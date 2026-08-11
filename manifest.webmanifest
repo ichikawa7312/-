@@ -1,0 +1,13 @@
+{
+  "name": "シンワ予定",
+  "short_name": "シンワ予定",
+  "description": "株式会社シンワ検査 静岡営業所 予定確認アプリ",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f6f7fb",
+  "theme_color": "#111827",
+  "icons": [
+    {"src":"./icon.svg","sizes":"any","type":"image/svg+xml","purpose":"any maskable"}
+  ]
+}
