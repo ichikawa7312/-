@@ -1,0 +1,78 @@
+name: Patch confirmation toggle
+
+on:
+  push:
+    paths:
+      - '.github/workflows/patch-confirm-toggle.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Patch confirmation toggle
+        shell: python
+        run: |
+          from pathlib import Path
+
+          app = Path('app.js')
+          text = app.read_text(encoding='utf-8')
+          old = '''async function doConfirm(id){
+  const s=schedules.find(x=>x.id===id);
+  const r=await db.from('confirmations').upsert(
+    {schedule_id:id,staff_id:me.id,revision:s.revision,confirmed_at:new Date().toISOString()},
+    {onConflict:'schedule_id,staff_id'}
+  );
+  if(r.error)return toast('保存できません');
+  await refresh();
+  toast('確認済みにしました');
+}
+'''
+          new = '''async function doConfirm(id){
+  const s=schedules.find(x=>x.id===id);
+  const current=conf(s,me.id);
+  const confirmed=current&&current.revision>=s.revision;
+
+  if(confirmed){
+    const r=await db.from('confirmations').delete().eq('schedule_id',id).eq('staff_id',me.id);
+    if(r.error)return toast('確認を取り消せません');
+    await refresh();
+    return toast('確認を取り消しました');
+  }
+
+  const r=await db.from('confirmations').upsert(
+    {schedule_id:id,staff_id:me.id,revision:s.revision,confirmed_at:new Date().toISOString()},
+    {onConflict:'schedule_id,staff_id'}
+  );
+  if(r.error)return toast('保存できません');
+  await refresh();
+  toast('確認済みにしました');
+}
+'''
+          if old not in text:
+              raise SystemExit('doConfirm block not found')
+          app.write_text(text.replace(old, new, 1), encoding='utf-8')
+
+          index = Path('index.html')
+          t = index.read_text(encoding='utf-8')
+          t = t.replace('20260812-0945', '20260812-1835')
+          index.write_text(t, encoding='utf-8')
+
+          sw = Path('sw.js')
+          t = sw.read_text(encoding='utf-8')
+          t = t.replace("shinwa-yotei-v4", "shinwa-yotei-v5")
+          t = t.replace('20260812-0945', '20260812-1835')
+          sw.write_text(t, encoding='utf-8')
+      - name: Verify JavaScript syntax
+        run: node --check app.js
+      - name: Commit patch and remove one-time workflow
+        run: |
+          rm .github/workflows/patch-confirm-toggle.yml
+          git config user.name "ichikawa7312"
+          git config user.email "ichikawa7312@gmail.com"
+          git add app.js index.html sw.js .github/workflows/patch-confirm-toggle.yml
+          git commit -m "Toggle schedule confirmation on repeated tap"
+          git push
