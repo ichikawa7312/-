@@ -1,0 +1,13 @@
+name: Check JS once
+
+on:
+  push:
+    paths:
+      - '.github/workflows/check-js-once.yml'
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - run: node --check app.js
