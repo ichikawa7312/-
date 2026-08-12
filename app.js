@@ -195,16 +195,19 @@ function edit(id){
   if(!admin())return;
   const s=id?schedules.find(x=>x.id===id):null;
   const sel=s?sm(s).map(x=>x.staff_id):[];
-  const dateBlock=s
-    ? `<label>作業日<div id="dateList">${dateRow(s.work_date,false)}</div></label>`
-    : `<label>作業日 <small style="color:#6b7280">（複数日登録できます）</small>
-        <div id="dateList">${dateRow(D1,false)}</div>
-       </label>
-       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:-4px">
-         <button type="button" id="addNextDate" class="sub" style="flex:1">＋翌日を追加</button>
-         <button type="button" id="addOtherDate" class="sub" style="flex:1">＋別日を追加</button>
-       </div>
-       <small style="color:#6b7280">続き現場は「＋翌日を追加」で日付を増やせます。</small>`;
+  const baseDate=s?.work_date||D1;
+  const dateHelp=s
+    ? 'この予定の内容をそのまま使って、あとから作業日を追加できます。'
+    : '続き現場は「＋翌日を追加」で日付を増やせます。';
+
+  const dateBlock=`<label>作業日 <small style="color:#6b7280">（複数日登録できます）</small>
+      <div id="dateList">${dateRow(baseDate,false)}</div>
+     </label>
+     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:-4px">
+       <button type="button" id="addNextDate" class="sub" style="flex:1">＋翌日を追加</button>
+       <button type="button" id="addOtherDate" class="sub" style="flex:1">＋別日を追加</button>
+     </div>
+     <small style="color:#6b7280">${dateHelp}</small>`;
 
   modal(s?'予定編集':'予定追加',`<form id="sf" class="form">
     <label>現場名<input id="ft" value="${esc(s?.title||'')}" required></label>
@@ -217,13 +220,11 @@ function edit(id){
 
   wireDateRows();
 
-  if(!s){
-    $('addNextDate').onclick=()=>{
-      const vals=[...document.querySelectorAll('input[name="workdate"]')].map(x=>x.value).filter(Boolean);
-      addDateRow(nextIso(vals.at(-1)||D1));
-    };
-    $('addOtherDate').onclick=()=>addDateRow('');
-  }
+  $('addNextDate').onclick=()=>{
+    const vals=[...document.querySelectorAll('input[name="workdate"]')].map(x=>x.value).filter(Boolean);
+    addDateRow(nextIso(vals.at(-1)||baseDate));
+  };
+  $('addOtherDate').onclick=()=>addDateRow('');
 
   $('sf').onsubmit=e=>saveSchedule(e,s);
   if(s)$('del').onclick=()=>delSchedule(s);
@@ -237,7 +238,7 @@ async function saveSchedule(e,s){
 
   const dates=[...new Set(
     [...document.querySelectorAll('input[name="workdate"]')].map(x=>x.value).filter(Boolean)
-  )].sort();
+  )];
   if(!dates.length)return toast('作業日を選択してください');
 
   const file=$('fp').files[0];
@@ -263,20 +264,56 @@ async function saveSchedule(e,s){
   };
 
   if(s){
+    const oldMembers=sm(s).map(x=>x.staff_id).sort();
+    const newMembers=[...sel].sort();
+    const membersChanged=oldMembers.length!==newMembers.length||oldMembers.some((x,i)=>x!==newMembers[i]);
+    const oldTime=(s.site_start_time||'').slice(0,5)||null;
+    const detailsChanged=
+      s.title!==common.title||
+      s.work_date!==dates[0]||
+      oldTime!==common.site_start_time||
+      s.pdf_path!==common.pdf_path||
+      s.pdf_name!==common.pdf_name||
+      membersChanged;
+
     const payload={
       ...common,
       id:s.id,
       work_date:dates[0],
-      revision:s.revision+1
+      revision:detailsChanged?s.revision+1:s.revision
     };
-    const r=await db.from('schedules').upsert(payload);
+    let r=await db.from('schedules').upsert(payload);
     if(r.error)return toast('予定保存失敗');
-    await db.from('schedule_members').delete().eq('schedule_id',s.id);
-    const mr=await db.from('schedule_members').insert(sel.map(staff_id=>({schedule_id:s.id,staff_id})));
-    if(mr.error)return toast('人員保存失敗');
+
+    if(membersChanged){
+      await db.from('schedule_members').delete().eq('schedule_id',s.id);
+      r=await db.from('schedule_members').insert(sel.map(staff_id=>({schedule_id:s.id,staff_id})));
+      if(r.error)return toast('人員保存失敗');
+    }
+
+    const extraDates=dates.slice(1);
+    if(extraDates.length){
+      const rows=extraDates.map(work_date=>({
+        ...common,
+        id:crypto.randomUUID(),
+        work_date,
+        revision:1,
+        created_by:me.id
+      }));
+      r=await db.from('schedules').insert(rows);
+      if(r.error)return toast('追加日の保存に失敗しました');
+
+      const memberRows=rows.flatMap(row=>sel.map(staff_id=>({
+        schedule_id:row.id,
+        staff_id
+      })));
+      r=await db.from('schedule_members').insert(memberRows);
+      if(r.error)return toast('追加日の人員保存に失敗しました');
+    }
+
     closeM();
     await refresh();
-    return toast('保存しました');
+    return toast(extraDates.length?`${extraDates.length}日分を追加しました`:'保存しました');
   }
 
   const rows=dates.map(work_date=>({
