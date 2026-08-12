@@ -152,6 +152,16 @@ async function refresh(){await load();render()}
 
 async function doConfirm(id){
   const s=schedules.find(x=>x.id===id);
+  const current=conf(s,me.id);
+  const confirmed=current&&current.revision>=s.revision;
+
+  if(confirmed){
+    const r=await db.from('confirmations').delete().eq('schedule_id',id).eq('staff_id',me.id);
+    if(r.error)return toast('確認を取り消せません');
+    await refresh();
+    return toast('確認を取り消しました');
+  }
+
   const r=await db.from('confirmations').upsert(
     {schedule_id:id,staff_id:me.id,revision:s.revision,confirmed_at:new Date().toISOString()},
     {onConflict:'schedule_id,staff_id'}
