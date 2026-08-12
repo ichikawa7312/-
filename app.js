@@ -10,7 +10,7 @@ const esc=s=>String(s??'').replace(/[&<>"']/g,m=>({
   '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
 }[m]));
 
-let session,me,staff=[],schedules=[],members=[],confs=[],deps=[],dm=[];
+let session,me,staff=[],schedules=[],members=[],confs=[],deps=[],dm=[],dayStatus=[];
 let onlyMine=true,cur=new Date(),selected=iso(new Date());
 
 function iso(d){
@@ -63,11 +63,12 @@ async function load(){
     db.from('schedule_members').select('*'),
     db.from('confirmations').select('*'),
     db.from('departures').select('*'),
-    db.from('departure_members').select('*')
+    db.from('departure_members').select('*'),
+    db.from('staff_day_status').select('*')
   ]);
   const bad=rs.find(r=>r.error);
   if(bad)throw bad.error;
-  [staff,schedules,members,confs,deps,dm]=rs.map(r=>r.data||[]);
+  [staff,schedules,members,confs,deps,dm,dayStatus]=rs.map(r=>r.data||[]);
   me=staff.find(x=>x.auth_user_id===session.user.id);
   if(!me)throw Error('社員情報に紐づいていません');
   $('acct').textContent=me.display_name;
@@ -102,6 +103,24 @@ function job(s){
   </article>`;
 }
 
+function dayStatusHtml(date){
+  const offIds=new Set(dayStatus.filter(x=>x.work_date===date&&x.status==='off').map(x=>x.staff_id));
+  const scheduledIds=new Set();
+  schedules.filter(s=>s.work_date===date).forEach(s=>sm(s).forEach(x=>scheduledIds.add(x.staff_id)));
+  const overlap=staff.filter(p=>offIds.has(p.id)&&scheduledIds.has(p.id));
+  const off=staff.filter(p=>offIds.has(p.id));
+  const site=staff.filter(p=>scheduledIds.has(p.id)&&!offIds.has(p.id));
+  const office=staff.filter(p=>!scheduledIds.has(p.id)&&!offIds.has(p.id));
+  const names=xs=>xs.length?xs.map(x=>esc(x.display_name)).join('・'):'なし';
+  return `<div class="box" style="margin-bottom:10px">
+    <div class="boxhead"><b>勤務状況</b><span style="font-size:11px;color:#6b7280">全${staff.length}名</span></div>
+    <div style="margin-top:7px"><b>現場 ${site.length}名</b><div style="font-size:12px;color:#4b5563;margin-top:2px">${names(site)}</div></div>
+    <div style="margin-top:7px"><b>事務所 ${office.length}名</b><div style="font-size:12px;color:#4b5563;margin-top:2px">${names(office)}</div></div>
+    <div style="margin-top:7px"><b>休み ${off.length}名</b><div style="font-size:12px;color:#4b5563;margin-top:2px">${names(off)}</div></div>
+    ${overlap.length?`<div style="margin-top:8px;padding:7px;border-radius:8px;background:#fff7ed;font-size:11px"><b>⚠ 休みと現場予定が重複：</b>${names(overlap)}</div>`:''}
+  </div>`;
+}
+
 function visible(){return schedules.filter(s=>!onlyMine||assigned(s))}
 function wire(){
   document.querySelectorAll('[data-c]').forEach(b=>b.onclick=()=>doConfirm(b.dataset.c));
@@ -118,8 +137,8 @@ function render(){
   const un=schedules.filter(s=>s.work_date>=D0&&assigned(s)&&state(s,me.id)[1]!=='done');
   $('dateLabel').textContent=new Date().toLocaleDateString('ja-JP',{year:'numeric',month:'long',day:'numeric',weekday:'short'});
   $('summary').textContent=`未確認 ${un.length}件`;
-  $('today').innerHTML=t.length?t.map(job).join(''):'<div class="empty">今日の予定はありません</div>';
-  $('tomorrow').innerHTML=tm.length?tm.map(job).join(''):'<div class="empty">明日の予定はありません</div>';
+  $('today').innerHTML=dayStatusHtml(D0)+(t.length?t.map(job).join(''):'<div class="empty">今日の現場予定はありません</div>');
+  $('tomorrow').innerHTML=dayStatusHtml(D1)+(tm.length?tm.map(job).join(''):'<div class="empty">明日の現場予定はありません</div>');
   const f=vs.filter(s=>s.work_date>D1).slice(0,20);
   $('future').innerHTML=f.length?f.map(s=>`<div class="row"><div><b>${esc(s.title)}</b><small>${s.work_date}　現地 ${(s.site_start_time||'').slice(0,5)||'未定'}</small></div></div>`).join(''):'<div class="empty">この先の予定はありません</div>';
   calendar();
@@ -138,7 +157,7 @@ function calendar(){
   $('grid').innerHTML=h;
   document.querySelectorAll('[data-day]').forEach(b=>b.onclick=()=>{selected=b.dataset.day;calendar()});
   const xs=visible().filter(s=>s.work_date===selected);
-  $('dayList').innerHTML=`<h2>${selected}</h2><div class="cards">${xs.length?xs.map(job).join(''):'<div class="empty">予定なし</div>'}</div>`;
+  $('dayList').innerHTML=`<h2>${selected}</h2><div class="cards">${dayStatusHtml(selected)}${xs.length?xs.map(job).join(''):'<div class="empty">現場予定なし</div>'}</div>`;
   wire();
 }
 
@@ -199,6 +218,38 @@ function wireDateRows(){
 function addDateRow(value=''){
   $('dateList').insertAdjacentHTML('beforeend',dateRow(value,true));
   wireDateRows();
+}
+
+function offChecks(date){
+  const ids=new Set(dayStatus.filter(x=>x.work_date===date&&x.status==='off').map(x=>x.staff_id));
+  return staff.map(p=>`<label class="ck"><input type="checkbox" name="offstaff" value="${p.id}" ${ids.has(p.id)?'checked':''}><span>${esc(p.display_name)}</span></label>`).join('');
+}
+
+function editOff(date=D1){
+  if(!admin())return;
+  modal('休み設定',`<form id="offForm" class="form">
+    <label>日付<input id="offDate" type="date" value="${date}" required></label>
+    <label>休みの人 <small style="color:#6b7280">（複数選択可）</small><div id="offStaff" class="staff">${offChecks(date)}</div></label>
+    <small style="color:#6b7280">現場予定にも休み設定にも入っていない人は、自動的に「事務所」になります。</small>
+    <button class="btn">保存</button>
+  </form>`);
+  $('offDate').onchange=()=>{$('offStaff').innerHTML=offChecks($('offDate').value)};
+  $('offForm').onsubmit=saveOff;
+}
+
+async function saveOff(e){
+  e.preventDefault();
+  const date=$('offDate').value;
+  const ids=[...document.querySelectorAll('input[name="offstaff"]:checked')].map(x=>x.value);
+  let r=await db.from('staff_day_status').delete().eq('work_date',date);
+  if(r.error)return toast('休み設定を保存できません');
+  if(ids.length){
+    r=await db.from('staff_day_status').insert(ids.map(staff_id=>({work_date:date,staff_id,status:'off',created_by:me.id})));
+    if(r.error)return toast('休み設定を保存できません');
+  }
+  closeM();
+  await refresh();
+  toast(ids.length?`${ids.length}名を休みに設定しました`:'休み設定を解除しました');
 }
 
 function edit(id){
@@ -510,6 +561,7 @@ $('all').onclick=()=>{
 $('prev').onclick=()=>{cur=new Date(cur.getFullYear(),cur.getMonth()-1,1);calendar()};
 $('next').onclick=()=>{cur=new Date(cur.getFullYear(),cur.getMonth()+1,1);calendar()};
 $('new').onclick=()=>edit();
+$('off').onclick=()=>editOff();
 $('close').onclick=closeM;
 $('shade').onclick=closeM;
 $('acct').onclick=()=>modal('アカウント',`<div class="stack"><b>${esc(me.display_name)}</b><span>${esc(session.user.email)}</span><span>${admin()?'管理者':'メンバー'}</span>${admin()?'<button id="inviteStaff" class="sub">社員アカウントを招待</button>':''}<button id="logout" class="sub">ログアウト</button></div>`);
