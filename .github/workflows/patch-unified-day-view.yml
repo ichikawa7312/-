@@ -1,0 +1,26 @@
+name: Patch unified day view
+
+on:
+  push:
+    paths:
+      - '.github/workflows/patch-unified-day-view.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Apply unified day view patch
+        run: python .github/patch-unified-day-view.py
+      - name: Check JavaScript
+        run: node --check app.js
+      - name: Commit changes
+        run: |
+          git config user.name "ichikawa7312"
+          git config user.email "ichikawa7312@gmail.com"
+          git add app.js app.css index.html sw.js
+          git commit -m "Unify schedule day layout with office and off staff"
+          git push
