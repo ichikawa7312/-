@@ -41,6 +41,7 @@ function closeM(){
   $('modal').classList.add('hide');
 }
 function admin(){return me?.role==='admin'}
+function owner(){return me?.display_name==='市川健太郎'&&String(session?.user?.email||'').toLowerCase()==='kentaro.i@shinwa-kensa.co.jp'}
 function st(id){return staff.find(x=>x.id===id)}
 function sm(s){return members.filter(x=>x.schedule_id===s.id)}
 function assigned(s){return sm(s).some(x=>x.staff_id===me?.id)}
@@ -390,12 +391,8 @@ async function saveOff(e){
   e.preventDefault();
   const date=$('offDate').value;
   const ids=[...document.querySelectorAll('input[name="offstaff"]:checked')].map(x=>x.value);
-  let r=await db.from('staff_day_status').delete().eq('work_date',date);
-  if(r.error)return toast('休み設定を保存できません');
-  if(ids.length){
-    r=await db.from('staff_day_status').insert(ids.map(staff_id=>({work_date:date,staff_id,status:'off',created_by:me.id})));
-    if(r.error)return toast('休み設定を保存できません');
-  }
+  const r=await db.rpc('admin_set_off_day',{p_work_date:date,p_staff_ids:ids});
+  if(r.error){console.error(r.error);return toast('休み設定を保存できません')}
   closeM();
   await refresh();
   toast(ids.length?`${ids.length}名を休みに設定しました`:'休み設定を解除しました');
@@ -458,130 +455,56 @@ function edit(id){
 
 async function saveSchedule(e,s){
   e.preventDefault();
-
   const personnelTbd=$('personnelTbd').value==='1';
   const picked=[...document.querySelectorAll('input[name="staff"]:checked')].map(x=>x.value);
   const sel=personnelTbd?[]:picked;
   if(!personnelTbd&&!sel.length)return toast('現場人員を選択してください');
-
-  const dates=[...new Set(
-    [...document.querySelectorAll('input[name="workdate"]')].map(x=>x.value).filter(Boolean)
-  )];
+  const dates=[...new Set([...document.querySelectorAll('input[name="workdate"]')].map(x=>x.value).filter(Boolean))];
   if(!dates.length)return toast('作業日を選択してください');
 
   const file=$('fp').files[0];
   let path=s?.pdf_path||null,pname=s?.pdf_name||null;
-
   if(file){
     const storageGroup=s?.id||crypto.randomUUID();
     path=`${storageGroup}/${Date.now()}_${crypto.randomUUID()}.pdf`;
     const up=await db.storage.from('instructions').upload(path,file,{contentType:'application/pdf'});
-    if(up.error){
-      console.error('PDF upload error',up.error);
-      return toast(`PDF保存失敗: ${up.error.message||'アップロードエラー'}`);
-    }
+    if(up.error){console.error('PDF upload error',up.error);return toast(`PDF保存失敗: ${up.error.message||'アップロードエラー'}`)}
     pname=file.name;
   }
 
-  const common={
-    title:$('ft').value.trim(),
-    site_start_time:$('ftime').value||null,
-    pdf_path:path,
-    pdf_name:pname,
-    personnel_tbd:personnelTbd,
-    updated_by:me.id
-  };
-
-  if(s){
-    const oldMembers=sm(s).map(x=>x.staff_id).sort();
-    const newMembers=[...sel].sort();
-    const membersChanged=oldMembers.length!==newMembers.length||oldMembers.some((x,i)=>x!==newMembers[i]);
-    const oldTime=(s.site_start_time||'').slice(0,5)||null;
-    const detailsChanged=
-      s.title!==common.title||
-      s.work_date!==dates[0]||
-      oldTime!==common.site_start_time||
-      s.pdf_path!==common.pdf_path||
-      s.pdf_name!==common.pdf_name||
-      Boolean(s.personnel_tbd)!==personnelTbd||
-      membersChanged;
-
-    const payload={
-      ...common,
-      id:s.id,
-      work_date:dates[0],
-      revision:detailsChanged?s.revision+1:s.revision
-    };
-    let r=await db.from('schedules').upsert(payload);
-    if(r.error)return toast('予定保存失敗');
-
-    if(membersChanged){
-      r=await db.from('schedule_members').delete().eq('schedule_id',s.id);
-      if(r.error)return toast('人員保存失敗');
-      if(sel.length){
-        r=await db.from('schedule_members').insert(sel.map(staff_id=>({schedule_id:s.id,staff_id})));
-        if(r.error)return toast('人員保存失敗');
-      }
-    }
-
-    const extraDates=dates.slice(1);
-    if(extraDates.length){
-      const rows=extraDates.map(work_date=>({
-        ...common,
-        id:crypto.randomUUID(),
-        work_date,
-        revision:1,
-        created_by:me.id
-      }));
-      r=await db.from('schedules').insert(rows);
-      if(r.error)return toast('追加日の保存に失敗しました');
-
-      const memberRows=rows.flatMap(row=>sel.map(staff_id=>({
-        schedule_id:row.id,
-        staff_id
-      })));
-      if(memberRows.length){
-        r=await db.from('schedule_members').insert(memberRows);
-        if(r.error)return toast('追加日の人員保存に失敗しました');
-      }
-    }
-
-    closeM();
-    await refresh();
-    return toast(extraDates.length?`${extraDates.length}日分を追加しました`:'保存しました');
-  }
-
-  const rows=dates.map(work_date=>({
-    ...common,
-    id:crypto.randomUUID(),
-    work_date,
-    revision:1,
-    created_by:me.id
-  }));
-
-  let r=await db.from('schedules').insert(rows);
-  if(r.error)return toast('予定保存失敗');
-
-  const memberRows=rows.flatMap(row=>sel.map(staff_id=>({
-    schedule_id:row.id,
-    staff_id
-  })));
-  if(memberRows.length){
-    r=await db.from('schedule_members').insert(memberRows);
-    if(r.error)return toast('人員保存失敗');
+  const r=await db.rpc('admin_save_schedule_bundle',{
+    p_schedule_id:s?.id||null,
+    p_dates:dates,
+    p_title:$('ft').value.trim(),
+    p_site_start_time:$('ftime').value||null,
+    p_pdf_path:path,
+    p_pdf_name:pname,
+    p_personnel_tbd:personnelTbd,
+    p_member_ids:sel
+  });
+  if(r.error){
+    console.error('schedule save rpc error',r.error);
+    cleanupPdfs().catch(()=>{});
+    return toast('予定を保存できません');
   }
 
   closeM();
   await refresh();
-  toast(dates.length>1?`${dates.length}日分を登録しました`:'保存しました');
+  cleanupPdfs().catch(()=>{});
+  const created=Array.isArray(r.data?.created_ids)?r.data.created_ids.length:0;
+  if(r.data?.departures_reset)return toast('保存しました（出発予定をリセット）');
+  if(s&&created)return toast(`${created}日分を追加しました`);
+  if(!s&&created>1)return toast(`${created}日分を登録しました`);
+  toast('保存しました');
 }
 
 async function delSchedule(s){
   if(!confirm('この予定を削除しますか？'))return;
-  const r=await db.from('schedules').delete().eq('id',s.id);
-  if(r.error)return toast('削除できません');
+  const r=await db.rpc('admin_delete_schedule',{p_schedule_id:s.id});
+  if(r.error){console.error(r.error);return toast('削除できません')}
   closeM();
   await refresh();
+  cleanupPdfs().catch(()=>{});
   toast('削除しました');
 }
 
@@ -650,7 +573,7 @@ function notificationControls(){
 }
 
 function openAccount(){
-  modal('アカウント',`<div class="stack"><b>${esc(me.display_name)}</b><span>${esc(session.user.email)}</span><span>${admin()?'管理者':'メンバー'}</span>${notificationControls()}${admin()?'<button id="inviteStaff" class="sub">社員アカウントを招待</button>':''}<button id="logout" class="sub">ログアウト</button></div>`);
+  modal('アカウント',`<div class="stack"><b>${esc(me.display_name)}</b><span>${esc(session.user.email)}</span><span>${admin()?'管理者':'メンバー'}</span>${notificationControls()}${admin()?'<button id="inviteStaff" class="sub">社員アカウントを招待</button>':''}${owner()?'<button id="passwordResetAdmin" class="sub">社員パスワード再設定</button>':''}<button id="logout" class="sub">ログアウト</button></div>`);
 }
 
 async function enableNotifications(){
@@ -706,6 +629,84 @@ async function testNotification(){
   }
 }
 
+async function adminToolsRequest(action,extra={},withAuth=true){
+  const headers={'Content-Type':'application/json'};
+  if(withAuth){
+    const sr=await db.auth.getSession();
+    if(!sr.data.session)throw Error('login_required');
+    session=sr.data.session;
+    headers.Authorization=`Bearer ${session.access_token}`;
+  }
+  const r=await fetch('https://dbupdbrjakandkppptix.supabase.co/functions/v1/admin-tools',{
+    method:'POST',headers,body:JSON.stringify({action,...extra})
+  });
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok)throw Error(data.error||'admin_tools_failed');
+  return data;
+}
+
+async function cleanupPdfs(){
+  if(!admin())return;
+  try{await adminToolsRequest('cleanup-pdfs')}catch(e){console.warn('PDF cleanup deferred',e)}
+}
+
+function auditWhen(z){
+  return new Date(z).toLocaleString('ja-JP',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'});
+}
+function sameAudit(a,b){return JSON.stringify(a??null)===JSON.stringify(b??null)}
+function auditDetail(a){
+  const d=a.details||{};
+  if(a.action==='create')return `${(d.members||[]).join('・')||'人員未定'}${d.pdf_name?` ／ PDF:${d.pdf_name}`:''}`;
+  if(a.action==='delete')return `${(d.members||[]).join('・')||'人員未定'}${d.pdf_name?` ／ PDF:${d.pdf_name}`:''}`;
+  if(a.action==='off_update')return `休み：${(d.new||[]).join('・')||'なし'}`;
+  if(a.action==='password_reset_link')return `${st(a.target_staff_id)?.display_name||d.target_name||'社員'} の再設定リンク発行`;
+  if(a.action==='pdf_cleanup')return `不要PDF ${d.deleted_count||0}件を削除`;
+  if(a.action==='update'){
+    const o=d.old||{},n=d.new||{},x=[];
+    if(!sameAudit(o.title,n.title))x.push('現場名');
+    if(!sameAudit(o.work_date,n.work_date))x.push('日付');
+    if(!sameAudit(o.site_start_time,n.site_start_time))x.push('開始時刻');
+    if(!sameAudit(o.pdf_name,n.pdf_name))x.push('PDF');
+    if(!sameAudit(o.personnel_tbd,n.personnel_tbd)||!sameAudit(o.members,n.members))x.push('人員');
+    if(d.departures_reset)x.push('出発予定削除');
+    return x.length?x.join('・'):'内容変更';
+  }
+  return '';
+}
+
+async function showAudit(){
+  if(!admin())return;
+  modal('更新履歴','<div class="center" style="min-height:120px">読み込み中…</div>');
+  const r=await db.from('schedule_audit_log').select('*').order('happened_at',{ascending:false}).limit(100);
+  if(r.error)return $('mb').innerHTML='<div class="empty">履歴を読み込めません</div>';
+  const labels={create:'予定登録',update:'予定変更',delete:'予定削除',off_update:'休み設定',password_reset_link:'PW再設定',pdf_cleanup:'PDF整理'};
+  $('mb').innerHTML=r.data.length?`<div class="stack">${r.data.map(a=>`<div class="box">
+    <div class="boxhead"><b>${esc(labels[a.action]||a.action)}</b><span style="font-size:11px;color:#6b7280">${esc(auditWhen(a.happened_at))}</span></div>
+    <div style="margin-top:5px"><b>${esc(a.title||'')}</b>${a.work_date?` <span style="font-size:11px;color:#6b7280">${esc(a.work_date)}</span>`:''}</div>
+    <div style="font-size:12px;margin-top:4px">${esc(auditDetail(a))}</div>
+    <div style="font-size:10px;color:#6b7280;margin-top:4px">操作：${esc(st(a.actor_staff_id)?.display_name||'システム')}</div>
+  </div>`).join('')}</div>`:'<div class="empty">更新履歴はまだありません</div>';
+}
+
+async function passwordResetAdmin(){
+  if(!owner())return;
+  const targets=staff.filter(x=>x.auth_user_id);
+  modal('社員パスワード再設定',`<form id="prf" class="form">
+    <label>社員<select id="prs" style="width:100%;border:1px solid #cbd5e1;border-radius:11px;padding:12px;background:white">${targets.map(x=>`<option value="${x.id}">${esc(x.display_name)}</option>`).join('')}</select></label>
+    <small style="color:#6b7280;line-height:1.5">本人用の1回限りの再設定リンクを作ります。有効期限は24時間です。市川さんが本人の新しいパスワードを見ることはありません。</small>
+    <button class="btn">再設定リンクを作成</button>
+  </form>`);
+  $('prf').onsubmit=async e=>{
+    e.preventDefault();
+    try{
+      const data=await adminToolsRequest('create-password-reset',{staff_id:$('prs').value});
+      const u=new URL(location.href);u.search='';u.hash='';u.searchParams.set('reset',data.token);u.searchParams.set('email',data.email);
+      modal('再設定リンク完成',`<div class="stack"><b>${esc(data.display_name)}</b><p>このURLを本人へ送ってください。24時間・1回限り有効です。</p><input id="resetUrl" value="${esc(u.toString())}" readonly><button id="copyReset" class="btn">URLをコピー</button></div>`);
+      $('copyReset').onclick=async()=>{await navigator.clipboard.writeText($('resetUrl').value);toast('コピーしました')};
+    }catch(e){console.error(e);toast('再設定リンクを作れませんでした')}
+  };
+}
+
 async function inviteStaff(){
   if(!admin())return;
   const targets=staff.filter(x=>!x.auth_user_id);
@@ -757,10 +758,15 @@ function authView(){
   $('auth').classList.remove('hide');
 }
 
-const qp=new URLSearchParams(location.search),prefill=qp.get('email')||'',activationToken=qp.get('activate')||'';
+const qp=new URLSearchParams(location.search),prefill=qp.get('email')||'',activationToken=qp.get('activate')||'',managedResetToken=qp.get('reset')||'';
+const ownerRecoveryRequested=qp.get('owner-recovery')==='1'||location.hash.includes('type=recovery');
 $('le').value=prefill;
 $('se').value=prefill;
-if(activationToken){
+$('mre').value=prefill;
+function hideAuthForms(){['login','signup','managedReset','ownerReset'].forEach(id=>$(id).classList.add('hide'))}
+function showManagedReset(){authView();hideAuthForms();$('managedReset').classList.remove('hide')}
+function showOwnerRecovery(){authView();hideAuthForms();$('ownerReset').classList.remove('hide')}
+if(activationToken&&!managedResetToken){
   $('login').classList.add('hide');
   $('signup').classList.remove('hide');
   $('se').readOnly=true;
@@ -811,6 +817,49 @@ $('signup').onsubmit=async e=>{
   enter();
 };
 
+$('forgotPassword').onclick=async()=>{
+  const email=$('le').value.trim().toLowerCase();
+  $('lm').textContent='';
+  if(email!=='kentaro.i@shinwa-kensa.co.jp')return $('lm').textContent='パスワード再設定は市川さんに依頼してください。';
+  try{
+    const redirect=`${location.origin}${location.pathname}?owner-recovery=1`;
+    const r=await db.auth.resetPasswordForEmail(email,{redirectTo:redirect});
+    if(r.error)throw r.error;
+    $('lm').textContent='市川さんの登録メールへ再設定メールを送りました。';
+  }catch(e){console.error(e);$('lm').textContent='再設定メールを送れませんでした。';}
+};
+
+$('managedReset').onsubmit=async e=>{
+  e.preventDefault();
+  $('mrm').textContent='';
+  const p=$('mrp').value;
+  if(p!==$('mrp2').value)return $('mrm').textContent='パスワードが一致しません。';
+  try{
+    await adminToolsRequest('complete-password-reset',{token:managedResetToken,email:$('mre').value.trim(),password:p},false);
+    history.replaceState({},'',location.pathname);
+    hideAuthForms();$('login').classList.remove('hide');$('le').value=$('mre').value;$('lm').textContent='パスワードを変更しました。新しいパスワードでログインしてください。';
+  }catch(e){console.error(e);$('mrm').textContent='再設定リンクが無効か期限切れです。';}
+};
+
+$('ownerReset').onsubmit=async e=>{
+  e.preventDefault();
+  $('orm').textContent='';
+  const p=$('orp').value;
+  if(p!==$('orp2').value)return $('orm').textContent='パスワードが一致しません。';
+  if(!session)return $('orm').textContent='再設定セッションを確認できません。';
+  const r=await db.auth.updateUser({password:p});
+  if(r.error)return $('orm').textContent='パスワードを変更できませんでした。';
+  await db.auth.signOut();
+  session=null;history.replaceState({},'',location.pathname);hideAuthForms();$('login').classList.remove('hide');$('le').value='kentaro.i@shinwa-kensa.co.jp';$('lm').textContent='パスワードを変更しました。新しいパスワードでログインしてください。';
+};
+
+db.auth.onAuthStateChange((event,newSession)=>{
+  if(event==='PASSWORD_RECOVERY'){
+    session=newSession;
+    setTimeout(showOwnerRecovery,0);
+  }
+});
+
 $('mine').onclick=()=>{
   onlyMine=true;
   $('mine').classList.add('on');
@@ -827,6 +876,7 @@ $('prev').onclick=()=>{cur=add(weekStart(cur),-14);calendar()};
 $('next').onclick=()=>{cur=add(weekStart(cur),14);calendar()};
 $('new').onclick=()=>edit();
 $('off').onclick=()=>editOff();
+$('historyBtn').onclick=showAudit;
 $('close').onclick=closeM;
 $('shade').onclick=closeM;
 $('acct').onclick=openAccount;
@@ -834,6 +884,7 @@ $('acct').onclick=openAccount;
 document.addEventListener('click',e=>{
   if(e.target.id==='logout')db.auth.signOut().then(()=>location.reload());
   if(e.target.id==='inviteStaff')inviteStaff();
+  if(e.target.id==='passwordResetAdmin')passwordResetAdmin();
   if(e.target.id==='enablePush')enableNotifications();
   if(e.target.id==='disablePush')disableNotifications();
   if(e.target.id==='testPush')testNotification();
@@ -850,6 +901,8 @@ document.querySelectorAll('.nav').forEach(b=>b.onclick=()=>{
 (async()=>{
   const r=await db.auth.getSession();
   session=r.data.session;
+  if(managedResetToken)return showManagedReset();
+  if(ownerRecoveryRequested&&session)return showOwnerRecovery();
   if(session)enter();else authView();
 })();
 
