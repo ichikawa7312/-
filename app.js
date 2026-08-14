@@ -121,6 +121,29 @@ function dayStatusHtml(date){
   </div>`;
 }
 
+function planDate(z){
+  const [y,m,d]=z.split('-').map(Number);
+  const w='日月火水木金土'[new Date(y,m-1,d).getDay()];
+  return {md:`${m}/${d}`,w};
+}
+
+function planList(xs,editable=false){
+  if(!xs.length)return '<div class="empty">予定はありません</div>';
+  const head=`<div class="planhead ${editable?'manage':''}"><span>日付</span><span>現場</span><span>人員</span>${editable?'<span></span>':''}</div>`;
+  const rows=xs.map(s=>{
+    const d=planDate(s.work_date);
+    const people=sm(s).map(x=>st(x.staff_id)?.display_name).filter(Boolean).map(esc).join('・')||'—';
+    const time=(s.site_start_time||'').slice(0,5)||'未定';
+    return `<div class="planrow ${editable?'manage':''}">
+      <div class="plandate"><b>${d.md}</b><small>(${d.w})</small></div>
+      <div class="plansite"><b>${esc(s.title)}</b><small>現地 ${time}</small></div>
+      <div class="planpeople">${people}</div>
+      ${editable?`<button class="smallbtn planedit" data-e="${s.id}">編集</button>`:''}
+    </div>`;
+  }).join('');
+  return head+rows;
+}
+
 function visible(){return schedules.filter(s=>!onlyMine||assigned(s))}
 function wire(){
   document.querySelectorAll('[data-c]').forEach(b=>b.onclick=()=>doConfirm(b.dataset.c));
@@ -140,7 +163,7 @@ function render(){
   $('today').innerHTML=dayStatusHtml(D0)+(t.length?t.map(job).join(''):'<div class="empty">今日の現場予定はありません</div>');
   $('tomorrow').innerHTML=dayStatusHtml(D1)+(tm.length?tm.map(job).join(''):'<div class="empty">明日の現場予定はありません</div>');
   const f=vs.filter(s=>s.work_date>D1).slice(0,20);
-  $('future').innerHTML=f.length?f.map(s=>`<div class="row"><div><b>${esc(s.title)}</b><small>${s.work_date}　現地 ${(s.site_start_time||'').slice(0,5)||'未定'}</small></div></div>`).join(''):'<div class="empty">この先の予定はありません</div>';
+  $('future').innerHTML=f.length?planList(f,false):'<div class="empty">この先の予定はありません</div>';
   calendar();
   manageList();
   wire();
@@ -163,7 +186,7 @@ function calendar(){
 
 function manageList(){
   if(!admin())return;
-  $('manageList').innerHTML=schedules.length?schedules.map(s=>`<div class="row"><div><b>${esc(s.title)}</b><small>${s.work_date}　${sm(s).map(x=>st(x.staff_id)?.display_name).join('・')}</small></div><button class="smallbtn" data-e="${s.id}">編集</button></div>`).join(''):'<div class="empty">予定なし</div>';
+  $('manageList').innerHTML=schedules.length?planList(schedules,true):'<div class="empty">予定なし</div>';
   wire();
 }
 
