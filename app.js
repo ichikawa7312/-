@@ -144,6 +144,30 @@ function planList(xs,editable=false){
   return head+rows;
 }
 
+function futureGroupedList(xs){
+  if(!xs.length)return '<div class="empty">この先の予定はありません</div>';
+  const groups=new Map();
+  xs.forEach(s=>{
+    if(!groups.has(s.work_date))groups.set(s.work_date,[]);
+    groups.get(s.work_date).push(s);
+  });
+  return [...groups.entries()].map(([date,items])=>{
+    const d=planDate(date);
+    const rows=items.map(s=>{
+      const people=sm(s).map(x=>st(x.staff_id)?.display_name).filter(Boolean).map(esc).join('・')||'—';
+      const time=(s.site_start_time||'').slice(0,5)||'未定';
+      return `<div class="futurejob">
+        <div class="futuremain"><b>${esc(s.title)}</b><small>現地 ${time}</small></div>
+        <div class="futurepeople">${people}</div>
+      </div>`;
+    }).join('');
+    return `<section class="futuregroup">
+      <div class="futureday"><b>${d.md}（${d.w}）</b><span>${items.length}現場</span></div>
+      <div class="futurejobs">${rows}</div>
+    </section>`;
+  }).join('');
+}
+
 function visible(){return schedules.filter(s=>!onlyMine||assigned(s))}
 function wire(){
   document.querySelectorAll('[data-c]').forEach(b=>b.onclick=()=>doConfirm(b.dataset.c));
@@ -163,7 +187,7 @@ function render(){
   $('today').innerHTML=dayStatusHtml(D0)+(t.length?t.map(job).join(''):'<div class="empty">今日の現場予定はありません</div>');
   $('tomorrow').innerHTML=dayStatusHtml(D1)+(tm.length?tm.map(job).join(''):'<div class="empty">明日の現場予定はありません</div>');
   const f=vs.filter(s=>s.work_date>D1).slice(0,20);
-  $('future').innerHTML=f.length?planList(f,false):'<div class="empty">この先の予定はありません</div>';
+  $('future').innerHTML=futureGroupedList(f);
   calendar();
   manageList();
   wire();
