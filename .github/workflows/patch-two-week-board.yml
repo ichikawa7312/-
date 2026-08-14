@@ -1,0 +1,26 @@
+name: Patch two week board
+
+on:
+  push:
+    paths:
+      - '.github/workflows/patch-two-week-board.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Apply two-week board patch
+        run: python .github/patch-two-week-board.py
+      - name: Check JavaScript
+        run: node --check app.js
+      - name: Commit changes
+        run: |
+          git config user.name "ichikawa7312"
+          git config user.email "ichikawa7312@gmail.com"
+          git add app.js app.css index.html sw.js
+          git commit -m "Turn calendar into a two-week site board"
+          git push
