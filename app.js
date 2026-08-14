@@ -268,19 +268,33 @@ function render(){
   wire();
 }
 
+function weekStart(d){
+  const x=new Date(d.getFullYear(),d.getMonth(),d.getDate());
+  const diff=(x.getDay()+6)%7;
+  return add(x,-diff);
+}
+
+function shortMd(d){return `${d.getMonth()+1}/${d.getDate()}`}
+
+function twoWeekCell(d){
+  const z=iso(d);
+  const xs=schedules.filter(s=>s.work_date===z);
+  const today=z===D0;
+  const rows=xs.length?xs.map(s=>`<div class="twosite"><span>${esc(s.title)}</span>${s.personnel_tbd?'<b class="twotbd">未定</b>':''}</div>`).join(''):'<div class="twonone">予定なし</div>';
+  return `<div class="twoday ${today?'today':''}">
+    <div class="twodate"><b>${d.getDate()}</b><span>（${'日月火水木金土'[d.getDay()]}）</span></div>
+    <div class="twosites">${rows}</div>
+  </div>`;
+}
+
 function calendar(){
-  const y=cur.getFullYear(),m=cur.getMonth(),fst=new Date(y,m,1),start=add(fst,-fst.getDay());
-  $('month').textContent=`${y}年 ${m+1}月`;
+  const start=weekStart(cur),end=add(start,13),next=add(start,7);
+  $('month').textContent=`${shortMd(start)} 〜 ${shortMd(end)}`;
+  $('weekA').textContent=`${shortMd(start)}〜${shortMd(add(start,6))}`;
+  $('weekB').textContent=`${shortMd(next)}〜${shortMd(end)}`;
   let h='';
-  for(let i=0;i<42;i++){
-    const d=add(start,i),z=iso(d),n=visible().filter(s=>s.work_date===z).length;
-    h+=`<button class="day ${d.getMonth()===m?'':'out'} ${z===selected?'sel':''}" data-day="${z}">${d.getDate()}<div>${Array.from({length:Math.min(n,4)},()=>'<i class="dot"></i>').join('')}</div></button>`;
-  }
+  for(let i=0;i<7;i++)h+=twoWeekCell(add(start,i))+twoWeekCell(add(start,7+i));
   $('grid').innerHTML=h;
-  document.querySelectorAll('[data-day]').forEach(b=>b.onclick=()=>{selected=b.dataset.day;calendar()});
-  const xs=visible().filter(s=>s.work_date===selected);
-  $('dayList').innerHTML=`<h2>${selected}</h2><div class="cards">${dayStatusHtml(selected)}${xs.length?xs.map(job).join(''):'<div class="empty">現場予定なし</div>'}</div>`;
-  wire();
 }
 
 function manageList(){
@@ -707,8 +721,8 @@ $('all').onclick=()=>{
   $('mine').classList.remove('on');
   render();
 };
-$('prev').onclick=()=>{cur=new Date(cur.getFullYear(),cur.getMonth()-1,1);calendar()};
-$('next').onclick=()=>{cur=new Date(cur.getFullYear(),cur.getMonth()+1,1);calendar()};
+$('prev').onclick=()=>{cur=add(weekStart(cur),-14);calendar()};
+$('next').onclick=()=>{cur=add(weekStart(cur),14);calendar()};
 $('new').onclick=()=>edit();
 $('off').onclick=()=>editOff();
 $('close').onclick=closeM;
