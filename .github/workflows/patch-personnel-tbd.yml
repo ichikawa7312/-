@@ -1,0 +1,26 @@
+name: Patch personnel TBD feature
+
+on:
+  push:
+    paths:
+      - '.github/workflows/patch-personnel-tbd.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Apply personnel TBD patch
+        run: python .github/patch-personnel-tbd.py
+      - name: Check JavaScript
+        run: node --check app.js
+      - name: Commit changes
+        run: |
+          git config user.name "ichikawa7312"
+          git config user.email "ichikawa7312@gmail.com"
+          git add app.js app.css index.html sw.js
+          git commit -m "Support schedules with undecided personnel"
+          git push
