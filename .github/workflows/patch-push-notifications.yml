@@ -1,0 +1,26 @@
+name: Patch push notifications
+
+on:
+  push:
+    paths:
+      - '.github/workflows/patch-push-notifications.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Apply push notification patch
+        run: python .github/patch-push-notifications.py
+      - name: Check JavaScript
+        run: node --check app.js && node --check sw.js
+      - name: Commit changes
+        run: |
+          git config user.name "ichikawa7312"
+          git config user.email "ichikawa7312@gmail.com"
+          git add app.js index.html sw.js
+          git commit -m "Add web push notifications"
+          git push
