@@ -171,6 +171,71 @@ function futureGroupedList(xs){
   }).join('');
 }
 
+function dayPeople(date){
+  const offIds=new Set(dayStatus.filter(x=>x.work_date===date&&x.status==='off').map(x=>x.staff_id));
+  const tbdCount=schedules.filter(s=>s.work_date===date&&s.personnel_tbd).length;
+  const scheduledIds=new Set();
+  schedules.filter(s=>s.work_date===date&&!s.personnel_tbd).forEach(s=>sm(s).forEach(x=>scheduledIds.add(x.staff_id)));
+  return {
+    tbdCount,
+    off:staff.filter(p=>offIds.has(p.id)),
+    office:staff.filter(p=>!scheduledIds.has(p.id)&&!offIds.has(p.id)),
+    overlap:staff.filter(p=>offIds.has(p.id)&&scheduledIds.has(p.id))
+  };
+}
+
+function detailHtml(s){
+  const ds=sdeps(s);
+  const departure=s.personnel_tbd?'':`<div class="box detailbox">
+    <div class="boxhead"><b>出発予定</b>${assigned(s)?`<button class="smallbtn" data-d="${s.id}">＋書く</button>`:''}</div>
+    ${ds.length?ds.map(d=>`<div class="departurerow">
+      <div><b>${d.departure_time.slice(0,5)}</b>　${esc(dpeople(d).map(x=>x.display_name).join('・'))}<div class="inputby">入力：${esc(st(d.author_staff_id)?.display_name)}</div></div>
+      ${(d.author_staff_id===me.id||admin())?`<button class="smallbtn" data-dd="${d.id}">削除</button>`:''}
+    </div>`).join(''):'<div class="detailmuted">まだ書き込みなし</div>'}
+  </div>`;
+  const waiting=s.personnel_tbd?'<div class="detailnote">人員が決まると、出発予定と確認状況が表示されます。</div>':'';
+  return `${departure}<div class="pdf"><span>${esc(s.pdf_name||'指示書PDFなし')}</span><button class="smallbtn" ${s.pdf_path?`data-p="${s.id}"`:'disabled'}>${s.pdf_path?'指示書を見る':'PDFなし'}</button></div>${waiting}${confHtml(s)}`;
+}
+
+function dayOverview(date,xs){
+  const d=planDate(date),info=dayPeople(date);
+  const names=items=>items.length?items.map(x=>esc(x.display_name)).join('・'):'なし';
+  const siteRows=xs.length?xs.map(s=>{
+    const people=s.personnel_tbd?'<span class="tbdBadge">人員未定</span>':(sm(s).map(x=>st(x.staff_id)?.display_name).filter(Boolean).map(esc).join('・')||'—');
+    const time=(s.site_start_time||'').slice(0,5)||'未定';
+    return `<div class="unifiedsite">
+      <div class="unifiedsitehead">
+        <div class="unifiedmain"><b>${esc(s.title)}</b><small>現地 ${time}</small></div>
+        <div class="unifiedpeople">${people}</div>
+        <button class="detailtoggle" data-detail="${s.id}">詳細</button>
+      </div>
+      <div id="detail-${s.id}" class="sitedetail hide">${detailHtml(s)}</div>
+    </div>`;
+  }).join(''):'<div class="nosite">現場予定なし</div>';
+  return `<section class="dayoverview">
+    <div class="dayoverviewhead"><b>${d.md}（${d.w}）</b><span>${xs.length}現場</span></div>
+    <div class="dayoverviewbody">
+      <div class="sitearea"><div class="areahead"><b>現場</b></div>${siteRows}</div>
+      <aside class="peoplearea">
+        <div class="staffbucket"><div class="buckethead"><b>事務所 ${info.office.length}名${info.tbdCount?'（暫定）':''}</b></div><div class="bucketnames">${names(info.office)}</div></div>
+        <div class="staffbucket offbucket"><div class="buckethead"><b>休み ${info.off.length}名</b></div><div class="bucketnames">${names(info.off)}</div></div>
+        ${info.tbdCount?`<div class="statuswarn"><b>⚠ 人員未定 ${info.tbdCount}現場</b><br>事務所表示の人が現場に入る可能性があります。</div>`:''}
+        ${info.overlap.length?`<div class="statuswarn"><b>⚠ 休みと現場が重複</b><br>${names(info.overlap)}</div>`:''}
+      </aside>
+    </div>
+  </section>`;
+}
+
+function futureDayOverview(xs){
+  if(!xs.length)return '<div class="empty">この先の予定はありません</div>';
+  const groups=new Map();
+  xs.forEach(s=>{
+    if(!groups.has(s.work_date))groups.set(s.work_date,[]);
+    groups.get(s.work_date).push(s);
+  });
+  return [...groups.entries()].map(([date,items])=>dayOverview(date,items)).join('');
+}
+
 function visible(){return schedules.filter(s=>!onlyMine||assigned(s)||s.personnel_tbd)}
 function wire(){
   document.querySelectorAll('[data-c]').forEach(b=>b.onclick=()=>doConfirm(b.dataset.c));
@@ -178,6 +243,13 @@ function wire(){
   document.querySelectorAll('[data-d]').forEach(b=>b.onclick=()=>departure(b.dataset.d));
   document.querySelectorAll('[data-dd]').forEach(b=>b.onclick=()=>deleteDeparture(b.dataset.dd));
   document.querySelectorAll('[data-e]').forEach(b=>b.onclick=()=>edit(b.dataset.e));
+  document.querySelectorAll('[data-detail]').forEach(b=>b.onclick=()=>{
+    const el=$(`detail-${b.dataset.detail}`);
+    if(!el)return;
+    const opening=el.classList.contains('hide');
+    el.classList.toggle('hide');
+    b.textContent=opening?'閉じる':'詳細';
+  });
 }
 
 function render(){
@@ -187,10 +259,10 @@ function render(){
   const un=schedules.filter(s=>s.work_date>=D0&&assigned(s)&&state(s,me.id)[1]!=='done');
   $('dateLabel').textContent=new Date().toLocaleDateString('ja-JP',{year:'numeric',month:'long',day:'numeric',weekday:'short'});
   $('summary').textContent=`未確認 ${un.length}件`;
-  $('today').innerHTML=dayStatusHtml(D0)+(t.length?t.map(job).join(''):'<div class="empty">今日の現場予定はありません</div>');
-  $('tomorrow').innerHTML=dayStatusHtml(D1)+(tm.length?tm.map(job).join(''):'<div class="empty">明日の現場予定はありません</div>');
+  $('today').innerHTML=dayOverview(D0,t);
+  $('tomorrow').innerHTML=dayOverview(D1,tm);
   const f=vs.filter(s=>s.work_date>D1).slice(0,20);
-  $('future').innerHTML=futureGroupedList(f);
+  $('future').innerHTML=futureDayOverview(f);
   calendar();
   manageList();
   wire();
