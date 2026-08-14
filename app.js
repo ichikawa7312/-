@@ -76,6 +76,7 @@ async function load(){
 }
 
 function confHtml(s){
+  if(s.personnel_tbd)return '';
   const ms=sm(s),done=ms.filter(x=>state(s,x.staff_id)[1]==='done').length;
   return `<div class="conf"><div class="confhead"><b>確認状況</b><span>${done}/${ms.length}名</span></div><div class="cgrid">${
     ms.map(x=>{
@@ -89,7 +90,7 @@ function job(s){
   const ds=sdeps(s);
   return `<article class="job">
     <div class="top"><div class="title">${esc(s.title)}</div><span class="time">現地 ${(s.site_start_time||'').slice(0,5)||'未定'}</span></div>
-    <div class="chips">${sm(s).map(x=>`<span class="chip">${esc(st(x.staff_id)?.display_name)}</span>`).join('')}</div>
+    <div class="chips">${s.personnel_tbd?'<span class="tbdBadge">人員未定</span>':sm(s).map(x=>`<span class="chip">${esc(st(x.staff_id)?.display_name)}</span>`).join('')}</div>
     <div class="box">
       <div class="boxhead"><b>出発予定</b>${assigned(s)?`<button class="smallbtn" data-d="${s.id}">＋書く</button>`:''}</div>
       ${ds.length?ds.map(d=>`<div style="margin-top:7px;display:flex;justify-content:space-between;gap:8px;align-items:flex-start">
@@ -105,8 +106,9 @@ function job(s){
 
 function dayStatusHtml(date){
   const offIds=new Set(dayStatus.filter(x=>x.work_date===date&&x.status==='off').map(x=>x.staff_id));
+  const tbdCount=schedules.filter(s=>s.work_date===date&&s.personnel_tbd).length;
   const scheduledIds=new Set();
-  schedules.filter(s=>s.work_date===date).forEach(s=>sm(s).forEach(x=>scheduledIds.add(x.staff_id)));
+  schedules.filter(s=>s.work_date===date&&!s.personnel_tbd).forEach(s=>sm(s).forEach(x=>scheduledIds.add(x.staff_id)));
   const overlap=staff.filter(p=>offIds.has(p.id)&&scheduledIds.has(p.id));
   const off=staff.filter(p=>offIds.has(p.id));
   const site=staff.filter(p=>scheduledIds.has(p.id)&&!offIds.has(p.id));
@@ -115,8 +117,9 @@ function dayStatusHtml(date){
   return `<div class="box" style="margin-bottom:10px">
     <div class="boxhead"><b>勤務状況</b><span style="font-size:11px;color:#6b7280">全${staff.length}名</span></div>
     <div style="margin-top:7px"><b>現場 ${site.length}名</b><div style="font-size:12px;color:#4b5563;margin-top:2px">${names(site)}</div></div>
-    <div style="margin-top:7px"><b>事務所 ${office.length}名</b><div style="font-size:12px;color:#4b5563;margin-top:2px">${names(office)}</div></div>
+    <div style="margin-top:7px"><b>事務所 ${office.length}名${tbdCount?'（暫定）':''}</b><div style="font-size:12px;color:#4b5563;margin-top:2px">${names(office)}</div></div>
     <div style="margin-top:7px"><b>休み ${off.length}名</b><div style="font-size:12px;color:#4b5563;margin-top:2px">${names(off)}</div></div>
+    ${tbdCount?`<div class="statuswarn"><b>⚠ 人員未定の現場 ${tbdCount}件</b><br>事務所表示の人が現場に入る可能性があります。</div>`:''}
     ${overlap.length?`<div style="margin-top:8px;padding:7px;border-radius:8px;background:#fff7ed;font-size:11px"><b>⚠ 休みと現場予定が重複：</b>${names(overlap)}</div>`:''}
   </div>`;
 }
@@ -132,7 +135,7 @@ function planList(xs,editable=false){
   const head=`<div class="planhead ${editable?'manage':''}"><span>日付</span><span>現場</span><span>人員</span>${editable?'<span></span>':''}</div>`;
   const rows=xs.map(s=>{
     const d=planDate(s.work_date);
-    const people=sm(s).map(x=>st(x.staff_id)?.display_name).filter(Boolean).map(esc).join('・')||'—';
+    const people=s.personnel_tbd?'<span class="tbdBadge">人員未定</span>':(sm(s).map(x=>st(x.staff_id)?.display_name).filter(Boolean).map(esc).join('・')||'—');
     const time=(s.site_start_time||'').slice(0,5)||'未定';
     return `<div class="planrow ${editable?'manage':''}">
       <div class="plandate"><b>${d.md}</b><small>(${d.w})</small></div>
@@ -154,7 +157,7 @@ function futureGroupedList(xs){
   return [...groups.entries()].map(([date,items])=>{
     const d=planDate(date);
     const rows=items.map(s=>{
-      const people=sm(s).map(x=>st(x.staff_id)?.display_name).filter(Boolean).map(esc).join('・')||'—';
+      const people=s.personnel_tbd?'<span class="tbdBadge">人員未定</span>':(sm(s).map(x=>st(x.staff_id)?.display_name).filter(Boolean).map(esc).join('・')||'—');
       const time=(s.site_start_time||'').slice(0,5)||'未定';
       return `<div class="futurejob">
         <div class="futuremain"><b>${esc(s.title)}</b><small>現地 ${time}</small></div>
@@ -168,7 +171,7 @@ function futureGroupedList(xs){
   }).join('');
 }
 
-function visible(){return schedules.filter(s=>!onlyMine||assigned(s))}
+function visible(){return schedules.filter(s=>!onlyMine||assigned(s)||s.personnel_tbd)}
 function wire(){
   document.querySelectorAll('[data-c]').forEach(b=>b.onclick=()=>doConfirm(b.dataset.c));
   document.querySelectorAll('[data-p]').forEach(b=>b.onclick=()=>openPdf(b.dataset.p));
@@ -321,10 +324,26 @@ function edit(id){
     <label>現場名<input id="ft" value="${esc(s?.title||'')}" required></label>
     ${dateBlock}
     <label>現地開始時刻<input id="ftime" type="time" value="${(s?.site_start_time||'').slice(0,5)}"></label>
-    <label>現場人員<div class="staff">${checks(sel)}</div></label>
+    <div class="formgroup"><div class="formlabel">現場人員</div>
+      <input id="personnelTbd" type="hidden" value="${s?.personnel_tbd?'1':'0'}">
+      <div class="personmode"><button type="button" id="modeSelect" class="modebtn">人員を選択</button><button type="button" id="modeTbd" class="modebtn">人員未定</button></div>
+      <div id="staffBox" class="staff">${checks(sel)}</div>
+      <small id="personHint" class="personhint"></small>
+    </div>
     <label>指示書PDF<input id="fp" type="file" accept="application/pdf,.pdf"><small>${esc(s?.pdf_name||'PDF未添付')}</small></label>
     <div class="actions">${s?'<button type="button" id="del" class="danger">削除</button>':''}<button class="btn grow">保存</button></div>
   </form>`);
+
+  const syncPersonnelMode=()=>{
+    const tbd=$('personnelTbd').value==='1';
+    $('modeSelect').classList.toggle('on',!tbd);
+    $('modeTbd').classList.toggle('on',tbd);
+    $('staffBox').classList.toggle('hide',tbd);
+    $('personHint').textContent=tbd?'人員が決まったら、この予定を編集して担当者を選択してください。':'担当する人を選択してください。';
+  };
+  $('modeSelect').onclick=()=>{$('personnelTbd').value='0';syncPersonnelMode()};
+  $('modeTbd').onclick=()=>{$('personnelTbd').value='1';syncPersonnelMode()};
+  syncPersonnelMode();
 
   wireDateRows();
 
@@ -341,8 +360,10 @@ function edit(id){
 async function saveSchedule(e,s){
   e.preventDefault();
 
-  const sel=[...document.querySelectorAll('input[name="staff"]:checked')].map(x=>x.value);
-  if(!sel.length)return toast('現場人員を選択してください');
+  const personnelTbd=$('personnelTbd').value==='1';
+  const picked=[...document.querySelectorAll('input[name="staff"]:checked')].map(x=>x.value);
+  const sel=personnelTbd?[]:picked;
+  if(!personnelTbd&&!sel.length)return toast('現場人員を選択してください');
 
   const dates=[...new Set(
     [...document.querySelectorAll('input[name="workdate"]')].map(x=>x.value).filter(Boolean)
@@ -368,6 +389,7 @@ async function saveSchedule(e,s){
     site_start_time:$('ftime').value||null,
     pdf_path:path,
     pdf_name:pname,
+    personnel_tbd:personnelTbd,
     updated_by:me.id
   };
 
@@ -382,6 +404,7 @@ async function saveSchedule(e,s){
       oldTime!==common.site_start_time||
       s.pdf_path!==common.pdf_path||
       s.pdf_name!==common.pdf_name||
+      Boolean(s.personnel_tbd)!==personnelTbd||
       membersChanged;
 
     const payload={
@@ -394,9 +417,12 @@ async function saveSchedule(e,s){
     if(r.error)return toast('予定保存失敗');
 
     if(membersChanged){
-      await db.from('schedule_members').delete().eq('schedule_id',s.id);
-      r=await db.from('schedule_members').insert(sel.map(staff_id=>({schedule_id:s.id,staff_id})));
+      r=await db.from('schedule_members').delete().eq('schedule_id',s.id);
       if(r.error)return toast('人員保存失敗');
+      if(sel.length){
+        r=await db.from('schedule_members').insert(sel.map(staff_id=>({schedule_id:s.id,staff_id})));
+        if(r.error)return toast('人員保存失敗');
+      }
     }
 
     const extraDates=dates.slice(1);
@@ -415,8 +441,10 @@ async function saveSchedule(e,s){
         schedule_id:row.id,
         staff_id
       })));
-      r=await db.from('schedule_members').insert(memberRows);
-      if(r.error)return toast('追加日の人員保存に失敗しました');
+      if(memberRows.length){
+        r=await db.from('schedule_members').insert(memberRows);
+        if(r.error)return toast('追加日の人員保存に失敗しました');
+      }
     }
 
     closeM();
@@ -439,8 +467,10 @@ async function saveSchedule(e,s){
     schedule_id:row.id,
     staff_id
   })));
-  r=await db.from('schedule_members').insert(memberRows);
-  if(r.error)return toast('人員保存失敗');
+  if(memberRows.length){
+    r=await db.from('schedule_members').insert(memberRows);
+    if(r.error)return toast('人員保存失敗');
+  }
 
   closeM();
   await refresh();
