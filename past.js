@@ -5,7 +5,7 @@ const db=createClient(
   'sb_publishable_c2f_qk0pmZy-0eaqqJh2FA_f8MU-iZ1'
 );
 const $=id=>document.getElementById(id);
-const esc=s=>String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot',"'":'&#39;'}[m]));
+const esc=s=>String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 function iso(d){const x=new Date(d.getTime()-d.getTimezoneOffset()*60000);return x.toISOString().slice(0,10)}
 function add(d,n){const x=new Date(d);x.setDate(x.getDate()+n);return x}
 const TODAY=iso(new Date());
