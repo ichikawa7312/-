@@ -5,13 +5,14 @@ const db=createClient(
   'sb_publishable_c2f_qk0pmZy-0eaqqJh2FA_f8MU-iZ1'
 );
 const $=id=>document.getElementById(id);
-const esc=s=>String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+const esc=s=>String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot',"'":'&#39;'}[m]));
 function iso(d){const x=new Date(d.getTime()-d.getTimezoneOffset()*60000);return x.toISOString().slice(0,10)}
 function add(d,n){const x=new Date(d);x.setDate(x.getDate()+n);return x}
 const TODAY=iso(new Date());
 const CUTOFF=iso(add(new Date(),-30));
 let cache={schedules:[],staff:[],members:[],confs:[],deps:[],dm:[],attachments:[]};
 let loaded=false;
+let pastIds=new Set();
 
 function injectStyle(){
   if($('pastStyle'))return;
@@ -60,24 +61,25 @@ function injectUI(){
   };
 
   document.querySelectorAll('.nav:not(#pastNav)').forEach(x=>x.addEventListener('click',()=>section.classList.add('hide')));
-  hidePastFromManage();
   const ml=$('manageList');
   if(ml)new MutationObserver(hidePastFromManage).observe(ml,{childList:true,subtree:true});
+  primePastIds().catch(()=>{});
 }
 
-function inferDate(md){
-  const m=String(md||'').match(/(\d{1,2})\/(\d{1,2})/);if(!m)return null;
-  const now=new Date(),cand=new Date(now.getFullYear(),Number(m[1])-1,Number(m[2]));
-  const diff=(cand-now)/86400000;
-  if(diff>180)cand.setFullYear(cand.getFullYear()-1);
-  if(diff<-180)cand.setFullYear(cand.getFullYear()+1);
-  return iso(cand);
-}
 function hidePastFromManage(){
   document.querySelectorAll('#manageList .planrow.manage').forEach(row=>{
-    const z=inferDate(row.querySelector('.plandate b')?.textContent);
-    row.style.display=z&&z<TODAY?'none':'';
+    const id=row.querySelector('[data-e]')?.dataset.e||'';
+    row.style.display=pastIds.has(id)?'none':'';
   });
+}
+
+async function primePastIds(){
+  const sr=await db.auth.getSession();
+  if(!sr.data.session)return;
+  const q=await db.from('schedules').select('id').gte('work_date',CUTOFF).lt('work_date',TODAY);
+  if(q.error)return;
+  pastIds=new Set((q.data||[]).map(x=>x.id));
+  hidePastFromManage();
 }
 
 async function loadPast(){
@@ -92,6 +94,7 @@ async function loadPast(){
   if(sq.error||stq.error){console.error(sq.error||stq.error);$('pastList').innerHTML='<div class="empty">過去の予定を読み込めません</div>';return}
   cache.schedules=sq.data||[];cache.staff=stq.data||[];
   const ids=cache.schedules.map(x=>x.id);
+  pastIds=new Set(ids);hidePastFromManage();
   if(!ids.length){loaded=true;renderPast();return}
   const [mq,cq,dq,aq]=await Promise.all([
     db.from('schedule_members').select('*').in('schedule_id',ids),
@@ -141,4 +144,5 @@ async function openInstructions(id){
   $('mb').querySelectorAll('[data-open-pdf]').forEach(b=>b.onclick=()=>window.open(b.dataset.openPdf,'_blank'));
 }
 
+db.auth.onAuthStateChange((event)=>{if(event==='SIGNED_IN'){loaded=false;primePastIds().catch(()=>{})}});
 injectUI();
