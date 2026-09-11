@@ -1,0 +1,13 @@
+/* Bottom navigation: keep all visible tabs on one row on PC and mobile. */
+#app > nav {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: stretch;
+}
+
+#app > nav .nav {
+  flex: 1 1 0;
+  min-width: 0;
+  width: auto;
+  white-space: nowrap;
+}
