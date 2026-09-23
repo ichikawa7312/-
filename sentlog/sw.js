@@ -1,4 +1,4 @@
-const CACHE='sentlog-pwa-v118';
+const CACHE='sentlog-pwa-v119';
 const APP_SHELL=['./','./index.html','./manifest.webmanifest','./icon.svg','./sync.js','./part01.txt','./part02.txt','./part03.txt','./part04.txt','./part05.txt','./part06.txt','./part07.txt','./part08.txt','./part09.txt'];
 const REMOTE_ASSETS=[
   'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js',
