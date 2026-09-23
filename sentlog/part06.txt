@@ -1,0 +1,60 @@
+ile(photoDBKey(photoId,drawingId),blob)}
+async function getPhotoBlob(photoId,drawingId=activeDrawingId){if(!drawingId||!photoId)return null;return getDBFile(photoDBKey(photoId,drawingId))}
+function revokePhotoThumbUrls(){photoThumbUrls.forEach(u=>URL.revokeObjectURL(u));photoThumbUrls=[]}
+async function preparePhoto(file){
+  if(!file||!String(file.type||'').startsWith('image/'))return file;
+  try{
+    const url=URL.createObjectURL(file);
+    const img=await new Promise((resolve,reject)=>{const im=new Image();im.onload=()=>resolve(im);im.onerror=reject;im.src=url});
+    const maxSide=1920,ratio=Math.min(1,maxSide/Math.max(img.naturalWidth||img.width,img.naturalHeight||img.height));
+    const w=Math.max(1,Math.round((img.naturalWidth||img.width)*ratio)),h=Math.max(1,Math.round((img.naturalHeight||img.height)*ratio));
+    const c=document.createElement('canvas');c.width=w;c.height=h;const cctx=c.getContext('2d');cctx.drawImage(img,0,0,w,h);URL.revokeObjectURL(url);
+    const blob=await new Promise(resolve=>c.toBlob(resolve,'image/jpeg',0.84));return blob||file;
+  }catch{return file}
+}
+function selectedShape(){return state.shapes.find(x=>x.id===selected)||null}
+async function addPhotosToSelected(files){
+  const s=selectedShape();if(!s||!files?.length)return;const targetId=s.id;
+  $('photoStatus').textContent='写真を保存中…';pushHistory();s.photos=s.photos||[];let added=0;
+  for(const f of files){
+    try{const blob=await preparePhoto(f);const id=uid();await savePhotoBlob(id,blob);const target=state.shapes.find(x=>x.id===targetId);if(!target)continue;target.photos=target.photos||[];target.photos.push({id,name:f.name||`写真${target.photos.length+1}`,createdAt:Date.now(),type:blob?.type||f.type||'image/jpeg',size:blob?.size||f.size||0});added++;}catch(e){console.warn('photo save failed',e)}
+  }
+  persist();$('photoStatus').textContent=added?`${added}枚保存しました`:'写真を保存できませんでした';setTimeout(()=>{if($('photoStatus'))$('photoStatus').textContent=''},1400);if(selected===targetId)renderSelectedPhotos();
+}
+async function removeSelectedPhoto(photoId){
+  const s=selectedShape();if(!s)return;pushHistory();s.photos=(s.photos||[]).filter(p=>p.id!==photoId);persist();await renderSelectedPhotos();
+}
+async function openPhotoViewer(photoId,name=''){
+  const blob=await getPhotoBlob(photoId);if(!blob)return; if(viewerPhotoUrl)URL.revokeObjectURL(viewerPhotoUrl);viewerPhotoUrl=URL.createObjectURL(blob);$('photoViewerImg').src=viewerPhotoUrl;$('photoViewerName').textContent=name||'変状写真';$('photoViewer').classList.add('open');$('photoViewer').setAttribute('aria-hidden','false');
+}
+function closePhotoViewer(){$('photoViewer').classList.remove('open');$('photoViewer').setAttribute('aria-hidden','true');$('photoViewerImg').removeAttribute('src');if(viewerPhotoUrl){URL.revokeObjectURL(viewerPhotoUrl);viewerPhotoUrl=null}}
+async function renderSelectedPhotos(){
+  const seq=++photoRenderSeq;revokePhotoThumbUrls();const grid=$('photoGrid'),emptyEl=$('photoEmpty'),count=$('photoCount');if(!grid)return;grid.innerHTML='';const s=selectedShape();const photos=s?.photos||[];count.textContent=`${photos.length}枚`;
+  $('cameraBtn').disabled=!s;$('photoAddBtn').disabled=!s;
+  if(!s){emptyEl.textContent='変状を選択すると写真を登録できます。';emptyEl.classList.remove('hidden');return}
+  if(!photos.length){emptyEl.textContent='写真はまだありません。';emptyEl.classList.remove('hidden');return}emptyEl.classList.add('hidden');
+  for(const meta of photos){
+    if(seq!==photoRenderSeq)return;const item=document.createElement('div');item.className='photo-thumb';item.title=meta.name||'変状写真';const img=document.createElement('img');img.alt=meta.name||'変状写真';const del=document.createElement('button');del.type='button';del.className='photo-del';del.textContent='×';del.title='この写真を外す';del.onclick=e=>{e.stopPropagation();removeSelectedPhoto(meta.id)};item.onclick=()=>openPhotoViewer(meta.id,meta.name);item.append(img,del);grid.appendChild(item);
+    try{const blob=await getPhotoBlob(meta.id);if(seq!==photoRenderSeq)return;if(blob){const url=URL.createObjectURL(blob);photoThumbUrls.push(url);img.src=url}else{img.alt='写真データなし'}}catch{img.alt='読込エラー'}
+  }
+}
+
+function setManagerHeader(title,back=false){$('headerTitle').textContent=title;$('navBackBtn').classList.toggle('hidden',!back);$('mobileSidebarBtn').classList.add('hidden')}
+function hideAllViews(){$('projectsView').classList.add('hidden');$('drawingsView').classList.add('hidden');$('editorView').classList.add('hidden')}
+function renderProjects(){
+  const grid=$('projectsGrid');grid.innerHTML='';const items=workspace.projects||[];$('projectsEmpty').classList.toggle('hidden',items.length>0);
+  items.slice().sort((a,b)=>(b.updatedAt||0)-(a.updatedAt||0)).forEach(p=>{
+    const card=document.createElement('div');card.className='manager-card';card.tabIndex=0;
+    const icon=document.createElement('div');icon.className='manager-folder';icon.textContent='📁';
+    const title=document.createElement('div');title.className='manager-card-title';title.textContent=p.name;
+    const meta=document.createElement('div');meta.className='manager-card-meta';meta.textContent=`図面 ${p.drawings?.length||0}枚`+(p.updatedAt?` / 更新 ${nowText(p.updatedAt)}`:'');
+    const bottom=document.createElement('div');bottom.className='manager-card-bottom';const badge=document.createElement('span');badge.className='manager-badge';badge.textContent='案件を開く';bottom.appendChild(badge);
+    card.append(icon,title,meta,bottom);card.onclick=()=>showDrawings(p.id);card.onkeydown=e=>{if(e.key==='Enter'||e.key===' ')card.click()};grid.appendChild(card);
+  });
+}
+function renderDrawings(){
+  const p=getProject();if(!p){showProjects();return}
+  $('drawingProjectTitle').textContent=p.name;$('drawingProjectSummary').textContent=`${p.name}　図面 ${p.drawings?.length||0}枚`;
+  const grid=$('drawingsGrid');grid.innerHTML='';const items=p.drawings||[];$('drawingsEmpty').classList.toggle('hidden',items.length>0);
+  items.slice().sort((a,b)=>(b.updatedAt||0)-(a.updatedAt||0)).forEach(d=>{
+    const

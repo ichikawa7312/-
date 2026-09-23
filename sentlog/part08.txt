@@ -1,0 +1,92 @@
+idth-20)/state.width,(r.height-20)/state.height);scale=clampZoom(scale);tx=(r.width-state.width*scale)/2;ty=(r.height-state.height*scale)/2;applyTransform()}
+function applyTransform(){$('stage').style.transform=`translate(${tx}px,${ty}px) scale(${scale})`;updateZoomUI()}
+function zoomAt(nextScale,clientX,clientY){if(!state.sourceType)return;const r=$('stageWrap').getBoundingClientRect();const fx=clientX-r.left,fy=clientY-r.top;const wx=(fx-tx)/scale,wy=(fy-ty)/scale;scale=clampZoom(nextScale);tx=fx-wx*scale;ty=fy-wy*scale;applyTransform();render()}
+function zoomCenter(factor){const r=$('stageWrap').getBoundingClientRect();zoomAt(scale*factor,r.left+r.width/2,r.top+r.height/2)}
+function point(e){const r=$('stageWrap').getBoundingClientRect();return{x:(e.clientX-r.left-tx)/scale,y:(e.clientY-r.top-ty)/scale}}
+function makeEl(tag,attrs){const el=document.createElementNS(NS,tag);Object.entries(attrs).forEach(([k,v])=>el.setAttribute(k,v));return el}
+function currentShapes(){return state.shapes.filter(s=>(s.page||1)===state.currentPage)}
+function circledNo(n){n=Number(n||0);if(n>=1&&n<=20)return String.fromCodePoint(0x2460+n-1);if(n>=21&&n<=35)return String.fromCodePoint(0x3251+n-21);if(n>=36&&n<=50)return String.fromCodePoint(0x32B1+n-36);return `(${n})`}
+function autoLabelFor(s){return `${s.type||'変状'}${circledNo(s.typeNo)}`}
+function formatGlobalNo(n){return String(Number(n||0)).padStart(3,'0')}
+const PAPER_SIZES={A4:[210,297],A3:[297,420],A2:[420,594],A1:[594,841],A0:[841,1189]};
+function getPageSetting(page=state.currentPage){
+  const key=String(page);return state.pageSettings[key]||{paperSize:'auto',orientation:'auto',scaleDenom:null,customW:null,customH:null};
+}
+function normalizeRotation(v){return ((Number(v)||0)%360+360)%360}
+function getPageRotation(page=state.currentPage){return normalizeRotation(state.pageRotations?.[String(page)]||0)}
+function updateRotationUI(){
+  const isPdf=state.sourceType==='pdf',rot=getPageRotation();
+  const controls=$('rotationControls'),status=$('rotationStatus');
+  if(controls)controls.style.display=isPdf?'grid':'none';
+  if(status){status.style.display=isPdf?'block':'none';status.textContent=`回転 ${rot}°`;}
+  if($('rotateLeftBtn'))$('rotateLeftBtn').disabled=!isPdf;
+  if($('rotateRightBtn'))$('rotateRightBtn').disabled=!isPdf;
+}
+function rotatePoint90(p,w,h,dir){
+  return dir>0?{x:h-p.y,y:p.x}:{x:p.y,y:w-p.x};
+}
+function rotateShapeGeometry(s,w,h,dir){
+  if(s.points?.length){s.points=s.points.map(p=>rotatePoint90(p,w,h,dir));}
+  else if(s.kind==='rect'){
+    const corners=[{x:s.x,y:s.y},{x:s.x+s.w,y:s.y},{x:s.x+s.w,y:s.y+s.h},{x:s.x,y:s.y+s.h}].map(p=>rotatePoint90(p,w,h,dir));
+    const xs=corners.map(p=>p.x),ys=corners.map(p=>p.y);
+    s.x=Math.min(...xs);s.y=Math.min(...ys);s.w=Math.max(...xs)-s.x;s.h=Math.max(...ys)-s.y;
+  }
+}
+async function rotateCurrentPage(dir){
+  if(state.sourceType!=='pdf'||!pdfDoc)return;
+  const page=state.currentPage,oldW=state.width,oldH=state.height;
+  state.shapes.filter(s=>(s.page||1)===page).forEach(s=>rotateShapeGeometry(s,oldW,oldH,dir));
+  state.pageRotations=state.pageRotations||{};
+  state.pageRotations[String(page)]=normalizeRotation(getPageRotation(page)+(dir>0?90:-90));
+  selected=null;drawing=null;panStart=null;
+  await renderPdfPage(page);
+  updateRotationUI();persist();
+}
+function getPaperMm(page=state.currentPage,setting=getPageSetting(page)){
+  let w=null,h=null,source='';
+  if(setting.paperSize==='custom'){
+    w=Number(setting.customW)||null;h=Number(setting.customH)||null;source='任意';
+  }else if(setting.paperSize && setting.paperSize!=='auto' && PAPER_SIZES[setting.paperSize]){
+    [w,h]=PAPER_SIZES[setting.paperSize];source=setting.paperSize;
+  }else{
+    const meta=state.pdfPageInfo?.[String(page)];if(meta){w=Number(meta.wMm)||null;h=Number(meta.hMm)||null;source='PDF自動';}
+  }
+  if(!w||!h)return null;
+  const orientation=setting.orientation||'auto';
+  const rot=getPageRotation(page),quarterTurn=rot===90||rot===270;
+  if(orientation==='landscape' && h>w)[w,h]=[h,w];
+  if(orientation==='portrait' && w>h)[w,h]=[h,w];
+  if(orientation==='auto'){
+    // Determine the page orientation before the user's display rotation, then rotate the physical paper dimensions with the PDF.
+    let landscape=state.width>state.height;if(quarterTurn)landscape=!landscape;
+    if(landscape&&h>w)[w,h]=[h,w];if(!landscape&&w>h)[w,h]=[h,w];
+  }
+  if(quarterTurn)[w,h]=[h,w];
+  return {w,h,source};
+}
+function pageScaleDenom(page=state.currentPage){const d=Number(getPageSetting(page).scaleDenom);return d>0?d:null}
+function pointPaperMm(p,page=state.currentPage){
+  const paper=getPaperMm(page);if(!paper||!state.width||!state.height)return null;
+  return {x:p.x*paper.w/state.width,y:p.y*paper.h/state.height};
+}
+function lineLengthMm(points,page=state.currentPage){
+  const denom=pageScaleDenom(page);if(!denom||!points?.length)return null;let total=0;
+  for(let i=1;i<points.length;i++){const a=pointPaperMm(points[i-1],page),b=pointPaperMm(points[i],page);if(!a||!b)return null;total+=Math.hypot(b.x-a.x,b.y-a.y)}
+  return total*denom;
+}
+function polygonAreaMm2(points,page=state.currentPage){
+  const denom=pageScaleDenom(page);if(!denom||!points?.length)return null;const pts=points.map(p=>pointPaperMm(p,page));if(pts.some(p=>!p))return null;let sum=0;
+  for(let i=0;i<pts.length;i++){const a=pts[i],b=pts[(i+1)%pts.length];sum+=a.x*b.y-b.x*a.y}
+  return Math.abs(sum)/2*denom*denom;
+}
+function shapeMeasurement(s){
+  if(!s)return null;const page=s.page||1;if(!pageScaleDenom(page)||!getPaperMm(page))return null;
+  if(s.kind==='polygon'||s.kind==='freehand'||s.kind==='freehand-area')return {kind:'area',value:polygonAreaMm2(s.points,page)};
+  if(s.kind==='rect'){
+    const pts=[{x:s.x,y:s.y},{x:s.x+s.w,y:s.y},{x:s.x+s.w,y:s.y+s.h},{x:s.x,y:s.y+s.h}];return {kind:'area',value:polygonAreaMm2(pts,page)};
+  }
+  return {kind:'length',value:lineLengthMm(s.points,page)};
+}
+function formatMeasurement(m){
+  if(!m||m.value==null||!Number.isFinite(m.value))r

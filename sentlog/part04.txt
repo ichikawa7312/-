@@ -1,0 +1,65 @@
+age/*" capture="environment" hidden>
+      <input id="photoInput" type="file" accept="image/*" multiple hidden>
+      <div id="photoGrid" class="photo-grid"></div>
+      <div id="photoEmpty" class="photo-empty">変状を選択すると写真を登録できます。</div>
+      <div id="photoStatus" class="photo-status"></div>
+    </div>
+    <button id="applyBtn" disabled>選択変状へ反映</button>
+    <button id="deleteBtn" disabled>選択変状を削除</button>
+  </div>
+  <div class="section-title">操作</div>
+  <div class="meta">上部ツール：押すとそのモードになり、同じボタンをもう一度押すと解除されます。何も描画ツールを選んでいない通常状態では、空白部分をドラッグして図面移動、書いた変状をタップしてそのまま選択できます。名称番号もドラッグで移動できます。空白をタップすると選択解除。細い線も少し広めの当たり判定で選べます。選択後は右側から属性変更・削除・写真撮影／追加が可能。写真は変状の固有IDに紐付けて端末内保存します。自由多角形：点を順番にタップし、最初の点付近をタップすると面積変状として確定。フリーハンド線：ひび割れ等を指やApple Pencilでなぞって線として記録。フリーハンド範囲：浮き・剥離・腐食等を囲って面積変状として記録。線幅は「極細～太」から変更できます。新規変状には案件全体の通しNo.と、変状名称ごとのNo.を自動採番します。PDFではページを切り替えても各ページの描画を保持します。図面設定は任意で、PDF読込後いつでも設定できます。縮尺未設定でも描画・保存はそのまま使えます。図面の表示倍率は左側の＋／−、全体表示、PCのマウスホイール、iPad/iPhoneの2本指ピンチで変更できます。表示倍率を変えても図面縮尺や実寸計算には影響しません。PDFは左側の回転ボタンでページごとに90°ずつ回転でき、描いた変状も図面と一緒に回転します。</div>
+</aside>
+</div>
+
+<div class="modal-backdrop" id="pageSettingsModal" aria-hidden="true">
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="pageSettingsTitle">
+    <div class="modal-title"><h2 id="pageSettingsTitle">図面設定</h2><button id="closeSettingsBtn" class="small">閉じる</button></div>
+    <div class="hint-box">この設定は任意です。縮尺未設定のままでも描画できます。設定すると、このページに既に描いた線・範囲も実寸換算されます。</div>
+    <div class="section-title">このページの用紙</div>
+    <div class="modal-grid">
+      <div><label>用紙サイズ</label><select id="paperSize"><option value="auto">自動（PDF情報）</option><option value="A4">A4</option><option value="A3">A3</option><option value="A2">A2</option><option value="A1">A1</option><option value="A0">A0</option><option value="custom">任意サイズ</option></select></div>
+      <div><label>向き</label><select id="paperOrientation"><option value="auto">自動</option><option value="landscape">横</option><option value="portrait">縦</option></select></div>
+      <div id="customWRow" class="hidden"><label>用紙幅（mm）</label><input id="customPaperW" inputmode="decimal" placeholder="例：420"></div>
+      <div id="customHRow" class="hidden"><label>用紙高さ（mm）</label><input id="customPaperH" inputmode="decimal" placeholder="例：297"></div>
+    </div>
+    <div id="detectedPaperInfo" class="meta" style="margin-top:8px"></div>
+    <div class="section-title">縮尺</div>
+    <div class="modal-grid">
+      <div><label>縮尺</label><select id="drawingScale"><option value="">未設定</option><option value="20">1:20</option><option value="30">1:30</option><option value="50">1:50</option><option value="100">1:100</option><option value="200">1:200</option><option value="250">1:250</option><option value="500">1:500</option><option value="custom">任意</option></select></div>
+      <div id="customScaleRow" class="hidden"><label>縮尺分母</label><input id="customScale" inputmode="decimal" placeholder="例：75（1:75）"></div>
+    </div>
+    <div id="aspectWarning" class="warning-box hidden"></div>
+    <div class="modal-actions"><button id="resetSettingsBtn">縮尺設定を解除</button><button id="saveSettingsBtn" class="active">このページに適用</button></div>
+  </div>
+</div>
+<div class="photo-viewer" id="photoViewer" aria-hidden="true">
+  <button id="photoViewerClose" class="photo-viewer-close" type="button">×</button>
+  <img id="photoViewerImg" alt="変状写真">
+  <div id="photoViewerName" class="photo-viewer-name"></div>
+</div>
+<script>
+const $=id=>document.getElementById(id);
+const svg=$('svg'), canvas=$('bgCanvas'), ctx=canvas.getContext('2d'), empty=$('empty'), loading=$('loading'), saveStatus=$('saveStatus');
+let tool='pan', scale=1, tx=0, ty=0, selected=null, drawing=null, panStart=null, labelDrag=null, pdfDoc=null, activeBlobUrl=null;
+let photoRenderSeq=0,photoThumbUrls=[],viewerPhotoUrl=null;
+const activeTouches=new Map();let pinchStart=null, gestureLock=false;
+function freshDrawingState(projectName=''){return {project:projectName,sourceType:null,fileName:'',pageCount:1,currentPage:1,width:1200,height:800,shapes:[],nextGlobalNo:1,typeCounters:{},pageSettings:{},pdfPageInfo:{},pageRotations:{},leaderMarker:'open-circle'}}
+let state=freshDrawingState('');
+const WORKSPACE_KEY='surveyFieldNoteWorkspaceV1';
+const DRAWING_KEY_PREFIX='surveyFieldNoteDrawingV1:';
+let workspace={projects:[]},activeProjectId=null,activeDrawingId=null,currentView='projects';
+const pageHistory={};
+function cloneShapes(v){return JSON.parse(JSON.stringify(v))}
+function historyFor(page=state.currentPage){const k=String(page);return pageHistory[k]||(pageHistory[k]={undo:[],redo:[]})}
+function snapshotPage(page=state.currentPage){return cloneShapes(state.shapes.filter(s=>(s.page||1)===page))}
+function pushHistory(page=state.currentPage){const h=historyFor(page);h.undo.push(snapshotPage(page));if(h.undo.length>80)h.undo.shift();h.redo=[];updateHistoryButtons()}
+function restorePageSnapshot(snapshot,page=state.currentPage){state.shapes=state.shapes.filter(s=>(s.page||1)!==page).concat(cloneShapes(snapshot));rebuildNumberingState();selected=null;$('globalNo').value='未選択';$('typeNo').value='未選択';setSelectionControls();updateMeasureResult();render();persist();updateHistoryButtons()}
+function updateHistoryButtons(){const h=historyFor();const u=$('undoBtn'),r=$('redoBtn');if(u)u.disabled=h.undo.length===0;if(r)r.disabled=h.redo.length===0}
+function clearAllHistory(){Object.keys(pageHistory).forEach(k=>delete pageHistory[k]);updateHistoryButtons()}
+function undo(){const h=historyFor();if(!h.undo.length)return;h.redo.push(snapshotPage());const prev=h.undo.pop();restorePageSnapshot(prev)}
+function redo(){const h=historyFor();if(!h.redo.length)return;h.undo.push(snapshotPage());const next=h.redo.pop();restorePageSnapshot(next)}
+const NS='http://www.w3.org/2000/svg';
+if(window.pdfjsLib){pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js'}
+
+function uid(){return crypto.randomUUID?crypto.randomUUID():'id-'+Date.now()+'-'+Math.rand

@@ -1,0 +1,91 @@
+manager-brand"><img src="./icon.svg" alt="セントログ"><div><div class="manager-brand-name">セントログ</div><div class="manager-brand-sub">現場調査・変状記録</div></div></div>
+    <div class="manager-head"><div><h1>案件一覧</h1><p>現場名を選ぶと、その案件に登録した図面を開けます。データは端末内に保存されます。</p></div><button id="newProjectBtn" class="manager-primary">＋ 新規案件</button></div>
+    <div class="manager-subbar" style="gap:8px;flex-wrap:wrap"><strong>端末間データ移行</strong><button id="exportBackupBtn" class="small">バックアップを書き出す</button><button id="importBackupBtn" class="small">バックアップを読み込む</button><input id="importBackupInput" type="file" accept="application/json,.json,.sentlog" hidden><span class="manager-card-meta">PC → iPad への案件移行にも使えます</span></div>
+    <div id="projectsGrid" class="manager-grid"></div>
+    <div id="projectsEmpty" class="manager-empty hidden">まだ案件がありません。<br>「＋ 新規案件」から現場名を登録してください。</div>
+  </div>
+</section>
+<section class="manager-screen hidden" id="drawingsView">
+  <div class="manager-shell">
+    <div class="manager-head"><div><h1 id="drawingProjectTitle">案件</h1><p>図面名を押すと編集画面が開きます。</p></div><label class="btn manager-primary" for="drawingAddInput">＋ PDF / 図面を追加</label></div>
+    <input id="drawingAddInput" type="file" accept="application/pdf,image/png,image/jpeg,image/webp" hidden>
+    <div class="manager-subbar"><span>📁</span><span id="drawingProjectSummary"></span></div>
+    <div id="drawingsGrid" class="manager-grid"></div>
+    <div id="drawingsEmpty" class="manager-empty hidden">まだ図面がありません。<br>「＋ PDF / 図面を追加」から登録してください。</div>
+  </div>
+</section>
+<div class="app hidden" id="editorView">
+<aside class="sidebar" id="sidebar">
+  <div class="section-title">案件</div>
+  <div class="project"><strong id="projectNameView">案件</strong><div id="drawingNameView" class="meta">図面</div><div class="meta">図面ファイル＋描画データを端末内保存</div></div>
+  <div class="section-title">図面</div>
+  <div id="errorBanner" class="error-banner"></div>
+  <div class="stack">
+    <label class="btn" for="fileInput">この図面を差し替え</label>
+    <input id="fileInput" type="file" accept="application/pdf,image/png,image/jpeg,image/webp" hidden>
+    <div id="fileName" class="meta">未読込</div>
+    <div class="row" id="pageControls" style="display:none">
+      <button id="prevPageBtn" class="small">前頁</button><div id="pageIndicator" class="page-indicator">1 / 1</div><button id="nextPageBtn" class="small">次頁</button>
+    </div>
+    <div class="rotate-row" id="rotationControls" style="display:none">
+      <button id="rotateLeftBtn" class="small" aria-label="左に90度回転">↶ 左90°</button>
+      <button id="rotateRightBtn" class="small" aria-label="右に90度回転">右90° ↷</button>
+    </div>
+    <div id="rotationStatus" class="meta" style="text-align:center;display:none">回転 0°</div>
+    <div class="section-title" style="margin-top:4px">表示倍率</div>
+    <div class="zoom-row"><button id="zoomOutBtn" aria-label="縮小">−</button><div id="zoomValue" class="zoom-value">100%</div><button id="zoomInBtn" aria-label="拡大">＋</button></div>
+    <button id="fitBtn">全体表示</button>
+    <div class="zoom-help">iPad / iPhone：2本指で拡大・縮小・移動　PC：マウスホイールで拡大・縮小</div>
+    <button id="pageSettingsSideBtn">図面設定（任意）</button>
+    <div id="scaleStatus" class="setting-status" style="justify-content:center">縮尺未設定</div>
+    <div>
+      <label>引き出し線 先端記号</label>
+      <select id="leaderMarkerSelect">
+        <option value="open-circle">○</option>
+        <option value="filled-circle">●</option>
+        <option value="arrow">矢印</option>
+        <option value="none">なし</option>
+      </select>
+    </div>
+    <button id="clearBtn">このページの描画を全削除</button>
+  </div>
+  <div class="footer-note">この図面のPDF本体と変状データは端末内に保存されます。「← 戻る」で案件内の図面一覧に戻れます。</div>
+</aside>
+<main class="workspace">
+  <div class="toolbar">
+    <button data-tool="polygon">自由多角形</button>
+    <button data-tool="freehand-line">フリーハンド線</button>
+    <button data-tool="freehand-area">フリーハンド範囲</button>
+    <button data-tool="rect">四角形</button>
+    <button data-tool="line">線</button>
+    <button id="undoBtn" disabled>戻す</button>
+    <button id="redoBtn" disabled>進む</button>
+    <span id="mobilePageInfo" class="page-indicator" style="align-self:center"></span>
+  </div>
+  <div class="stage-wrap" id="stageWrap">
+    <div class="empty" id="empty"><div><b>PDFまたは図面画像を読み込んでください</b>PDF / PNG / JPEG の上から変状範囲を描けます。</div></div>
+    <div class="loading" id="loading">図面を読み込み中…</div>
+    <div class="stage" id="stage">
+      <canvas class="background" id="bgCanvas"></canvas>
+      <svg class="svg" id="svg" xmlns="http://www.w3.org/2000/svg"></svg>
+    </div>
+  </div>
+</main>
+<aside class="inspector" id="inspector">
+  <div class="mobile-handle" id="mobileHandle">変状情報 ▲</div>
+  <div class="section-title">選択中の変状</div>
+  <div class="stack">
+    <div><label>損傷種類</label><select id="damageType"><option>腐食</option><option>浮き</option><option>剥離</option><option>漏水</option><option>ひび割れ</option><option>その他</option></select></div>
+    <div class="row"><div><label>全体No.</label><input id="globalNo" value="未採番" readonly></div><div><label>変状No.</label><input id="typeNo" value="未採番" readonly></div></div>
+    <div><label>任意記号（必要時）</label><input id="damageNo" placeholder="例：G1-FU（自動番号とは別）"></div>
+    <div><label>部材</label><input id="member" placeholder="例：G1 上フランジ"></div>
+    <div><label>線の太さ</label><select id="lineWidth"><option value="0.8">極細</option><option value="1.2" selected>細</option><option value="1.6">標準</option><option value="2.2">太</option></select></div>
+    <div><label>図面換算値</label><div id="measureResult" class="measure-box">縮尺未設定</div></div>
+    <div><label>メモ</label><textarea id="memo" placeholder="現場所見、寸法、注意事項など"></textarea></div>
+    <div class="photo-panel">
+      <div class="photo-head"><span class="photo-title">写真</span><span id="photoCount" class="photo-count">0枚</span></div>
+      <div class="photo-actions">
+        <button id="cameraBtn" type="button" disabled>📷 写真を撮る</button>
+        <button id="photoAddBtn" type="button" disabled>＋ 写真を追加</button>
+      </div>
+      <input id="cameraInput" type="file" accept="im

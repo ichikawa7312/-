@@ -1,0 +1,50 @@
+om().toString(16).slice(2)}
+function drawingStorageKey(id){return DRAWING_KEY_PREFIX+id}
+function saveWorkspace(){localStorage.setItem(WORKSPACE_KEY,JSON.stringify(workspace))}
+function getProject(id=activeProjectId){return workspace.projects.find(p=>p.id===id)||null}
+function getDrawingMeta(projectId=activeProjectId,drawingId=activeDrawingId){const p=getProject(projectId);return p?.drawings?.find(d=>d.id===drawingId)||null}
+function nowText(ts){if(!ts)return '';try{return new Intl.DateTimeFormat('ja-JP',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'}).format(new Date(ts))}catch{return ''}}
+function updateActiveMeta(){
+  const p=getProject(),d=getDrawingMeta();if(!p||!d)return;
+  d.fileName=state.fileName||d.fileName||'';d.sourceType=state.sourceType||d.sourceType||'';d.pageCount=state.pageCount||1;d.shapeCount=(state.shapes||[]).length;d.photoCount=(state.shapes||[]).reduce((n,s)=>n+(s.photos?.length||0),0);d.updatedAt=Date.now();p.updatedAt=d.updatedAt;saveWorkspace();
+}
+function persist(){
+  if(activeDrawingId){localStorage.setItem(drawingStorageKey(activeDrawingId),JSON.stringify(state));updateActiveMeta()}
+  saveStatus.textContent='保存済み';setTimeout(()=>saveStatus.textContent='端末内保存',900)
+}
+function showError(msg){const el=$('errorBanner');el.textContent=msg;el.style.display=msg?'block':'none'}
+function setLoading(on){loading.style.display=on?'grid':'none'}
+
+function openDB(){return new Promise((resolve,reject)=>{const req=indexedDB.open('surveyFieldNoteDB',1);req.onupgradeneeded=()=>{const db=req.result;if(!db.objectStoreNames.contains('files'))db.createObjectStore('files')};req.onsuccess=()=>resolve(req.result);req.onerror=()=>reject(req.error)})}
+async function putDBFile(key,file){const db=await openDB();await new Promise((resolve,reject)=>{const tx=db.transaction('files','readwrite');tx.objectStore('files').put(file,key);tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error)});db.close()}
+async function getDBFile(key){const db=await openDB();const value=await new Promise((resolve,reject)=>{const tx=db.transaction('files','readonly');const req=tx.objectStore('files').get(key);req.onsuccess=()=>resolve(req.result);req.onerror=()=>reject(req.error)});db.close();return value}
+async function getAllDBFiles(){const db=await openDB();const result=await new Promise((resolve,reject)=>{const tx=db.transaction('files','readonly');const store=tx.objectStore('files');const kr=store.getAllKeys(),vr=store.getAll();let keys=null,vals=null;const done=()=>{if(keys&&vals)resolve(keys.map((k,i)=>({key:k,value:vals[i]})))};kr.onsuccess=()=>{keys=kr.result;done()};vr.onsuccess=()=>{vals=vr.result;done()};kr.onerror=vr.onerror=()=>reject(tx.error||kr.error||vr.error)});db.close();return result}
+async function clearDBFiles(){const db=await openDB();await new Promise((resolve,reject)=>{const tx=db.transaction('files','readwrite');tx.objectStore('files').clear();tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error)});db.close()}
+function blobToDataURL(blob){return new Promise((resolve,reject)=>{const r=new FileReader();r.onload=()=>resolve(r.result);r.onerror=()=>reject(r.error);r.readAsDataURL(blob)})}
+function dataURLToBlob(dataUrl){const [meta,data]=String(dataUrl).split(',');const m=/^data:([^;]+);base64$/.exec(meta||'');const bytes=atob(data||'');const arr=new Uint8Array(bytes.length);for(let i=0;i<bytes.length;i++)arr[i]=bytes.charCodeAt(i);return new Blob([arr],{type:m?m[1]:'application/octet-stream'})}
+async function exportSentlogBackup(){
+  if(currentView==='editor'&&activeDrawingId)persist();
+  saveWorkspace();
+  const drawingStates={};
+  for(const p of workspace.projects||[])for(const d of p.drawings||[]){const raw=localStorage.getItem(drawingStorageKey(d.id));if(raw)drawingStates[d.id]=JSON.parse(raw)}
+  const files=[];
+  for(const item of await getAllDBFiles()){const v=item.value;if(v instanceof Blob){files.push({key:item.key,type:v.type||'application/octet-stream',name:v.name||'',lastModified:v.lastModified||null,data:await blobToDataURL(v)})}}
+  const payload={format:'sentlog-backup',version:1,exportedAt:new Date().toISOString(),workspace,drawingStates,files};
+  const blob=new Blob([JSON.stringify(payload)],{type:'application/json'});
+  const url=URL.createObjectURL(blob),a=document.createElement('a');const d=new Date();const y=d.getFullYear(),m=String(d.getMonth()+1).padStart(2,'0'),day=String(d.getDate()).padStart(2,'0');a.href=url;a.download=`セントログ_バックアップ_${y}${m}${day}.sentlog.json`;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1500);
+}
+async function importSentlogBackup(file){
+  const raw=await file.text();let pack;try{pack=JSON.parse(raw)}catch{alert('バックアップファイルを読み込めませんでした。');return}
+  if(pack?.format!=='sentlog-backup'||!pack.workspace){alert('セントログのバックアップファイルではありません。');return}
+  if(!confirm('現在この端末にある案件データを、読み込むバックアップで置き換えます。よろしいですか？'))return;
+  Object.keys(localStorage).filter(k=>k.startsWith(DRAWING_KEY_PREFIX)).forEach(k=>localStorage.removeItem(k));
+  await clearDBFiles();
+  workspace=pack.workspace||{projects:[]};workspace.projects=workspace.projects||[];saveWorkspace();
+  for(const [id,st] of Object.entries(pack.drawingStates||{}))localStorage.setItem(drawingStorageKey(id),JSON.stringify(st));
+  for(const f of pack.files||[]){const blob=dataURLToBlob(f.data);const value=f.name?new File([blob],f.name,{type:f.type||blob.type,lastModified:f.lastModified||Date.now()}):blob;await putDBFile(f.key,value)}
+  alert('バックアップを読み込みました。案件一覧を更新します。');location.reload();
+}
+async function saveBackgroundFile(file,drawingId=activeDrawingId){if(!drawingId)return;return putDBFile('background:'+drawingId,file)}
+async function getBackgroundFile(drawingId=activeDrawingId){if(!drawingId)return null;return getDBFile('background:'+drawingId)}
+function photoDBKey(photoId,drawingId=activeDrawingId){return `photo:${drawingId}:${photoId}`}
+async function savePhotoBlob(photoId,blob,drawingId=activeDrawingId){if(!drawingId||!photoId)return;return putDBF

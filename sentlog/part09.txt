@@ -1,0 +1,366 @@
+eturn '縮尺未設定';
+  if(m.kind==='length'){const mm=m.value;return mm>=1000?`${(mm/1000).toFixed(mm>=10000?2:3)} m`:`${mm.toFixed(0)} mm`}
+  const mm2=m.value;return mm2>=1e6?`${(mm2/1e6).toFixed(3)} m²`:`${(mm2/100).toFixed(1)} cm²`;
+}
+function updateMeasureResult(){const s=state.shapes.find(x=>x.id===selected);$('measureResult').textContent=s?formatMeasurement(shapeMeasurement(s)):(pageScaleDenom()?'変状を選択してください':'縮尺未設定')}
+function updateScaleStatus(){
+  const setting=getPageSetting(),paper=getPaperMm(),den=pageScaleDenom();
+  $('scaleStatus').textContent=den&&paper?`${paper.source} ${paper.w.toFixed(0)}×${paper.h.toFixed(0)}mm / 1:${den}`:'縮尺未設定';
+  updateMeasureResult();
+}
+function syncSettingVisibility(){
+  $('customWRow').classList.toggle('hidden',$('paperSize').value!=='custom');$('customHRow').classList.toggle('hidden',$('paperSize').value!=='custom');$('customScaleRow').classList.toggle('hidden',$('drawingScale').value!=='custom');
+  const paperChoice=$('paperSize').value,orient=$('paperOrientation').value;let expected=null;
+  if(paperChoice==='custom')expected={w:Number($('customPaperW').value),h:Number($('customPaperH').value)};
+  else if(PAPER_SIZES[paperChoice]){let [w,h]=PAPER_SIZES[paperChoice];if(orient==='landscape'&&h>w)[w,h]=[h,w];if(orient==='portrait'&&w>h)[w,h]=[h,w];if(orient==='auto'){const landscape=state.width>state.height;if(landscape&&h>w)[w,h]=[h,w];if(!landscape&&w>h)[w,h]=[h,w];}expected={w,h};}
+  const actualRatio=state.width/state.height;const warn=$('aspectWarning');
+  if(expected?.w&&expected?.h){const diff=Math.abs(actualRatio-(expected.w/expected.h))/(expected.w/expected.h);if(diff>.025){warn.textContent='選択した用紙の縦横比とPDF表示の縦横比に差があります。スキャンPDF等では数量に誤差が出る可能性があります。';warn.classList.remove('hidden')}else warn.classList.add('hidden')}else warn.classList.add('hidden');
+}
+function openPageSettings(){
+  if(!state.sourceType)return;const s=getPageSetting();$('paperSize').value=s.paperSize||'auto';$('paperOrientation').value=s.orientation||'auto';$('customPaperW').value=s.customW||'';$('customPaperH').value=s.customH||'';
+  const d=Number(s.scaleDenom)||null;const presets=['20','30','50','100','200','250','500'];$('drawingScale').value=d?(presets.includes(String(d))?String(d):'custom'):'';$('customScale').value=d&&!presets.includes(String(d))?d:'';
+  const meta=state.pdfPageInfo?.[String(state.currentPage)];$('detectedPaperInfo').textContent=meta?`PDF検出サイズ：約 ${meta.wMm.toFixed(1)} × ${meta.hMm.toFixed(1)} mm`:'PDFから用紙実寸を取得できないため、数量換算する場合は用紙サイズを指定してください。';
+  syncSettingVisibility();$('pageSettingsModal').classList.add('open');$('pageSettingsModal').setAttribute('aria-hidden','false');
+}
+function closePageSettings(){$('pageSettingsModal').classList.remove('open');$('pageSettingsModal').setAttribute('aria-hidden','true')}
+function savePageSettings(){
+  let denom=null;if($('drawingScale').value==='custom')denom=Number($('customScale').value)||null;else denom=Number($('drawingScale').value)||null;
+  const setting={paperSize:$('paperSize').value,orientation:$('paperOrientation').value,scaleDenom:denom,customW:Number($('customPaperW').value)||null,customH:Number($('customPaperH').value)||null};
+  if(denom && !getPaperMm(state.currentPage,setting)){alert('縮尺を使う場合は、用紙サイズを設定してください。');return}
+  state.pageSettings[String(state.currentPage)]=setting;persist();updateScaleStatus();closePageSettings();
+}
+function resetPageSettings(){state.pageSettings[String(state.currentPage)]={paperSize:'auto',orientation:'auto',scaleDenom:null,customW:null,customH:null};persist();updateScaleStatus();openPageSettings()}
+function rebuildNumberingState(){
+  // Visible numbering is always rebuilt from the shapes that currently exist.
+  // Deleted draft shapes therefore do not consume numbers. The shape ID remains stable.
+  const seenByType={};
+  state.typeCounters={};
+  state.shapes.forEach((s,i)=>{
+    const type=s.type||'腐食';
+    s.type=type;
+    s.globalNo=i+1;
+    seenByType[type]=(seenByType[type]||0)+1;
+    s.typeNo=seenByType[type];
+    state.typeCounters[type]=seenByType[type];
+    s.autoLabel=autoLabelFor(s);
+  });
+  state.nextGlobalNo=state.shapes.length+1;
+}
+function assignNumbers(s){
+  const type=s.type||'腐食';
+  s.globalNo=state.shapes.length+1;
+  s.typeNo=state.shapes.filter(x=>(x.type||'腐食')===type).length+1;
+  s.autoLabel=autoLabelFor(s);
+}
+function reassignTypeNumber(s,newType){
+  if(!s||s.type===newType)return;
+  s.type=newType;
+  rebuildNumberingState();
+}
+
+function shapeAnchorPoint(s){
+  if(s.points?.length){
+    return {x:s.points.reduce((a,p)=>a+p.x,0)/s.points.length,y:s.points.reduce((a,p)=>a+p.y,0)/s.points.length};
+  }
+  return {x:s.x+s.w/2,y:s.y+s.h/2};
+}
+function getLabelPos(s){
+  const a=shapeAnchorPoint(s);
+  return s.labelPos?{x:s.labelPos.x,y:s.labelPos.y}:a;
+}
+function nearestPointOnSegment(p,a,b){
+  const abx=b.x-a.x, aby=b.y-a.y;
+  const ab2=abx*abx+aby*aby;
+  if(!ab2)return {x:a.x,y:a.y,d2:(p.x-a.x)*(p.x-a.x)+(p.y-a.y)*(p.y-a.y)};
+  let t=((p.x-a.x)*abx+(p.y-a.y)*aby)/ab2;
+  t=Math.max(0,Math.min(1,t));
+  const x=a.x+abx*t, y=a.y+aby*t;
+  const dx=p.x-x, dy=p.y-y;
+  return {x,y,d2:dx*dx+dy*dy};
+}
+function nearestPointOnPath(p,points,closed=false){
+  if(!points?.length)return null;
+  if(points.length===1)return {x:points[0].x,y:points[0].y};
+  let best=null;
+  for(let i=1;i<points.length;i++){
+    const cand=nearestPointOnSegment(p,points[i-1],points[i]);
+    if(!best||cand.d2<best.d2)best=cand;
+  }
+  if(closed){
+    const cand=nearestPointOnSegment(p,points[points.length-1],points[0]);
+    if(!best||cand.d2<best.d2)best=cand;
+  }
+  return best?{x:best.x,y:best.y}:null;
+}
+function leaderAnchorPoint(s){
+  const lp=getLabelPos(s);
+  if(s.kind==='line'||s.kind==='freehand-line')return nearestPointOnPath(lp,s.points,false)||shapeAnchorPoint(s);
+  if(s.kind==='polygon'||s.kind==='freehand'||s.kind==='freehand-area')return nearestPointOnPath(lp,s.points,true)||shapeAnchorPoint(s);
+  if(s.kind==='rect'){
+    const pts=[{x:s.x,y:s.y},{x:s.x+s.w,y:s.y},{x:s.x+s.w,y:s.y+s.h},{x:s.x,y:s.y+s.h}];return nearestPointOnPath(lp,pts,true)||shapeAnchorPoint(s);
+  }
+  return shapeAnchorPoint(s);
+}
+function labelFontSize(){return Math.max(16,18/scale)}
+function labelMetrics(label){
+  const fs=labelFontSize();
+  return {fontSize:fs,width:Math.max(32,label.length*fs*0.72+16),height:fs+10};
+}
+function shouldDrawLeader(s){
+  const a=leaderAnchorPoint(s),lp=getLabelPos(s);
+  return Math.hypot(lp.x-a.x,lp.y-a.y)>(22/Math.max(scale,.001));
+}
+function drawLeaderMarker(anchor,labelPos,selectedNow){
+  const marker=state.leaderMarker||'open-circle';
+  if(marker==='none')return null;
+  const color=selectedNow?'#2563eb':'#374151';
+  const size=Math.max(3.5,5/Math.max(scale,.001));
+  if(marker==='open-circle'){
+    return makeEl('circle',{cx:anchor.x,cy:anchor.y,r:size,fill:'#fff',stroke:color,'stroke-width':Math.max(1,1.2/Math.max(scale,.001))});
+  }
+  if(marker==='filled-circle'){
+    return makeEl('circle',{cx:anchor.x,cy:anchor.y,r:size,fill:color,stroke:'#fff','stroke-width':Math.max(.8,0.8/Math.max(scale,.001))});
+  }
+  if(marker==='arrow'){
+    const dx=anchor.x-labelPos.x, dy=anchor.y-labelPos.y;
+    const len=Math.hypot(dx,dy)||1;
+    const ux=dx/len, uy=dy/len;
+    const px=-uy, py=ux;
+    const head=Math.max(10,12/Math.max(scale,.001));
+    const spread=head*0.55;
+    const bx=anchor.x-ux*head, by=anchor.y-uy*head;
+    const p1=`${anchor.x},${anchor.y}`;
+    const p2=`${bx+px*spread},${by+py*spread}`;
+    const p3=`${bx-px*spread},${by-py*spread}`;
+    return makeEl('polygon',{points:`${p1} ${p2} ${p3}`,fill:color,stroke:color,'stroke-width':Math.max(.6,0.8/Math.max(scale,.001))});
+  }
+  return null;
+}
+function syncLeaderMarkerUI(){const el=$('leaderMarkerSelect');if(el)el.value=state.leaderMarker||'open-circle'}
+function visualStroke(s){const base=Number(s?.strokeWidth||1.2);return base/Math.max(scale,.001)}
+function hitStroke(){return 18/Math.max(scale,.001)}
+function setSelectionControls(){const has=!!state.shapes.find(x=>x.id===selected);$('applyBtn').disabled=!has;$('deleteBtn').disabled=!has;if($('cameraBtn'))$('cameraBtn').disabled=!has;if($('photoAddBtn'))$('photoAddBtn').disabled=!has}
+function clearSelection(){selected=null;$('globalNo').value='未選択';$('typeNo').value='未選択';setSelectionControls();updateMeasureResult();render();renderSelectedPhotos()}
+function bindHitTarget(hit,id){
+  hit.dataset.id=id;
+  hit.style.cursor='pointer';
+  hit.addEventListener('pointerdown',ev=>{
+    if(tool!=='pan')return;
+    ev.preventDefault();ev.stopPropagation();
+    selectShape(id);
+  });
+}
+function bindLabelTarget(hit,id){
+  hit.dataset.id=id;
+  hit.style.cursor='grab';
+  hit.addEventListener('pointerdown',ev=>{
+    if(tool!=='pan')return;
+    ev.preventDefault();ev.stopPropagation();
+    const s=state.shapes.find(x=>x.id===id);if(!s)return;
+    selectShape(id);
+    const p=point(ev), lp=getLabelPos(s);
+    labelDrag={id,pointerId:ev.pointerId,start:p,origin:lp,moved:false,historyPushed:false};
+    try{$('stageWrap').setPointerCapture(ev.pointerId)}catch{}
+  });
+}
+function render(){
+  svg.innerHTML='';
+  currentShapes().forEach(s=>{
+    let el,hit;
+    const selectedNow=s.id===selected;
+    const strokeColor=selectedNow?'#2563eb':'#b91c1c';
+    const fillColor=selectedNow?'rgba(37,99,235,.13)':'rgba(239,68,68,.10)';
+    if(s.kind==='polygon'||s.kind==='freehand'||s.kind==='freehand-area'){
+      const pts=s.points.map(p=>`${p.x},${p.y}`).join(' ');
+      el=makeEl('polygon',{points:pts,fill:fillColor,stroke:strokeColor,'stroke-width':visualStroke(s)});
+      hit=makeEl('polygon',{points:pts,fill:'rgba(0,0,0,0.001)',stroke:'rgba(0,0,0,0)','stroke-width':hitStroke(),'pointer-events':'all'});
+    }else if(s.kind==='rect'){
+      el=makeEl('rect',{x:s.x,y:s.y,width:s.w,height:s.h,fill:fillColor,stroke:strokeColor,'stroke-width':visualStroke(s)});
+      hit=makeEl('rect',{x:s.x,y:s.y,width:s.w,height:s.h,fill:'rgba(0,0,0,0.001)',stroke:'rgba(0,0,0,0)','stroke-width':hitStroke(),'pointer-events':'all'});
+    }else{
+      const pts=s.points.map(p=>`${p.x},${p.y}`).join(' ');
+      el=makeEl('polyline',{points:pts,fill:'none',stroke:strokeColor,'stroke-width':visualStroke(s),'stroke-linecap':'round','stroke-linejoin':'round'});
+      hit=makeEl('polyline',{points:pts,fill:'none',stroke:'rgba(0,0,0,0.001)','stroke-width':hitStroke(),'stroke-linecap':'round','stroke-linejoin':'round','pointer-events':'stroke'});
+    }
+    el.dataset.id=s.id;
+    el.style.pointerEvents='none';
+    svg.appendChild(el);
+    if(tool==='pan'){
+      bindHitTarget(hit,s.id);
+      svg.appendChild(hit);
+    }
+    const label=s.autoLabel||s.no;
+    if(label){
+      const a=leaderAnchorPoint(s), lp=getLabelPos(s), m=labelMetrics(label);
+      if(shouldDrawLeader(s)){
+        const leader=makeEl('line',{
+          x1:a.x,y1:a.y,x2:lp.x,y2:lp.y,
+          stroke:selectedNow?'#2563eb':'#374151',
+          'stroke-width':Math.max(1,1.2/Math.max(scale,.001))
+        });
+        leader.style.pointerEvents='none';
+        svg.appendChild(leader);
+        const markerEl=drawLeaderMarker(a,lp,selectedNow);
+        if(markerEl){markerEl.style.pointerEvents='none';svg.appendChild(markerEl)}
+      }
+      const t=makeEl('text',{x:lp.x,y:lp.y,'font-size':m.fontSize,'text-anchor':'middle','dominant-baseline':'middle',fill:selectedNow?'#1d4ed8':'#111827','font-weight':'700','paint-order':'stroke','stroke':'#fff','stroke-width':4,'pointer-events':'none'});
+      t.textContent=label;svg.appendChild(t);
+      if(tool==='pan'){
+        const labelHit=makeEl('rect',{
+          x:lp.x-m.width/2,y:lp.y-m.height/2,width:m.width,height:m.height,rx:6,ry:6,
+          fill:'rgba(0,0,0,0.001)','pointer-events':'all'
+        });
+        bindLabelTarget(labelHit,s.id);
+        svg.appendChild(labelHit);
+      }
+      const photoN=s.photos?.length||0;if(photoN){const b=makeEl('text',{x:lp.x+m.width/2+8,y:lp.y+m.fontSize*.65,'font-size':Math.max(12,13/scale),'text-anchor':'start',fill:'#374151','font-weight':'700','paint-order':'stroke','stroke':'#fff','stroke-width':3,'pointer-events':'none'});b.textContent=`📷${photoN}`;svg.appendChild(b)}
+    }
+  });
+  setSelectionControls();
+}
+function selectShape(id){selected=id;const s=state.shapes.find(x=>x.id===id);if(!s)return;$('damageType').value=s.type||'腐食';$('globalNo').value='No.'+formatGlobalNo(s.globalNo);$('typeNo').value=s.autoLabel||autoLabelFor(s);$('damageNo').value=s.no||'';$('member').value=s.member||'';$('lineWidth').value=String(s.strokeWidth||1.2);$('memo').value=s.memo||'';setSelectionControls();updateMeasureResult();render();renderSelectedPhotos();if(innerWidth<900)$('inspector').classList.add('open')}
+function addShape(s){pushHistory();s.id=crypto.randomUUID?crypto.randomUUID():Date.now()+'';s.page=state.currentPage;s.type=$('damageType').value;s.no=$('damageNo').value;s.member=$('member').value;s.memo=$('memo').value;s.strokeWidth=Number($('lineWidth').value||1.2);s.photos=[];assignNumbers(s);state.shapes.push(s);selected=s.id;selectShape(s.id);persist()}
+
+async function openFile(file,save=true){showError('');setLoading(true);try{
+  const isPDF=file.type==='application/pdf'||/\.pdf$/i.test(file.name||'');
+  state.fileName=file.name||state.fileName||'図面';$('fileName').textContent=state.fileName;
+  if(save)await saveBackgroundFile(file);
+  if(isPDF){state.sourceType='pdf';if(!window.pdfjsLib)throw new Error('PDF表示エンジンを読み込めません。初回のみ通信できる状態でこの画面を開いてください。');const buf=await file.arrayBuffer();pdfDoc=await pdfjsLib.getDocument({data:new Uint8Array(buf)}).promise;state.pageCount=pdfDoc.numPages;state.currentPage=Math.min(Math.max(1,state.currentPage||1),state.pageCount);await renderPdfPage(state.currentPage)}
+  else{state.sourceType='image';state.pageCount=1;state.currentPage=1;await renderImage(file)}
+  updatePageUI();persist();
+}catch(e){console.error(e);showError('読み込みに失敗しました：'+(e?.message||e));empty.style.display='grid'}finally{setLoading(false)}}
+
+async function renderPdfPage(pageNo){if(!pdfDoc)return;setLoading(true);try{const page=await pdfDoc.getPage(pageNo);state.currentPage=pageNo;const intrinsic=normalizeRotation(page.rotate||0);const base=page.getViewport({scale:1,rotation:intrinsic});state.pdfPageInfo=state.pdfPageInfo||{};state.pdfPageInfo[String(pageNo)]={wMm:base.width*25.4/72,hMm:base.height*25.4/72};const targetScale=Math.min(2.2,Math.max(1.35,1800/base.width));const viewport=page.getViewport({scale:targetScale,rotation:normalizeRotation(intrinsic+getPageRotation(pageNo))});setupStage(viewport.width,viewport.height);ctx.clearRect(0,0,canvas.width,canvas.height);await page.render({canvasContext:ctx,viewport}).promise;selected=null;drawing=null;updatePageUI();updateScaleStatus();updateRotationUI();render();renderSelectedPhotos();persist()}finally{setLoading(false)}}
+async function renderImage(file){const url=URL.createObjectURL(file);if(activeBlobUrl)URL.revokeObjectURL(activeBlobUrl);activeBlobUrl=url;await new Promise((resolve,reject)=>{const img=new Image();img.onload=()=>{setupStage(img.naturalWidth,img.naturalHeight);ctx.clearRect(0,0,canvas.width,canvas.height);ctx.drawImage(img,0,0);state.pdfPageInfo=state.pdfPageInfo||{};delete state.pdfPageInfo['1'];updateScaleStatus();resolve()};img.onerror=reject;img.src=url})}
+function updatePageUI(){const isPdf=state.sourceType==='pdf';updateHistoryButtons();$('pageControls').style.display=isPdf?'flex':'none';$('pageIndicator').textContent=`${state.currentPage} / ${state.pageCount}`;$('prevPageBtn').disabled=!isPdf||state.currentPage<=1;$('nextPageBtn').disabled=!isPdf||state.currentPage>=state.pageCount;$('mobilePageInfo').textContent=isPdf?`${state.currentPage}/${state.pageCount}頁`:'';updateRotationUI();updateScaleStatus()}
+
+$('fileInput').onchange=async e=>{const f=e.target.files[0];if(!f)return;if(!activeDrawingId){e.target.value='';return}state.shapes=[];state.nextGlobalNo=1;state.typeCounters={};state.pageSettings={};state.pdfPageInfo={};state.pageRotations={};selected=null;$('globalNo').value='未採番';$('typeNo').value='未採番';state.currentPage=1;clearAllHistory();await openFile(f,true);e.target.value=''};
+$('prevPageBtn').onclick=async()=>{if(pdfDoc&&state.currentPage>1)await renderPdfPage(state.currentPage-1)};
+$('nextPageBtn').onclick=async()=>{if(pdfDoc&&state.currentPage<state.pageCount)await renderPdfPage(state.currentPage+1)};
+$('rotateLeftBtn').onclick=()=>rotateCurrentPage(-1);
+$('rotateRightBtn').onclick=()=>rotateCurrentPage(1);
+$('fitBtn').onclick=fit;
+$('zoomInBtn').onclick=()=>zoomCenter(1.25);
+$('zoomOutBtn').onclick=()=>zoomCenter(1/1.25);
+$('stageWrap').addEventListener('wheel',e=>{if(!state.sourceType)return;e.preventDefault();const factor=Math.exp(-e.deltaY*0.0015);zoomAt(scale*factor,e.clientX,e.clientY)},{passive:false});
+$('clearBtn').onclick=()=>{if(confirm(`${state.currentPage}ページ目の描画をすべて削除しますか？`)){pushHistory();state.shapes=state.shapes.filter(s=>(s.page||1)!==state.currentPage);rebuildNumberingState();selected=null;render();renderSelectedPhotos();persist()}};
+$('undoBtn').onclick=undo;
+$('redoBtn').onclick=redo;
+$('applyBtn').onclick=()=>{const s=state.shapes.find(x=>x.id===selected);if(!s)return;pushHistory();const newType=$('damageType').value;if(s.type!==newType)reassignTypeNumber(s,newType);s.no=$('damageNo').value;s.member=$('member').value;s.memo=$('memo').value;s.strokeWidth=Number($('lineWidth').value||1.2);rebuildNumberingState();selectShape(s.id);persist()};
+$('deleteBtn').onclick=()=>{if(!selected)return;pushHistory();state.shapes=state.shapes.filter(x=>x.id!==selected);rebuildNumberingState();selected=null;$('globalNo').value='未選択';$('typeNo').value='未選択';setSelectionControls();updateMeasureResult();render();renderSelectedPhotos();persist()};
+$('cameraBtn').onclick=()=>{if(selected)$('cameraInput').click()};
+$('photoAddBtn').onclick=()=>{if(selected)$('photoInput').click()};
+$('cameraInput').onchange=async e=>{const files=[...e.target.files];e.target.value='';await addPhotosToSelected(files)};
+$('photoInput').onchange=async e=>{const files=[...e.target.files];e.target.value='';await addPhotosToSelected(files)};
+$('photoViewerClose').onclick=closePhotoViewer;
+$('photoViewer').addEventListener('pointerdown',e=>{if(e.target===$('photoViewer'))closePhotoViewer()});
+$('pageSettingsSideBtn').onclick=openPageSettings;
+$('leaderMarkerSelect').onchange=e=>{state.leaderMarker=e.target.value||'open-circle';render();persist()};
+$('mobileSidebarBtn').onclick=()=>$('sidebar').classList.toggle('open');
+$('closeSettingsBtn').onclick=closePageSettings;
+$('saveSettingsBtn').onclick=savePageSettings;
+$('resetSettingsBtn').onclick=resetPageSettings;
+$('paperSize').onchange=syncSettingVisibility;$('paperOrientation').onchange=syncSettingVisibility;$('drawingScale').onchange=syncSettingVisibility;$('customPaperW').oninput=syncSettingVisibility;$('customPaperH').oninput=syncSettingVisibility;
+$('pageSettingsModal').addEventListener('pointerdown',e=>{if(e.target===$('pageSettingsModal'))closePageSettings()});
+$('mobileHandle').onclick=()=>$('inspector').classList.toggle('open');
+document.querySelectorAll('[data-tool]').forEach(b=>b.onclick=()=>{
+  const clicked=b.dataset.tool;
+  const wasActive=b.classList.contains('active') && tool===clicked;
+  document.querySelectorAll('[data-tool]').forEach(x=>x.classList.remove('active'));
+  drawing=null;
+  if(wasActive){
+    tool='pan'; // 何も選択されていない状態＝図面移動
+  }else{
+    tool=clicked;
+    b.classList.add('active');
+  }
+  render();
+});
+
+function beginPinchIfReady(){
+  if(activeTouches.size<2)return false;
+  const pts=[...activeTouches.values()].slice(0,2),r=$('stageWrap').getBoundingClientRect();
+  const midX=(pts[0].x+pts[1].x)/2-r.left,midY=(pts[0].y+pts[1].y)/2-r.top;
+  const dist=Math.hypot(pts[1].x-pts[0].x,pts[1].y-pts[0].y);
+  pinchStart={dist:Math.max(1,dist),scale,worldX:(midX-tx)/scale,worldY:(midY-ty)/scale};
+  gestureLock=true;drawing=null;panStart=null;render();return true;
+}
+function updatePinch(){
+  if(!pinchStart||activeTouches.size<2)return;
+  const pts=[...activeTouches.values()].slice(0,2),r=$('stageWrap').getBoundingClientRect();
+  const midX=(pts[0].x+pts[1].x)/2-r.left,midY=(pts[0].y+pts[1].y)/2-r.top;
+  const dist=Math.max(1,Math.hypot(pts[1].x-pts[0].x,pts[1].y-pts[0].y));
+  scale=clampZoom(pinchStart.scale*(dist/pinchStart.dist));
+  tx=midX-pinchStart.worldX*scale;ty=midY-pinchStart.worldY*scale;applyTransform();render();
+}
+// 図面操作中にEdge/Safari等の長押し・右クリック・選択メニューが出るのを抑止
+const stageWrapEl=$('stageWrap');
+['contextmenu','selectstart','dragstart'].forEach(name=>{
+  stageWrapEl.addEventListener(name,e=>{e.preventDefault();e.stopPropagation();},{capture:true});
+});
+// 一部のブラウザでは長押し後にauxclickが発火するため、図面エリアでは無効化
+stageWrapEl.addEventListener('auxclick',e=>{e.preventDefault();e.stopPropagation();},{capture:true});
+
+$('stageWrap').addEventListener('pointerdown',e=>{
+  if(!state.sourceType)return;
+  if(e.pointerType==='touch'){activeTouches.set(e.pointerId,{x:e.clientX,y:e.clientY});try{$('stageWrap').setPointerCapture(e.pointerId)}catch{};if(beginPinchIfReady())return;if(gestureLock)return}
+  const p=point(e);
+  if(tool==='pan'){panStart={x:e.clientX,y:e.clientY,tx,ty,moved:false};try{$('stageWrap').setPointerCapture(e.pointerId)}catch{};return}
+  if(tool==='freehand-line'){drawing={kind:'freehand-line',points:[p]};try{$('stageWrap').setPointerCapture(e.pointerId)}catch{};return}
+  if(tool==='freehand-area'){drawing={kind:'freehand-area',points:[p]};try{$('stageWrap').setPointerCapture(e.pointerId)}catch{};return}
+  if(tool==='rect'){drawing={kind:'rect',x:p.x,y:p.y,w:0,h:0};return}
+  if(tool==='line'){drawing={kind:'line',points:[p,p]};return}
+  if(tool==='polygon'){if(!drawing)drawing={kind:'polygon',points:[p]};else{const first=drawing.points[0],d=Math.hypot(p.x-first.x,p.y-first.y);if(d<18/scale&&drawing.points.length>=3){addShape({kind:'polygon',points:drawing.points});drawing=null}else drawing.points.push(p)}renderPreview()}
+});
+$('stageWrap').addEventListener('pointermove',e=>{
+  if(!state.sourceType)return;
+  if(e.pointerType==='touch'&&activeTouches.has(e.pointerId)){activeTouches.set(e.pointerId,{x:e.clientX,y:e.clientY});if(pinchStart){updatePinch();return}if(gestureLock)return}
+  if(labelDrag && e.pointerId===labelDrag.pointerId){
+    const s=state.shapes.find(x=>x.id===labelDrag.id);
+    if(!s)return;
+    const p=point(e),dx=p.x-labelDrag.start.x,dy=p.y-labelDrag.start.y;
+    if(Math.hypot(dx,dy)>(4/Math.max(scale,.001))){
+      if(!labelDrag.historyPushed){pushHistory();labelDrag.historyPushed=true;}
+      labelDrag.moved=true;
+    }
+    s.labelPos={x:labelDrag.origin.x+dx,y:labelDrag.origin.y+dy};
+    render();
+    return;
+  }
+  if(tool==='pan'&&panStart){const dx=e.clientX-panStart.x,dy=e.clientY-panStart.y;if(Math.hypot(dx,dy)>5)panStart.moved=true;tx=panStart.tx+dx;ty=panStart.ty+dy;applyTransform();return}
+  if(!drawing)return;const p=point(e);if(tool==='freehand-line'||tool==='freehand-area')drawing.points.push(p);if(tool==='rect'){drawing.w=p.x-drawing.x;drawing.h=p.y-drawing.y}if(tool==='line')drawing.points[1]=p;renderPreview()
+});
+function finishPointer(e,cancelled=false){
+  if(e.pointerType==='touch'&&activeTouches.has(e.pointerId)){activeTouches.delete(e.pointerId);if(pinchStart||gestureLock){pinchStart=null;panStart=null;drawing=null;labelDrag=null;if(activeTouches.size===0)gestureLock=false;try{$('stageWrap').releasePointerCapture(e.pointerId)}catch{};return}}
+  if(labelDrag && e.pointerId===labelDrag.pointerId){
+    if(labelDrag.historyPushed)persist();
+    labelDrag=null;
+    try{$('stageWrap').releasePointerCapture(e.pointerId)}catch{}
+    return;
+  }
+  if(cancelled){panStart=null;drawing=null;return}
+  if(tool==='pan'){const wasTap=panStart&&!panStart.moved;panStart=null;if(wasTap)clearSelection();return}
+  if(!drawing)return;
+  if(tool==='freehand-line'&&drawing.points.length>1){addShape({kind:'freehand-line',points:drawing.points});drawing=null}
+  else if(tool==='freehand-area'&&drawing.points.length>3){addShape({kind:'freehand-area',points:drawing.points});drawing=null}
+  else if(tool==='rect'){let{x,y,w,h}=drawing;if(w<0){x+=w;w=-w}if(h<0){y+=h;h=-h}if(w>3&&h>3)addShape({kind:'rect',x,y,w,h});drawing=null}
+  else if(tool==='line'){addShape({kind:'line',points:drawing.points});drawing=null}
+  try{$('stageWrap').releasePointerCapture(e.pointerId)}catch{}
+}
+$('stageWrap').addEventListener('pointerup',e=>finishPointer(e,false));
+$('stageWrap').addEventListener('pointercancel',e=>finishPointer(e,true));
+function renderPreview(){render();if(!drawing)return;let el;if(drawing.kind==='polygon'||drawing.kind==='freehand-area'){el=makeEl('polyline',{points:drawing.points.map(p=>`${p.x},${p.y}`).join(' '),fill:drawing.kind==='polygon'?'rgba(239,68,68,.06)':'none',stroke:'#ef4444','stroke-width':Number($('lineWidth').value||1.2)/Math.max(scale,.001),'stroke-linecap':'round','stroke-linejoin':'round'});}else if(drawing.kind==='rect'){let{x,y,w,h}=drawing;if(w<0){x+=w;w=-w}if(h<0){y+=h;h=-h}el=makeEl('rect',{x,y,width:w,height:h,fill:'rgba(239,68,68,.06)',stroke:'#ef4444','stroke-width':Number($('lineWidth').value||1.2)/Math.max(scale,.001)})}else{el=makeEl('polyline',{points:drawing.points.map(p=>`${p.x},${p.y}`).join(' '),fill:'none',stroke:'#ef4444','stroke-width':Number($('lineWidth').value||1.2)/Math.max(scale,.001),'stroke-linecap':'round','stroke-linejoin':'round'})}svg.appendChild(el)}
+
+$('newProjectBtn').onclick=createProject;
+$('exportBackupBtn').onclick=()=>exportSentlogBackup().catch(e=>{console.error(e);alert('バックアップの書き出しに失敗しました。')});
+$('importBackupBtn').onclick=()=>$('importBackupInput').click();
+$('importBackupInput').onchange=async e=>{const f=e.target.files?.[0];e.target.value='';if(f)await importSentlogBackup(f)};
+$('drawingAddInput').onchange=async e=>{const f=e.target.files[0];if(f)await createDrawingFromFile(f);e.target.value=''};
+$('navBackBtn').onclick=()=>{if(currentView==='editor')showDrawings(activeProjectId);else if(currentView==='drawings')showProjects()};
+
+window.addEventListener('resize',()=>{if(state.sourceType)fit()});
+if('serviceWorker' in navigator&&location.protocol!=='file:')navigator.serviceWorker.register('./sw.js').catch(()=>{});
+initApp();
+</script>
+</body>
+</html>

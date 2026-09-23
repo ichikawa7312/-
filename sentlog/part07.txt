@@ -1,0 +1,49 @@
+ card=document.createElement('div');card.className='manager-card';card.tabIndex=0;
+    const thumb=document.createElement('div');thumb.className='manager-drawing-thumb';thumb.textContent=(d.sourceType==='image'?'🖼️':'📄');
+    const title=document.createElement('div');title.className='manager-card-title';title.textContent=d.name;
+    const file=document.createElement('div');file.className='manager-card-meta';file.textContent=d.fileName||'図面ファイル';
+    const bottom=document.createElement('div');bottom.className='manager-card-bottom';const badge=document.createElement('span');badge.className='manager-badge';badge.textContent=`${d.pageCount||1}頁 / 変状 ${d.shapeCount||0}件 / 写真 ${d.photoCount||0}枚`;const updated=document.createElement('span');updated.className='manager-card-meta';updated.textContent=d.updatedAt?nowText(d.updatedAt):'';bottom.append(badge,updated);
+    card.append(thumb,title,file,bottom);card.onclick=()=>openDrawing(p.id,d.id);card.onkeydown=e=>{if(e.key==='Enter'||e.key===' ')card.click()};grid.appendChild(card);
+  });
+}
+function showProjects(){
+  if(currentView==='editor'&&activeDrawingId)persist();currentView='projects';hideAllViews();$('projectsView').classList.remove('hidden');activeProjectId=null;activeDrawingId=null;setManagerHeader('セントログ',false);renderProjects();
+}
+function showDrawings(projectId){
+  if(currentView==='editor'&&activeDrawingId)persist();activeProjectId=projectId;activeDrawingId=null;currentView='drawings';hideAllViews();$('drawingsView').classList.remove('hidden');const p=getProject();setManagerHeader(p?.name||'案件',true);renderDrawings();
+}
+function showEditor(){
+  currentView='editor';hideAllViews();$('editorView').classList.remove('hidden');const p=getProject(),d=getDrawingMeta();setManagerHeader(`${p?.name||'案件'} / ${d?.name||'図面'}`,true);$('mobileSidebarBtn').classList.remove('hidden');$('projectNameView').textContent=p?.name||'案件';$('drawingNameView').textContent=d?.name||'図面';
+}
+function createProject(){
+  const name=(prompt('現場名（案件名）を入力してください。','')||'').trim();if(!name)return;const p={id:uid(),name,drawings:[],createdAt:Date.now(),updatedAt:Date.now()};workspace.projects.push(p);saveWorkspace();renderProjects();showDrawings(p.id)
+}
+async function createDrawingFromFile(file){
+  const p=getProject();if(!p||!file)return;const base=(file.name||'図面').replace(/\.[^.]+$/,'');const name=(prompt('図面名を入力してください。',base)||'').trim();if(!name)return;
+  const d={id:uid(),name,fileName:file.name||'',sourceType:(file.type==='application/pdf'||/\.pdf$/i.test(file.name||''))?'pdf':'image',pageCount:1,shapeCount:0,createdAt:Date.now(),updatedAt:Date.now()};p.drawings.push(d);p.updatedAt=d.updatedAt;saveWorkspace();
+  activeDrawingId=d.id;state=freshDrawingState(p.name);state.fileName=file.name||'';clearAllHistory();selected=null;drawing=null;pdfDoc=null;showEditor();await saveBackgroundFile(file,d.id);await openFile(file,false);persist();
+}
+async function openDrawing(projectId,drawingId){
+  activeProjectId=projectId;activeDrawingId=drawingId;const p=getProject(projectId),d=getDrawingMeta(projectId,drawingId);if(!p||!d)return;
+  try{const saved=JSON.parse(localStorage.getItem(drawingStorageKey(drawingId))||'null');state={...freshDrawingState(p.name),...(saved||{})}}catch{state=freshDrawingState(p.name)}
+  state.project=p.name;state.pageSettings=state.pageSettings||{};state.pdfPageInfo=state.pdfPageInfo||{};state.pageRotations=state.pageRotations||{};state.leaderMarker=state.leaderMarker||'open-circle';state.shapes=state.shapes||[];state.shapes.forEach(s=>s.photos=s.photos||[]);
+  selected=null;drawing=null;panStart=null;labelDrag=null;pdfDoc=null;clearAllHistory();showEditor();$('fileName').textContent=state.fileName||d.fileName||'未読込';syncLeaderMarkerUI();rebuildNumberingState();
+  empty.style.display='grid';svg.innerHTML='';ctx.clearRect(0,0,canvas.width,canvas.height);updatePageUI();render();renderSelectedPhotos();
+  try{const file=await getBackgroundFile(drawingId);if(file)await openFile(file,false);else showError('この図面の元ファイルが見つかりません。左側の「この図面を差し替え」から再登録してください。')}catch(e){console.warn(e);showError('図面ファイルの復元に失敗しました。')}
+}
+async function migrateLegacyIfNeeded(){
+  if((workspace.projects||[]).length)return;
+  let old=null;try{old=JSON.parse(localStorage.getItem('surveyFieldNoteV2')||'null')}catch{}
+  if(!old||(!old.fileName&&!old.shapes?.length))return;
+  const p={id:uid(),name:old.project||'試作案件',drawings:[],createdAt:Date.now(),updatedAt:Date.now()},d={id:uid(),name:(old.fileName||'移行図面').replace(/\.[^.]+$/,''),fileName:old.fileName||'',sourceType:old.sourceType||'',pageCount:old.pageCount||1,shapeCount:(old.shapes||[]).length,createdAt:Date.now(),updatedAt:Date.now()};p.drawings.push(d);workspace.projects.push(p);saveWorkspace();localStorage.setItem(drawingStorageKey(d.id),JSON.stringify({...freshDrawingState(p.name),...old}));
+  try{const legacy=await getDBFile('background');if(legacy)await putDBFile('background:'+d.id,legacy)}catch{}
+}
+async function initApp(){
+  try{workspace=JSON.parse(localStorage.getItem(WORKSPACE_KEY)||'null')||{projects:[]}}catch{workspace={projects:[]}};workspace.projects=workspace.projects||[];workspace.projects.forEach(p=>p.drawings=p.drawings||[]);await migrateLegacyIfNeeded();renderSelectedPhotos();showProjects();
+}
+
+function setupStage(w,h){state.width=Math.max(1,Math.round(w));state.height=Math.max(1,Math.round(h));canvas.width=state.width;canvas.height=state.height;canvas.style.width=state.width+'px';canvas.style.height=state.height+'px';svg.setAttribute('width',state.width);svg.setAttribute('height',state.height);svg.setAttribute('viewBox',`0 0 ${state.width} ${state.height}`);empty.style.display='none';fit();render();persist()}
+const MIN_ZOOM=.05,MAX_ZOOM=8;
+function clampZoom(v){return Math.min(MAX_ZOOM,Math.max(MIN_ZOOM,v))}
+function updateZoomUI(){const el=$('zoomValue');if(el)el.textContent=`${Math.round(scale*100)}%`}
+function fit(){if(!state.sourceType)return;const r=$('stageWrap').getBoundingClientRect();scale=Math.min((r.w
