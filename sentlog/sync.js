@@ -206,6 +206,7 @@
 
   async function afterAuth() {
     await ensureDevice();
+    queueExistingUnsyncedPhotos();
     await renderCloudModal();
     await syncQueue(true);
     await refreshServerCounts();
@@ -313,8 +314,28 @@
     const hash = await sha256(blob);
     const path = `${session.user.id}/${cloudProjectId}/${item.assetId}/${fileName}`;
 
+    const { data: existing, error: existingError } = await cloud
+      .from('sentlog_assets')
+      .select('id,status,sha256,byte_size,storage_path')
+      .eq('id', item.assetId)
+      .maybeSingle();
+    if (existingError) throw existingError;
+    if (existing) {
+      if (String(existing.sha256 || '').toLowerCase() !== hash.toLowerCase() || Number(existing.byte_size) !== blob.size) {
+        throw new Error('同じ写真IDのクラウドデータと内容が一致しません');
+      }
+      ctx.photo.cloud = {
+        assetId: item.assetId,
+        status: existing.status || 'uploaded',
+        uploadedAt: Date.now(),
+        sha256: hash
+      };
+      persistDrawingState(item.drawingId, ctx.st);
+      return;
+    }
+
     const { error: uploadError } = await cloud.storage.from('sentlog-temp').upload(path, blob, {
-      upsert: true,
+      upsert: false,
       contentType: mime,
       cacheControl: '3600'
     });
@@ -349,7 +370,7 @@
       metadata: meta
     };
 
-    const { error: rowError } = await cloud.from('sentlog_assets').upsert(row, { onConflict: 'id' });
+    const { error: rowError } = await cloud.from('sentlog_assets').insert(row);
     if (rowError) {
       try { await cloud.storage.from('sentlog-temp').remove([path]); } catch {}
       throw rowError;
@@ -357,6 +378,29 @@
 
     ctx.photo.cloud = { assetId: item.assetId, status: 'uploaded', uploadedAt: Date.now(), sha256: hash };
     persistDrawingState(item.drawingId, ctx.st);
+  }
+
+  function queueExistingUnsyncedPhotos() {
+    try {
+      const queued = new Set(queue().map(x => x.drawingId + ':' + x.photoId));
+      for (const p of (workspace?.projects || [])) {
+        for (const d of (p.drawings || [])) {
+          const st = drawingStateFor(d.id);
+          if (!st) continue;
+          for (const s of (st.shapes || [])) {
+            for (const ph of (s.photos || [])) {
+              const key = d.id + ':' + ph.id;
+              if (!ph.cloud?.assetId && !queued.has(key)) {
+                enqueuePhoto(p.id, d.id, s.id, ph.id);
+                queued.add(key);
+              }
+            }
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('Sentlog existing photo queue scan failed', e);
+    }
   }
 
   async function syncQueue(force=false) {
