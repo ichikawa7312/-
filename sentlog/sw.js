@@ -1,5 +1,5 @@
-const CACHE='sentlog-pwa-v121';
-const APP_SHELL=['./','./index.html','./manifest.webmanifest','./icon.svg','./cloud-sync.js','./part01.txt','./part02.txt','./part03.txt','./part04.txt','./part05.txt','./part06.txt','./part07.txt','./part08.txt','./part09.txt'];
+const CACHE='sentlog-pwa-v123';
+const APP_SHELL=['./','./index.html','./manifest.webmanifest','./icon.svg','./cloud-hotfix.js','./cloud-sync.js','./part01.txt','./part02.txt','./part03.txt','./part04.txt','./part05.txt','./part06.txt','./part07.txt','./part08.txt','./part09.txt'];
 const PDF_ASSETS=['https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js','https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js'];
 self.addEventListener('install',event=>{event.waitUntil((async()=>{const c=await caches.open(CACHE);await c.addAll(APP_SHELL);for(const u of PDF_ASSETS){try{const r=await fetch(u,{mode:'cors'});if(r.ok)await c.put(u,r.clone())}catch(e){}}await self.skipWaiting()})())});
 self.addEventListener('activate',event=>{event.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(k=>k!==CACHE&&k.startsWith('sentlog-')).map(k=>caches.delete(k)))).then(()=>self.clients.claim()))});
