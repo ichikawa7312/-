@@ -48,7 +48,7 @@ button{border:1px solid #cbd5e1;background:#fff;border-radius:9px;padding:10px 1
 
   <div class="card">
     <h2>3. 自動同期</h2>
-    <p class="muted">この画面をEdgeで開いておけば、新しい写真を約5秒ごとに確認します。PCへ保存後、ファイルサイズとSHA-256を照合し、完全一致した写真だけSupabaseから削除します。</p>
+    <p class="muted">この画面をEdgeで開いておけば、新しい写真・図面PDFを約5秒ごとに確認します。PCへ保存後、ファイルサイズとSHA-256を照合し、必要端末への配信も確認できたデータだけSupabaseから削除します。</p>
     <div class="row">
       <button id="startBtn" class="primary" disabled>自動同期を開始</button>
       <button id="stopBtn" disabled>停止</button>
@@ -146,13 +146,13 @@ async function getProjectName(id){const q=await rest('/rest/v1/sentlog_projects?
 
 async function pendingAssets(){
   const fields=enc('id,project_id,kind,file_name,storage_path,mime_type,byte_size,sha256,status,captured_at,metadata');
-  const q=await rest('/rest/v1/sentlog_assets?kind=eq.photo&status=in.(uploaded,pc_verified)&select='+fields+'&order=uploaded_at.asc');
+  const q=await rest('/rest/v1/sentlog_assets?kind=in.(photo,drawing)&status=in.(uploaded,pc_verified)&select='+fields+'&order=uploaded_at.asc');
   $('pendingCount').textContent=q?.length||0;return q||[]
 }
 async function downloadAsset(a){
   const parts=String(a.storage_path).split('/').map(enc).join('/');
   const r=await fetch(SUPABASE_URL+'/storage/v1/object/authenticated/'+BUCKET+'/'+parts,{headers:authHeaders()});
-  if(!r.ok)throw Error('写真ダウンロード失敗: '+r.status);return r.blob()
+  if(!r.ok)throw Error('ファイルダウンロード失敗: '+r.status);return r.blob()
 }
 async function saveVerified(a){
   const blob=await downloadAsset(a);
@@ -161,8 +161,16 @@ async function saveVerified(a){
   const year=String(dt.getFullYear());
   const drawing=a.metadata?.drawing_name||'_図面未設定';
   const label=a.metadata?.shape_label||'_変状未設定';
-  let d=rootHandle;d=await subdir(d,year);d=await subdir(d,project);d=await subdir(d,'写真');d=await subdir(d,drawing);d=await subdir(d,label);
-  const name=safe(a.file_name,'photo.jpg');
+  let d=rootHandle;d=await subdir(d,year);d=await subdir(d,project);
+  let logicalParts=[rootHandle.name,year,safe(project)];
+  if(a.kind==='drawing'){
+    d=await subdir(d,'図面');
+    logicalParts.push('図面');
+  }else{
+    d=await subdir(d,'写真');d=await subdir(d,drawing);d=await subdir(d,label);
+    logicalParts.push('写真',safe(drawing),safe(label));
+  }
+  const name=safe(a.file_name,a.kind==='drawing'?'drawing.pdf':'photo.jpg');
   const fh=await d.getFileHandle(name,{create:true});
   let existing=await fh.getFile();
   let ok=existing.size===Number(a.byte_size);
@@ -171,14 +179,14 @@ async function saveVerified(a){
   if(existing.size!==Number(a.byte_size))throw Error('サイズ照合NG: '+name);
   const hash=(await fileSha(existing)).toLowerCase();if(hash!==String(a.sha256).toLowerCase())throw Error('SHA-256照合NG: '+name);
   const device=await ensureDevice();
-  const logical=[rootHandle.name,year,safe(project),'写真',safe(drawing),safe(label),name].join('\\');
+  const logical=[...logicalParts,name].join('\\');
   await rest('/rest/v1/rpc/sentlog_mark_pc_verified',{method:'POST',body:JSON.stringify({p_asset_id:a.id,p_device_id:device,p_sha256:hash,p_byte_size:existing.size,p_pc_path:logical})});
   savedCount++;$('savedCount').textContent=savedCount;log('PC保存・照合OK: '+logical);
 }
 async function deleteVerified(a){
   const r=await fetch(SUPABASE_URL+'/functions/v1/sentlog-delete-verified',{method:'POST',headers:authHeaders({'Content-Type':'application/json'}),body:JSON.stringify({asset_id:a.id})});
   const j=await r.json().catch(()=>({}));if(!r.ok)throw Error(j.error||j.detail||'クラウド削除失敗');
-  deletedCount++;$('deletedCount').textContent=deletedCount;log('Supabase写真削除: '+a.file_name)
+  deletedCount++;$('deletedCount').textContent=deletedCount;log('Supabase一時ファイル削除: '+a.file_name)
 }
 async function syncOnce(){
   if(busy)return;busy=true;setSync('同期中…','busy');
@@ -191,7 +199,7 @@ async function syncOnce(){
         await deleteVerified(a);
       }catch(e){log('処理待ち: '+(a.file_name||a.id)+' / '+e.message)}
     }
-    setSync(list.length?'同期完了':'新しい写真はありません','ok')
+    setSync(list.length?'同期完了':'新しいデータはありません','ok')
   }catch(e){setSync('同期エラー: '+e.message,'err');log('同期エラー: '+e.message)}
   finally{busy=false}
 }
