@@ -75,7 +75,7 @@ manager-brand"><img src="./icon.svg" alt="セントログ"><div><div class="mana
   <div class="mobile-handle" id="mobileHandle">変状情報 ▲</div>
   <div class="section-title">選択中の変状</div>
   <div class="stack">
-    <div><label>損傷種類</label><select id="damageType"><option>腐食</option><option>浮き</option><option>剥離</option><option>漏水</option><option>ひび割れ</option><option>その他</option></select></div>
+    <div><label>損傷種類</label><select id="damageType"><option>腐食</option><option>浮き</option><option>剥離</option><option>漏水</option><option>漏水箇所</option><option>ひび割れ</option><option>その他</option></select></div>
     <div class="row"><div><label>全体No.</label><input id="globalNo" value="未採番" readonly></div><div><label>変状No.</label><input id="typeNo" value="未採番" readonly></div></div>
     <div><label>任意記号（必要時）</label><input id="damageNo" placeholder="例：G1-FU（自動番号とは別）"></div>
     <div><label>部材</label><input id="member" placeholder="例：G1 上フランジ"></div>
