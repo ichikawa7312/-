@@ -225,7 +225,7 @@ async function uploadAsset({cloudProject,deviceId,clientKey,kind,fileName,blob,s
   if(!(blob instanceof Blob))return {status:'missing'};
   const hash=await sha256Hex(blob);
   const existing=await existingAsset(clientKey);
-  if(existing && existing.status!=='storage_deleted' && String(existing.sha256).toLowerCase()===hash && Number(existing.byte_size)===blob.size){
+  if(existing && String(existing.sha256).toLowerCase()===hash && Number(existing.byte_size)===blob.size){
     return {status:'exists',asset:existing};
   }
   const ext=extForBlob(blob,fileName);
@@ -247,10 +247,21 @@ async function uploadAsset({cloudProject,deviceId,clientKey,kind,fileName,blob,s
     });
     return {status:'uploaded',asset:made?.[0]};
   }
-  const made=await rest('/rest/v1/sentlog_assets',{
-    method:'POST',headers:{'Prefer':'return=representation'},body:JSON.stringify(payload)
-  });
-  return {status:'uploaded',asset:made?.[0]};
+  try{
+    const made=await rest('/rest/v1/sentlog_assets',{
+      method:'POST',headers:{'Prefer':'return=representation'},body:JSON.stringify(payload)
+    });
+    return {status:'uploaded',asset:made?.[0]};
+  }catch(e){
+    const dup=await existingAsset(clientKey).catch(()=>null);
+    if(dup){
+      if(dup.status==='storage_deleted'){
+        try{await fetch(SUPABASE_URL+'/storage/v1/object/'+BUCKET+'/'+storagePath,{method:'DELETE',headers:headers()})}catch{}
+      }
+      return {status:'exists',asset:dup};
+    }
+    throw e;
+  }
 }
 async function uploadPhoto(cloudProject,deviceId,item){
   const p=item.photo;
