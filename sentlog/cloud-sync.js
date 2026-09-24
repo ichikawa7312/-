@@ -262,13 +262,125 @@ async function uploadPhoto(cloudProject,deviceId,item){
     metadata:{local_project_key:cloudProject.client_key||'',drawing_id:item.drawingId,drawing_name:item.drawingName,shape_id:item.shapeId,shape_type:item.shapeType,shape_label:item.shapeLabel,photo_id:p.id}
   });
 }
+
+const PDF_SYNC_LIMIT=22*1024*1024;
+const PDF_OPTIMIZE_THRESHOLD=12*1024*1024;
+
+function joinBytes(parts){
+  const size=parts.reduce((n,p)=>n+p.length,0),out=new Uint8Array(size);
+  let pos=0;for(const p of parts){out.set(p,pos);pos+=p.length}return out;
+}
+function buildImagePdf(pages){
+  const te=new TextEncoder(),objCount=2+pages.length*3,objects=new Array(objCount+1);
+  objects[1]=te.encode('<< /Type /Catalog /Pages 2 0 R >>');
+  const kids=[];
+  for(let i=0;i<pages.length;i++)kids.push((3+i*3)+' 0 R');
+  objects[2]=te.encode('<< /Type /Pages /Kids [ '+kids.join(' ')+' ] /Count '+pages.length+' >>');
+  for(let i=0;i<pages.length;i++){
+    const p=pages[i],pageObj=3+i*3,imgObj=4+i*3,contentObj=5+i*3;
+    const w=Math.round(p.wPt*1000)/1000,h=Math.round(p.hPt*1000)/1000;
+    objects[pageObj]=te.encode('<< /Type /Page /Parent 2 0 R /MediaBox [0 0 '+w+' '+h+'] /Resources << /XObject << /Im0 '+imgObj+' 0 R >> >> /Contents '+contentObj+' 0 R >>');
+    objects[imgObj]=joinBytes([
+      te.encode('<< /Type /XObject /Subtype /Image /Width '+p.pxW+' /Height '+p.pxH+' /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length '+p.jpeg.length+' >>\nstream\n'),
+      p.jpeg,
+      te.encode('\nendstream')
+    ]);
+    const ops='q\n'+w+' 0 0 '+h+' 0 0 cm\n/Im0 Do\nQ\n';
+    const opBytes=te.encode(ops);
+    objects[contentObj]=joinBytes([te.encode('<< /Length '+opBytes.length+' >>\nstream\n'),opBytes,te.encode('endstream')]);
+  }
+  const chunks=[te.encode('%PDF-1.4\n')],offsets=new Array(objCount+1).fill(0);
+  let offset=chunks[0].length;
+  for(let i=1;i<=objCount;i++){
+    offsets[i]=offset;
+    const chunk=joinBytes([te.encode(i+' 0 obj\n'),objects[i],te.encode('\nendobj\n')]);
+    chunks.push(chunk);offset+=chunk.length;
+  }
+  const xrefOffset=offset;
+  let xref='xref\n0 '+(objCount+1)+'\n0000000000 65535 f \n';
+  for(let i=1;i<=objCount;i++)xref+=String(offsets[i]).padStart(10,'0')+' 00000 n \n';
+  xref+='trailer\n<< /Size '+(objCount+1)+' /Root 1 0 R >>\nstartxref\n'+xrefOffset+'\n%%EOF\n';
+  chunks.push(te.encode(xref));
+  return new Blob(chunks,{type:'application/pdf'});
+}
+function canvasJpeg(canvas,quality){
+  return new Promise((resolve,reject)=>canvas.toBlob(async b=>{
+    if(!b)return reject(new Error('PDF軽量化用画像を作成できませんでした'));
+    resolve(new Uint8Array(await b.arrayBuffer()));
+  },'image/jpeg',quality));
+}
+async function rasterizePdf(blob,dpi,quality,maxDim){
+  if(!window.pdfjsLib)throw new Error('PDF軽量化エンジンを読み込めません');
+  const data=new Uint8Array(await blob.arrayBuffer());
+  const doc=await pdfjsLib.getDocument({data}).promise;
+  const pages=[];
+  try{
+    for(let no=1;no<=doc.numPages;no++){
+      setStatus('☁ PDF軽量化 '+no+'/'+doc.numPages,'busy');
+      const page=await doc.getPage(no);
+      const base=page.getViewport({scale:1});
+      let scale=dpi/72;
+      const longest=Math.max(base.width,base.height);
+      if(longest*scale>maxDim)scale=maxDim/longest;
+      scale=Math.max(.75,scale);
+      const vp=page.getViewport({scale});
+      const c=document.createElement('canvas');
+      c.width=Math.max(1,Math.round(vp.width));c.height=Math.max(1,Math.round(vp.height));
+      const cx=c.getContext('2d',{alpha:false});
+      cx.fillStyle='#fff';cx.fillRect(0,0,c.width,c.height);
+      await page.render({canvasContext:cx,viewport:vp,background:'white'}).promise;
+      const jpeg=await canvasJpeg(c,quality);
+      pages.push({wPt:base.width,hPt:base.height,pxW:c.width,pxH:c.height,jpeg});
+      c.width=1;c.height=1;
+      if(no%3===0)await sleep(20);
+    }
+  }finally{try{await doc.destroy()}catch{}}
+  return buildImagePdf(pages);
+}
+async function optimizePdfForSync(blob){
+  if(!(blob instanceof Blob)||blob.type!=='application/pdf'&&blob.size<=PDF_OPTIMIZE_THRESHOLD)return {blob,optimized:false,originalSize:blob?.size||0};
+  if(blob.size<=PDF_OPTIMIZE_THRESHOLD)return {blob,optimized:false,originalSize:blob.size};
+  const presets=[
+    {dpi:160,q:.82,max:3200},
+    {dpi:130,q:.76,max:2700},
+    {dpi:105,q:.70,max:2200},
+    {dpi:90,q:.66,max:1900}
+  ];
+  let best=null;
+  for(const p of presets){
+    const made=await rasterizePdf(blob,p.dpi,p.q,p.max);
+    if(!best||made.size<best.size)best=made;
+    if(made.size<=PDF_SYNC_LIMIT&&made.size<blob.size*.97)break;
+  }
+  if(best&&best.size<blob.size&&best.size<=PDF_SYNC_LIMIT)return {blob:best,optimized:true,originalSize:blob.size};
+  if(blob.size<=PDF_SYNC_LIMIT)return {blob,optimized:false,originalSize:blob.size};
+  throw new Error('PDFを同期上限まで軽量化できませんでした。ページ数を分けるか、元PDFを軽量化してください。');
+}
+
 async function uploadDrawing(cloudProject,deviceId,item){
-  const blob=await dbGet('background:'+item.drawingId);
+  const key='background:'+item.drawingId;
+  let blob=await dbGet(key);
   if(!(blob instanceof Blob))return {status:'missing'};
+  const fileName=item.fileName||item.drawingName||('drawing-'+item.drawingId);
+  let optimization={blob,optimized:false,originalSize:blob.size};
+  const isPdf=item.sourceType==='pdf'||blob.type==='application/pdf'||/\.pdf$/i.test(fileName);
+  if(isPdf){
+    optimization=await optimizePdfForSync(blob);
+    blob=optimization.blob;
+    if(optimization.optimized){
+      const localCopy=new File([blob],fileName,{type:'application/pdf',lastModified:Date.now()});
+      await dbPut(key,localCopy);
+      blob=localCopy;
+    }
+  }
   return uploadAsset({
     cloudProject,deviceId,clientKey:'drawing:'+item.drawingId,kind:'drawing',
-    fileName:item.fileName||item.drawingName||('drawing-'+item.drawingId),blob,storageFolder:'drawings',
-    metadata:{local_project_key:cloudProject.client_key||'',drawing_id:item.drawingId,drawing_name:item.drawingName,source_type:item.sourceType}
+    fileName,blob,storageFolder:'drawings',
+    metadata:{
+      local_project_key:cloudProject.client_key||'',drawing_id:item.drawingId,drawing_name:item.drawingName,
+      source_type:item.sourceType,optimized_for_sync:!!optimization.optimized,
+      original_byte_size:optimization.originalSize,sync_byte_size:blob.size
+    }
   });
 }
 async function downloadPrivateAsset(asset){
@@ -299,6 +411,7 @@ async function pullProjectAssets(cloudProject,deviceId){
           same=(await sha256Hex(local)).toLowerCase()===String(a.sha256).toLowerCase();
         }
         if(!same){await dbPut(key,await downloadPrivateAsset(a));received++}
+        if(a.source_device_id!==deviceId)await ackAsset(a.id,deviceId);
       }else if(a.kind==='photo'){
         if(a.source_device_id===deviceId)continue;
         const drawingId=a.metadata?.drawing_id,photoId=a.metadata?.photo_id;
