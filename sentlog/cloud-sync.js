@@ -479,8 +479,11 @@ async function doSignup(){
 
 loadSession();
 window.addEventListener('online',()=>syncNow());
+window.addEventListener('focus',()=>syncNow());
+window.addEventListener('pageshow',()=>syncNow());
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')syncNow()});
 document.addEventListener('change',e=>{
   if(e.target?.id==='cameraInput'||e.target?.id==='photoInput')setTimeout(syncNow,2500);
 },true);
 setTimeout(()=>{buildUI();if(session&&navigator.onLine)syncNow()},800);
-syncTimer=setInterval(()=>{if(session&&navigator.onLine)syncNow()},15000);
+syncTimer=setInterval(()=>{if(session&&navigator.onLine)syncNow()},5000);
