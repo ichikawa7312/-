@@ -359,7 +359,15 @@ $('drawingAddInput').onchange=async e=>{const f=e.target.files[0];if(f)await cre
 $('navBackBtn').onclick=()=>{if(currentView==='editor')showDrawings(activeProjectId);else if(currentView==='drawings')showProjects()};
 
 window.addEventListener('resize',()=>{if(state.sourceType)fit()});
-if('serviceWorker' in navigator&&location.protocol!=='file:')navigator.serviceWorker.register('./sw.js').catch(()=>{});
+if('serviceWorker' in navigator&&location.protocol!=='file:'){
+  let swReloaded=false;
+  navigator.serviceWorker.addEventListener('controllerchange',()=>{
+    if(swReloaded)return;
+    swReloaded=true;
+    location.reload();
+  });
+  navigator.serviceWorker.register('./sw.js',{updateViaCache:'none'}).then(reg=>reg.update()).catch(()=>{});
+}
 initApp();
 </script>
 </body>
