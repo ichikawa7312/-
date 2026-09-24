@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#111827">
+<title>セントログ更新</title>
+<style>
+body{margin:0;background:#111827;color:#fff;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;min-height:100vh;display:grid;place-items:center;padding:24px;box-sizing:border-box}
+.card{width:min(420px,100%);background:#1f2937;border:1px solid #374151;border-radius:16px;padding:22px;box-sizing:border-box;text-align:center}
+h1{font-size:20px;margin:0 0 10px}p{font-size:14px;line-height:1.6;color:#d1d5db;margin:0}.ok{margin-top:16px;font-size:13px;color:#a7f3d0}
+</style>
+</head>
+<body>
+<div class="card">
+<h1>セントログを更新しています</h1>
+<p>古い表示用キャッシュだけを消して、最新版を読み込み直します。案件・図面・写真などの端末内データは削除しません。</p>
+<div class="ok" id="status">処理中…</div>
+</div>
+<script>
+(async()=>{
+  const st=document.getElementById('status');
+  try{
+    if('serviceWorker' in navigator){
+      const regs=await navigator.serviceWorker.getRegistrations();
+      for(const r of regs){
+        if((r.scope||'').includes('/sentlog/')) await r.unregister();
+      }
+    }
+    if('caches' in window){
+      const keys=await caches.keys();
+      await Promise.all(keys.filter(k=>k.startsWith('sentlog-')).map(k=>caches.delete(k)));
+    }
+    st.textContent='更新準備完了。最新版を開きます…';
+    setTimeout(()=>location.replace('../sentlog/?fresh=20260925-2'),700);
+  }catch(e){
+    st.textContent='更新画面を開き直してください。';
+  }
+})();
+</script>
+</body>
+</html>
