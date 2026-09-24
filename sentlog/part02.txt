@@ -8,7 +8,7 @@ tween;gap:12px;margin-bottom:12px}.modal-title h2{font-size:18px;margin:0}.modal
 </style>
 </head>
 <body>
-<header><button id="navBackBtn" class="nav-back hidden">← 戻る</button><img src="./icon.svg" class="brand-mark" alt=""><strong id="headerTitle" class="header-title">セントログ</strong><span class="pill" style="background:#374151;color:#fff">試作版 v1.15</span><button id="mobileSidebarBtn" class="mobile-sidebar-btn hidden">図面</button><span class="status" id="saveStatus">端末内保存</span></header>
+<header><button id="navBackBtn" class="nav-back hidden">← 戻る</button><img src="./icon.svg" class="brand-mark" alt=""><strong id="headerTitle" class="header-title">セントログ</strong><span class="pill" style="background:#374151;color:#fff">試作版 v1.16</span><button id="mobileSidebarBtn" class="mobile-sidebar-btn hidden">図面</button><span class="status" id="saveStatus">端末内保存</span></header>
 <section class="manager-screen" id="projectsView">
   <div class="manager-shell">
     <div class="
