@@ -29,4 +29,115 @@ label{font-size:12px;color:var(--muted);display:block;margin-bottom:4px}input,se
 .zoom-row{display:grid;grid-template-columns:44px 1fr 44px;gap:8px;align-items:center}.rotate-row{display:grid;grid-template-columns:1fr 1fr;gap:8px}.rotate-row button{min-height:40px}.zoom-value{display:flex;align-items:center;justify-content:center;min-height:38px;border:1px solid var(--line);border-radius:8px;background:#f9fafb;font-size:12px;font-weight:700;color:#374151}.zoom-help{font-size:11px;color:var(--muted);line-height:1.45}
 @media(max-width:900px){.app{grid-template-columns:1fr}.sidebar{display:block;position:fixed;top:58px;left:0;bottom:0;width:min(86vw,300px);z-index:20;transform:translateX(-105%);transition:.2s;box-shadow:8px 0 24px rgba(0,0,0,.18)}.sidebar.open{transform:translateX(0)}.mobile-sidebar-btn{display:inline-flex}.inspector{position:absolute;left:0;right:0;bottom:0;height:42vh;border-left:0;border-top:1px solid var(--line);z-index:8;transform:translateY(calc(100% - 48px));transition:.2s}.inspector.open{transform:translateY(0)}.workspace{height:calc(100vh - 58px)}.toolbar{overflow-x:auto;flex-wrap:nowrap}.toolbar button{white-space:normal;width:136px;min-width:136px;height:44px;flex:0 0 136px}.mobile-handle{display:block!important;text-align:center;font-weight:700;padding:6px;cursor:pointer}.stage-wrap{padding-bottom:48px}}
 
+/* iPhoneだけ：上部の詰まりを減らし、操作ボタンに呼吸を持たせる */
+@media(max-width:480px){
+  header{
+    height:72px;
+    min-height:72px;
+    padding:8px 10px;
+    gap:7px;
+    flex-wrap:wrap;
+    align-content:center;
+    row-gap:6px;
+  }
+  header .brand-mark,
+  header .pill{display:none}
+  header .nav-back{
+    height:34px;
+    padding:0 9px;
+    border-radius:9px;
+    flex:0 0 auto;
+  }
+  header .header-title{
+    flex:1 1 140px;
+    min-width:0;
+    max-width:none;
+    font-size:15px;
+    line-height:1.2;
+  }
+  header .mobile-sidebar-btn{
+    height:34px;
+    padding:0 10px;
+    border-radius:9px;
+    flex:0 0 auto;
+  }
+  header #sentlogCloudStatus{
+    height:34px!important;
+    margin-left:0!important;
+    padding:0 10px!important;
+    border-radius:9px!important;
+    flex:0 0 auto;
+    font-size:11px!important;
+  }
+  header .status{
+    margin-left:0;
+    flex:1 1 auto;
+    min-width:72px;
+    text-align:right;
+    font-size:10px;
+    white-space:nowrap;
+  }
+
+  .app{height:calc(100vh - 72px)}
+  .workspace{height:calc(100vh - 72px)}
+  .sidebar{top:72px}
+
+  .toolbar{
+    padding:10px 12px 11px;
+    gap:9px;
+    border-bottom:1px solid #e5e7eb;
+    scrollbar-width:none;
+  }
+  .toolbar::-webkit-scrollbar{display:none}
+  .toolbar button{
+    width:124px;
+    min-width:124px;
+    height:42px;
+    flex:0 0 124px;
+    padding:0 12px;
+    border-radius:10px;
+    font-size:13px;
+  }
+  .toolbar .page-indicator{
+    min-width:58px;
+    padding:0 4px;
+  }
+
+  .stage-wrap{
+    padding:10px 10px 54px;
+  }
+
+  .inspector{
+    height:46vh;
+    transform:translateY(calc(100% - 54px));
+    border-radius:16px 16px 0 0;
+    box-shadow:0 -4px 16px rgba(17,24,39,.08);
+    padding:0 12px 16px;
+  }
+  .inspector.open{transform:translateY(0)}
+  .mobile-handle{
+    min-height:54px;
+    display:flex!important;
+    align-items:center;
+    justify-content:center;
+    margin:0 -12px 8px;
+    padding:0 12px;
+    border-radius:16px 16px 0 0;
+    background:#fff;
+    border-bottom:1px solid #eef2f7;
+    font-size:13px;
+  }
+  .inspector .section-title{
+    margin-top:10px;
+  }
+  .inspector .stack{gap:10px}
+  .inspector input,
+  .inspector select,
+  .inspector textarea{min-height:42px}
+  .inspector textarea{min-height:84px}
+
+  .modal-backdrop{padding:12px}
+}
+
+
 .modal-backdrop{position:fixed;inset:0;background:rgba(17,24,39,.45);display:none;align-items:center;justify-content:center;padding:18px;z-index:30}.modal-backdrop.open{display:flex}.modal-card{width:min(520px,100%);max-height:88vh;overflow:auto;background:#fff;border-radius:14px;box-shadow:0 24px 70px rgba(0,0,0,.28);padding:18px}.modal-title{display:flex;align-items:center;justify-content:space-be
