@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#111827">
+<title>セントログ PC同期</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#f3f4f6;color:#111827;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Yu Gothic UI",sans-serif}
+header{background:#111827;color:#fff;padding:16px 20px;display:flex;align-items:center;gap:12px}header h1{font-size:19px;margin:0}header span{margin-left:auto;font-size:12px;opacity:.85}
+main{max-width:820px;margin:24px auto;padding:0 16px}.card{background:#fff;border:1px solid #d1d5db;border-radius:14px;padding:18px;margin-bottom:14px;box-shadow:0 1px 2px rgba(0,0,0,.04)}
+h2{font-size:17px;margin:0 0 12px}.muted{font-size:12px;color:#6b7280;line-height:1.6}.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+label{font-size:12px;color:#4b5563;display:block}input{width:100%;margin-top:5px;padding:10px;border:1px solid #cbd5e1;border-radius:8px;font:inherit}
+button{border:1px solid #cbd5e1;background:#fff;border-radius:9px;padding:10px 13px;font-weight:700;cursor:pointer}button.primary{background:#111827;color:#fff;border-color:#111827}button:disabled{opacity:.45;cursor:default}
+.row{display:flex;gap:8px;flex-wrap:wrap}.status{padding:10px 12px;border-radius:9px;background:#f3f4f6;font-size:13px;font-weight:700}.ok{background:#ecfdf5;color:#065f46}.warn{background:#fffbeb;color:#92400e}.err{background:#fef2f2;color:#991b1b}.busy{background:#eff6ff;color:#1d4ed8}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:12px}.stat{border:1px solid #e5e7eb;border-radius:10px;padding:12px;text-align:center}.stat b{font-size:22px;display:block}.stat small{color:#6b7280}
+.log{height:220px;overflow:auto;background:#0b1220;color:#d1d5db;border-radius:10px;padding:12px;font:12px/1.5 Consolas,monospace;white-space:pre-wrap}
+.hidden{display:none!important}@media(max-width:650px){.grid,.stats{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<header><h1>セントログ PC自動同期</h1><span>PowerShell不要版</span></header>
+<main>
+  <div class="card">
+    <h2>1. セントログへログイン</h2>
+    <div id="loginBox">
+      <div class="grid">
+        <label>メールアドレス<input id="email" type="email" autocomplete="username" value="ichikawa7312@gmail.com"></label>
+        <label>パスワード<input id="password" type="password" autocomplete="current-password"></label>
+      </div>
+      <div class="row" style="margin-top:12px"><button id="loginBtn" class="primary">ログイン</button></div>
+    </div>
+    <div id="loggedBox" class="hidden">
+      <div id="who" class="status ok"></div>
+      <div class="row" style="margin-top:10px"><button id="logoutBtn">ログアウト</button></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>2. 会社PCの保存先を選ぶ</h2>
+    <p class="muted">「保存先を選ぶ」を押して、セントログ案件を保存したいフォルダを選択してください。Edgeがそのフォルダへの書き込み許可を求めます。</p>
+    <div class="row">
+      <button id="folderBtn" class="primary">保存先を選ぶ</button>
+      <button id="permissionBtn">保存許可を確認</button>
+    </div>
+    <div id="folderStatus" class="status warn" style="margin-top:10px">保存先未設定</div>
+  </div>
+
+  <div class="card">
+    <h2>3. 自動同期</h2>
+    <p class="muted">この画面をEdgeで開いておけば、新しい写真を約5秒ごとに確認します。PCへ保存後、ファイルサイズとSHA-256を照合し、完全一致した写真だけSupabaseから削除します。</p>
+    <div class="row">
+      <button id="startBtn" class="primary" disabled>自動同期を開始</button>
+      <button id="stopBtn" disabled>停止</button>
+      <button id="onceBtn" disabled>今すぐ1回同期</button>
+    </div>
+    <div id="syncStatus" class="status" style="margin-top:10px">停止中</div>
+    <div class="stats">
+      <div class="stat"><b id="pendingCount">0</b><small>クラウド待機</small></div>
+      <div class="stat"><b id="savedCount">0</b><small>今回PC保存</small></div>
+      <div class="stat"><b id="deletedCount">0</b><small>クラウド削除</small></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>動作ログ</h2>
+    <div id="log" class="log"></div>
+  </div>
+</main>
+<script>
+const SUPABASE_URL='https://wiulvaqixphuobdielyy.supabase.co';
+const API_KEY='sb_publishable_4pCeFn-wPsEYzFLhCMCINw_VEUfxz0-';
+const BUCKET='sentlog-temp';
+const SESSION_KEY='sentlogPcWebSessionV1';
+const DEVICE_KEY='sentlogPcWebDeviceV1';
+const DB='sentlog-pc-sync';
+let session=null, rootHandle=null, timer=null, busy=false, savedCount=0, deletedCount=0;
+
+const $=id=>document.getElementById(id);
+const log=(m)=>{const t=new Date().toLocaleTimeString('ja-JP'); $('log').textContent += '['+t+'] '+m+'\n'; $('log').scrollTop=$('log').scrollHeight};
+const enc=s=>encodeURIComponent(String(s));
+function setSync(t,c=''){const e=$('syncStatus');e.textContent=t;e.className='status '+c}
+function authHeaders(extra={}){return {'apikey':API_KEY,...(session?.access_token?{'Authorization':'Bearer '+session.access_token}:{}),...extra}}
+
+function loadSession(){try{session=JSON.parse(localStorage.getItem(SESSION_KEY)||'null')}catch{session=null}}
+function saveSession(s){session=s||null;if(session)localStorage.setItem(SESSION_KEY,JSON.stringify(session));else localStorage.removeItem(SESSION_KEY);refreshUI()}
+function expired(){return !session?.expires_at || Date.now()/1000>session.expires_at-60}
+async function refreshSession(){
+  const r=await fetch(SUPABASE_URL+'/auth/v1/token?grant_type=refresh_token',{method:'POST',headers:{apikey:API_KEY,'Content-Type':'application/json'},body:JSON.stringify({refresh_token:session.refresh_token})});
+  const j=await r.json(); if(!r.ok)throw Error(j.message||j.msg||'ログイン更新失敗'); j.expires_at=Math.floor(Date.now()/1000)+(j.expires_in||3600); saveSession(j)
+}
+async function ensureSession(){if(!session)throw Error('ログインしてください');if(expired())await refreshSession();return session}
+async function rest(path,opt={}){
+  await ensureSession();
+  const r=await fetch(SUPABASE_URL+path,{...opt,headers:authHeaders({'Content-Type':'application/json',...(opt.headers||{})})});
+  const tx=await r.text(); let d=null; try{d=tx?JSON.parse(tx):null}catch{d=tx}
+  if(!r.ok)throw Error(d?.message||d?.msg||d?.error_description||String(d||r.status)); return d
+}
+async function login(){
+  const email=$('email').value.trim(),password=$('password').value;if(!email||!password)return alert('メールアドレスとパスワードを入力してください');
+  $('loginBtn').disabled=true;
+  try{
+    const r=await fetch(SUPABASE_URL+'/auth/v1/token?grant_type=password',{method:'POST',headers:{apikey:API_KEY,'Content-Type':'application/json'},body:JSON.stringify({email,password})});
+    const j=await r.json();if(!r.ok)throw Error(j.message||j.msg||'ログインできません');j.expires_at=Math.floor(Date.now()/1000)+(j.expires_in||3600);saveSession(j);await ensureDevice();log('ログインしました')
+  }catch(e){alert(e.message);log('ログイン失敗: '+e.message)}finally{$('loginBtn').disabled=false}
+}
+async function ensureDevice(){
+  let id=localStorage.getItem(DEVICE_KEY);
+  if(id){try{const q=await rest('/rest/v1/sentlog_devices?id=eq.'+enc(id)+'&select=id,active');if(q?.[0]?.active)return id}catch{}}
+  id=await rest('/rest/v1/rpc/sentlog_register_device',{method:'POST',body:JSON.stringify({p_device_name:(navigator.platform||'Windows')+' Edge セントログ同期',p_device_type:'pc'})});
+  id=String(id).replace(/^"|"$/g,'');localStorage.setItem(DEVICE_KEY,id);return id
+}
+
+function openIDB(){return new Promise((res,rej)=>{const q=indexedDB.open(DB,1);q.onupgradeneeded=()=>{if(!q.result.objectStoreNames.contains('kv'))q.result.createObjectStore('kv')};q.onsuccess=()=>res(q.result);q.onerror=()=>rej(q.error)})}
+async function idbSet(k,v){const db=await openIDB();await new Promise((res,rej)=>{const tx=db.transaction('kv','readwrite');tx.objectStore('kv').put(v,k);tx.oncomplete=res;tx.onerror=()=>rej(tx.error)});db.close()}
+async function idbGet(k){const db=await openIDB();const v=await new Promise((res,rej)=>{const q=db.transaction('kv','readonly').objectStore('kv').get(k);q.onsuccess=()=>res(q.result);q.onerror=()=>rej(q.error)});db.close();return v}
+async function chooseFolder(){
+  if(!window.showDirectoryPicker)return alert('この機能はMicrosoft EdgeまたはChromeで開いてください');
+  try{rootHandle=await showDirectoryPicker({mode:'readwrite'});await idbSet('root',rootHandle);await updateFolder();log('保存先を選択: '+rootHandle.name)}catch(e){if(e.name!=='AbortError')log('保存先選択エラー: '+e.message)}
+}
+async function permission(){
+  if(!rootHandle)return false;
+  let p=await rootHandle.queryPermission({mode:'readwrite'});
+  if(p!=='granted')p=await rootHandle.requestPermission({mode:'readwrite'});
+  await updateFolder();return p==='granted'
+}
+async function updateFolder(){
+  const e=$('folderStatus');
+  if(!rootHandle){e.textContent='保存先未設定';e.className='status warn';refreshUI();return}
+  const p=await rootHandle.queryPermission({mode:'readwrite'});
+  e.textContent='保存先: '+rootHandle.name+' / '+(p==='granted'?'書き込み許可済み':'許可が必要');
+  e.className='status '+(p==='granted'?'ok':'warn');refreshUI()
+}
+function refreshUI(){
+  const logged=!!session?.user?.email;$('loginBox').classList.toggle('hidden',logged);$('loggedBox').classList.toggle('hidden',!logged);
+  if(logged)$('who').textContent='ログイン中: '+session.user.email;
+  const ready=logged&&!!rootHandle;$('startBtn').disabled=!ready||!!timer;$('onceBtn').disabled=!ready;$('stopBtn').disabled=!timer
+}
+
+const invalid=/[<>:"/\\|?*\x00-\x1F]/g;
+function safe(s,fallback='_'){s=String(s||fallback).replace(invalid,'_').replace(/[. ]+$/g,'').trim();return s||fallback}
+async function subdir(parent,name){return parent.getDirectoryHandle(safe(name),{create:true})}
+async function fileSha(file){const buf=await file.arrayBuffer(),h=await crypto.subtle.digest('SHA-256',buf);return [...new Uint8Array(h)].map(b=>b.toString(16).padStart(2,'0')).join('')}
+async function getProjectName(id){const q=await rest('/rest/v1/sentlog_projects?id=eq.'+enc(id)+'&select=name');return q?.[0]?.name||('案件_'+id)}
+
+async function pendingAssets(){
+  const fields=enc('id,project_id,kind,file_name,storage_path,mime_type,byte_size,sha256,status,captured_at,metadata');
+  const q=await rest('/rest/v1/sentlog_assets?kind=eq.photo&status=in.(uploaded,pc_verified)&select='+fields+'&order=uploaded_at.asc');
+  $('pendingCount').textContent=q?.length||0;return q||[]
+}
+async function downloadAsset(a){
+  const parts=String(a.storage_path).split('/').map(enc).join('/');
+  const r=await fetch(SUPABASE_URL+'/storage/v1/object/authenticated/'+BUCKET+'/'+parts,{headers:authHeaders()});
+  if(!r.ok)throw Error('写真ダウンロード失敗: '+r.status);return r.blob()
+}
+async function saveVerified(a){
+  const blob=await downloadAsset(a);
+  const project=await getProjectName(a.project_id);
+  const dt=a.captured_at?new Date(a.captured_at):new Date();
+  const year=String(dt.getFullYear());
+  const drawing=a.metadata?.drawing_name||'_図面未設定';
+  const label=a.metadata?.shape_label||'_変状未設定';
+  let d=rootHandle;d=await subdir(d,year);d=await subdir(d,project);d=await subdir(d,'写真');d=await subdir(d,drawing);d=await subdir(d,label);
+  const name=safe(a.file_name,'photo.jpg');
+  const fh=await d.getFileHandle(name,{create:true});
+  let existing=await fh.getFile();
+  let ok=existing.size===Number(a.byte_size);
+  if(ok)ok=(await fileSha(existing)).toLowerCase()===String(a.sha256).toLowerCase();
+  if(!ok){const w=await fh.createWritable();await w.write(blob);await w.close();existing=await fh.getFile()}
+  if(existing.size!==Number(a.byte_size))throw Error('サイズ照合NG: '+name);
+  const hash=(await fileSha(existing)).toLowerCase();if(hash!==String(a.sha256).toLowerCase())throw Error('SHA-256照合NG: '+name);
+  const device=await ensureDevice();
+  const logical=[rootHandle.name,year,safe(project),'写真',safe(drawing),safe(label),name].join('\\');
+  await rest('/rest/v1/rpc/sentlog_mark_pc_verified',{method:'POST',body:JSON.stringify({p_asset_id:a.id,p_device_id:device,p_sha256:hash,p_byte_size:existing.size,p_pc_path:logical})});
+  savedCount++;$('savedCount').textContent=savedCount;log('PC保存・照合OK: '+logical);
+}
+async function deleteVerified(a){
+  const r=await fetch(SUPABASE_URL+'/functions/v1/sentlog-delete-verified',{method:'POST',headers:authHeaders({'Content-Type':'application/json'}),body:JSON.stringify({asset_id:a.id})});
+  const j=await r.json().catch(()=>({}));if(!r.ok)throw Error(j.error||j.detail||'クラウド削除失敗');
+  deletedCount++;$('deletedCount').textContent=deletedCount;log('Supabase写真削除: '+a.file_name)
+}
+async function syncOnce(){
+  if(busy)return;busy=true;setSync('同期中…','busy');
+  try{
+    await ensureSession();if(!(await permission()))throw Error('保存先フォルダへの書き込み許可が必要です');
+    const list=await pendingAssets();
+    for(const a of list){
+      try{
+        if(a.status==='uploaded')await saveVerified(a);
+        await deleteVerified(a);
+      }catch(e){log('処理待ち: '+(a.file_name||a.id)+' / '+e.message)}
+    }
+    setSync(list.length?'同期完了':'新しい写真はありません','ok')
+  }catch(e){setSync('同期エラー: '+e.message,'err');log('同期エラー: '+e.message)}
+  finally{busy=false}
+}
+function start(){if(timer)return;syncOnce();timer=setInterval(syncOnce,5000);setSync('自動同期ON','ok');refreshUI();log('自動同期を開始')}
+function stop(){if(timer){clearInterval(timer);timer=null}setSync('停止中');refreshUI();log('自動同期を停止')}
+
+$('loginBtn').onclick=login;$('logoutBtn').onclick=()=>{stop();saveSession(null);log('ログアウト')};
+$('folderBtn').onclick=chooseFolder;$('permissionBtn').onclick=permission;$('startBtn').onclick=start;$('stopBtn').onclick=stop;$('onceBtn').onclick=syncOnce;
+window.addEventListener('online',()=>{if(timer)syncOnce()});window.addEventListener('offline',()=>setSync('オフライン待機','warn'));
+
+(async()=>{
+  loadSession();
+  try{rootHandle=await idbGet('root')}catch{}
+  refreshUI();await updateFolder();
+  if(session){try{await ensureSession();await ensureDevice()}catch(e){saveSession(null);log('再ログインが必要です')}}
+  log('PC同期画面を起動しました');
+})();
+</script>
+</body>
+</html>
