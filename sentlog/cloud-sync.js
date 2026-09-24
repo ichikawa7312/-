@@ -338,7 +338,7 @@ async function rasterizePdf(blob,dpi,quality,maxDim){
   return buildImagePdf(pages);
 }
 async function optimizePdfForSync(blob){
-  if(!(blob instanceof Blob)||blob.type!=='application/pdf'&&blob.size<=PDF_OPTIMIZE_THRESHOLD)return {blob,optimized:false,originalSize:blob?.size||0};
+  if(!(blob instanceof Blob))return {blob,optimized:false,originalSize:0};
   if(blob.size<=PDF_OPTIMIZE_THRESHOLD)return {blob,optimized:false,originalSize:blob.size};
   const presets=[
     {dpi:160,q:.82,max:3200},
