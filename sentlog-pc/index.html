@@ -19,7 +19,7 @@ button{border:1px solid #cbd5e1;background:#fff;border-radius:9px;padding:10px 1
 </style>
 </head>
 <body>
-<header><h1>セントログ PC自動同期</h1><span>PowerShell不要版</span></header>
+<header><h1>セントログ PC自動同期</h1><span>セントログ本体とログイン共有</span></header>
 <main>
   <div class="card">
     <h2>1. セントログへログイン</h2>
@@ -71,7 +71,8 @@ button{border:1px solid #cbd5e1;background:#fff;border-radius:9px;padding:10px 1
 const SUPABASE_URL='https://wiulvaqixphuobdielyy.supabase.co';
 const API_KEY='sb_publishable_4pCeFn-wPsEYzFLhCMCINw_VEUfxz0-';
 const BUCKET='sentlog-temp';
-const SESSION_KEY='sentlogPcWebSessionV1';
+const SESSION_KEY='sentlogCloudSessionV1';
+const LEGACY_SESSION_KEY='sentlogPcWebSessionV1';
 const DEVICE_KEY='sentlogPcWebDeviceV1';
 const DB='sentlog-pc-sync';
 let session=null, rootHandle=null, timer=null, busy=false, savedCount=0, deletedCount=0;
@@ -82,8 +83,8 @@ const enc=s=>encodeURIComponent(String(s));
 function setSync(t,c=''){const e=$('syncStatus');e.textContent=t;e.className='status '+c}
 function authHeaders(extra={}){return {'apikey':API_KEY,...(session?.access_token?{'Authorization':'Bearer '+session.access_token}:{}),...extra}}
 
-function loadSession(){try{session=JSON.parse(localStorage.getItem(SESSION_KEY)||'null')}catch{session=null}}
-function saveSession(s){session=s||null;if(session)localStorage.setItem(SESSION_KEY,JSON.stringify(session));else localStorage.removeItem(SESSION_KEY);refreshUI()}
+function loadSession(){try{session=JSON.parse(localStorage.getItem(SESSION_KEY)||localStorage.getItem(LEGACY_SESSION_KEY)||'null');if(session)localStorage.setItem(SESSION_KEY,JSON.stringify(session))}catch{session=null}}
+function saveSession(s){session=s||null;if(session){localStorage.setItem(SESSION_KEY,JSON.stringify(session));localStorage.removeItem(LEGACY_SESSION_KEY)}else{localStorage.removeItem(SESSION_KEY);localStorage.removeItem(LEGACY_SESSION_KEY)}refreshUI()}
 function expired(){return !session?.expires_at || Date.now()/1000>session.expires_at-60}
 async function refreshSession(){
   const r=await fetch(SUPABASE_URL+'/auth/v1/token?grant_type=refresh_token',{method:'POST',headers:{apikey:API_KEY,'Content-Type':'application/json'},body:JSON.stringify({refresh_token:session.refresh_token})});
