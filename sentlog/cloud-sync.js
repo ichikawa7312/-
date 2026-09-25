@@ -7,6 +7,35 @@ const DRAWING_KEY_PREFIX='surveyFieldNoteDrawingV1:';
 const DB_NAME='surveyFieldNoteDB';
 const BUCKET='sentlog-temp';
 const SYNC_META_PREFIX='sentlogCloudProjectSyncV2:';
+const SELF_REFRESH_KEY='sentlogSelfRefreshBuildV1';
+const SELF_REFRESH_BUILD='20260925-iconfix-1';
+
+async function selfRefreshIfNeeded(){
+  try{
+    if(localStorage.getItem(SELF_REFRESH_KEY)===SELF_REFRESH_BUILD)return false;
+    localStorage.setItem(SELF_REFRESH_KEY,SELF_REFRESH_BUILD);
+    if('serviceWorker' in navigator){
+      const regs=await navigator.serviceWorker.getRegistrations();
+      for(const reg of regs){
+        try{
+          const scope=new URL(reg.scope).pathname;
+          if(scope.includes('/sentlog/'))await reg.unregister();
+        }catch{}
+      }
+    }
+    if('caches' in window){
+      const keys=await caches.keys();
+      await Promise.all(keys.filter(k=>k.startsWith('sentlog-')).map(k=>caches.delete(k)));
+    }
+    const u=new URL(location.href);
+    u.searchParams.set('fresh',SELF_REFRESH_BUILD);
+    location.replace(u.toString());
+    return true;
+  }catch{
+    return false;
+  }
+}
+if(await selfRefreshIfNeeded())throw new Error('sentlog_self_refresh');
 
 let session=null;
 let syncing=false;
