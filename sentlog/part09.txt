@@ -277,21 +277,41 @@ document.querySelectorAll('[data-tool]').forEach(b=>b.onclick=()=>{
   render();
 });
 
+// Keep each live contact until its own up/cancel event. A second finger is not stale data.
+function cancelPointerDraft(){
+  if(labelDrag?.historyPushed)persist();
+  labelDrag=null;drawing=null;panStart=null;
+}
+function resetTouchGesture(){
+  const ids=[...activeTouches.keys()];
+  activeTouches.clear();pinchStart=null;gestureLock=false;
+  cancelPointerDraft();
+  for(const id of ids){try{$('stageWrap').releasePointerCapture(id)}catch{}}
+}
 function beginPinchIfReady(){
-  if(activeTouches.size<2)return false;
-  const pts=[...activeTouches.values()].slice(0,2),r=$('stageWrap').getBoundingClientRect();
+  if(pinchStart)return true;
+  if(activeTouches.size!==2)return false;
+  const ids=[...activeTouches.keys()],pts=ids.map(id=>activeTouches.get(id));
+  const r=$('stageWrap').getBoundingClientRect();
   const midX=(pts[0].x+pts[1].x)/2-r.left,midY=(pts[0].y+pts[1].y)/2-r.top;
   const dist=Math.hypot(pts[1].x-pts[0].x,pts[1].y-pts[0].y);
-  pinchStart={dist:Math.max(1,dist),scale,worldX:(midX-tx)/scale,worldY:(midY-ty)/scale};
-  gestureLock=true;drawing=null;panStart=null;render();return true;
+  cancelPointerDraft();gestureLock=true;
+  // Nearly coincident contacts must not amplify a tiny movement into a large zoom.
+  if(dist<12)return true;
+  pinchStart={ids,dist,scale,worldX:(midX-tx)/scale,worldY:(midY-ty)/scale,zooming:false};
+  render();return true;
 }
 function updatePinch(){
-  if(!pinchStart||activeTouches.size<2)return;
-  const pts=[...activeTouches.values()].slice(0,2),r=$('stageWrap').getBoundingClientRect();
+  if(!pinchStart)return;
+  const pts=pinchStart.ids.map(id=>activeTouches.get(id));
+  if(pts.some(p=>!p))return;
+  const r=$('stageWrap').getBoundingClientRect();
   const midX=(pts[0].x+pts[1].x)/2-r.left,midY=(pts[0].y+pts[1].y)/2-r.top;
   const dist=Math.max(1,Math.hypot(pts[1].x-pts[0].x,pts[1].y-pts[0].y));
-  scale=clampZoom(pinchStart.scale*(dist/pinchStart.dist));
-  tx=midX-pinchStart.worldX*scale;ty=midY-pinchStart.worldY*scale;applyTransform();render();
+  if(Math.abs(dist-pinchStart.dist)>Math.max(4,pinchStart.dist*.02))pinchStart.zooming=true;
+  scale=pinchStart.zooming?clampZoom(pinchStart.scale*(dist/pinchStart.dist)):pinchStart.scale;
+  tx=midX-pinchStart.worldX*scale;ty=midY-pinchStart.worldY*scale;
+  applyTransform();render();
 }
 // 図面操作中にEdge/Safari等の長押し・右クリック・選択メニューが出るのを抑止
 const stageWrapEl=$('stageWrap');
@@ -305,16 +325,30 @@ stageWrapEl.addEventListener('auxclick',e=>{e.preventDefault();e.stopPropagation
   stageWrapEl.addEventListener(name,e=>{e.preventDefault();e.stopPropagation();},{passive:false,capture:true});
 });
 
+// Capture before SVG hit targets stop propagation, so a pinch can start on a label too.
+stageWrapEl.addEventListener('pointerdown',e=>{
+  if(e.pointerType!=='touch'||!state.sourceType)return;
+  // isPrimary marks a new touch sequence, not the second contact of an existing one.
+  if(e.isPrimary&&(activeTouches.size||gestureLock))resetTouchGesture();
+  activeTouches.set(e.pointerId,{x:e.clientX,y:e.clientY});
+  try{stageWrapEl.setPointerCapture(e.pointerId)}catch{}
+  if(beginPinchIfReady()||gestureLock){
+    if(e.cancelable)e.preventDefault();e.stopImmediatePropagation();
+  }
+},{capture:true,passive:false});
+stageWrapEl.addEventListener('pointermove',e=>{
+  if(e.pointerType!=='touch'||!activeTouches.has(e.pointerId))return;
+  activeTouches.set(e.pointerId,{x:e.clientX,y:e.clientY});
+  if(gestureLock){
+    if(!pinchStart&&activeTouches.size===2)beginPinchIfReady();
+    updatePinch();
+    if(e.cancelable)e.preventDefault();e.stopImmediatePropagation();
+  }
+},{capture:true,passive:false});
+
 $('stageWrap').addEventListener('pointerdown',e=>{
   if(!state.sourceType)return;
-  if(e.pointerType==='touch'){
-    // Safariで終了通知が欠けた古い指情報が残っていても、次の1本指タップを2本指と誤認しない
-    if(activeTouches.size && !pinchStart && !gestureLock)activeTouches.clear();
-    activeTouches.set(e.pointerId,{x:e.clientX,y:e.clientY});
-    try{$('stageWrap').setPointerCapture(e.pointerId)}catch{}
-    if(beginPinchIfReady())return;
-    if(gestureLock)return
-  }
+  if(gestureLock)return;
   const p=point(e);
   if(tool==='pan'){panStart={x:e.clientX,y:e.clientY,tx,ty,moved:false};try{$('stageWrap').setPointerCapture(e.pointerId)}catch{};return}
   if(tool==='freehand-line'){drawing={kind:'freehand-line',points:[p]};try{$('stageWrap').setPointerCapture(e.pointerId)}catch{};return}
@@ -325,7 +359,7 @@ $('stageWrap').addEventListener('pointerdown',e=>{
 });
 $('stageWrap').addEventListener('pointermove',e=>{
   if(!state.sourceType)return;
-  if(e.pointerType==='touch'&&activeTouches.has(e.pointerId)){activeTouches.set(e.pointerId,{x:e.clientX,y:e.clientY});if(pinchStart){updatePinch();return}if(gestureLock)return}
+  if(gestureLock || (e.pointerType==='touch'&&!activeTouches.has(e.pointerId)))return;
   if(labelDrag && e.pointerId===labelDrag.pointerId){
     const s=state.shapes.find(x=>x.id===labelDrag.id);
     if(!s)return;
@@ -342,7 +376,17 @@ $('stageWrap').addEventListener('pointermove',e=>{
   if(!drawing)return;const p=point(e);if(tool==='freehand-line'||tool==='freehand-area')drawing.points.push(p);if(tool==='rect'){drawing.w=p.x-drawing.x;drawing.h=p.y-drawing.y}if(tool==='line')drawing.points[1]=p;renderPreview()
 });
 function finishPointer(e,cancelled=false){
-  if(e.pointerType==='touch'&&activeTouches.has(e.pointerId)){activeTouches.delete(e.pointerId);if(pinchStart||gestureLock){pinchStart=null;panStart=null;drawing=null;labelDrag=null;if(activeTouches.size===0)gestureLock=false;try{$('stageWrap').releasePointerCapture(e.pointerId)}catch{};return}}
+  if(e.pointerType==='touch'){
+    if(!activeTouches.has(e.pointerId))return;
+    activeTouches.delete(e.pointerId);
+    if(pinchStart||gestureLock){
+      if(pinchStart?.ids.includes(e.pointerId))pinchStart=null;
+      panStart=null;drawing=null;labelDrag=null;
+      if(activeTouches.size===0)gestureLock=false;
+      try{stageWrapEl.releasePointerCapture(e.pointerId)}catch{}
+      return;
+    }
+  }
   if(labelDrag && e.pointerId===labelDrag.pointerId){
     if(labelDrag.historyPushed)persist();
     labelDrag=null;
@@ -358,20 +402,17 @@ function finishPointer(e,cancelled=false){
   else if(tool==='line'){addShape({kind:'line',points:drawing.points});drawing=null}
   try{$('stageWrap').releasePointerCapture(e.pointerId)}catch{}
 }
-$('stageWrap').addEventListener('pointerup',e=>finishPointer(e,false));
-$('stageWrap').addEventListener('pointercancel',e=>finishPointer(e,true));
+// Observe touch endings at window capture, even if a finger leaves the canvas or an SVG node vanishes.
+window.addEventListener('pointerup',e=>{if(e.pointerType==='touch')finishPointer(e,false)},{capture:true});
+window.addEventListener('pointercancel',e=>{if(e.pointerType==='touch')finishPointer(e,true)},{capture:true});
+stageWrapEl.addEventListener('pointerup',e=>{if(e.pointerType!=='touch')finishPointer(e,false)});
+stageWrapEl.addEventListener('pointercancel',e=>{if(e.pointerType!=='touch')finishPointer(e,true)});
 stageWrapEl.addEventListener('lostpointercapture',e=>{
-  if(e.pointerType!=='touch')return;
-  activeTouches.delete(e.pointerId);
-  if(activeTouches.size<2)pinchStart=null;
-  if(activeTouches.size===0)gestureLock=false;
+  if(e.pointerType==='touch'&&activeTouches.has(e.pointerId)&&!stageWrapEl.hasPointerCapture(e.pointerId))finishPointer(e,true);
 });
-window.addEventListener('blur',()=>{
-  activeTouches.clear();pinchStart=null;gestureLock=false;panStart=null;
-});
-document.addEventListener('visibilitychange',()=>{
-  if(document.hidden){activeTouches.clear();pinchStart=null;gestureLock=false;panStart=null;}
-});
+window.addEventListener('blur',resetTouchGesture);
+window.addEventListener('pagehide',resetTouchGesture);
+document.addEventListener('visibilitychange',()=>{if(document.hidden)resetTouchGesture()});
 function renderPreview(){render();if(!drawing)return;let el;if(drawing.kind==='polygon'||drawing.kind==='freehand-area'){el=makeEl('polyline',{points:drawing.points.map(p=>`${p.x},${p.y}`).join(' '),fill:drawing.kind==='polygon'?'rgba(239,68,68,.06)':'none',stroke:'#ef4444','stroke-width':Number($('lineWidth').value||1.2)/Math.max(scale,.001),'stroke-linecap':'round','stroke-linejoin':'round'});}else if(drawing.kind==='rect'){let{x,y,w,h}=drawing;if(w<0){x+=w;w=-w}if(h<0){y+=h;h=-h}el=makeEl('rect',{x,y,width:w,height:h,fill:'rgba(239,68,68,.06)',stroke:'#ef4444','stroke-width':Number($('lineWidth').value||1.2)/Math.max(scale,.001)})}else{el=makeEl('polyline',{points:drawing.points.map(p=>`${p.x},${p.y}`).join(' '),fill:'none',stroke:'#ef4444','stroke-width':Number($('lineWidth').value||1.2)/Math.max(scale,.001),'stroke-linecap':'round','stroke-linejoin':'round'})}svg.appendChild(el)}
 
 $('newProjectBtn').onclick=createProject;
