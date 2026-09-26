@@ -1,5 +1,5 @@
 /* Only static app resources belong in Cache Storage. Never cache user APIs. */
-const CACHE='sentlog-pwa-v132';
+const CACHE='sentlog-pwa-v133';
 const ROOT=new URL('./',self.registration.scope);
 const FILES=['','index.html','manifest.webmanifest','icon.svg','cloud-sync.js','phone-runtime.js','phone-layout.css','pdf-recovery.js',...Array.from({length:9},(_,i)=>'part0'+(i+1)+'.txt')];
 const PDF_ASSETS=['https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js','https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js'];
