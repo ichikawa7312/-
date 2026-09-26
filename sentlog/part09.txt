@@ -278,11 +278,13 @@ document.querySelectorAll('[data-tool]').forEach(b=>b.onclick=()=>{
 });
 
 // Keep each live contact until its own up/cancel event. A second finger is not stale data.
+let pinchFrame=0;
 function cancelPointerDraft(){
   if(labelDrag?.historyPushed)persist();
   labelDrag=null;drawing=null;panStart=null;
 }
 function resetTouchGesture(){
+  if(pinchFrame){cancelAnimationFrame(pinchFrame);pinchFrame=0;}
   const ids=[...activeTouches.keys()];
   activeTouches.clear();pinchStart=null;gestureLock=false;
   cancelPointerDraft();
@@ -313,6 +315,15 @@ function updatePinch(){
   tx=midX-pinchStart.worldX*scale;ty=midY-pinchStart.worldY*scale;
   applyTransform();render();
 }
+// Coalesce the two pointermove events from a single touch frame before measuring distance.
+function queuePinchUpdate(){
+  if(pinchFrame)return;
+  pinchFrame=requestAnimationFrame(()=>{pinchFrame=0;updatePinch()});
+}
+function flushPinchUpdate(){
+  if(!pinchFrame)return;
+  cancelAnimationFrame(pinchFrame);pinchFrame=0;updatePinch();
+}
 // 図面操作中にEdge/Safari等の長押し・右クリック・選択メニューが出るのを抑止
 const stageWrapEl=$('stageWrap');
 ['contextmenu','selectstart','dragstart'].forEach(name=>{
@@ -341,7 +352,7 @@ stageWrapEl.addEventListener('pointermove',e=>{
   activeTouches.set(e.pointerId,{x:e.clientX,y:e.clientY});
   if(gestureLock){
     if(!pinchStart&&activeTouches.size===2)beginPinchIfReady();
-    updatePinch();
+    queuePinchUpdate();
     if(e.cancelable)e.preventDefault();e.stopImmediatePropagation();
   }
 },{capture:true,passive:false});
@@ -378,6 +389,7 @@ $('stageWrap').addEventListener('pointermove',e=>{
 function finishPointer(e,cancelled=false){
   if(e.pointerType==='touch'){
     if(!activeTouches.has(e.pointerId))return;
+    flushPinchUpdate();
     activeTouches.delete(e.pointerId);
     if(pinchStart||gestureLock){
       if(pinchStart?.ids.includes(e.pointerId))pinchStart=null;
