@@ -1,4 +1,4 @@
-/* Phone layout v1.19. Loaded last; canvas world coordinates are unchanged. */
+/* Phone layout v1.20. Loaded last; canvas world coordinates are unchanged. */
 html.sentlog-phone {
   --sl-safe-top: env(safe-area-inset-top, 0px);
   --sl-safe-bottom: env(safe-area-inset-bottom, 0px);
@@ -57,3 +57,19 @@ html.sentlog-phone, .sentlog-phone body { height:100%; overflow:hidden; }
   .sentlog-phone #sentlogCloudStatus { grid-row:1; grid-column:4; }
   .sentlog-phone #saveStatus { grid-row:1; grid-column:5; }
 }
+/* The pager takes its own space below the PDF, above the collapsed inspector. */
+.sentlog-phone #pageControls.phone-page-controls {
+  flex:0 0 auto; gap:8px; align-items:center; min-height:60px; margin:0;
+  padding:8px calc(14px + var(--sl-safe-right)) 8px calc(14px + var(--sl-safe-left));
+  border-top:1px solid var(--line); background:#fff;
+}
+.sentlog-phone .phone-page-controls button {
+  flex:1 1 0; width:auto; min-width:0; height:44px; min-height:44px;
+  padding:0 8px; border-radius:10px; font-size:13px; line-height:1.2;
+  white-space:nowrap; touch-action:manipulation;
+}
+.sentlog-phone .phone-page-controls .page-indicator {
+  flex:0 0 68px; min-width:68px; margin:0; font-size:13px;
+  line-height:1.4; font-variant-numeric:tabular-nums;
+}
+.sentlog-phone #mobilePageInfo { display:none; }
