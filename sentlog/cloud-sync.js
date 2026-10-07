@@ -13,6 +13,7 @@ let syncTimer=null;
 
 const enc=s=>encodeURIComponent(String(s));
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+const snapshotFingerprint=payload=>sha256Hex(new Blob([window.sentlogSyncView?.snapshotText(payload)||JSON.stringify(payload)]));
 const headers=(extra={})=>({
   'apikey':SUPABASE_KEY,
   ...(session?.access_token?{'Authorization':'Bearer '+session.access_token}:{}),
@@ -181,15 +182,18 @@ async function upsertSnapshot(cloudProject,localProject,deviceId){
   const localUpdated=Number(localProject.updatedAt||0);
   if(meta && Number(meta.local_updated_at||0)===localUpdated)return {skipped:true,revision:Number(meta.revision||0)};
   const current=await rest('/rest/v1/sentlog_project_snapshots?project_id=eq.'+enc(cloudProject.id)+'&select=revision');
-  const rev=(current?.[0]?.revision||0)+1;
+  const remoteRevision=Number(current?.[0]?.revision||0);
+  if(remoteRevision>Number(meta?.revision||0))return {skipped:true,pending:true};
+  const rev=remoteRevision+1;
   const updatedAt=new Date().toISOString();
   const payload={project_id:cloudProject.id,owner_id:session.user.id,revision:rev,payload:projectSnapshot(localProject),updated_by_device:deviceId,updated_at:updatedAt};
+  const fingerprint=await snapshotFingerprint(payload.payload);
   const made=await rest('/rest/v1/sentlog_project_snapshots?on_conflict=project_id',{
     method:'POST',
     headers:{'Prefer':'resolution=merge-duplicates,return=representation'},
     body:JSON.stringify(payload)
   });
-  setSyncMeta(localProject.id,{revision:rev,local_updated_at:localUpdated,remote_updated_at:made?.[0]?.updated_at||updatedAt});
+  setSyncMeta(localProject.id,{revision:rev,local_updated_at:localUpdated,remote_updated_at:made?.[0]?.updated_at||updatedAt,fingerprint});
   return {skipped:false,revision:rev};
 }
 function collectPhotos(localProject){
@@ -327,7 +331,11 @@ async function pullProjectAssets(cloudProject,deviceId){
         if(local instanceof Blob && local.size===Number(a.byte_size)){
           same=(await sha256Hex(local)).toLowerCase()===String(a.sha256).toLowerCase();
         }
-        if(!same){await dbPut(key,await downloadPrivateAsset(a));received++}
+        if(!same){
+          if(local instanceof Blob && local.size && window.sentlogSyncView && !window.sentlogSyncView.canReplaceDrawing(drawingId))continue;
+          const file=await downloadPrivateAsset(a);await dbPut(key,file);received++;
+          await window.sentlogSyncView?.fileReceived(drawingId,file);
+        }
         if(a.source_device_id!==deviceId)await ackAsset(a.id,deviceId);
       }else if(a.kind==='photo'){
         if(a.source_device_id===deviceId)continue;
@@ -339,68 +347,48 @@ async function pullProjectAssets(cloudProject,deviceId){
         if(local instanceof Blob && local.size===Number(a.byte_size)){
           same=(await sha256Hex(local)).toLowerCase()===String(a.sha256).toLowerCase();
         }
-        if(!same){await dbPut(key,await downloadPrivateAsset(a));received++}
+        if(!same){await dbPut(key,await downloadPrivateAsset(a));received++;window.sentlogSyncView?.photoReceived(drawingId);}
         await ackAsset(a.id,deviceId);
       }
     }catch(e){console.warn('asset pull failed',a?.id,e)}
   }
   return received;
 }
-function applyRemoteSnapshot(ws,cloudProject,snap){
-  const payload=snap?.payload;if(!payload?.project)return false;
-  const remoteProject=payload.project;
-  const localId=remoteProject.id||cloudProject.client_key;
-  remoteProject.id=localId;
-  remoteProject.drawings=remoteProject.drawings||[];
-  const idx=(ws.projects||[]).findIndex(p=>p.id===localId);
-  const old=idx>=0?ws.projects[idx]:null;
-  const incomingUpdated=Number(remoteProject.updatedAt||Date.parse(snap.updated_at)||Date.now());
-  remoteProject.updatedAt=incomingUpdated;
-  if(idx>=0)ws.projects[idx]=remoteProject;else ws.projects.push(remoteProject);
-  const remoteDrawingIds=new Set();
-  for(const d of payload.drawings||[]){
-    const id=d?.meta?.id||d?.state?.id;if(!id)continue;
-    remoteDrawingIds.add(id);
-    if(d.state)localStorage.setItem(DRAWING_KEY_PREFIX+id,JSON.stringify(d.state));
-  }
-  if(old?.drawings){
-    for(const d of old.drawings){
-      if(d?.id&&!remoteDrawingIds.has(d.id))localStorage.removeItem(DRAWING_KEY_PREFIX+d.id);
-    }
-  }
-  saveWorkspace(ws);
-  setSyncMeta(localId,{revision:Number(snap.revision||0),local_updated_at:incomingUpdated,remote_updated_at:snap.updated_at||new Date().toISOString()});
-  return true;
-}
 async function pullRemoteProjects(deviceId){
   const cps=await rest('/rest/v1/sentlog_projects?status=eq.active&select=id,name,client_key,updated_at');
-  const ws=workspace();ws.projects=ws.projects||[];
-  let changed=0,files=0;
+  const blocked=new Set();let changed=0,files=0,conflicts=0;
   for(const cp of cps||[]){
     if(!cp.client_key)continue;
     const snaps=await rest('/rest/v1/sentlog_project_snapshots?project_id=eq.'+enc(cp.id)+'&select=revision,payload,updated_at');
     const snap=snaps?.[0];if(!snap?.payload?.project)continue;
-    const localId=cp.client_key;
-    const lp=ws.projects.find(p=>p.id===localId);
-    const meta=getSyncMeta(localId);
+    // A prior request may have taken seconds; never reuse the workspace captured before it.
+    const ws=workspace(),lp=(ws.projects||[]).find(p=>p.id===cp.client_key);
+    const expectedLocal=JSON.stringify(lp||null),meta=getSyncMeta(cp.client_key);
     const remoteRev=Number(snap.revision||0);
-    let shouldApply=!lp;
-    if(lp && remoteRev>Number(meta?.revision||0)){
-      const localChanged=meta && Number(lp.updatedAt||0)!==Number(meta.local_updated_at||0);
-      if(!localChanged)shouldApply=true;
-      else{
-        const remoteTime=Date.parse(snap.updated_at||0)||0;
-        const localTime=Number(lp.updatedAt||0);
-        shouldApply=remoteTime>localTime;
+    if(!lp || remoteRev>Number(meta?.revision||0) || !meta){
+      const incomingFingerprint=await snapshotFingerprint(snap.payload);
+      const localFingerprint=lp?await snapshotFingerprint(projectSnapshot(lp)):null;
+      const localChanged=lp && meta && (meta.fingerprint?localFingerprint!==meta.fingerprint:Number(lp.updatedAt||0)!==Number(meta.local_updated_at||0));
+      if(localChanged && localFingerprint!==incomingFingerprint){
+        // Do not resolve concurrent edits by silently replacing either device's work.
+        blocked.add(cp.id);conflicts++;
+      }else if(localFingerprint===incomingFingerprint){
+        // Identical content can have different last-viewed pages and timestamps.
+        if(JSON.stringify((workspace().projects||[]).find(p=>p.id===cp.client_key)||null)===expectedLocal)
+          setSyncMeta(cp.client_key,{revision:remoteRev,local_updated_at:Number(lp.updatedAt||0),remote_updated_at:snap.updated_at,fingerprint:localFingerprint});
+        else blocked.add(cp.id);
+      }else{
+        const result=window.sentlogSyncView?.commit(cp,snap,expectedLocal);
+        if(result?.applied){
+          setSyncMeta(cp.client_key,{revision:remoteRev,local_updated_at:Number(snap.payload.project.updatedAt||0),remote_updated_at:snap.updated_at,fingerprint:incomingFingerprint});
+          changed++;
+        }else blocked.add(cp.id);
       }
     }
-    if(shouldApply && applyRemoteSnapshot(ws,cp,snap))changed++;
-    else if(lp && !meta){
-      setSyncMeta(localId,{revision:remoteRev,local_updated_at:Number(lp.updatedAt||0),remote_updated_at:snap.updated_at||''});
-    }
-    files+=await pullProjectAssets(cp,deviceId);
+    // Do not change the underlying PDF while related metadata is waiting for a safe commit.
+    if(!blocked.has(cp.id))files+=await pullProjectAssets(cp,deviceId);
   }
-  return {changed,files};
+  return {changed,files,blocked,conflicts};
 }
 
 function setStatus(text,kind=''){
@@ -424,7 +412,9 @@ async function syncNow(){
     const drawingErrors=[];
     for(const lp of ws.projects||[]){
       const cp=await ensureCloudProject(lp);
+      if(pulled.blocked.has(cp.id))continue;
       const snap=await upsertSnapshot(cp,lp,deviceId);
+      if(snap.pending){pulled.blocked.add(cp.id);continue;}
       if(!snap.skipped)uploaded++;
       for(const item of collectDrawings(lp)){
         try{
@@ -438,10 +428,9 @@ async function syncNow(){
       }
     }
     if(drawingErrors.length){setStatus('☁ PDF確認が必要','err');msg(drawingErrors.join(' / '));}
+    else if(pulled.conflicts){setStatus('☁ 変更の確認待ち','err');msg('同じ案件がこの端末と別の端末で変更されています。どちらも自動では上書きしていません。');}
+    else if(pulled.blocked.size){setStatus('☁ 作業後に反映','busy');msg('操作中の変更は保留しています。入力・描画を終えると次の同期で反映します。PDFの差し替えや削除は図面を閉じた後に反映します。',true);}
     else{setStatus(remoteChanged||pulled.files?'☁ 受信・同期済み':'☁ 同期済み','ok');msg('');}
-    if(remoteChanged){
-      setTimeout(()=>location.reload(),900);
-    }
   }catch(e){
     console.warn('Sentlog cloud sync',e);
     setStatus('☁ 同期待ち','err');

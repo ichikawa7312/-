@@ -2,9 +2,9 @@
   'use strict';
   const phone = /iPhone|iPod/i.test(navigator.userAgent) || (matchMedia('(max-width:480px) and (pointer:coarse)').matches && !/iPad/i.test(navigator.userAgent));
   if (phone) document.documentElement.classList.add('sentlog-phone');
-  window.SENTLOG_BUILD = 'v1.22';
+  window.SENTLOG_BUILD = 'v1.23';
   const header = document.querySelector('header');
-  if (header?.querySelector('.pill')) header.querySelector('.pill').textContent='試作版 v1.22';
+  if (header?.querySelector('.pill')) header.querySelector('.pill').textContent='試作版 v1.23';
   if (phone && header) {
     const measure = () => document.documentElement.style.setProperty('--sl-header-height', header.getBoundingClientRect().height + 'px');
     measure();
@@ -12,7 +12,7 @@
   }
   ['projectsView','drawingsView'].forEach(id => {
     const host = document.querySelector('#' + id + ' .manager-shell');
-    if (host) { const label=document.createElement('small'); label.className='sentlog-build'; label.textContent='セントログ v1.22 · PDF高精細表示・画質優先同期'; host.appendChild(label); }
+    if (host) { const label=document.createElement('small'); label.className='sentlog-build'; label.textContent='セントログ v1.23 · PDF高精細表示・画質優先同期'; host.appendChild(label); }
   });
   window.sentlogRestoreDrawingView = async function (id, file) {
     if (typeof activeDrawingId !== 'undefined' && activeDrawingId === id && typeof pdfDoc !== 'undefined' && !pdfDoc && typeof openFile === 'function') {
@@ -92,7 +92,7 @@
   const attach = () => {
     const box = document.getElementById('sentlogCloudMsg');
     if (!box || document.getElementById('sentlogReloadDisplay')) return;
-    const note=document.createElement('small'); note.className='sentlog-build'; note.textContent='表示バージョン v1.22';
+    const note=document.createElement('small'); note.className='sentlog-build'; note.textContent='表示バージョン v1.23';
     const btn=document.createElement('button'); btn.id='sentlogReloadDisplay'; btn.type='button'; btn.textContent='この画面を更新';
     btn.onclick=async()=>{
       if (!navigator.onLine) { note.textContent='通信できる場所で更新してください。'; return; }
