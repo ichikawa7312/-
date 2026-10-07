@@ -1,0 +1,37 @@
+name: Sentlog PDF quality test resources
+on:
+  push:
+    branches: [sentlog-quality-v122]
+    paths: [.github/workflows/sentlog-quality-check.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  resources:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+      - name: Prepare version-pinned PDF libraries for isolated testing
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/pdf-deps bundle/vendor
+          cd /tmp/pdf-deps
+          npm pack pdfjs-dist@3.11.174 --silent
+          tar -xzf pdfjs-dist-3.11.174.tgz
+          cp package/build/pdf.min.js package/build/pdf.worker.min.js "$GITHUB_WORKSPACE/bundle/vendor/"
+          cp package/LICENSE "$GITHUB_WORKSPACE/bundle/vendor/pdfjs-LICENSE.txt"
+          rm -rf package
+          npm pack pdf-lib@1.17.1 --silent
+          tar -xzf pdf-lib-1.17.1.tgz
+          cp package/dist/pdf-lib.min.js "$GITHUB_WORKSPACE/bundle/vendor/"
+          cp package/LICENSE.md "$GITHUB_WORKSPACE/bundle/vendor/pdf-lib-LICENSE.md"
+          cd "$GITHUB_WORKSPACE"
+          cp -R sentlog bundle/sentlog
+          sha256sum bundle/vendor/* > bundle/checksums.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sentlog-pdf-test-resources
+          path: bundle
+          retention-days: 1
