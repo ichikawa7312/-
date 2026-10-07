@@ -16,10 +16,11 @@ button{border:1px solid #cbd5e1;background:#fff;border-radius:9px;padding:10px 1
 .stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:12px}.stat{border:1px solid #e5e7eb;border-radius:10px;padding:12px;text-align:center}.stat b{font-size:22px;display:block}.stat small{color:#6b7280}
 .log{height:220px;overflow:auto;background:#0b1220;color:#d1d5db;border-radius:10px;padding:12px;font:12px/1.5 Consolas,monospace;white-space:pre-wrap}
 .hidden{display:none!important}@media(max-width:650px){.grid,.stats{grid-template-columns:1fr}}
+.sentlog-pdf-status{background:#fff;border:1px solid #d1d5db;border-radius:14px;padding:16px 18px;margin-bottom:14px;font-size:13px;line-height:1.7;overflow-wrap:anywhere}.sentlog-pdf-status button{margin-top:10px;min-height:44px}
 </style>
 </head>
 <body>
-<header><h1>セントログ PC自動同期</h1><span>セントログ本体とログイン共有</span></header>
+<header><h1>セントログ PC自動同期</h1><span>v1.26 · PDF再配信対応</span></header>
 <main>
   <div class="card">
     <h2>1. セントログへログイン</h2>
@@ -218,5 +219,6 @@ window.addEventListener('online',()=>{if(timer)syncOnce()});window.addEventListe
   log('PC同期画面を起動しました');
 })();
 </script>
+<script type="module" src="../sentlog/pdf-recovery.js?v=126"></script>
 </body>
 </html>

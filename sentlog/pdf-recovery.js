@@ -1,4 +1,4 @@
-/* PDF re-delivery v1.19. No file deletion and no session/token rewriting. */
+/* PDF re-delivery v1.26. Archive sender wired to PC; never bypass byte verification. */
 const BASE='https://wiulvaqixphuobdielyy.supabase.co';
 const KEY='sb_publishable_4pCeFn-wPsEYzFLhCMCINw_VEUfxz0-';
 const BUCKET='sentlog-temp';
@@ -32,15 +32,30 @@ const fileKey=a=>'background:'+a.metadata.drawing_id;
 async function localFile(a){return db('surveyFieldNoteDB','files',fileKey(a))}
 async function pcFile(a){
   const root=await db('sentlog-pc-sync','kv','root');
-  if(!root || await root.queryPermission({mode:'readwrite'})!=='granted')return null;
+  if(!root)throw new Error('PCの保管フォルダが未設定です。「保存先を選ぶ」で以前の保管フォルダを指定してください。');
+  if(typeof root.queryPermission!=='function' || await root.queryPermission({mode:'readwrite'})!=='granted'){
+    throw new Error('保管フォルダの読み取り許可が必要です。「保存許可を確認」を押してください。');
+  }
   const receipts=await api('sentlog_pc_receipts?asset_id=eq.'+enc(a.id)+'&select=pc_path,sha256,byte_size');
   const receipt=receipts?.[0];
-  if(!receipt || receipt.sha256!==a.sha256)return null;
+  if(!receipt || String(receipt.sha256).toLowerCase()!==String(a.sha256).toLowerCase() || Number(receipt.byte_size)!==Number(a.byte_size)){
+    throw new Error('同じ内容のPDFをPCに保管した記録がありません。PDFがある端末でセントログを開いてください。');
+  }
   const path=String(receipt.pc_path||'').split(/[\\/]/);
-  // Browser archive paths start with the selected directory name. Never escape it.
-  if(path[0]!==root.name || path.length<2 || path.some(p=>!p||p==='.'||p==='..'))return null;
+  // Only traverse the receipt's relative path within the user-selected root.
+  if(path.length<2 || path.some(p=>!p||p==='.'||p==='..'))throw new Error('保管先の記録を確認できません。');
+  if(path[0]!==root.name)throw new Error('保存先が異なります。「保存先を選ぶ」で「'+path[0]+'」を指定してください。');
   let folder=root;
-  try{for(const segment of path.slice(1,-1))folder=await folder.getDirectoryHandle(segment);return (await folder.getFileHandle(path.at(-1))).getFile()}catch(e){if(e.name==='NotFoundError')return null;throw e}
+  try{
+    for(const segment of path.slice(1,-1))folder=await folder.getDirectoryHandle(segment);
+    const blob=await (await folder.getFileHandle(path.at(-1))).getFile();
+    if(!await matches(blob,a))throw new Error('保管ファイルの内容が登録PDFと異なります。別のPDFは自動で送りません。');
+    return blob;
+  }catch(e){
+    if(e.name==='NotFoundError')throw new Error('保管先にPDFが見つかりません：'+path.join(' / '));
+    if(e.name==='NotAllowedError')throw new Error('保管フォルダへのアクセスが拒否されました。「保存許可を確認」を押してください。');
+    throw e;
+  }
 }
 function panels(){
   const parents=IS_PC?[document.querySelector('main')]:[document.querySelector('#projectsView .manager-shell'),document.querySelector('#drawingsView .manager-shell'),document.querySelector('#sidebar')];
@@ -78,11 +93,24 @@ async function run(){
   try{
     const assets=await api('sentlog_assets?kind=eq.drawing&select=id,project_id,status,file_name,mime_type,byte_size,sha256,storage_path,metadata&limit=1000');
     const requests=await api('sentlog_pdf_requests?received_at=is.null&select=asset_id,expected_sha256&limit=1000');
-    const needed=new Set((requests||[]).map(r=>r.asset_id));
-    let supplied=0;
-    for(const a of assets||[])if(a.metadata?.drawing_id && needed.has(a.id)){try{if(await supply(a,id))supplied++}catch(e){console.warn('PDF re-delivery',a.id,e.message)}}
-    if(IS_PC){status(supplied?'PDFの再配信を行いました。受信側の確認を待っています。':'PDF再配信：この画面と保存先の許可を維持すると、保存済みPDFの再取得要求に応答します。');return}
+    const needed=new Set((requests||[]).map(r=>r.asset_id+':'+String(r.expected_sha256).toLowerCase()));
+    const pending=(assets||[]).filter(a=>a.metadata?.drawing_id && needed.has(a.id+':'+String(a.sha256).toLowerCase()));
+    let supplied=0;const supplyErrors=[];
+    for(const a of pending){
+      // Uploaded files already have a delivery source; an archive read is not needed for them.
+      if(IS_PC && a.status!=='storage_deleted')continue;
+      try{if(await supply(a,id))supplied++}catch(e){supplyErrors.push((a.file_name||'図面PDF')+'：'+e.message);console.warn('PDF re-delivery',a.id,e.message)}
+    }
+    if(IS_PC){
+      const version='PDF再配信 v1.26：';
+      if(supplyErrors.length)status(version+supplyErrors.join(' / '));
+      else if(supplied)status(version+supplied+' 件を保管フォルダから再送しました。受信側の確認を待っています。');
+      else if(pending.length)status(version+'受信確認待ち：'+pending.map(a=>a.file_name||'図面PDF').join('、')+'。受信側のセントログも開いたままにしてください。');
+      else status(version+'再取得要求はありません。この画面と保存先の許可を維持すると、保管済みPDFの再取得要求に応答します。');
+      return;
+    }
     const ids=drawingIds();let available=0,missing=0,total=0,errors=0;
+    const missingNames=[],differentNames=[];
     for(const a of assets||[]){
       if(!a.metadata?.drawing_id || !ids.has(a.metadata.drawing_id))continue;
       total++;
@@ -94,9 +122,9 @@ async function run(){
           continue;
         }
         // A different local PDF may be an unsent replacement. Never overwrite it.
-        if(blob instanceof Blob && blob.size>0){missing++;continue}
+        if(blob instanceof Blob && blob.size>0){missing++;differentNames.push(a.file_name||'図面PDF');continue}
         await rpc('sentlog_request_pdf',{p_asset_id:a.id,p_device_id:id});
-        if(a.status==='storage_deleted'){missing++;continue}
+        if(a.status==='storage_deleted'){missing++;missingNames.push(a.file_name||'図面PDF');continue}
         const path=a.storage_path.split('/').map(enc).join('/');
         const downloaded=await(await net('/storage/v1/object/authenticated/'+BUCKET+'/'+path)).blob();
         if(!await matches(downloaded,a))throw new Error('PDFの内容照合に失敗しました');
@@ -109,7 +137,8 @@ async function run(){
       }catch(e){errors++;console.warn('PDF receive',a.id,e.message)}
     }
     if(errors)status('PDF受信の確認が必要です：保存済み '+available+' / '+total+' 件。通信を確認し「PDFを再確認」を押してください。');
-    else if(missing)status('PDF '+missing+' 件の再取得待ちです。PDFが表示できるPC・iPadなどでセントログを開いたままにしてください。保存済み '+available+' / '+total+' 件。');
+    else if(differentNames.length)status('この端末のPDFと登録内容が異なります：'+differentNames.join('、')+'。上書きせずに停止しています。'+(missingNames.length?'再取得待ち：'+missingNames.join('、')+'。':'')+'照合済み '+available+' / '+total+' 件。');
+    else if(missing)status('PDF '+missing+' 件の再取得待ち：'+missingNames.join('、')+'。PDFが表示できる端末、または会社PCの「PC自動同期」を開き、保存先を許可してください。保存済み '+available+' / '+total+' 件。');
     else status(total?'PDF：この端末に '+available+' / '+total+' 件保存済み（内容照合済み）。':'PDF：同期対象の図面を確認しています。');
   }catch(e){status('PDF同期の確認が必要です：'+e.message)}finally{busy=false}
 }
