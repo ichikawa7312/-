@@ -12,7 +12,7 @@ def fail_write(page,key):
  # commit. This simulates an interrupted save; it is not a native quota test.
  page.evaluate('''key=>{window.storageTestPut=IDBObjectStore.prototype.put;IDBObjectStore.prototype.put=function(v,k){const request=storageTestPut.apply(this,arguments);if(k===key){const tx=this.transaction;request.addEventListener('success',()=>tx.abort(),{once:true});}return request;};}''',key)
 def restore_writes(page):
- page.evaluate('IDBObjectStore.prototype.put=storageTestPut')
+ page.evaluate('()=>{IDBObjectStore.prototype.put=storageTestPut;}')
 with sync_playwright() as pw:
  browser=pw.chromium.launch();ctx=browser.new_context(service_workers='block',viewport={'width':390,'height':844},has_touch=True,is_mobile=True)
  ctx.route('**/*',h['route']);page=h['launch'](ctx);h['seed'](page);h['open_app'](page)
