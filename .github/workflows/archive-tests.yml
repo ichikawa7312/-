@@ -1,7 +1,7 @@
 name: Sentlog archive checks
 on:
   push:
-    branches: [sentlog-archive-v133, sentlog-archive-v134, main]
+    branches: [sentlog-archive-v133, sentlog-archive-v134, sentlog-management-v135, main]
   pull_request:
 permissions:
   contents: read
@@ -16,22 +16,27 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: python scripts/build_archive.py
+      - run: |
+          python scripts/build_archive.py
+          python scripts/build_management.py
       - run: |
           node --check sentlog/archive.js
           node --check sentlog/archive-core.js
           node --check sentlog/archive-pc.js
           node --check sentlog/cloud-sync.js
           node --check sentlog/pdf-recovery.js
+          node --check sentlog/management.js
           node tests/core.test.cjs
           node tests/pc.test.cjs
           node tests/integration.test.cjs
+          node tests/management.test.cjs
       - run: |
           pip install playwright==1.57.0
           python -m playwright install --with-deps chromium
           python tests/ui.py
           python tests/archive_click.py
           python tests/full_archive_click.py
+          python tests/full_management.py
       - uses: actions/upload-artifact@v4
         if: always()
         with:

@@ -16,12 +16,14 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
-      - name: Build archive integration
+      - name: Build archive and management integration
         run: |
           python3 scripts/build_archive.py
+          python3 scripts/build_management.py
           node tests/core.test.cjs
           node tests/pc.test.cjs
           node tests/integration.test.cjs
+          node tests/management.test.cjs
       - name: Setup Pages
         uses: actions/configure-pages@v5
         with:
