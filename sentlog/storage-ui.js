@@ -16,6 +16,7 @@
 #sentlogStorageRows{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;font-size:12px;margin:14px 0;line-height:1.5;}
 #sentlogStorageRows dt,#sentlogStorageRows dd{margin:0;}#sentlogStorageRows dd{text-align:right;font-variant-numeric:tabular-nums;}
 #sentlogStorageSection progress{display:block;width:100%;height:12px;margin:8px 0;}
+#sentlogStorageSection progress[hidden]{display:none!important;}
 #sentlogStorageSection .sl-storage-actions{display:flex;flex-wrap:wrap;gap:8px;padding-bottom:12px;}
 #sentlogStorageSection button{font-size:12px;padding:8px 10px;}
 #sentlogStorageWarning{position:fixed;z-index:11000;bottom:calc(8px + env(safe-area-inset-bottom,0px));left:12px;right:12px;max-width:740px;margin:0 auto;padding:14px;border:2px solid #b91c1c;border-radius:12px;background:#fff1f2;color:#881337;box-shadow:0 4px 20px #0003;font-size:13px;line-height:1.6;}
