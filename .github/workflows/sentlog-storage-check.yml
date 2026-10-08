@@ -34,8 +34,20 @@ jobs:
         run: |
           python .github/sentlog-storage-patch.py
           python .github/refine-sentlog-storage.py
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('.sentlog-storage/site/sentlog/storage-ui.js')
+          s=p.read_text()
+          if '#sentlogStorageSection progress[hidden]' not in s:
+            s=s.replace('#sentlogStorageSection .sl-storage-actions{', '#sentlogStorageSection progress[hidden]{display:none!important;}\n#sentlogStorageSection .sl-storage-actions{')
+          # The refiner can also receive a previously built UI. Keep retry idempotent.
+          duplicate="if(typeof renderSelectedPhotos==='function')renderSelectedPhotos();if(typeof renderSelectedPhotos==='function')renderSelectedPhotos();"
+          s=s.replace(duplicate,"if(typeof renderSelectedPhotos==='function')renderSelectedPhotos();")
+          p.write_text(s)
+          PY
           for f in .sentlog-storage/site/sentlog/*.js; do node --check "$f"; done
           python .github/test_sentlog_storage_extra.py
+          python .github/test_sentlog_storage_safety.py
       - name: Commit tested application changes to the isolated branch only
         if: success()
         run: |
