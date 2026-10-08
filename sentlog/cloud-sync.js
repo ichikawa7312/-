@@ -1,3 +1,5 @@
+import { createSyncStatusView } from './sync-status.js?v=127';
+const syncStatus=createSyncStatusView();
 const SUPABASE_URL='https://wiulvaqixphuobdielyy.supabase.co';
 const SUPABASE_KEY='sb_publishable_4pCeFn-wPsEYzFLhCMCINw_VEUfxz0-';
 const SESSION_KEY='sentlogCloudSessionV1';
@@ -156,7 +158,7 @@ async function ensureCloudProject(localProject){
   const query=await rest('/rest/v1/sentlog_projects?client_key=eq.'+enc(localProject.id)+'&select=id,name,status,client_key');
   if(Array.isArray(query)&&query[0])return query[0];
   const payload={owner_id:session.user.id,client_key:localProject.id,name:localProject.name||'案件',status:'active'};
-  const made=await rest('/rest/v1/sentlog_projects',{method:'POST',headers:{'Prefer':'return=representation'},body:JSON.stringify(payload)});
+  const made=await syncStatus.track('案件を送信中',()=>rest('/rest/v1/sentlog_projects',{method:'POST',headers:{'Prefer':'return=representation'},body:JSON.stringify(payload)}));
   return made[0];
 }
 
@@ -188,11 +190,11 @@ async function upsertSnapshot(cloudProject,localProject,deviceId){
   const updatedAt=new Date().toISOString();
   const payload={project_id:cloudProject.id,owner_id:session.user.id,revision:rev,payload:projectSnapshot(localProject),updated_by_device:deviceId,updated_at:updatedAt};
   const fingerprint=await snapshotFingerprint(payload.payload);
-  const made=await rest('/rest/v1/sentlog_project_snapshots?on_conflict=project_id',{
+  const made=await syncStatus.track('変状データを送信中',()=>rest('/rest/v1/sentlog_project_snapshots?on_conflict=project_id',{
     method:'POST',
     headers:{'Prefer':'resolution=merge-duplicates,return=representation'},
     body:JSON.stringify(payload)
-  });
+  }));
   setSyncMeta(localProject.id,{revision:rev,local_updated_at:localUpdated,remote_updated_at:made?.[0]?.updated_at||updatedAt,fingerprint});
   return {skipped:false,revision:rev};
 }
@@ -233,9 +235,9 @@ async function uploadAsset({cloudProject,deviceId,clientKey,kind,fileName,blob,s
   }
   const ext=extForBlob(blob,fileName);
   const storagePath=session.user.id+'/'+cloudProject.id+'/'+storageFolder+'/'+clientKey.replace(/[^a-zA-Z0-9:_-]/g,'_')+ext;
-  const up=await fetch(SUPABASE_URL+'/storage/v1/object/'+BUCKET+'/'+storagePath,{
+  const up=await syncStatus.track((kind==='drawing'?'PDF・図面':'写真')+'を送信中',()=>fetch(SUPABASE_URL+'/storage/v1/object/'+BUCKET+'/'+storagePath,{
     method:'POST',headers:headers({'Content-Type':blob.type||'application/octet-stream','x-upsert':'true'}),body:blob
-  });
+  }));
   if(!up.ok)throw new Error('ファイル送信に失敗: '+await up.text());
 
   const payload={
@@ -306,9 +308,11 @@ async function uploadDrawing(cloudProject,deviceId,item){
 }
 async function downloadPrivateAsset(asset){
   const parts=String(asset.storage_path||'').split('/').map(enc).join('/');
-  const r=await fetch(SUPABASE_URL+'/storage/v1/object/authenticated/'+BUCKET+'/'+parts,{headers:headers()});
-  if(!r.ok)throw new Error('クラウドファイル取得失敗: '+r.status);
-  const blob=await r.blob();
+  const blob=await syncStatus.track((asset.kind==='drawing'?'PDF・図面':'写真')+'を受信中',async()=>{
+    const r=await fetch(SUPABASE_URL+'/storage/v1/object/authenticated/'+BUCKET+'/'+parts,{headers:headers()});
+    if(!r.ok)throw new Error('クラウドファイル取得失敗: '+r.status);
+    return await r.blob();
+  });
   if(Number(asset.byte_size)!==blob.size)throw new Error('クラウドファイルのサイズ照合NG');
   const hash=await sha256Hex(blob);
   if(hash.toLowerCase()!==String(asset.sha256||'').toLowerCase())throw new Error('クラウドファイルのSHA-256照合NG');
@@ -391,16 +395,11 @@ async function pullRemoteProjects(deviceId){
   return {changed,files,blocked,conflicts};
 }
 
-function setStatus(text,kind=''){
-  const el=document.getElementById('sentlogCloudStatus');
-  if(!el)return;
-  el.textContent=text;
-  el.dataset.kind=kind;
-  el.style.background=kind==='ok'?'#065f46':kind==='busy'?'#92400e':kind==='err'?'#991b1b':'#374151';
-}
 async function syncNow(){
   if(syncing||!navigator.onLine||!session)return;
-  syncing=true;setStatus('☁ 双方向同期中…','busy');
+  syncing=true;
+  const statusCycle=syncStatus.begin();
+  msg('');
   let remoteChanged=0;
   try{
     await ensureSession();
@@ -427,13 +426,13 @@ async function syncNow(){
         if(r.status==='uploaded')uploaded++;
       }
     }
-    if(drawingErrors.length){setStatus('☁ PDF確認が必要','err');msg(drawingErrors.join(' / '));}
-    else if(pulled.conflicts){setStatus('☁ 変更の確認待ち','err');msg('同じ案件がこの端末と別の端末で変更されています。どちらも自動では上書きしていません。');}
-    else if(pulled.blocked.size){setStatus('☁ 作業後に反映','busy');msg('操作中の変更は保留しています。入力・描画を終えると次の同期で反映します。PDFの差し替えや削除は図面を閉じた後に反映します。',true);}
-    else{setStatus(remoteChanged||pulled.files?'☁ 受信・同期済み':'☁ 同期済み','ok');msg('');}
+    if(drawingErrors.length)syncStatus.finish(statusCycle,{level:'error',label:'PDF要確認',message:drawingErrors.join(' / ')});
+    else if(pulled.conflicts)syncStatus.finish(statusCycle,{level:'error',label:'変更を要確認',message:'同じ案件がこの端末と別の端末で変更されています。どちらも自動では上書きしていません。'});
+    else if(pulled.blocked.size)syncStatus.finish(statusCycle,{level:'pending',label:'作業後に反映',message:'操作中の変更は保留しています。入力・描画を終えると次の同期で反映します。PDFの差し替えや削除は図面を閉じた後に反映します。'});
+    else syncStatus.finish(statusCycle,{level:'ok',message:(remoteChanged||pulled.files||uploaded?'変更の送受信が終了しました。':'変更の確認が終了しました。')+' PDFの保存・再取得状況は、PDF確認欄に表示します。'});
   }catch(e){
     console.warn('Sentlog cloud sync',e);
-    setStatus('☁ 同期待ち','err');
+    syncStatus.finish(statusCycle,{level:'error',label:'同期を要確認',message:'同期は完了していません。'+(e?.message||String(e))});
   }finally{syncing=false}
 }
 
@@ -451,6 +450,7 @@ function modalHtml(){
         <div id="sentlogCloudWho" style="padding:10px;border:1px solid #d1d5db;border-radius:8px;font-size:13px"></div>
         <div style="display:flex;gap:8px;margin-top:12px"><button id="sentlogCloudSyncNow" style="flex:1;background:#111827;color:#fff">今すぐ同期</button><button id="sentlogCloudLogout" style="flex:1">ログアウト</button></div>
       </div>
+      <div id="sentlogCloudDetails"></div>
       <div id="sentlogCloudMsg" style="min-height:20px;margin-top:10px;font-size:12px;color:#b91c1c"></div>
     </div></div>`;
 }
@@ -459,26 +459,29 @@ function buildUI(){
   const header=document.querySelector('header');
   if(header){
     const b=document.createElement('button');
-    b.id='sentlogCloudStatus';b.textContent='☁ 同期設定';
-    b.style.cssText='width:auto;padding:7px 10px;border-radius:999px;background:#374151;color:#fff;border:1px solid #4b5563;font-size:12px;margin-left:4px';
+    b.id='sentlogCloudStatus';b.type='button';
+    b.setAttribute('aria-haspopup','dialog');b.setAttribute('aria-controls','sentlogCloudModal');
     b.onclick=openModal;header.insertBefore(b,header.querySelector('.status'));
   }
+  syncStatus.mount(document.getElementById('sentlogCloudStatus'),document.getElementById('sentlogCloudDetails'));
   document.getElementById('sentlogCloudClose').onclick=closeModal;
   document.getElementById('sentlogCloudLogin').onclick=doLogin;
   document.getElementById('sentlogCloudSignup').onclick=doSignup;
-  document.getElementById('sentlogCloudLogout').onclick=()=>{saveSession(null);closeModal();setStatus('☁ 同期設定')};
+  document.getElementById('sentlogCloudLogout').onclick=()=>{saveSession(null);msg('');closeModal()};
   document.getElementById('sentlogCloudSyncNow').onclick=()=>{closeModal();syncNow()};
   updateCloudUI();
 }
-function openModal(){document.getElementById('sentlogCloudModal').style.display='flex';updateCloudUI()}
+function openModal(){document.getElementById('sentlogCloudModal').style.display='flex';updateCloudUI();syncStatus.refresh()}
 function closeModal(){document.getElementById('sentlogCloudModal').style.display='none'}
 function msg(t,ok=false){const e=document.getElementById('sentlogCloudMsg');if(!e)return;e.textContent=t;e.style.color=ok?'#065f46':'#b91c1c'}
 function updateCloudUI(){
+  syncStatus.setAccount(session?.user?.id||'');
+  syncStatus.setOnline(navigator.onLine);
   const out=document.getElementById('sentlogCloudLoggedOut'),inn=document.getElementById('sentlogCloudLoggedIn');
   if(!out||!inn)return;
   const logged=!!session?.user?.email;
   out.style.display=logged?'none':'block';inn.style.display=logged?'block':'none';
-  if(logged){document.getElementById('sentlogCloudWho').textContent='ログイン中：'+session.user.email;setStatus('☁ 同期ON','ok')}
+  if(logged)document.getElementById('sentlogCloudWho').textContent='ログイン中：'+session.user.email;
 }
 async function doLogin(){
   msg('ログイン中…',true);
@@ -501,7 +504,10 @@ async function doSignup(){
 }
 
 loadSession();
-window.addEventListener('online',()=>syncNow());
+syncStatus.setAccount(session?.user?.id||'');
+syncStatus.setOnline(navigator.onLine);
+window.addEventListener('offline',()=>syncStatus.setOnline(false));
+window.addEventListener('online',()=>{syncStatus.setOnline(true);syncNow()});
 window.addEventListener('focus',()=>syncNow());
 window.addEventListener('pageshow',()=>syncNow());
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')syncNow()});
