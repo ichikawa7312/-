@@ -5,6 +5,9 @@ on:
   workflow_dispatch:
 permissions:
   contents: write
+concurrency:
+  group: sentlog-storage-v130
+  cancel-in-progress: true
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -19,7 +22,7 @@ jobs:
       - name: Prepare pinned synthetic browser fixtures
         run: |
           python -m pip install playwright==1.57.0 reportlab==4.4.4
-          python -m playwright install --with-deps chromium
+          python -m playwright install --with-deps chromium webkit
           mkdir -p .sentlog-storage/site .sentlog-storage/vendor .sentlog-storage/results
           git archive bfc1028231c3a037cc925b0066cab724899632c7 | tar -x -C .sentlog-storage/site
           cp sentlog/record-store.js sentlog/storage-ui.js .sentlog-storage/site/sentlog/
@@ -30,8 +33,9 @@ jobs:
       - name: Build storage integration and test without cloud access
         run: |
           python .github/sentlog-storage-patch.py
+          python .github/refine-sentlog-storage.py
           for f in .sentlog-storage/site/sentlog/*.js; do node --check "$f"; done
-          python .github/test_sentlog_storage.py
+          python .github/test_sentlog_storage_extra.py
       - name: Commit tested application changes to the isolated branch only
         if: success()
         run: |
