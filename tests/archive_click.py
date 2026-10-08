@@ -95,11 +95,21 @@ with sync_playwright() as p:
     page=make_page(browser)
     page.evaluate('''()=>{
         const original=fetch;
-        window.fetch=(url,options)=>String(url).includes('sentlog_project_snapshots?')
-          ?new Promise((resolve,reject)=>options.signal.addEventListener('abort',()=>reject(new DOMException('Aborted','AbortError')),{once:true}))
-          :original(url,options);
+        window.fetch=(url,options)=>{
+          if(!String(url).includes('sentlog_project_snapshots?'))return original(url,options);
+          window.snapshotFetchStarted=true;
+          return new Promise((resolve,reject)=>{
+            const abort=()=>reject(new DOMException('Aborted','AbortError'));
+            if(options.signal.aborted)abort();
+            else options.signal.addEventListener('abort',abort,{once:true});
+          });
+        };
     }''')
-    page.clock.install();click_start(page);page.clock.run_for(20500)
+    page.clock.install();click_start(page)
+    # The dialog opens before asynchronous preflight. Start the fake 20-second
+    # network wait only AFTER the request has actually installed its abort timer.
+    page.wait_for_function('window.snapshotFetchStarted===true')
+    page.clock.run_for(20500)
     expect(page.locator('#slArchiveDialogMsg')).to_contain_text('通信の応答を確認できませんでした')
     expect(page.locator('#slArchiveRetry')).to_be_enabled()
     assert request_count(page,'begin')==0
