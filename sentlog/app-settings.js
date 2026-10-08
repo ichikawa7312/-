@@ -76,7 +76,7 @@
     overlay.classList.add('open');overlay.setAttribute('aria-hidden','false');
     // Keep keyboard/screen-reader navigation inside settings, not the project cards below it.
     for(const element of document.body.children){
-      if(element===overlay || /^(SCRIPT|STYLE)$/.test(element.tagName))continue;
+      if(element===overlay || element.id==='sentlogStorageWarning' || /^(SCRIPT|STYLE)$/.test(element.tagName))continue;
       inertState.set(element,element.inert);element.inert=true;
     }
     closeButton.focus({preventScroll:true});

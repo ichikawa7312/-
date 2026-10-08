@@ -78,12 +78,12 @@
     warning.hidden=!store.failed;
     if(store.failed){
       const messages=store.issues.map(([key,msg])=>(key.startsWith('file:')?'PDF・写真の保存：':key==='records'?'変状・案件の保存：':'復元の確認：')+msg);
-      const content=messages.join(' ／ ')+(store.issues.some(([k])=>k.startsWith('file:'))?' PDF・写真は、空き容量を確保してから同じ操作で追加し直してください。':'');
+      const content=messages.join(' ／ ')+(store.issues.some(([k])=>k.startsWith('file:'))?' PDF・写真もこの画面を開いている間は再保存できます。':'');
       const label=warning.querySelector('.message');if(label.textContent!==content)label.textContent=content;
     }
   }
   store.subscribe(showFailure);showFailure();
-  retry.onclick=async()=>{retry.disabled=true;try{await store.retry();}catch(_){}finally{retry.disabled=false;showFailure();}};
+  retry.onclick=async()=>{retry.disabled=true;try{await store.retry();if(typeof renderSelectedPhotos==='function')renderSelectedPhotos();}catch(_){}finally{retry.disabled=false;showFailure();}};
   rescue.onclick=async()=>{rescue.disabled=true;try{await exportSentlogBackup({allowPending:true});}catch(e){warning.querySelector('.message').textContent+=' 控えの書き出しも完了していません：'+e.message;}finally{rescue.disabled=false;}};
   window.addEventListener('beforeunload',event=>{if(store.pending||store.failed){event.preventDefault();event.returnValue='';}});
 })();

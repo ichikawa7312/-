@@ -23,6 +23,7 @@ async function net(path,options={}){
 async function api(path,body){const r=await net('/rest/v1/'+path,body===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});return r.status===204?null:r.json()}
 const rpc=(name,body)=>api('rpc/'+name,body);
 async function db(name,store,key,value){
+  if(value!==undefined && name==='surveyFieldNoteDB' && window.SentlogRecords?.ready)return window.SentlogRecords.writeFile(key,value);
   const connection=await new Promise((resolve,reject)=>{const q=indexedDB.open(name,1);q.onupgradeneeded=()=>{if(!q.result.objectStoreNames.contains(store))q.result.createObjectStore(store)};q.onsuccess=()=>resolve(q.result);q.onerror=()=>reject(q.error)});
   try{return await new Promise((resolve,reject)=>{const write=value!==undefined,tx=connection.transaction(store,write?'readwrite':'readonly'),q=write?tx.objectStore(store).put(value,key):tx.objectStore(store).get(key);let result;q.onsuccess=()=>{result=q.result};tx.oncomplete=()=>resolve(result);tx.onerror=()=>reject(tx.error);tx.onabort=()=>reject(tx.error||new Error('端末への保存が中断されました'))})}finally{connection.close()}
 }
@@ -147,4 +148,5 @@ setTimeout(run,2500);
 setInterval(run,10000);
 window.addEventListener('online',()=>run());
 document.addEventListener('visibilitychange',()=>{if(!document.hidden)run()});
+window.sentlogPdfRecoveryIdle=async()=>{const deadline=Date.now()+30000;while(busy){if(Date.now()>deadline)throw Error("PDF受信が続いています。終了後に復元をやり直してください。");await new Promise(resolve=>setTimeout(resolve,30));}};
 window.sentlogCheckPdfRecovery=run;

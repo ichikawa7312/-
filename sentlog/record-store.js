@@ -12,7 +12,7 @@
   let memory=new Map(), pending=new Map(), revision=0, connection=null;
   let initialized=false, boot=null, flight=null, queued=false, inFlight=0, exclusive=false;
   let migrationInfo=null, operation=false, failure=null;
-  const listeners=new Set(), failures=new Map();
+  const listeners=new Set(), failures=new Map(), fileTasks=new Set(), failedFiles=new Map();
   function notify(){for(const fn of listeners){try{fn()}catch(e){console.warn('Storage status',e)}}}
   function report(key,error){failures.set(String(key),error?.message||String(error));notify();}
   function recovered(key){if(failures.delete(String(key)))notify();}
@@ -146,9 +146,30 @@
     })();
     return flight;
   }
-  async function retry(){failure=null;try{await flush();}catch(e){report('records',e);throw e;}}
+  function writeFile(key,value){
+    assertReady();
+    if(exclusive) return Promise.reject(Error('復元中です'));
+    let task;
+    task=(async()=>{
+      try{
+        await connect();const tx=transaction('readwrite'),done=complete(tx);
+        tx.objectStore(STORE).put(value,key);await done;
+        failedFiles.delete(key);recovered('file:'+key);
+      }catch(error){failedFiles.set(key,value);report('file:'+key,error);throw error;}
+      finally{fileTasks.delete(task);notify();}
+    })();fileTasks.add(task);notify();return task;
+  }
+  async function settled(){
+    while(fileTasks.size)await Promise.all([...fileTasks]);
+    await flush();
+  }
+  async function retry(){
+    failure=null;
+    for(const [key,value] of [...failedFiles])await writeFile(key,value);
+    try{await flush();recovered('import');}catch(e){report('records',e);throw e;}
+  }
   async function replaceAll(records,files){
-    await flush();exclusive=true;operation=true;notify();
+    await settled();exclusive=true;operation=true;notify();
     try{
       const tx=transaction('readwrite'),done=complete(tx),s=tx.objectStore(STORE);let conflict=false;
       let archive=null;
@@ -161,7 +182,7 @@
         s.put({...e.target.result,revision:revision+1,restoredAt:new Date().toISOString()},META);
       };
       try{await done;}catch(e){if(conflict)throw Error('別の画面で記録が更新されたため復元を中止しました');throw e;}
-      revision++;memory=new Map(records);recovered('import');
+      revision++;memory=new Map(records);failedFiles.clear();failures.clear();notify();
     }catch(e){report('import',e);throw e;}
     finally{exclusive=false;operation=false;notify();}
   }
@@ -180,8 +201,9 @@
     };
     await done;return totals;
   }
-  window.SentlogRecords={init,flush,retry,batch,replaceAll,stats,
-    get ready(){return initialized;},get pending(){return pending.size+inFlight>0||operation;},get failed(){return failures.size>0;},
+  window.SentlogRecords={init,flush,settled,writeFile,retry,batch,replaceAll,stats,
+    uncommittedFiles:()=>[...failedFiles].map(([key,value])=>({key,value})),
+    get ready(){return initialized;},get pending(){return pending.size+inFlight>0||fileTasks.size>0||operation;},get failed(){return failures.size>0;},
     get issues(){return [...failures];},get migration(){return migrationInfo;},
     getItem:k=>{assertReady();return memory.get(k)??null;},
     setItem:(k,v)=>batch([[k,String(v)]]),removeItem:k=>batch([[k,null]]),keys:()=>[...memory.keys()],

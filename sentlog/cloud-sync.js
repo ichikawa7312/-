@@ -395,7 +395,7 @@ async function syncNow(){
   let remoteChanged=0;
   try{
     await window.sentlogAppReady;
-    await window.SentlogRecords.flush();window.SentlogRecords.assertSafe();
+    await window.SentlogRecords.settled();window.SentlogRecords.assertSafe();
     await ensureSession();
     const deviceId=await ensureDevice();
     const pulled=await pullRemoteProjects(deviceId);
@@ -420,7 +420,7 @@ async function syncNow(){
         if(r.status==='uploaded')uploaded++;
       }
     }
-    await window.SentlogRecords.flush();window.SentlogRecords.assertSafe();
+    await window.SentlogRecords.settled();window.SentlogRecords.assertSafe();
     if(drawingErrors.length)syncStatus.finish(statusCycle,{level:'error',label:'PDF要確認',message:drawingErrors.join(' / ')});
     else if(pulled.conflicts)syncStatus.finish(statusCycle,{level:'error',label:'変更を要確認',message:'同じ案件がこの端末と別の端末で変更されています。どちらも自動では上書きしていません。'});
     else if(pulled.blocked.size)syncStatus.finish(statusCycle,{level:'pending',label:'作業後に反映',message:'操作中の変更は保留しています。入力・描画を終えると次の同期で反映します。PDFの差し替えや削除は図面を閉じた後に反映します。'});
@@ -511,3 +511,5 @@ document.addEventListener('change',e=>{
 },true);
 setTimeout(()=>{buildUI();if(session&&navigator.onLine)syncNow()},800);
 syncTimer=setInterval(()=>{if(session&&navigator.onLine)syncNow()},5000);
+// The restore flag blocks new cycles; drain the active one before replacing records.
+window.sentlogCloudIdle=async()=>{const deadline=Date.now()+30000;while(syncing){if(Date.now()>deadline)throw Error("同期処理が続いています。終了後に復元をやり直してください。");await sleep(30);}};

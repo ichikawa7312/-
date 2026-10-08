@@ -99,7 +99,7 @@
       if (!confirm('入力や描画を終えてから更新してください。保存済みの案件・PDF・写真は削除しません。')) return;
       if (typeof persist==='function' && typeof activeDrawingId!=='undefined' && activeDrawingId) persist();
       btn.disabled=true;
-      try { await window.SentlogRecords.flush();window.SentlogRecords.assertSafe(); }
+      try { await window.SentlogRecords.settled();window.SentlogRecords.assertSafe(); }
       catch(error){btn.disabled=false;note.textContent='未保存の記録があります。画面を閉じず、保存警告を確認してください。';return;}
       try { const reg=await navigator.serviceWorker?.getRegistration(); if(reg) await reg.update(); } catch (_) {}
       location.reload();

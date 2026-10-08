@@ -17,7 +17,7 @@ async function addPhotosToSelected(files){
   const s=selectedShape();if(!s||!files?.length)return;const targetId=s.id;
   $('photoStatus').textContent='写真を保存中…';pushHistory();s.photos=s.photos||[];let added=0;
   for(const f of files){
-    try{const blob=await preparePhoto(f);const id=uid();await savePhotoBlob(id,blob);const target=state.shapes.find(x=>x.id===targetId);if(!target)continue;target.photos=target.photos||[];target.photos.push({id,name:f.name||`写真${target.photos.length+1}`,createdAt:Date.now(),type:blob?.type||f.type||'image/jpeg',size:blob?.size||f.size||0});added++;}catch(e){console.warn('photo save failed',e)}
+    try{const blob=await preparePhoto(f);const id=uid();const target=state.shapes.find(x=>x.id===targetId);if(!target)continue;target.photos=target.photos||[];target.photos.push({id,name:f.name||`写真${target.photos.length+1}`,createdAt:Date.now(),type:blob?.type||f.type||'image/jpeg',size:blob?.size||f.size||0});await savePhotoBlob(id,blob);added++;}catch(e){console.warn('photo save failed',e)}
   }
   persist();$('photoStatus').textContent=added?`${added}枚保存しました`:'写真を保存できませんでした';setTimeout(()=>{if($('photoStatus'))$('photoStatus').textContent=''},1400);if(selected===targetId)renderSelectedPhotos();
 }
