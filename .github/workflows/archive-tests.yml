@@ -1,0 +1,37 @@
+name: Sentlog archive checks
+on:
+  push:
+    branches: [sentlog-archive-v133, main]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python scripts/build_archive.py
+      - run: |
+          node --check sentlog/archive.js
+          node --check sentlog/archive-core.js
+          node --check sentlog/archive-pc.js
+          node --check sentlog/cloud-sync.js
+          node --check sentlog/pdf-recovery.js
+          node tests/core.test.cjs
+          node tests/pc.test.cjs
+          node tests/integration.test.cjs
+      - run: |
+          pip install playwright==1.57.0
+          python -m playwright install --with-deps chromium
+          python tests/ui.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: archive-ui-checks
+          path: test-results
