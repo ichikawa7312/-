@@ -34,7 +34,9 @@ try:
                 if url.startswith(origin+'/'):
                     request_route.continue_();return
                 if url.startswith('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/'):
-                    request_route.fulfill(status=200,content_type='text/javascript',body='window.pdfjsLib={GlobalWorkerOptions:{}};');return
+                    # pdf-quality binds getDocument during setup even in an empty
+                    # project. Supply its interface; parsing a PDF is not tested here.
+                    request_route.fulfill(status=200,content_type='text/javascript',body='window.pdfjsLib={GlobalWorkerOptions:{},getDocument(){throw new Error("Unexpected PDF use in no-file archive fixture");}};');return
                 if not url.startswith('https://wiulvaqixphuobdielyy.supabase.co/rest/v1/'):
                     unexpected.append(url);request_route.abort();return
                 path=urlparse(url).path;body=json.loads(request.post_data) if request.post_data else None

@@ -27,6 +27,12 @@ for path, expected in {
     if actual != expected:
         raise RuntimeError(f'Unexpected baseline: {path}: {actual}')
 
+# A timed-out mutation can have completed on the server. Never claim that it
+# definitely did not; the UI must reconcile the recorded state on the next check.
+change('sentlog/archive.js',
+       '通信の応答を確認できませんでした。保管は確定していません。通信を確認して、もう一度操作してください。',
+       '通信の応答を確認できませんでした。処理結果が不明なため、通信を確認して状態を再確認してください。')
+
 p = 'sentlog/cloud-sync.js'
 change(p,"const syncStatus=createSyncStatusView();","/* archive-v133: server-controlled project lifecycle; no automatic archive transfer. */\nconst syncStatus=createSyncStatusView();\nconst archive=window.SentlogArchive;\nif(!archive)throw Error('保管機能が未更新です。通信できる場所で画面を更新してください。');")
 change(p,"async function pullRemoteProjects(deviceId){", "async function pullRemoteProjects(deviceId,manualProject=null){")
