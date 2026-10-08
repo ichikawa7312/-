@@ -1,4 +1,4 @@
-/* v1.27: presentation only. Polling, file storage and synchronization stay in cloud-sync.js. */
+/* v1.28: compact phone labels only. Polling, storage and quiet-status timing are unchanged. */
 export function createSyncStatusView(doc = document) {
   const SHOW_DELAY = 1200, MIN_VISIBLE = 900;
   let account = '', online = true, cycle = 0, running = false;
@@ -41,7 +41,11 @@ export function createSyncStatusView(doc = document) {
       else if(outcome.level === 'pending') { title = outcome.label || '反映待ち'; kind = 'warn'; }
       else { title = visible ? '同期中' : '自動同期ON'; kind = 'ok'; active = visible; }
     }
-    text(label, title);
+    // The existing phone-layout class also covers phone landscape. Keep full details and accessibility labels.
+    const phone = doc.documentElement.classList.contains('sentlog-phone');
+    const compactTitle = title === '自動同期ON' ? '同期ON' :
+      kind === 'err' ? '要確認' : account && online && outcome.level === 'pending' ? '反映待ち' : title;
+    text(label, phone ? compactTitle : title);
     attr(button, 'data-kind', kind);
     attr(button, 'data-activity', String(active));
     attr(button, 'aria-label', title + '、同期状況を開く');
