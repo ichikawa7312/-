@@ -45,13 +45,20 @@ s=s.replace("size:blob?.size||f.size||0});added++;", "size:blob?.size||f.size||0
 (p/'part06.txt').write_text(s)
 for name in ['phone-runtime.js','cloud-sync.js']:
  s=(p/name).read_text().replace('await window.SentlogRecords.flush();window.SentlogRecords.assertSafe();','await window.SentlogRecords.settled();window.SentlogRecords.assertSafe();');(p/name).write_text(s)
+s=(p/'cloud-sync.js').read_text()
+if 'window.sentlogCloudIdle=' not in s:
+ s+='\n// The restore flag blocks new cycles; drain the active one before replacing records.\nwindow.sentlogCloudIdle=async()=>{const deadline=Date.now()+30000;while(syncing){if(Date.now()>deadline)throw Error("同期処理が続いています。終了後に復元をやり直してください。");await sleep(30);}};\n'
+(p/'cloud-sync.js').write_text(s)
 s=(p/'pdf-recovery.js').read_text()
 s=s.replace('async function db(name,store,key,value){','async function db(name,store,key,value){\n  if(value!==undefined && name===\'surveyFieldNoteDB\' && window.SentlogRecords?.ready)return window.SentlogRecords.writeFile(key,value);')
-s=s.replace('window.sentlogCheckPdfRecovery=run;','window.sentlogPdfRecoveryIdle=async()=>{while(busy)await new Promise(resolve=>setTimeout(resolve,30));};\nwindow.sentlogCheckPdfRecovery=run;')
+s=s.replace('window.sentlogCheckPdfRecovery=run;','window.sentlogPdfRecoveryIdle=async()=>{const deadline=Date.now()+30000;while(busy){if(Date.now()>deadline)throw Error("PDF受信が続いています。終了後に復元をやり直してください。");await new Promise(resolve=>setTimeout(resolve,30));}};\nwindow.sentlogCheckPdfRecovery=run;')
 (p/'pdf-recovery.js').write_text(s)
 s=(p/'storage-ui.js').read_text().replace('await store.retry();','await store.retry();if(typeof renderSelectedPhotos===\'function\')renderSelectedPhotos();')
 s=s.replace('PDF・写真は、空き容量を確保してから同じ操作で追加し直してください。','PDF・写真もこの画面を開いている間は再保存できます。')
 (p/'storage-ui.js').write_text(s)
+s=(p/'app-settings.js').read_text()
+s=s.replace("if(element===overlay ||", "if(element===overlay || element.id==='sentlogStorageWarning' ||")
+(p/'app-settings.js').write_text(s)
 # Reject mixed old/new cached scripts before executing the editor.
 s=(p/'index.html').read_text()
 check="for(const [i,token] of [[4,'window.SentlogRecords'],[5,'await savePhotoBlob(id,blob)'],[6,'window.SentlogRecords'],[8,'window.sentlogAppReady']]){if(!parts[i].includes(token))throw Error('最新版の表示データが揃っていません。通信できる場所でもう一度開いてください。');}const deps=[['cloud-sync.js?v=20261008-storage-130','await window.sentlogAppReady'],['sync-view.js?v=130','window.SentlogRecords.batch'],['pdf-recovery.js?v=130','window.SentlogRecords.getItem'],['phone-runtime.js?v=130','v1.30'],['storage-ui.js?v=130','sentlogStorageWarning']];await Promise.all(deps.map(async([file,token])=>{const r=await fetch('./'+file,{cache:'no-store'});if(!r.ok||!(await r.text()).includes(token))throw Error('最新版を取得できませんでした。記録は残して起動を止めています。通信状態を確認してください。');}));"
