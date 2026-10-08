@@ -1,4 +1,4 @@
-/* v1.31: a categorized capacity bar. Display only; record/file storage is unchanged. */
+/* v1.32: always compare used space against browser quota. Display only. */
 (function () {
   'use strict';
   const store=window.SentlogRecords;
@@ -19,7 +19,8 @@
 #sentlogStorageSection .sl-storage-bar-head{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:6px;font-size:12px;margin:14px 0 8px;}
 #sentlogStorageSection .sl-storage-usage{font-weight:600;font-variant-numeric:tabular-nums;}
 #sentlogStorageBar{display:flex;direction:ltr;isolation:isolate;width:100%;height:26px;overflow:hidden;border-radius:8px;background:#edf0f3;box-shadow:inset 0 0 0 1px #cbd5e1;}
-#sentlogStorageBar .sl-storage-segment{height:100%;flex-shrink:0;transition:none;}
+#sentlogStorageBar .sl-storage-used{display:flex;height:100%;min-width:0;flex:0 0 auto;overflow:hidden;}
+#sentlogStorageBar .sl-storage-segment{height:100%;min-width:0;flex:0 0 auto;transition:none;}
 #sentlogStorageSection [data-category="records"]{--sl-storage-color:#2563eb;}
 #sentlogStorageSection [data-category="drawings"]{--sl-storage-color:#0d9488;}
 #sentlogStorageSection [data-category="photos"]{--sl-storage-color:#e99717;}
@@ -36,7 +37,6 @@
 #sentlogStorageSection .sl-storage-notice[data-level="error"]{color:#991b1b;background:#fef2f2;padding:8px;border-radius:6px;}
 #sentlogStorageSection .sl-storage-actions{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0 12px;}
 #sentlogStorageSection button{font-size:12px;padding:8px 10px;min-height:44px;width:auto;touch-action:manipulation;}
-#sentlogStorageSection #sentlogStorageMode{border-color:transparent;background:transparent;color:#475569;text-decoration:underline;text-underline-offset:3px;}
 #sentlogStorageDetails{border-top:1px solid var(--line);}
 #sentlogStorageDetails summary{font-size:12px;font-weight:500;color:#6b7280;}
 #sentlogStorageWarning{position:fixed;z-index:11000;bottom:calc(8px + env(safe-area-inset-bottom,0px));left:12px;right:12px;max-width:740px;margin:0 auto;padding:14px;border:2px solid #b91c1c;border-radius:12px;background:#fff1f2;color:#881337;box-shadow:0 4px 20px #0003;font-size:13px;line-height:1.6;}
@@ -48,13 +48,13 @@
   section.innerHTML=`<summary>保存容量</summary>
 <p id="sentlogStorageScope">この端末のセントログ</p>
 <div class="sl-storage-total"><span id="sentlogStorageTotal">計測前</span><small id="sentlogStorageTotalNote">保存データの合計（目安）</small></div>
-<div class="sl-storage-bar-head"><span id="sentlogStorageBarTitle">ブラウザの保存枠</span><span id="sentlogStorageUsage" class="sl-storage-usage"></span></div>
-<div id="sentlogStorageBar" role="img" aria-label="保存容量を計測する前のバー"></div>
+<div class="sl-storage-bar-head"><span id="sentlogStorageBarTitle">保存容量（上限の目安）</span><span id="sentlogStorageUsage" class="sl-storage-usage"></span></div>
+<div id="sentlogStorageBar" role="img" aria-label="保存容量を計測する前のバー" hidden></div>
 <div class="sl-storage-caption"><span id="sentlogStorageBarStart"></span><span id="sentlogStorageBarEnd"></span></div>
 <p id="sentlogStorageRemaining"></p>
 <p id="sentlogStorageNotice" class="sl-storage-notice" role="status" aria-live="polite">容量は、この項目を開いたときに計測します。</p>
 <ul id="sentlogStorageLegend" class="sl-storage-legend" aria-label="色ごとの保存データ量"></ul>
-<div class="sl-storage-actions"><button type="button" id="sentlogStorageRefresh">容量を再確認</button><button type="button" id="sentlogStorageMode" hidden>内訳を大きく見る</button></div>
+<div class="sl-storage-actions"><button type="button" id="sentlogStorageRefresh">容量を再確認</button></div>
 <details id="sentlogStorageDetails"><summary>詳しい情報</summary>
 <p id="sentlogQuotaInfo"></p><p id="sentlogStorageMethod"></p>
 <p>記録・メモ、PDF・図面、写真、移行前の控えは端末内で集計した目安です。「その他」には、確認できた範囲で同じサイトのキャッシュなども含めます。圧縮・丸め・計測時刻の違いで、ブラウザの報告値とは一致しないことがあります。</p>
@@ -65,7 +65,7 @@
 </details>`;
   modal.querySelector('#sentlogBackupSection').before(section);
   const get=id=>section.querySelector('#'+id);
-  const refresh=get('sentlogStorageRefresh'),mode=get('sentlogStorageMode');
+  const refresh=get('sentlogStorageRefresh');
   const protection=get('sentlogPersistenceInfo'),protect=get('sentlogStorageProtect');
   const bar=get('sentlogStorageBar'),legend=get('sentlogStorageLegend'),notice=get('sentlogStorageNotice');
   const bytes=n=>{if(!Number.isFinite(n))return '取得不可';if(n<1024)return Math.round(n)+' B';if(n<1024**2)return (n/1024).toFixed(1)+' KB';if(n<1024**3)return (n/1024**2).toFixed(1)+' MB';return (n/1024**3).toFixed(2)+' GB';};
@@ -73,7 +73,7 @@
   const percent=n=>n>0&&n<0.1?'0.1%未満':n.toFixed(1)+'%';
   // Optional browser diagnostics must not leave the panel stuck in "measuring".
   async function optional(task){let timer;try{return await Promise.race([Promise.resolve().then(task).catch(()=>null),new Promise(resolve=>{timer=setTimeout(()=>resolve(null),2500);})]);}finally{clearTimeout(timer);}}
-  let measuring=false,sample=null,expanded=false;
+  let measuring=false,sample=null;
   function setNotice(message,level=''){notice.textContent=message;notice.dataset.level=level;}
   function renderCapacity(){
     if(!sample)return;
@@ -86,33 +86,40 @@
       {key:'other',name:'その他',amount:sizes.other}
     ];
     const total=categories.reduce((n,c)=>n+c.amount,0);
-    const known=estimate&&valid(estimate.usage)&&valid(estimate.quota)&&estimate.quota>0;
-    // Do not invent free capacity or negative "other" bytes when estimates are
-    // compressed/rounded below the locally summed file sizes. Show composition instead.
-    const comparable=known&&estimate.usage>=total&&estimate.usage<=estimate.quota;
-    const quotaMode=comparable&&!expanded;
-    const ratio=known?Math.min(100,100*estimate.usage/estimate.quota):null;
-    if(quotaMode)categories[4].amount+=estimate.usage-total;
-    const denominator=quotaMode?estimate.quota:total;
+    const usageKnown=!!estimate&&valid(estimate.usage);
+    const quotaKnown=!!estimate&&valid(estimate.quota)&&estimate.quota>0;
+    const known=usageKnown&&quotaKnown;
+    const ratio=known?100*(estimate.usage/estimate.quota):null;
+    const normalized=usageKnown&&estimate.usage<total;
+    // Browser estimates and local byte totals can differ. The outer used width
+    // ALWAYS follows usage/quota, never local composition. Only its inner colors
+    // are proportional when local totals exceed reported usage; do not invent
+    // negative "other" bytes or inflate tiny categories with minimum widths.
+    if(usageKnown&&estimate.usage>total)categories[4].amount+=estimate.usage-total;
+    const colorTotal=categories.reduce((n,c)=>n+c.amount,0);
     const visibleCategories=categories.filter(c=>c.key!=='other'||c.amount>0);
-    get('sentlogStorageScope').textContent=quotaMode?'このサイトで使用中（この端末）':'この端末のセントログ';
-    get('sentlogStorageTotal').textContent=bytes(quotaMode?estimate.usage:total);
-    get('sentlogStorageTotalNote').textContent=quotaMode?'うちセントログ '+bytes(total)+'（目安）':'保存データの合計（目安）';
-    get('sentlogStorageBarTitle').textContent=quotaMode?'ブラウザの保存枠':'保存データの内訳';
-    get('sentlogStorageUsage').textContent=quotaMode?'使用 '+percent(ratio):total?'内訳を拡大表示':'';
-    get('sentlogStorageBarStart').textContent=quotaMode?'色付き：使用中':'色の長さ：データ量の割合';
-    get('sentlogStorageBarEnd').textContent=quotaMode?'上限目安 '+bytes(estimate.quota):'';
-    get('sentlogStorageRemaining').textContent=quotaMode?'保存枠の残り：約 '+bytes(Math.max(0,estimate.quota-estimate.usage))+'（目安）':'';
-    bar.hidden=false;bar.dataset.mode=quotaMode?'quota':'composition';bar.replaceChildren();
-    for(const category of visibleCategories){
-      if(category.amount<=0||denominator<=0)continue;
-      const segment=document.createElement('span');segment.className='sl-storage-segment';segment.dataset.category=category.key;
-      // No minimum width: tiny records must not appear to consume a large share.
-      segment.style.width=(100*category.amount/denominator)+'%';segment.setAttribute('aria-hidden','true');
-      segment.title=category.name+'：'+bytes(category.amount);bar.appendChild(segment);
+    get('sentlogStorageScope').textContent=usageKnown?'このサイトで使用中（この端末）':'この端末のセントログ';
+    get('sentlogStorageTotal').textContent=bytes(usageKnown?estimate.usage:total);
+    get('sentlogStorageTotalNote').textContent=usageKnown?'セントログ内の集計：'+bytes(total)+'（目安）':'保存データの合計（目安）';
+    get('sentlogStorageBarTitle').textContent=quotaKnown?'保存容量（上限の目安）':'保存容量：上限不明';
+    get('sentlogStorageUsage').textContent=known?'使用 '+percent(ratio):'使用率は取得できません';
+    get('sentlogStorageBarStart').textContent=known?'色付き：使用中':'';
+    get('sentlogStorageBarEnd').textContent=quotaKnown?'上限目安 '+bytes(estimate.quota):'';
+    get('sentlogStorageRemaining').textContent=known?'空き（保存枠の残り）：約 '+bytes(Math.max(0,estimate.quota-estimate.usage))+'（目安）':'空き容量：不明';
+    bar.hidden=!known;bar.dataset.mode=known?'quota':'unknown';bar.replaceChildren();
+    if(known){
+      const used=document.createElement('span');used.className='sl-storage-used';
+      used.style.width=Math.max(0,Math.min(100,ratio))+'%';used.setAttribute('aria-hidden','true');
+      for(const category of visibleCategories){
+        if(category.amount<=0||colorTotal<=0)continue;
+        const segment=document.createElement('span');segment.className='sl-storage-segment';segment.dataset.category=category.key;
+        segment.style.width=(100*(category.amount/colorTotal))+'%';
+        segment.title=category.name+'：'+bytes(category.amount)+(normalized?'（端末内集計の目安）':'');used.appendChild(segment);
+      }
+      bar.appendChild(used);
     }
     const description=visibleCategories.map(c=>c.name+' '+bytes(c.amount)).join('、');
-    bar.setAttribute('aria-label',(quotaMode?'ブラウザの保存枠の使用率 '+percent(ratio)+'。':'保存済みデータの内訳。満杯を意味するバーではありません。')+description);
+    bar.setAttribute('aria-label',known?'保存上限の目安 '+bytes(estimate.quota)+'、使用 '+bytes(estimate.usage)+'、使用率 '+percent(ratio)+'、空きの目安 '+bytes(Math.max(0,estimate.quota-estimate.usage))+'。'+(normalized?'色分けは端末内集計の比率による目安。':'')+description:'保存上限または使用量を取得できないため、容量バーは表示していません。');
     legend.replaceChildren();
     for(const c of visibleCategories){
       const item=document.createElement('li');item.dataset.category=c.key;
@@ -122,19 +129,16 @@
       if(c.count){const count=document.createElement('span');count.className='sl-storage-count';count.textContent=c.count;amount.appendChild(count);}
       content.append(name,amount);item.append(dot,content);legend.appendChild(item);
     }
-    mode.hidden=!comparable||total===0;
-    mode.textContent=expanded?'保存枠と比べる':'内訳を大きく見る';mode.setAttribute('aria-pressed',String(expanded));
-    let message=quotaMode?'薄い部分は保存枠の残りの目安です。本体の空き容量ではありません。':
-      total?'バー全体は保存済みデータの内訳です。満杯を意味しません。':'この端末に集計対象の保存データはありません。';
-    if(!known)message+=' 保存枠の上限はこのブラウザでは取得できません。';
-    else if(!comparable)message+=' ブラウザの報告値と集計方法が異なるため、残り容量は表示していません。';
-    else if(quotaMode&&ratio>0&&ratio<1)message+=' 使用量が少ないため、色の部分は細くなります。';
+    let message=known?'バー全体が保存上限の目安です。色付きが使用中、薄い部分が空きの目安です。本体の空き容量ではありません。':
+      quotaKnown?'ブラウザの使用量を取得できないため、容量バーは表示していません。':'上限不明：このブラウザでは保存上限を取得できないため、容量バーは表示していません。';
+    if(normalized)message+=' ブラウザの使用量と端末内の集計が異なるため、色分けは内訳の比率による目安です。';
+    if(known&&ratio>0&&ratio<1)message+=' 使用量が少ないため、色の部分は細くなります。';
     let level='';
     if(known&&ratio>=90){level='error';message+=' 保存枠の上限に近づいています。バックアップと本体の空き容量を確認してください。';}
-    else if(known&&ratio>=80){level='warn';message+=' 保存枠の使用率が80%を超えています。バックアップと本体の空き容量を確認してください。';}
+    else if(known&&ratio>=80){level='warn';message+=' 保存枠の使用率が80%以上です。バックアップと本体の空き容量を確認してください。';}
     setNotice(message,level);
-    get('sentlogQuotaInfo').textContent=known?'ブラウザ報告（このサイトの概算）：使用 '+bytes(estimate.usage)+' ／ 上限 '+bytes(estimate.quota)+'。使用率 '+percent(ratio)+'。':'ブラウザの使用量・上限：取得できません。';
-    get('sentlogStorageMethod').textContent=quotaMode?'バー全体＝ブラウザの上限目安。セントログ内の合計との差を「その他」に含めています。':'バー全体＝セントログの保存データ合計。ブラウザの空き容量を示すものではありません。';
+    get('sentlogQuotaInfo').textContent='ブラウザ報告（このサイトの概算）：使用 '+(usageKnown?bytes(estimate.usage):'取得不可')+' ／ 上限 '+(quotaKnown?bytes(estimate.quota):'不明')+(known?'。使用率 '+percent(ratio):'')+'。';
+    get('sentlogStorageMethod').textContent=known?'バー全体＝ブラウザの上限目安。塗りつぶしの長さ＝ブラウザの使用量÷上限。'+(normalized?'色分けは端末内集計の比率で配分しています。内訳の数値は圧縮・丸めなどにより上の使用量と一致しないことがあります。':'セントログ内の合計との差を「その他」に含めています。'):'上限または使用量が不明なときは、使用率・空き容量を推定したり、内訳でバー全体を埋めたりしません。';
     get('sentlogMigrationInfo').textContent='保存先：IndexedDB。大容量保存への移行は完了しています。移行前の記録の控えも端末内に保持しています。';
   }
   async function update(){
@@ -150,13 +154,12 @@
       protect.disabled=!navigator.storage?.persist||persisted===true;
     }catch(error){
       // Never leave the previous successful measurement looking current after failure.
-      sample=null;bar.hidden=true;legend.replaceChildren();mode.hidden=true;get('sentlogStorageTotal').textContent='取得できません';get('sentlogStorageTotalNote').textContent='';
+      sample=null;bar.hidden=true;legend.replaceChildren();get('sentlogStorageTotal').textContent='取得できません';get('sentlogStorageTotalNote').textContent='';
       for(const id of ['sentlogStorageUsage','sentlogStorageBarStart','sentlogStorageBarEnd','sentlogStorageRemaining','sentlogQuotaInfo','sentlogStorageMethod','sentlogMigrationInfo','sentlogPersistenceInfo'])get(id).textContent='';
       setNotice('容量を確認できませんでした。「容量を再確認」を押してください。'+(error.message||error),'error');
     }finally{measuring=false;refresh.disabled=false;refresh.textContent='容量を再確認';section.setAttribute('aria-busy','false');}
   }
   section.addEventListener('toggle',event=>{if(event.target===section&&section.open)update();});refresh.onclick=update;
-  mode.onclick=()=>{expanded=!expanded;renderCapacity();};
   protect.onclick=async()=>{
     protect.disabled=true;
     try{const granted=await navigator.storage.persist();await update();if(!granted)protection.textContent='保護は今回は承認されませんでした。通常保存とバックアップは引き続き利用できます。';}
