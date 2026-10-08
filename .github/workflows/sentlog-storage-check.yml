@@ -1,0 +1,55 @@
+name: Sentlog storage migration check
+on:
+  push:
+    branches: [sentlog-storage-v130]
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Prepare pinned synthetic browser fixtures
+        run: |
+          python -m pip install playwright==1.57.0 reportlab==4.4.4
+          python -m playwright install --with-deps chromium
+          mkdir -p .sentlog-storage/site .sentlog-storage/vendor .sentlog-storage/results
+          git archive bfc1028231c3a037cc925b0066cab724899632c7 | tar -x -C .sentlog-storage/site
+          cp sentlog/record-store.js sentlog/storage-ui.js .sentlog-storage/site/sentlog/
+          curl --fail --location https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js -o .sentlog-storage/vendor/pdf.min.js
+          curl --fail --location https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js -o .sentlog-storage/vendor/pdf.worker.min.js
+          echo '5b5799e6f8c680663207ac5b42ee14eed2a406fa7af48f50c154f0c0b1566946  .sentlog-storage/vendor/pdf.min.js' | sha256sum -c
+          echo 'feabdf309770ed24bba31a5467836cdc8cf639c705af27d52b585b041bb8527b  .sentlog-storage/vendor/pdf.worker.min.js' | sha256sum -c
+      - name: Build storage integration and test without cloud access
+        run: |
+          python .github/sentlog-storage-patch.py
+          for f in .sentlog-storage/site/sentlog/*.js; do node --check "$f"; done
+          python .github/test_sentlog_storage.py
+      - name: Commit tested application changes to the isolated branch only
+        if: success()
+        run: |
+          cp -a .sentlog-storage/site/sentlog/. sentlog/
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add sentlog/
+          if ! git diff --cached --quiet; then
+            git commit -m 'Build tested Sentlog v1.30 IndexedDB record migration candidate'
+            git push origin HEAD:refs/heads/sentlog-storage-v130
+          fi
+          git rev-parse HEAD > .sentlog-storage/results/candidate-sha.txt
+          git diff bfc1028231c3a037cc925b0066cab724899632c7 --stat -- sentlog/ > .sentlog-storage/results/change-summary.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sentlog-storage-results
+          path: |
+            .sentlog-storage/results/
+            .sentlog-storage/site/sentlog/
+          retention-days: 2
