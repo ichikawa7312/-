@@ -25,7 +25,7 @@ async function createDrawingFromFile(file){
 }
 async function openDrawing(projectId,drawingId){
   activeProjectId=projectId;activeDrawingId=drawingId;const p=getProject(projectId),d=getDrawingMeta(projectId,drawingId);if(!p||!d)return;
-  try{const saved=JSON.parse(localStorage.getItem(drawingStorageKey(drawingId))||'null');state={...freshDrawingState(p.name),...(saved||{})}}catch{state=freshDrawingState(p.name)}
+  try{const saved=JSON.parse(window.SentlogRecords.getItem(drawingStorageKey(drawingId))||'null');state={...freshDrawingState(p.name),...(saved||{})}}catch{state=freshDrawingState(p.name)}
   state.project=p.name;state.pageSettings=state.pageSettings||{};state.pdfPageInfo=state.pdfPageInfo||{};state.pageRotations=state.pageRotations||{};state.leaderMarker=state.leaderMarker||'open-circle';state.shapes=state.shapes||[];state.shapes.forEach(s=>s.photos=s.photos||[]);
   selected=null;drawing=null;panStart=null;labelDrag=null;pdfDoc=null;clearAllHistory();showEditor();$('fileName').textContent=state.fileName||d.fileName||'未読込';syncLeaderMarkerUI();rebuildNumberingState();
   empty.style.display='grid';svg.innerHTML='';ctx.clearRect(0,0,canvas.width,canvas.height);updatePageUI();render();renderSelectedPhotos();
@@ -33,13 +33,14 @@ async function openDrawing(projectId,drawingId){
 }
 async function migrateLegacyIfNeeded(){
   if((workspace.projects||[]).length)return;
-  let old=null;try{old=JSON.parse(localStorage.getItem('surveyFieldNoteV2')||'null')}catch{}
+  let old=null;try{old=JSON.parse(window.SentlogRecords.getItem('surveyFieldNoteV2')||'null')}catch{}
   if(!old||(!old.fileName&&!old.shapes?.length))return;
-  const p={id:uid(),name:old.project||'試作案件',drawings:[],createdAt:Date.now(),updatedAt:Date.now()},d={id:uid(),name:(old.fileName||'移行図面').replace(/\.[^.]+$/,''),fileName:old.fileName||'',sourceType:old.sourceType||'',pageCount:old.pageCount||1,shapeCount:(old.shapes||[]).length,createdAt:Date.now(),updatedAt:Date.now()};p.drawings.push(d);workspace.projects.push(p);saveWorkspace();localStorage.setItem(drawingStorageKey(d.id),JSON.stringify({...freshDrawingState(p.name),...old}));
+  const p={id:uid(),name:old.project||'試作案件',drawings:[],createdAt:Date.now(),updatedAt:Date.now()},d={id:uid(),name:(old.fileName||'移行図面').replace(/\.[^.]+$/,''),fileName:old.fileName||'',sourceType:old.sourceType||'',pageCount:old.pageCount||1,shapeCount:(old.shapes||[]).length,createdAt:Date.now(),updatedAt:Date.now()};p.drawings.push(d);workspace.projects.push(p);saveWorkspace();window.SentlogRecords.setItem(drawingStorageKey(d.id),JSON.stringify({...freshDrawingState(p.name),...old}));
   try{const legacy=await getDBFile('background');if(legacy)await putDBFile('background:'+d.id,legacy)}catch{}
 }
 async function initApp(){
-  try{workspace=JSON.parse(localStorage.getItem(WORKSPACE_KEY)||'null')||{projects:[]}}catch{workspace={projects:[]}};workspace.projects=workspace.projects||[];workspace.projects.forEach(p=>p.drawings=p.drawings||[]);await migrateLegacyIfNeeded();renderSelectedPhotos();showProjects();
+  await window.SentlogRecords.init();
+  try{workspace=JSON.parse(window.SentlogRecords.getItem(WORKSPACE_KEY)||'null')||{projects:[]}}catch{workspace={projects:[]}};workspace.projects=workspace.projects||[];workspace.projects.forEach(p=>p.drawings=p.drawings||[]);await migrateLegacyIfNeeded();renderSelectedPhotos();showProjects();
 }
 
 function setupStage(w,h){state.width=Math.max(1,Math.round(w));state.height=Math.max(1,Math.round(h));canvas.width=state.width;canvas.height=state.height;canvas.style.width=state.width+'px';canvas.style.height=state.height+'px';svg.setAttribute('width',state.width);svg.setAttribute('height',state.height);svg.setAttribute('viewBox',`0 0 ${state.width} ${state.height}`);empty.style.display='none';fit();render();persist()}

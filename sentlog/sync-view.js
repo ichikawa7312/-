@@ -2,7 +2,7 @@
 (function () {
   'use strict';
   const clone=value=>JSON.parse(JSON.stringify(value));
-  const read=id=>{try{return JSON.parse(localStorage.getItem(drawingStorageKey(id))||'null');}catch(_){return null;}};
+  const read=id=>{try{return JSON.parse(window.SentlogRecords.getItem(drawingStorageKey(id))||'null');}catch(_){return null;}};
   function content(value){
     if(!value)return value;
     const result={...value};
@@ -55,12 +55,12 @@
     return {...incoming,currentPage:Math.min(Math.max(1,old.currentPage||1),incoming.pageCount||1),
       width:old.width,height:old.height,pdfPageInfo:{...(incoming.pdfPageInfo||{}),...(old.pdfPageInfo||{})}};
   }
-  function commit(cloudProject,snapshot,expectedLocal){
+  async function commit(cloudProject,snapshot,expectedLocal){
     const remote=snapshot?.payload?.project;
     if(!remote || remote.id && remote.id!==cloudProject.client_key)return {applied:false,reason:'invalid'};
     const id=cloudProject.client_key;
     // Read again immediately before a synchronous commit; network awaits may span local edits.
-    let ws;try{ws=JSON.parse(localStorage.getItem(WORKSPACE_KEY)||'{"projects":[]}');}catch(_){return {applied:false,reason:'storage'};}
+    let ws;try{ws=JSON.parse(window.SentlogRecords.getItem(WORKSPACE_KEY)||'{"projects":[]}');}catch(_){return {applied:false,reason:'storage'};}
     const oldProject=ws.projects.find(p=>p.id===id);
     if(JSON.stringify(oldProject||null)!==expectedLocal)return {applied:false,reason:'local-edit'};
     const active=currentView==='editor' && activeProjectId===id;
@@ -83,12 +83,7 @@
     }
     for(const d of oldProject?.drawings||[])if(!remoteIds.has(d.id))writes.set(drawingStorageKey(d.id),null);
     writes.set(WORKSPACE_KEY,JSON.stringify(ws));
-    try{
-      for(const [key,value] of writes){oldValues.set(key,localStorage.getItem(key));if(value===null)localStorage.removeItem(key);else localStorage.setItem(key,value);}
-    }catch(error){
-      for(const [key,value] of oldValues){try{if(value===null)localStorage.removeItem(key);else localStorage.setItem(key,value);}catch(_){}}
-      throw error;
-    }
+    window.SentlogRecords.batch(writes);
     // Update the application's in-memory model as well as storage, without initApp/openDrawing.
     workspace=ws;
     if(active && incoming){
@@ -113,6 +108,7 @@
     }else if(currentView==='drawings'){
       const host=$('drawingsView'),scroll=host.scrollTop;renderDrawings();host.scrollTop=scroll;
     }
+    await window.SentlogRecords.flush();
     return {applied:true};
   }
   window.sentlogSyncView={snapshotText,commit,

@@ -2,9 +2,9 @@
   'use strict';
   const phone = /iPhone|iPod/i.test(navigator.userAgent) || (matchMedia('(max-width:480px) and (pointer:coarse)').matches && !/iPad/i.test(navigator.userAgent));
   if (phone) document.documentElement.classList.add('sentlog-phone');
-  window.SENTLOG_BUILD = 'v1.29';
+  window.SENTLOG_BUILD = 'v1.30';
   const header = document.querySelector('header');
-  if (header?.querySelector('.pill')) header.querySelector('.pill').textContent='試作版 v1.29';
+  if (header?.querySelector('.pill')) header.querySelector('.pill').textContent='試作版 v1.30';
   if (phone && header) {
     const measure = () => document.documentElement.style.setProperty('--sl-header-height', header.getBoundingClientRect().height + 'px');
     measure();
@@ -12,7 +12,7 @@
   }
   ['projectsView','drawingsView'].forEach(id => {
     const host = document.querySelector('#' + id + ' .manager-shell');
-    if (host) { const label=document.createElement('small'); label.className='sentlog-build'; label.textContent='セントログ v1.29 · 図面上の選択・文字移動／変状情報は手動で開閉'; host.appendChild(label); }
+    if (host) { const label=document.createElement('small'); label.className='sentlog-build'; label.textContent='セントログ v1.30 · 図面上の選択・文字移動／変状情報は手動で開閉'; host.appendChild(label); }
   });
   window.sentlogRestoreDrawingView = async function (id, file) {
     if (typeof activeDrawingId !== 'undefined' && activeDrawingId === id && typeof pdfDoc !== 'undefined' && !pdfDoc && typeof openFile === 'function') {
@@ -92,13 +92,15 @@
   const attach = () => {
     const box = document.getElementById('sentlogCloudMsg');
     if (!box || document.getElementById('sentlogReloadDisplay')) return;
-    const note=document.createElement('small'); note.className='sentlog-build'; note.textContent='表示バージョン v1.29';
+    const note=document.createElement('small'); note.className='sentlog-build'; note.textContent='表示バージョン v1.30';
     const btn=document.createElement('button'); btn.id='sentlogReloadDisplay'; btn.type='button'; btn.textContent='この画面を更新';
     btn.onclick=async()=>{
       if (!navigator.onLine) { note.textContent='通信できる場所で更新してください。'; return; }
       if (!confirm('入力や描画を終えてから更新してください。保存済みの案件・PDF・写真は削除しません。')) return;
       if (typeof persist==='function' && typeof activeDrawingId!=='undefined' && activeDrawingId) persist();
       btn.disabled=true;
+      try { await window.SentlogRecords.settled();window.SentlogRecords.assertSafe(); }
+      catch(error){btn.disabled=false;note.textContent='未保存の記録があります。画面を閉じず、保存警告を確認してください。';return;}
       try { const reg=await navigator.serviceWorker?.getRegistration(); if(reg) await reg.update(); } catch (_) {}
       location.reload();
     };

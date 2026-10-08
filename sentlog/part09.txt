@@ -441,13 +441,12 @@ window.addEventListener('orientationchange',()=>{setTimeout(()=>{if(state.source
 if('serviceWorker' in navigator&&location.protocol!=='file:'){
   let swReloaded=false;
   navigator.serviceWorker.addEventListener('controllerchange',()=>{
-    if(swReloaded)return;
+    // Explicit reload awaits IndexedDB commits; worker activation never interrupts edits.
     swReloaded=true;
-    location.reload();
   });
   navigator.serviceWorker.register('./sw.js',{updateViaCache:'none'}).then(reg=>reg.update()).catch(()=>{});
 }
-initApp();
+window.sentlogAppReady=initApp();
 </script>
 </body>
 </html>
