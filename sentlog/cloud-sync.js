@@ -133,25 +133,17 @@ async function dbGet(key){
   });
   db.close();return v;
 }
-async function dbPut(key,value){
-  const db=await openDB();
-  await new Promise((resolve,reject)=>{
-    const tx=db.transaction('files','readwrite');
-    tx.objectStore('files').put(value,key);
-    tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error);
-  });
-  db.close();
-}
+async function dbPut(key,value){return window.putDBFile(key,value);}
 async function sha256Hex(blob){
   const buf=await blob.arrayBuffer();
   const hash=await crypto.subtle.digest('SHA-256',buf);
   return [...new Uint8Array(hash)].map(b=>b.toString(16).padStart(2,'0')).join('');
 }
 function workspace(){
-  try{return JSON.parse(localStorage.getItem(WORKSPACE_KEY)||'{"projects":[]}')}catch{return {projects:[]}}
+  try{return JSON.parse(window.SentlogRecords.getItem(WORKSPACE_KEY)||'{"projects":[]}')}catch{return {projects:[]}}
 }
 function drawingState(id){
-  try{return JSON.parse(localStorage.getItem(DRAWING_KEY_PREFIX+id)||'null')}catch{return null}
+  try{return JSON.parse(window.SentlogRecords.getItem(DRAWING_KEY_PREFIX+id)||'null')}catch{return null}
 }
 
 async function ensureCloudProject(localProject){
@@ -162,12 +154,12 @@ async function ensureCloudProject(localProject){
   return made[0];
 }
 
-function saveWorkspace(ws){localStorage.setItem(WORKSPACE_KEY,JSON.stringify(ws))}
+function saveWorkspace(ws){window.SentlogRecords.setItem(WORKSPACE_KEY,JSON.stringify(ws))}
 function getSyncMeta(projectId){
-  try{return JSON.parse(localStorage.getItem(SYNC_META_PREFIX+projectId)||'null')}catch{return null}
+  try{return JSON.parse(window.SentlogRecords.getItem(SYNC_META_PREFIX+projectId)||'null')}catch{return null}
 }
 function setSyncMeta(projectId,meta){
-  localStorage.setItem(SYNC_META_PREFIX+projectId,JSON.stringify(meta||{}));
+  window.SentlogRecords.setItem(SYNC_META_PREFIX+projectId,JSON.stringify(meta||{}));
 }
 function projectSnapshot(localProject){
   const drawings=(localProject.drawings||[]).map(d=>{
@@ -372,7 +364,7 @@ async function pullRemoteProjects(deviceId){
     if(!lp || remoteRev>Number(meta?.revision||0) || !meta){
       const incomingFingerprint=await snapshotFingerprint(snap.payload);
       const localFingerprint=lp?await snapshotFingerprint(projectSnapshot(lp)):null;
-      const localChanged=lp && meta && (meta.fingerprint?localFingerprint!==meta.fingerprint:Number(lp.updatedAt||0)!==Number(meta.local_updated_at||0));
+      const localChanged=lp && meta && (meta.restored_backup || (meta.fingerprint?localFingerprint!==meta.fingerprint:Number(lp.updatedAt||0)!==Number(meta.local_updated_at||0)));
       if(localChanged && localFingerprint!==incomingFingerprint){
         // Do not resolve concurrent edits by silently replacing either device's work.
         blocked.add(cp.id);conflicts++;
@@ -382,7 +374,7 @@ async function pullRemoteProjects(deviceId){
           setSyncMeta(cp.client_key,{revision:remoteRev,local_updated_at:Number(lp.updatedAt||0),remote_updated_at:snap.updated_at,fingerprint:localFingerprint});
         else blocked.add(cp.id);
       }else{
-        const result=window.sentlogSyncView?.commit(cp,snap,expectedLocal);
+        const result=await window.sentlogSyncView?.commit(cp,snap,expectedLocal);
         if(result?.applied){
           setSyncMeta(cp.client_key,{revision:remoteRev,local_updated_at:Number(snap.payload.project.updatedAt||0),remote_updated_at:snap.updated_at,fingerprint:incomingFingerprint});
           changed++;
@@ -396,12 +388,14 @@ async function pullRemoteProjects(deviceId){
 }
 
 async function syncNow(){
-  if(syncing||!navigator.onLine||!session)return;
+  if(syncing||!navigator.onLine||!session||window.sentlogImporting)return;
   syncing=true;
   const statusCycle=syncStatus.begin();
   msg('');
   let remoteChanged=0;
   try{
+    await window.sentlogAppReady;
+    await window.SentlogRecords.flush();window.SentlogRecords.assertSafe();
     await ensureSession();
     const deviceId=await ensureDevice();
     const pulled=await pullRemoteProjects(deviceId);
@@ -426,6 +420,7 @@ async function syncNow(){
         if(r.status==='uploaded')uploaded++;
       }
     }
+    await window.SentlogRecords.flush();window.SentlogRecords.assertSafe();
     if(drawingErrors.length)syncStatus.finish(statusCycle,{level:'error',label:'PDF要確認',message:drawingErrors.join(' / ')});
     else if(pulled.conflicts)syncStatus.finish(statusCycle,{level:'error',label:'変更を要確認',message:'同じ案件がこの端末と別の端末で変更されています。どちらも自動では上書きしていません。'});
     else if(pulled.blocked.size)syncStatus.finish(statusCycle,{level:'pending',label:'作業後に反映',message:'操作中の変更は保留しています。入力・描画を終えると次の同期で反映します。PDFの差し替えや削除は図面を閉じた後に反映します。'});

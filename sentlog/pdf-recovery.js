@@ -82,9 +82,9 @@ async function supply(a,id){
   await rpc('sentlog_finish_pdf_redelivery',{p_asset_id:a.id,p_device_id:id,p_token:claim.token});
   return true;
 }
-function drawingIds(){try{const ws=JSON.parse(localStorage.getItem('surveyFieldNoteWorkspaceV1')||'{"projects":[]}');return new Set(ws.projects.flatMap(p=>(p.drawings||[]).map(d=>d.id)))}catch{return new Set()}}
+function drawingIds(){try{const ws=JSON.parse(window.SentlogRecords.getItem('surveyFieldNoteWorkspaceV1')||'{"projects":[]}');return new Set(ws.projects.flatMap(p=>(p.drawings||[]).map(d=>d.id)))}catch{return new Set()}}
 async function run(){
-  if(busy || !navigator.onLine || document.hidden)return;
+  if(busy || !navigator.onLine || document.hidden || window.sentlogImporting || (!IS_PC && !window.SentlogRecords?.ready))return;
   const s=session(),id=device();
   if(!s?.access_token || !id)return;
   // The main app owns token refresh; do not race it from a second synchronizer.
@@ -142,6 +142,7 @@ async function run(){
     else status(total?'PDF：この端末に '+available+' / '+total+' 件保存済み（内容照合済み）。':'PDF：同期対象の図面を確認しています。');
   }catch(e){status('PDF同期の確認が必要です：'+e.message)}finally{busy=false}
 }
+if(!IS_PC)await window.sentlogAppReady;
 setTimeout(run,2500);
 setInterval(run,10000);
 window.addEventListener('online',()=>run());
