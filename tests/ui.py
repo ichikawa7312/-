@@ -5,7 +5,7 @@ from playwright.sync_api import sync_playwright
 ROOT=Path(__file__).resolve().parents[1]
 BASE='''<!doctype html><html lang="ja"><meta charset="UTF-8"><style>
 body{margin:0;font:14px system-ui;background:#f3f4f6;color:#111827}header{padding:16px;background:#111827;color:white}.manager-shell{max-width:900px;margin:auto;padding:16px}.hidden{display:none!important}#projectsGrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px}.manager-card{box-sizing:border-box;padding:18px;background:white;border:1px solid #d1d5db;border-radius:12px}.manager-card-title{font-size:18px;margin:12px 0}.manager-folder{font-size:30px}button{padding:10px;border:1px solid #cbd5e1;border-radius:8px;background:white;cursor:pointer}button:disabled{opacity:.45}#projectsEmpty{padding:10px}
-</style><header>セントログ v1.33</header><section id="projectsView"><div class="manager-shell"><div id="projectsGrid"></div><p id="projectsEmpty"></p></div></section><section id="editorView"><div id="stageWrap"></div></section>
+</style><header>セントログ v1.34</header><section id="projectsView"><div class="manager-shell"><div id="projectsGrid"></div><p id="projectsEmpty"></p></div></section><section id="editorView"><div id="stageWrap"></div></section>
 <script>
 let currentView='projects',activeProjectId=null,tool='pan';
 let workspace={projects:[{id:'a',name:'使用中の案件A',drawings:[]},{id:'b',name:'終了した案件B',drawings:[]}]};
@@ -54,6 +54,7 @@ with sync_playwright() as p:
         page.wait_for_function("document.getElementById('slArchiveMessage').textContent.includes('未同期')")
         assert not any(c['p_action']=='begin' for c in calls)
         assert page.evaluate('workspace.projects[0].name')=='未同期の変更'
+        page.locator('#slArchiveClose').click()
         controls[0]['status']='archived';page.evaluate('window.SentlogArchive.refresh()')
         assert '未同期の変更' not in page.locator('#projectsGrid').inner_text()
         page.get_by_role('button',name='📁 保管').click()

@@ -1,7 +1,7 @@
 name: Sentlog archive checks
 on:
   push:
-    branches: [sentlog-archive-v133, main]
+    branches: [sentlog-archive-v133, sentlog-archive-v134, main]
   pull_request:
 permissions:
   contents: read
@@ -30,6 +30,8 @@ jobs:
           pip install playwright==1.57.0
           python -m playwright install --with-deps chromium
           python tests/ui.py
+          python tests/archive_click.py
+          python tests/full_archive_click.py
       - uses: actions/upload-artifact@v4
         if: always()
         with:

@@ -1,4 +1,4 @@
-/* v1.33 archive stage 1. Classification only: never remove local records/files. */
+/* v1.34 archive stage 1. Immediate, bounded preflight feedback. Classification only: never remove local records/files. */
 (function(){
   'use strict';
   const C=window.SentlogArchiveCore;
@@ -7,6 +7,14 @@
   const KEY='sb_publishable_4pCeFn-wPsEYzFLhCMCINw_VEUfxz0-';
   let controls=[],owner='',fresh=false,flight=null,archiveView=false,currentJob=null,acting=false,installed=false;
   const checked=new Map();
+  let pendingMessage='',pendingName='',retryProjectId=null;
+  // Bound read/wait stages, not a whole action: a timed-out wait must NEVER
+  // continue on to begin/finalize later. Existing synchronization may finish.
+  async function waitFor(task,message,ms=15000){
+    let timer;
+    try{return await Promise.race([Promise.resolve().then(task),new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error(message)),ms);})]);}
+    finally{clearTimeout(timer);}
+  }
   const session=()=>{try{return JSON.parse(localStorage.getItem('sentlogCloudSessionV1')||'null');}catch{return null;}};
   const device=()=>localStorage.getItem('sentlogCloudDeviceV1');
   function account(){const id=session()?.user?.id||'';if(owner!==id){owner=id;fresh=false;controls=[];checked.clear();try{controls=JSON.parse(localStorage.getItem('sentlogArchiveControlV1:'+id)||'[]');}catch{};}return id;}
@@ -16,6 +24,9 @@
     try{const r=await fetch(BASE+'/rest/v1/'+path,{method:body===undefined?'GET':'POST',cache:'no-store',signal:c.signal,
       headers:{apikey:KEY,Authorization:'Bearer '+s.access_token,'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body)});
       const j=await r.json().catch(()=>null);if(!r.ok)throw Error(j?.message||'保管状態を確認できません。通信とログインを確認してください。');return j;
+    }catch(e){
+      if(e.name==='AbortError')throw Error('通信の応答を確認できませんでした。保管は確定していません。通信を確認して、もう一度操作してください。');
+      throw e;
     }finally{clearTimeout(timer);}
   }
   const rpc=(action,project=null,data={})=>net('rpc/sentlog_archive_v1',{p_action:action,p_project_id:project,p_device_id:device(),p_data:data});
@@ -67,17 +78,56 @@
   }
   function includeLocal(id,manual){if(!fresh)return false;const c=byLocal(id);return c?C.maySync(c,manual):!manual;}
   function createButton(text,fn){const b=document.createElement('button');b.type='button';b.textContent=text;b.onclick=fn;return b;}
-  function tell(message){const e=document.getElementById('slArchiveMessage');if(e)e.textContent=message;else alert(message);}
-  async function action(fn){if(acting)return;acting=true;try{await fn();}catch(e){tell(e.message||String(e));}finally{acting=false;}}
+  function tell(message){
+    const e=document.getElementById('slArchiveMessage'),dialog=document.getElementById('slArchiveDialog'),msg=document.getElementById('slArchiveDialogMsg');
+    if(e)e.textContent=message;
+    if(dialog?.open&&msg){msg.textContent=message;msg.scrollIntoView({block:'nearest'});}
+    else if(!e)alert(message);
+  }
+  function progress(message){pendingMessage=message;const msg=document.getElementById('slArchiveDialogMsg');if(msg)msg.textContent='';renderJob();}
+  function updateActions(){
+    const dialog=document.getElementById('slArchiveDialog');if(!dialog)return;
+    dialog.setAttribute('aria-busy',String(acting));
+    const ready=currentJob&&C.readiness(currentJob).ready;
+    const done=document.getElementById('slArchiveFinalize');done.hidden=!currentJob;done.disabled=acting||!ready||currentJob?.initiator!==device();
+    for(const id of ['slArchiveRecheck','slArchiveCancel']){const b=document.getElementById(id);b.hidden=!currentJob;b.disabled=acting||!currentJob;}
+    const retry=document.getElementById('slArchiveRetry');retry.hidden=!!currentJob||!retryProjectId||acting;retry.disabled=acting;
+    document.getElementById('slArchiveClose').textContent=currentJob||acting?'閉じる（確認は継続）':'閉じる';
+  }
+  async function action(fn){
+    if(acting){const dialog=document.getElementById('slArchiveDialog');if(dialog&&!dialog.open)dialog.showModal();tell(pendingMessage||'前の操作を確認中です。完了するまでお待ちください。');return;}
+    acting=true;updateActions();
+    try{await fn();}
+    catch(e){pendingMessage='';renderJob();tell(e.message||String(e));}
+    finally{acting=false;pendingMessage='';updateActions();}
+  }
   async function start(p){
+    // Open synchronously on the click, BEFORE awaiting any storage/network work.
+    currentJob=null;retryProjectId=p.id;pendingName=p.name||'案件';
+    pendingMessage='同期状況を確認しています…';openJob();
+    document.getElementById('slArchiveDialogMsg').textContent='';
     if(!navigator.onLine)throw Error('保管する前にオンラインで同期を確認してください。');
-    await window.sentlogCloudIdle?.();await window.sentlogArchiveSync?.();await window.sentlogCloudIdle?.();await refresh();
-    await window.SentlogRecords.settled();window.SentlogRecords.assertSafe();
+    const user=session()?.user?.id,id=device();
+    if(!user||!session()?.access_token||!id)throw Error('ログインして同期を確認してから操作してください。');
+    if(typeof window.sentlogCloudIdle!=='function'||typeof window.sentlogArchiveSync!=='function')throw Error('同期機能の準備ができていません。「この画面を更新」から再読み込みしてください。');
+    progress('現在の同期が終わるのを待っています…');
+    await waitFor(()=>window.sentlogCloudIdle(),'同期処理が続いているため、まだ保管できません。同期の終了を確認してから「もう一度確認」を押してください。');
+    // Do not silently start a full sync of every project from this button.
+    // Unsynced content must be reported, not hidden behind an unbounded transfer.
+    progress('この端末の保存状態を確認しています…');
+    await waitFor(()=>window.SentlogRecords.settled(),'端末への保存を確認できませんでした。保存警告を確認してください。');window.SentlogRecords.assertSafe();
+    progress('案件の同期状況を確認しています…');
+    await waitFor(()=>refresh(),'保管状態の確認に時間がかかっています。通信を確認して、もう一度操作してください。',25000);
     const cp=byLocal(p.id);if(!cp)throw Error('案件の送信がまだ完了していません。「今すぐ同期」を実行してください。');
-    if(cp.checking){currentJob=await rpc('inspect',cp.id,{job_id:cp.job_id});openJob();return;}
+    if(cp.checking){currentJob=await rpc('inspect',cp.id,{job_id:cp.job_id});pendingMessage='';renderJob();return;}
+    if(cp.status==='archived')throw Error('この案件はすでに保管中です。保管フォルダを確認してください。');
     const snapshots=await net('sentlog_project_snapshots?project_id=eq.'+encodeURIComponent(cp.id)+'&select=revision,payload');
-    const s=snapshots?.[0];if(!s||C.snapshotText(localSnapshot(getProject(p.id)))!==C.snapshotText(s.payload))throw Error('未同期の記録があります。同期を完了してから保管してください。');
-    currentJob=await rpc('begin',cp.id,{revision:s.revision});checked.clear();openJob();await refresh();
+    const local=getProject(p.id),snapshot=snapshots?.[0];
+    if(!local||!snapshot||C.snapshotText(localSnapshot(local))!==C.snapshotText(snapshot.payload))throw Error('未同期の記録があります。同期を完了してから保管してください。');
+    if(user!==session()?.user?.id||id!==device())throw Error('ログインまたは端末情報が変わりました。もう一度操作してください。');
+    progress('保管前の安全確認を開始しています…');
+    currentJob=await rpc('begin',cp.id,{revision:snapshot.revision});checked.clear();pendingMessage='';renderJob();
+    await waitFor(()=>refresh(),'端末・PCの確認結果を取得できませんでした。「再確認」を押してください。保管はまだ確定していません。',25000);
   }
   async function manual(cp){
     if(cp.checking)throw Error('保管確認中です。先に確認を完了、または中止してください。');
@@ -95,21 +145,29 @@
     await window.sentlogArchiveSync?.();
   }
   function renderJob(){
-    const box=document.getElementById('slArchiveJobBody');if(!box||!currentJob)return;
-    const ready=C.readiness(currentJob);box.replaceChildren();
+    const box=document.getElementById('slArchiveJobBody');if(!box)return;
+    box.replaceChildren();
+    const name=currentJob?.payload?.project?.name||pendingName;
+    if(name){const target=document.createElement('p');target.textContent='対象：'+name;box.append(target);}
+    if(!currentJob){
+      const state=document.createElement('p');state.setAttribute('role','status');state.textContent=pendingMessage||'確認を完了できませんでした。下の案内をご確認ください。';box.append(state);
+      const note=document.createElement('p');note.className='muted';note.textContent='確認が揃うまで保管には移しません。PDF・写真・記録も削除しません。';box.append(note);updateActions();return;
+    }
+    const ready=C.readiness(currentJob);
     const h=document.createElement('p');h.textContent='まだ保管には移していません。確認中は対象案件への送信を一時停止します。データは消しません。';box.append(h);
     const p=document.createElement('p');p.textContent=ready.ready?'全端末と会社PCの確認が揃いました。下のボタンで保管を確定できます。':ready.reasons.join('\n');p.style.whiteSpace='pre-wrap';box.append(p);
     const note=document.createElement('p');note.className='muted';note.textContent='過去の端末登録も、未確認のまま無視しません。使わなくなった登録がある場合は、未送信のデータがないことを確認してから整理が必要です。10分で確認は失効します。';box.append(note);
-    const done=document.getElementById('slArchiveFinalize');done.disabled=!ready.ready||currentJob.initiator!==device();
+    updateActions();
   }
   function openJob(){let dialog=document.getElementById('slArchiveDialog');if(!dialog){
     dialog=document.createElement('dialog');dialog.id='slArchiveDialog';dialog.setAttribute('aria-labelledby','slArchiveDialogTitle');
     const h=document.createElement('h2');h.id='slArchiveDialogTitle';h.textContent='保管前の安全確認';
-    const b=document.createElement('div');b.id='slArchiveJobBody';const msg=document.createElement('p');msg.id='slArchiveDialogMsg';msg.setAttribute('role','status');
-    const finish=createButton('確認済みの案件を保管へ移す',()=>action(async()=>{try{await rpc('finalize',currentJob.project_id,{job_id:currentJob.id});dialog.close();currentJob=null;await refresh();tell('保管へ移しました。全端末に反映され、自動同期は停止します。PDF・写真は端末に残しています。');}catch(e){msg.textContent=e.message;}}));finish.id='slArchiveFinalize';
-    const recheck=createButton('再確認',()=>action(async()=>{checked.clear();await refresh();currentJob=await rpc('inspect',currentJob.project_id,{job_id:currentJob.id});renderJob();}));
-    const cancel=createButton('確認を中止して使用中のままにする',()=>action(async()=>{await rpc('cancel',currentJob.project_id,{job_id:currentJob.id});dialog.close();currentJob=null;checked.clear();await refresh();tell('保管の確認を中止しました。使用中のままです。');}));
-    const close=createButton('閉じる（確認は継続）',()=>dialog.close());dialog.append(h,b,msg,finish,recheck,cancel,close);document.body.append(dialog);
+    const b=document.createElement('div');b.id='slArchiveJobBody';const msg=document.createElement('p');msg.id='slArchiveDialogMsg';msg.setAttribute('role','status');msg.setAttribute('aria-live','polite');
+    const finish=createButton('確認済みの案件を保管へ移す',()=>action(async()=>{try{await rpc('finalize',currentJob.project_id,{job_id:currentJob.id});dialog.close();currentJob=null;retryProjectId=null;await refresh();tell('保管へ移しました。全端末に反映され、自動同期は停止します。PDF・写真は端末に残しています。');}catch(e){msg.textContent=e.message;}}));finish.id='slArchiveFinalize';
+    const recheck=createButton('再確認',()=>action(async()=>{tell('端末とPCの状態を再確認しています…');checked.clear();await waitFor(()=>refresh(),'確認に時間がかかっています。通信を確認して再確認してください。',25000);currentJob=await rpc('inspect',currentJob.project_id,{job_id:currentJob.id});renderJob();tell('確認結果を更新しました。');}));recheck.id='slArchiveRecheck';
+    const cancel=createButton('確認を中止して使用中のままにする',()=>action(async()=>{await rpc('cancel',currentJob.project_id,{job_id:currentJob.id});dialog.close();currentJob=null;retryProjectId=null;checked.clear();await refresh();tell('保管の確認を中止しました。使用中のままです。');}));cancel.id='slArchiveCancel';
+    const retry=createButton('もう一度確認',()=>action(()=>{const p=getProject(retryProjectId);if(!p)throw Error('案件一覧から、もう一度選択してください。');return start(p);}));retry.id='slArchiveRetry';
+    const close=createButton('閉じる',()=>dialog.close());close.id='slArchiveClose';dialog.append(h,b,msg,finish,recheck,cancel,retry,close);document.body.append(dialog);
     dialog.addEventListener('close',()=>{const e=document.getElementById('slArchiveMessage');if(e&&currentJob)e.textContent='保管を確認中です。「保管を確認」から続けられます。';});
   }renderJob();if(!dialog.open)dialog.showModal();}
   function renderBanner(){
@@ -119,14 +177,14 @@
     const label=document.createElement('span');label.textContent=c.checking?'保管の安全確認中です。図面を閉じてください。未同期があれば確認を中止してください。':'保管中・自動同期停止。この段階では閲覧のみです。編集する場合は「使用中に戻す」を選んでください。';
     banner.append(label);
     if(c.status==='archived')banner.append(createButton('使用中に戻す',()=>action(()=>reopen(c))));
-    else banner.append(createButton('保管を確認',()=>action(async()=>{currentJob=await rpc('inspect',c.id,{job_id:c.job_id});openJob();})));
+    else banner.append(createButton('保管を確認',()=>action(()=>start({id:c.client_key,name:c.name}))));
   }
   function locked(){const c=byLocal(activeProjectId);return !!c&&(c.status==='archived'||c.checking);}
   async function install(){
     await window.sentlogAppReady;account();
     const shell=document.querySelector('#projectsView .manager-shell');if(!shell)return;
     const style=document.createElement('style');style.textContent=`
-.sl-archive-tools{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin:14px 0}.sl-archive-tools h2{margin:0;font-size:17px}.sl-archive-tools button,.sl-archive-actions button{min-height:44px;font-size:12px;width:auto}.sl-archive-actions{display:flex;flex-wrap:wrap;gap:6px;margin-top:14px}.sl-archive-main{width:100%;text-align:left;background:transparent;border:0;padding:0;color:inherit}.sl-archive-folder{background:#f0f5fa;border:1px dashed #94a3b8;min-height:130px}.sl-archive-hint{font-size:12px;line-height:1.6;color:#475569}#slArchiveMessage,#slArchiveProjectBanner{font-size:13px;line-height:1.65;white-space:pre-wrap}#slArchiveProjectBanner{background:#fff7ed;padding:10px;margin:8px 12px;border:1px solid #fed7aa;border-radius:8px}#slArchiveProjectBanner[hidden]{display:none}#slArchiveDialog{box-sizing:border-box;width:min(600px,calc(100vw - 24px));max-height:85vh;overflow:auto;border:1px solid #cbd5e1;border-radius:14px;padding:20px;color:#111827;background:#fff;font:14px/1.7 system-ui}#slArchiveDialog::backdrop{background:#0008}#slArchiveDialog h2{font-size:19px}#slArchiveDialog button{display:block;width:100%;min-height:44px;margin-top:10px}#slArchiveDialog .muted{font-size:12px;color:#64748b}`;document.head.append(style);
+.sl-archive-tools{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin:14px 0}.sl-archive-tools h2{margin:0;font-size:17px}.sl-archive-tools button,.sl-archive-actions button{min-height:44px;font-size:12px;width:auto}.sl-archive-actions{display:flex;flex-wrap:wrap;gap:6px;margin-top:14px}.sl-archive-main{width:100%;text-align:left;background:transparent;border:0;padding:0;color:inherit}.sl-archive-folder{background:#f0f5fa;border:1px dashed #94a3b8;min-height:130px}.sl-archive-hint{font-size:12px;line-height:1.6;color:#475569}#slArchiveMessage,#slArchiveProjectBanner{font-size:13px;line-height:1.65;white-space:pre-wrap}#slArchiveProjectBanner{background:#fff7ed;padding:10px;margin:8px 12px;border:1px solid #fed7aa;border-radius:8px}#slArchiveProjectBanner[hidden]{display:none}#slArchiveDialog{box-sizing:border-box;width:min(600px,calc(100vw - 24px));max-height:85vh;overflow:auto;border:1px solid #cbd5e1;border-radius:14px;padding:20px;color:#111827;background:#fff;font:14px/1.7 system-ui}#slArchiveDialog::backdrop{background:#0008}#slArchiveDialog h2{font-size:19px}#slArchiveDialog button{display:block;width:100%;min-height:44px;margin-top:10px}#slArchiveDialog .muted{font-size:12px;color:#64748b}#slArchiveDialog [hidden]{display:none!important}#slArchiveDialogMsg{white-space:pre-wrap;overflow-wrap:anywhere;color:#991b1b}#slArchiveDialog button:disabled{opacity:.5;cursor:wait}`;document.head.append(style);
     const tools=document.createElement('div');tools.className='sl-archive-tools';const title=document.createElement('h2');title.id='slArchiveListTitle';title.textContent='使用中の案件';
     const back=createButton('← 案件一覧へ',()=>{archiveView=false;renderProjects();});back.id='slArchiveBack';back.hidden=true;tools.append(title,back);
     const msg=document.createElement('p');msg.id='slArchiveMessage';msg.setAttribute('role','status');shell.querySelector('#projectsGrid').before(tools,msg);

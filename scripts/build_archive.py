@@ -1,7 +1,8 @@
-"""Apply the reviewed v1.33 additions to the v1.32 static app at build time.
+"""Apply the reviewed archive additions to the v1.32 static app at build time.
 
 Inputs remain the original application files; guarded transformations fail closed
 if a future edit changes an integration point. No user data is read by this build.
+v1.34 changes only archive-click feedback and its release/cache markers.
 """
 from pathlib import Path
 import hashlib
@@ -51,21 +52,21 @@ change(p,'v1.26 · PDF再配信対応','v1.33 · 案件一式の保管確認')
 change(p,'<script type="module" src="../sentlog/pdf-recovery.js?v=126"></script>', '<script src="../sentlog/archive-core.js?v=133"></script>\n<script src="../sentlog/archive-pc.js?v=133"></script>\n<script type="module" src="../sentlog/pdf-recovery.js?v=133"></script>')
 
 p = 'sentlog/index.html'
-change(p,'phone-runtime.js?v=132','phone-runtime.js?v=133',2)
-change(p,"'v1.32'","'v1.33'",2) # phone and storage preflight tokens
-change(p,"['storage-ui.js?v=132','v1.33']", "['storage-ui.js?v=132','v1.32'],['archive-core.js?v=133','SentlogArchiveCore'],['archive.js?v=133','v1.33 archive']")
+change(p,'phone-runtime.js?v=132','phone-runtime.js?v=134',2)
+change(p,"'v1.32'","'v1.34'",2) # phone and storage preflight tokens
+change(p,"['storage-ui.js?v=132','v1.34']", "['storage-ui.js?v=132','v1.32'],['archive-core.js?v=133','SentlogArchiveCore'],['archive.js?v=134','v1.34 archive']")
 change(p,'cloud-sync.js?v=20261008-storage-130','cloud-sync.js?v=20261008-archive-133',2)
 change(p,"'await window.sentlogAppReady'],['sync-view.js", "'archive-v133'],['sync-view.js")
 change(p,'pdf-recovery.js?v=130','pdf-recovery.js?v=133',2)
 # The loader injects escaped script end tags into document.write.
 needle='<script type="module" src="./cloud-sync.js?v=20261008-archive-133">'
-change(p,needle,'<script src="./archive-core.js?v=133"><\\/script><script src="./archive.js?v=133"><\\/script>'+needle)
+change(p,needle,'<script src="./archive-core.js?v=133"><\\/script><script src="./archive.js?v=134"><\\/script>'+needle)
 p = 'sentlog/phone-runtime.js'
 s = (ROOT/p).read_text()
 if s.count('v1.32') != 4:
     raise RuntimeError('Unexpected build-version markers')
-(ROOT/p).write_text(s.replace('v1.32','v1.33'))
+(ROOT/p).write_text(s.replace('v1.32','v1.34'))
 p = 'sentlog/sw.js'
-change(p,"const CACHE='sentlog-pwa-v145';", "const CACHE='sentlog-pwa-v146';")
+change(p,"const CACHE='sentlog-pwa-v145';", "const CACHE='sentlog-pwa-v147';")
 change(p,"'record-store.js','storage-ui.js'", "'archive-core.js','archive.js','record-store.js','storage-ui.js'")
-print('Built Sentlog v1.33 archive stage 1: no local deletion operations')
+print('Built Sentlog v1.34 archive click fix: no local deletion operations')
