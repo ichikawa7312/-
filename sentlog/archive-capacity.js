@@ -1,4 +1,4 @@
-/* Sentlog v1.37. Device-only archived capacity release and verified PC restoration.
+/* Sentlog v1.38. Device-only archived capacity release and verified PC restoration.
    No automatic purge; no mutation of company PC backup or other devices. */
 (function(){
   'use strict';
@@ -260,17 +260,35 @@
     }finally{if(view)view.locked(false);active=false;}
   }
   function renderActions(host,cp,p){
-    if(!cp||cp.retired||cp.status!=='archived')return;
+    if(!cp||cp.status!=='archived')return;
     const saved=current(cp.id);
-    const style='sl-capacity-button';
-    if(saved?.mode){
-      const button=el('button','PCからこの端末に復旧');button.type='button';button.className=style;button.onclick=()=>restore(cp);host.append(button);
-      const note=el('small',saved.mode==='project'?'この端末から案件を外しています':'この端末のPDF・写真は整理済み');note.className='sl-capacity-note';host.append(note);
-    }else{
-      const files=el('button','PDF・写真を端末から外す');files.type='button';files.className=style;files.onclick=()=>cleanup(cp,'files');
-      const whole=el('button','この端末から案件を外す');whole.type='button';whole.className=style;whole.onclick=()=>cleanup(cp,'project');
-      host.append(files,whole);
+    const unavailable=!!cp.retired||!!cp.checking;
+    const cleared=!!saved?.mode;
+    const disableRelease=unavailable||cleared;
+    const disableRestore=unavailable||!cleared;
+    const reason=cp.retired
+      ?'使用終了（不要）の案件は、会社PCへの復旧用一式が確認されていないため操作できません。'
+      :cp.checking?'保管前の確認中です。確認が完了するまで操作できません。'
+      :cleared?'この端末は容量整理済みです。再び整理するには先に復旧してください。'
+      :'この端末ではまだ容量整理していません。復旧は整理後に利用できます。';
+    function control(label,handler,disabled){
+      const button=el('button',label);button.type='button';button.className='sl-capacity-button';
+      button.disabled=disabled;
+      if(disabled)button.title=reason;
+      else button.onclick=handler;
+      host.append(button);
     }
+    control('PDF・写真を端末から外す',()=>cleanup(cp,'files'),disableRelease);
+    control('この端末から案件を外す',()=>cleanup(cp,'project'),disableRelease);
+    control('PCからこの端末に復旧',()=>restore(cp),disableRestore);
+    const note=el('small',cp.retired
+      ?'使用終了（不要）：復旧用の一式バックアップが未確認のため、容量整理・復旧はできません。'
+      :cp.checking?'保管の安全確認中です。完了してから操作してください。'
+      :saved?.mode==='project'?'この端末では案件を外しています。PCから復旧できます。'
+      :saved?.mode==='files'?'この端末のPDF・写真は整理済みです。PCから復旧できます。'
+      :'通常保管：PCにある原本を照合してから端末の容量を空けます。復旧は整理後に使用できます。');
+    note.className='sl-capacity-note';
+    host.append(note);
   }
   async function install(){
     await window.sentlogAppReady;

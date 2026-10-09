@@ -1,4 +1,4 @@
-"""Guarded v1.37 capacity + restoration integration after archive and management builds.
+"""Guarded v1.38 capacity + restoration integration after archive and management builds.
 Every storage mutation stays user-triggered. No test or build touches real user data.
 """
 from pathlib import Path
@@ -81,7 +81,7 @@ change(p,"  async function reopen(cp){\n",
 change(p,"if(cp.retired)throw Error('この端末に残っている記録はありません。使用終了の案件は自動で取得しません。');await manual(cp);",
  "if(cp.retired)throw Error('この端末に残っている記録はありません。使用終了の案件は自動で取得しません。');if(window.SentlogCapacity?.isCleared(cp.id))throw Error('この端末から外しています。「PCから復旧」を押してください。');await manual(cp);")
 change(p,"card.append(actions);grid.append(card);",
- "if(archiveView&&!cp?.retired)window.SentlogCapacity?.renderActions(actions,cp,p);\n        card.append(actions);grid.append(card);")
+ "if(archiveView)window.SentlogCapacity?.renderActions(actions,cp,p);\n        card.append(actions);grid.append(card);")
 change(p,"if(archiveView){if(!cp?.retired)actions.append(createButton('この案件を手動同期',()=>action(()=>manual(cp))));",
  "if(archiveView){if(!cp?.retired&&!window.SentlogCapacity?.isCleared(cp.id))actions.append(createButton('この案件を手動同期',()=>action(()=>manual(cp))));")
 change(p,"if(!getProject(p.id)){if(!cp)throw Error('案件を確認できません。');",
@@ -90,22 +90,22 @@ change(p,"if(!getProject(p.id)){if(!cp)throw Error('案件を確認できませ�
 # Append the feature script before the normal cloud synchronization starts.
 p='sentlog/index.html'
 change(p,"['management.js?v=136','v1.36 management']",
- "['management.js?v=136','v1.36 management'],['archive-capacity.js?v=137','SentlogCapacity']")
+ "['management.js?v=136','v1.36 management'],['archive-capacity.js?v=138','SentlogCapacity']")
 change(p,'<script src="./management.js?v=136"><\\/script>',
- '<script src="./management.js?v=136"><\\/script><script src="./archive-capacity.js?v=137"><\\/script>')
-change(p,"'v1.36'","'v1.37'")
-change(p,'phone-runtime.js?v=136','phone-runtime.js?v=137',2)
+ '<script src="./management.js?v=136"><\\/script><script src="./archive-capacity.js?v=138"><\\/script>')
+change(p,"'v1.36'","'v1.38'")
+change(p,'phone-runtime.js?v=136','phone-runtime.js?v=138',2)
 p='sentlog/phone-runtime.js'
-change(p,'v1.36','v1.37',4)
+change(p,'v1.36','v1.38',4)
 p='sentlog/sw.js'
-change(p,"const CACHE='sentlog-pwa-v149';","const CACHE='sentlog-pwa-v150';")
+change(p,"const CACHE='sentlog-pwa-v149';","const CACHE='sentlog-pwa-v151';")
 change(p,"'management.js','record-store.js'","'management.js','archive-capacity.js','record-store.js'")
 
 p='sentlog-pc/index.html'
 change(p,'<script src="../sentlog/archive-pc.js?v=133"></script>',
- '<script src="../sentlog/archive-pc.js?v=133"></script>\n<script src="../sentlog/archive-restore-pc.js?v=137"></script>')
-change(p,'v1.35 · 案件一式の保管確認','v1.37 · 復旧・容量整理対応')
+ '<script src="../sentlog/archive-pc.js?v=133"></script>\n<script src="../sentlog/archive-restore-pc.js?v=138"></script>')
+change(p,'v1.35 · 案件一式の保管確認','v1.38 · 復旧・容量整理対応')
 
-change('tests/full_management.py',"window.SENTLOG_BUILD==='v1.36'","window.SENTLOG_BUILD==='v1.37'")
-change('tests/full_archive_click.py',"window.SENTLOG_BUILD==='v1.36'","window.SENTLOG_BUILD==='v1.37'")
-print('Built Sentlog v1.37 capacity stage: archived-only actions, atomic local transaction, PC data preserved')
+change('tests/full_management.py',"window.SENTLOG_BUILD==='v1.36'","window.SENTLOG_BUILD==='v1.38'")
+change('tests/full_archive_click.py',"window.SENTLOG_BUILD==='v1.36'","window.SENTLOG_BUILD==='v1.38'")
+print('Built Sentlog v1.38 capacity stage: archived-only actions, atomic local transaction, PC data preserved')

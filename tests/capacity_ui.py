@@ -84,7 +84,7 @@ try:
    context.route('**/*',route)
    page=context.new_page();errors=[];page.on('pageerror',lambda e:errors.append(str(e)))
    page.goto(origin+'/sentlog/',wait_until='domcontentloaded')
-   page.wait_for_function("window.SENTLOG_BUILD==='v1.37' && !!window.SentlogCapacity && !!window.SentlogArchive",timeout=15000)
+   page.wait_for_function("window.SENTLOG_BUILD==='v1.38' && !!window.SentlogCapacity && !!window.SentlogArchive",timeout=15000)
    page.evaluate("""async data=>{
      workspace={projects:data.projects};
      window.SentlogRecords.setItem('surveyFieldNoteWorkspaceV1',JSON.stringify(workspace));
@@ -95,6 +95,9 @@ try:
      await window.SentlogArchive.refresh();renderProjects();
    }""",{'projects':[project,other],'id':drawingid,'state':state,'photoid':photoid,'pdf':list(pdf),'photo':list(photo)})
    page.get_by_role('button',name='📁 保管').click()
+   expect(page.get_by_role('button',name='PDF・写真を端末から外す')).to_be_enabled()
+   expect(page.get_by_role('button',name='この端末から案件を外す')).to_be_enabled()
+   expect(page.get_by_role('button',name='PCからこの端末に復旧')).to_be_disabled()
    original=page.evaluate('window.SentlogRecords.getItem("surveyFieldNoteDrawingV1:'+drawingid+'")')
    page.get_by_role('button',name='PDF・写真を端末から外す').click()
    delete=page.get_by_role('button',name='照合済みのPDF・写真を端末から削除')
@@ -114,6 +117,9 @@ try:
     })"""),ensure_ascii=False))
     print('REQUESTS',json.dumps(calls[-10:],ensure_ascii=False))
     raise
+   expect(page.get_by_role('button',name='PDF・写真を端末から外す')).to_be_disabled()
+   expect(page.get_by_role('button',name='この端末から案件を外す')).to_be_disabled()
+   expect(page.get_by_role('button',name='PCからこの端末に復旧')).to_be_enabled()
    assert page.evaluate("async()=>await getDBFile('background:"+drawingid+"')") is None
    assert page.evaluate("async()=>await getDBFile('photo:"+drawingid+":"+photoid+"')") is None
    assert page.evaluate('window.SentlogRecords.getItem("surveyFieldNoteDrawingV1:'+drawingid+'")')==original
@@ -124,6 +130,9 @@ try:
    assert page.evaluate("async()=>Array.from(new Uint8Array(await (await getDBFile('background:"+drawingid+"')).arrayBuffer()))")==list(pdf)
    assert page.evaluate("async()=>Array.from(new Uint8Array(await (await getDBFile('photo:"+drawingid+":"+photoid+"')).arrayBuffer()))")==list(photo)
    page.locator('.sl-capacity-dialog').get_by_role('button',name='閉じる',exact=True).click()
+   expect(page.get_by_role('button',name='PDF・写真を端末から外す')).to_be_enabled()
+   expect(page.get_by_role('button',name='この端末から案件を外す')).to_be_enabled()
+   expect(page.get_by_role('button',name='PCからこの端末に復旧')).to_be_disabled()
    page.get_by_role('button',name='この端末から案件を外す').click()
    delete=page.get_by_role('button',name='この端末から案件一式を外す')
    expect(delete).to_be_visible()

@@ -1,7 +1,7 @@
 name: Sentlog archive checks
 on:
   push:
-    branches: [sentlog-archive-v133, sentlog-archive-v134, sentlog-management-v135, sentlog-registration-v136, sentlog-capacity-v137, main]
+    branches: [sentlog-archive-v133, sentlog-archive-v134, sentlog-management-v135, sentlog-registration-v136, sentlog-capacity-v137, sentlog-capacity-v138, main]
   pull_request:
 permissions:
   contents: read

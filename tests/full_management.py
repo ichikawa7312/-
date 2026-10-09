@@ -79,6 +79,9 @@ try:
    page.get_by_role('button',name='使用終了にする',exact=True).click();d.get_by_role('checkbox').check();d.get_by_role('button',name='削除せずに使用終了にする').click();expect(d).not_to_be_visible()
    expect(page.get_by_role('button',name='使用終了にする',exact=True)).to_have_count(0)
    page.get_by_role('button',name='📁 保管').click();expect(page.locator('#projectsGrid')).to_contain_text('使用終了（不要）')
+   expect(page.locator('#projectsGrid')).to_contain_text('復旧用の一式バックアップが未確認')
+   for label in ('PDF・写真を端末から外す','この端末から案件を外す','PCからこの端末に復旧'):
+    expect(page.get_by_role('button',name=label)).to_be_disabled()
    expect(page.get_by_role('button',name='この案件を手動同期')).to_have_count(0)
    assert page.evaluate('JSON.stringify(workspace)')==before
    assert page.evaluate("async()=>await (await getDBFile('background:retained-test')).text()")=='keep original bytes'
