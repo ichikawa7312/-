@@ -101,7 +101,19 @@ try:
    expect(delete).to_be_visible()
    page.once('dialog',lambda d:d.accept())
    delete.click()
-   page.wait_for_function("window.SentlogCapacity.isCleared('cloud-test') && !window.SentlogRecords.pending")
+   try:
+    page.wait_for_function("window.SentlogCapacity.isCleared('cloud-test') && !window.SentlogRecords.pending",timeout=8000)
+   except Exception:
+    print('CAPACITY DEBUG',json.dumps(page.evaluate("""() => ({
+      message:document.querySelector('.sl-capacity-dialog .sl-capacity-message')?.textContent,
+      hint:document.querySelector('.sl-capacity-dialog .sl-capacity-hint')?.textContent,
+      pending:window.SentlogRecords.pending,issues:window.SentlogRecords.issues,
+      saved:window.SentlogRecords.getItem('sentlogArchiveLocalV1'),
+      workspace:window.SentlogRecords.getItem('surveyFieldNoteWorkspaceV1'),
+      view:currentView
+    })"""),ensure_ascii=False))
+    print('REQUESTS',json.dumps(calls[-10:],ensure_ascii=False))
+    raise
    assert page.evaluate("async()=>await getDBFile('background:"+drawingid+"')") is None
    assert page.evaluate("async()=>await getDBFile('photo:"+drawingid+":"+photoid+"')") is None
    assert page.evaluate('window.SentlogRecords.getItem("surveyFieldNoteDrawingV1:'+drawingid+'")')==original
