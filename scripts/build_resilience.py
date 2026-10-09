@@ -19,10 +19,6 @@ change(p,"await rpc('reopen',cp.id);",
 # only restore via a PC-verified immutable backup (capacity restore handles this).
 change(p,"await manual(cp);}showDrawings(p.id)",
          "throw Error('この端末に案件がありません。保管フォルダの「PCからこの端末に復旧」を使ってください。');}showDrawings(p.id)")
-change(p,"'保管中・自動同期停止。この段階では閲覧のみです。'",
-         "'保管中・自動同期停止。閲覧・復旧は保管フォルダで行います。'")
-change(p,"'保管中は自動同期を停止します。この版では端末のデータは削除しません。'",
-         "'保管中は自動同期を停止します。容量整理・復旧は保管済み案件だけ操作できます。'")
 
 p='sentlog/index.html'
 change(p,"archive-capacity.js?v=138","archive-capacity.js?v=139",2)
