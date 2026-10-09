@@ -27,7 +27,7 @@ async function fixture({corrupt=false,unknownMime=false}={}){
   sentlogCloudSessionV1:JSON.stringify(session),sentlogPcWebDeviceV1:'pc-id'
  };
  const context=vm.createContext({
-   location:{pathname:'/sentlog-pc/'},console,Blob,File,Response,Date,
+   location:{pathname:'/sentlog-pc/'},console,Blob,File,Response,Date,AbortController,
    crypto:webcrypto,navigator:{onLine:true},
    document:{hidden:false,querySelector:()=>main,createElement:element,getElementById:()=>null,addEventListener:()=>{}},
    localStorage:{getItem:k=>local[k]||null},idbGet:async k=>k==='root'?root:null,
