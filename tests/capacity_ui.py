@@ -73,6 +73,12 @@ try:
      elif action=='finish':result={'finished':True}
      elif action=='cancel':result={'cancelled':True}
      else:unexpected.append(body);code=400
+    elif path.endswith('/rpc/sentlog_backup_status_v2'):
+     result={'name':project['name'],'status':'archived','retired':False,
+       'backup':{'revision':1,'is_current_revision':True,'file_count':2,'pdf_count':1,'photo_count':1,
+         'total_bytes':len(pdf)+len(photo),'last_verified_at':'2026-10-09T04:00:00Z'},
+       'events':[{'type':'archive_archived','at':'2026-10-09T04:00:00Z',
+         'device':'市川 PC','detail':{'file_count':2}}]}
     elif path.endswith('/sentlog_devices'):
      if r.method=='PATCH':rr.fulfill(status=204,headers={'Access-Control-Allow-Origin':'*'});return
      result=[{'id':'device-current','active':True}]
@@ -146,6 +152,32 @@ try:
    page.wait_for_function("!window.SentlogCapacity.isCleared('cloud-test') && !window.SentlogRecords.pending",timeout=30000)
    assert sorted(x['name'] for x in page.evaluate('workspace.projects'))==sorted([project['name'],other['name']])
    assert page.evaluate('window.SentlogRecords.getItem("surveyFieldNoteDrawingV1:'+drawingid+'")')==original
+   # v1.39: backup inventory + audit appears with safe text-only rendering.
+   page.locator('.sl-capacity-dialog').get_by_role('button',name='閉じる',exact=True).click()
+   page.get_by_role('button',name='バックアップ・操作履歴を確認').click()
+   expect(page.locator('.sl-details-dialog')).to_contain_text('PDF')
+   expect(page.locator('.sl-details-dialog')).to_contain_text('市川 PC')
+   page.locator('.sl-details-dialog').get_by_role('button',name='閉じる').click()
+   # Simulate a newly registered device: case does not exist locally and it has
+   # no capacity marker. Other projects must remain untouched.
+   page.evaluate("""async data=>{
+     const old=window.SentlogRecords.getItem('surveyFieldNoteWorkspaceV1');
+     const ws=JSON.parse(old);
+     const next={...ws,projects:ws.projects.filter(p=>p.id!==data.project)};
+     await window.SentlogRecords.archiveAtomic({
+       writes:[['surveyFieldNoteWorkspaceV1',JSON.stringify(next)],['surveyFieldNoteDrawingV1:'+data.drawing,null]],
+       deleteFiles:[{key:'background:'+data.drawing,size:data.pdf},{key:'photo:'+data.drawing+':'+data.photo,size:data.photoSize}],
+       expectedWorkspace:old
+     });
+     workspace=next;renderProjects();
+   }""",{'project':project['id'],'drawing':drawingid,'photo':photoid,'pdf':len(pdf),'photoSize':len(photo)})
+   expect(page.get_by_role('button',name='PDF・写真を端末から外す')).to_be_disabled()
+   expect(page.get_by_role('button',name='PCからこの端末に復旧')).to_be_enabled()
+   page.get_by_role('button',name='PCからこの端末に復旧').click()
+   page.wait_for_function("workspace.projects.some(p=>p.id==='local-archive-test') && !window.SentlogRecords.pending",timeout=30000)
+   assert sorted(x['name'] for x in page.evaluate('workspace.projects'))==sorted([project['name'],other['name']])
+   assert page.evaluate("async()=>Array.from(new Uint8Array(await (await getDBFile('background:"+drawingid+"')).arrayBuffer()))")==list(pdf)
+   print(f'PASS fresh device {width}px: PC-verified archived case appears without local marker and restores while other project survives')
    assert not unexpected,unexpected
    assert not errors,errors
    assert not any(c['method']=='DELETE' for c in calls)
