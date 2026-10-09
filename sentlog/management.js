@@ -1,4 +1,4 @@
-/* v1.35 management. Reversible classification and device settings; no data deletion. */
+/* v1.36 management. Reversible classification and device settings; no data deletion. */
 (function(){
   'use strict';
   const BASE='https://wiulvaqixphuobdielyy.supabase.co';
@@ -6,13 +6,13 @@
   const session=()=>{try{return JSON.parse(localStorage.getItem('sentlogCloudSessionV1')||'null');}catch{return null;}};
   const device=()=>localStorage.getItem('sentlogCloudDeviceV1');
   let listFlight=null,rows=[],requestNo=0;
-  async function rpc(action,project=null,payload={}){
+  async function rpc(action,project=null,payload={},endpoint='sentlog_management_v1'){
     if(!navigator.onLine)throw Error('通信できる状態で操作してください。');
     if(window.sentlogManagementSession)await window.sentlogManagementSession();
     const s=session();if(!s?.access_token||!s?.user?.id)throw Error('ログインしてから操作してください。');
     const actor=device(),owner=s.user.id,c=new AbortController(),timeout=setTimeout(()=>c.abort(),20000);
     try{
-      const response=await fetch(BASE+'/rest/v1/rpc/sentlog_management_v1',{
+      const response=await fetch(BASE+'/rest/v1/rpc/'+endpoint,{
         method:'POST',cache:'no-store',signal:c.signal,
         headers:{apikey:KEY,Authorization:'Bearer '+s.access_token,'Content-Type':'application/json'},
         body:JSON.stringify({p_action:action,p_project_id:project,p_device_id:actor,p_data:payload})
@@ -78,6 +78,14 @@
       if(name===null)return;
       if(!name.trim()||name.trim().length>120)throw Error('端末名を1～120文字で入力してください。');
       await rpc(action,null,{device_id:row.id,name:name.trim()});
+    }else if(action==='device_remove'){
+      if(row.active)throw Error('先にこの登録を停止してください。');
+      const done=await openDecision({title:'「'+row.name+'」を登録一覧から削除する',
+        description:'停止中の登録を一覧から外し、元の登録を再開できなくします。\n端末内の写真・PDF・変状記録、会社PCの控えは削除しません。PDF受信履歴を壊さないよう登録番号の参照情報はシステム内に保持します。\nもう一度利用する場合は新しい登録が必要です。停止した端末に未送信の内容がないことを確認してください。',
+        checkboxText:'停止済み登録を一覧から削除し、元の登録は再開できないことを確認しました。',
+        confirmText:'登録一覧から削除',
+        run:()=>rpc('remove',null,{device_id:row.id,confirm_device_id:row.id,confirm_name:row.name,confirmed:true},'sentlog_device_registration_v1')
+      });if(!done)return;
     }else{
       const stopping=action==='device_stop';
       const done=await openDecision({title:'「'+row.name+'」の登録を'+(stopping?'停止':'再開')+'する',
@@ -103,7 +111,13 @@
       const rename=button('名前を変更',doAction('device_rename'));
       const active=button(row.active?'登録を停止':'登録を再開',doAction(row.active?'device_stop':'device_resume'));
       if(row.active&&row.id===id){active.disabled=true;active.title='今操作している端末は別の端末から停止してください。';}
-      actions.append(rename,active);item.append(name,info,actions,error);list.append(item);
+      actions.append(rename,active);
+      if(!row.active){
+        const remove=button('登録を削除',doAction('device_remove'));
+        if(row.id===id){remove.disabled=true;remove.title='現在操作している端末の登録は削除できません。';}
+        actions.append(remove);
+      }
+      item.append(name,info,actions,error);list.append(item);
     }
     if(!rows.length)list.append(paragraph('このアカウントの登録端末はありません。'));
   }
@@ -114,8 +128,12 @@
     msg.textContent='登録端末を確認しています…';refresh.disabled=true;
     document.getElementById('slDeviceList').replaceChildren();document.getElementById('slDeviceCounts').textContent='';
     listFlight=(async()=>{try{
-      const result=await rpc('device_list');if(!Array.isArray(result))throw Error('登録端末を確認できません。');
-      if(generation!==requestNo)return;rows=result;renderDevices();msg.textContent='';
+      const result=await rpc('device_list');
+      const hidden=await rpc('list',null,{},'sentlog_device_registration_v1');
+      if(!Array.isArray(result)||!Array.isArray(hidden))throw Error('登録端末を確認できません。');
+      if(generation!==requestNo)return;
+      const removed=new Set(hidden);
+      rows=result.filter(r=>!removed.has(r.id));renderDevices();msg.textContent='';
     }catch(e){rows=[];msg.textContent=e.message||String(e);throw e;}finally{listFlight=null;refresh.disabled=false;}})();return listFlight;
   }
   async function install(){
@@ -126,7 +144,7 @@
 `;document.head.append(style);
     const section=document.createElement('details');section.id='slDeviceSection';
     const summary=document.createElement('summary');summary.textContent='登録端末';
-    const help=paragraph('同じ端末でも、ブラウザや登録し直しにより別の登録が残る場合があります。登録番号と最終接続を見て、1件ずつ整理してください。\n停止してもデータは消しません。アカウントのログアウト機能ではありません。古い版は先に更新してください。');
+    const help=paragraph('同じ端末でも、ブラウザや登録し直しにより別の登録が残る場合があります。登録番号と最終接続を見て、1件ずつ整理してください。\n停止後は「登録を削除」で一覧から外せます。端末・PCのPDFや写真は消さず、受信履歴のための参照情報も残します。削除した登録は再開できません。古い版は先に更新してください。');
     const counts=paragraph('');counts.id='slDeviceCounts';const msg=paragraph('');msg.id='slDeviceMessage';msg.setAttribute('role','status');
     const refresh=button('登録端末を再確認',()=>loadDevices().catch(()=>{}));refresh.id='slDeviceRefresh';
     const list=document.createElement('div');list.id='slDeviceList';section.append(summary,help,refresh,msg,counts,list);backup.before(section);

@@ -1,4 +1,4 @@
-"""Integrate v1.35 into the checked v1.34 archive build. No user data access.
+"""Integrate v1.36 into the checked v1.34 archive build. No user data access.
 Run AFTER build_archive.py. Hash guards deliberately reject an unknown baseline.
 """
 from pathlib import Path
@@ -37,13 +37,13 @@ change(p,'pdf-recovery.js?v=133','pdf-recovery.js?v=135')
 p='sentlog/pdf-recovery.js'
 change(p,"  try{\n    const assets=await api('sentlog_assets?", "  try{\n    const registration=await api('sentlog_devices?id=eq.'+enc(id)+'&select=id,active');\n    if(!registration?.[0]||registration[0].active!==true){status('この端末登録は停止中、または未確認です。セントログの「設定 → 登録端末」を確認してください。');return;}\n    const assets=await api('sentlog_assets?")
 p='sentlog/index.html'
-for old,new in [('phone-runtime.js?v=134','phone-runtime.js?v=135'),('archive-core.js?v=133','archive-core.js?v=135'),('archive.js?v=134','archive.js?v=135'),('pdf-recovery.js?v=133','pdf-recovery.js?v=135'),('cloud-sync.js?v=20261008-archive-133','cloud-sync.js?v=20261009-management-135')]:change(p,old,new,2)
-change(p,"'v1.34'","'v1.35'")
-change(p,"['archive.js?v=135','v1.34 archive']","['archive.js?v=135','v1.35 archive'],['management.js?v=135','v1.35 management']")
-change(p,'<script src="./archive.js?v=135"><\\/script>', '<script src="./archive.js?v=135"><\\/script><script src="./management.js?v=135"><\\/script>')
-p='sentlog/phone-runtime.js';change(p,'v1.34','v1.35',4)
-p='sentlog/sw.js';change(p,"const CACHE='sentlog-pwa-v147';","const CACHE='sentlog-pwa-v148';")
+for old,new in [('phone-runtime.js?v=134','phone-runtime.js?v=136'),('archive-core.js?v=133','archive-core.js?v=135'),('archive.js?v=134','archive.js?v=135'),('pdf-recovery.js?v=133','pdf-recovery.js?v=135'),('cloud-sync.js?v=20261008-archive-133','cloud-sync.js?v=20261009-management-135')]:change(p,old,new,2)
+change(p,"'v1.34'","'v1.36'")
+change(p,"['archive.js?v=135','v1.34 archive']","['archive.js?v=135','v1.35 archive'],['management.js?v=136','v1.36 management']")
+change(p,'<script src="./archive.js?v=135"><\\/script>', '<script src="./archive.js?v=135"><\\/script><script src="./management.js?v=136"><\\/script>')
+p='sentlog/phone-runtime.js';change(p,'v1.34','v1.36',4)
+p='sentlog/sw.js';change(p,"const CACHE='sentlog-pwa-v147';","const CACHE='sentlog-pwa-v149';")
 change(p,"'archive-core.js','archive.js','record-store.js'","'archive-core.js','archive.js','management.js','record-store.js'")
-print('Built Sentlog v1.35: reversible use-ending, device settings, no local data removal')
+print('Built Sentlog v1.36: stopped registrations can leave list; no local/file/history deletion')
 
 change('tests/full_archive_click.py',"window.SENTLOG_BUILD==='v1.34'","window.SENTLOG_BUILD==='v1.35'")

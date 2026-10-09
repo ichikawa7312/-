@@ -25,7 +25,7 @@ try:
    cp={'id':'cloud-test','client_key':'local-test','name':project['name'],'status':'active','checking':False,'retired':False}
    payload={'project':project,'drawings':[]}
    devices=[{'id':'device-current','name':'検証ブラウザ','type':'browser','active':True,'last_seen_at':'2026-10-01T01:00:00Z','created_at':'2026-09-01T00:00:00Z'}, {'id':'device-old','name':'以前の登録','type':'ipad','active':True,'last_seen_at':'2026-09-01T01:00:00Z','created_at':'2026-09-01T00:00:00Z'}]
-   calls=[];unexpected=[];fail_list=False
+   calls=[];unexpected=[];fail_list=False;removed_ids=[]
    def route(rr):
     r=rr.request;url=r.url
     if url.startswith(origin+'/'):rr.continue_();return
@@ -51,6 +51,15 @@ try:
       assert data['confirmed'] and data['confirm_name']==cp['name'];cp.update(status='archived',retired=True);result={'retired':True,'file_backup_verified':False}
      elif action=='project_resume':cp.update(status='active',retired=False);result={'retired':False}
      else:unexpected.append(body);result={};status=400
+    elif path.endswith('/rpc/sentlog_device_registration_v1'):
+     action=body['p_action'];data=body.get('p_data',{})
+     if action=='list':result=removed_ids
+     elif action=='remove':
+      row=next(d for d in devices if d['id']==data['device_id'])
+      assert row['active'] is False and row['id']!='device-current'
+      assert data['confirmed'] and data['confirm_device_id']==row['id'] and data['confirm_name']==row['name']
+      removed_ids.append(row['id']);result={'removed':True,'retained_for_references':True}
+     else:unexpected.append(body);result={};status=400
     elif path.endswith('/sentlog_devices'):
      if r.method=='PATCH':rr.fulfill(status=204,headers={'Access-Control-Allow-Origin':'*'});return
      result=[devices[0]]
@@ -60,7 +69,7 @@ try:
     else:unexpected.append(path);result={};status=400
     rr.fulfill(status=status,content_type='application/json',headers={'Access-Control-Allow-Origin':'*'},body=json.dumps(result,ensure_ascii=False))
    context.route('**/*',route);page=context.new_page();errors=[];page.on('pageerror',lambda e:errors.append(str(e)))
-   page.goto(origin+'/sentlog/',wait_until='domcontentloaded');page.wait_for_function("window.SENTLOG_BUILD==='v1.35'")
+   page.goto(origin+'/sentlog/',wait_until='domcontentloaded');page.wait_for_function("window.SENTLOG_BUILD==='v1.36'")
    expect(page.get_by_role('button',name='使用終了にする',exact=True)).to_be_visible()
    page.evaluate("async()=>{await window.SentlogRecords.writeFile('background:retained-test',new Blob(['keep original bytes']));await window.SentlogRecords.writeFile('photo:retained-test:1',new Blob(['keep photo']));}")
    before=page.evaluate('JSON.stringify(workspace)')
@@ -84,6 +93,25 @@ try:
    old.get_by_role('button',name='登録を停止').click();d=page.locator('.sl-management-dialog');expect(d).to_be_visible()
    expect(d.get_by_role('button',name='この登録を停止する')).to_be_disabled();d.get_by_role('checkbox').check();d.get_by_role('button',name='この登録を停止する').click();expect(d).not_to_be_visible()
    expect(old).to_contain_text('停止中');old.get_by_role('button',name='登録を再開').click();d.get_by_role('checkbox').check();d.get_by_role('button',name='この登録を再開する').click();expect(d).not_to_be_visible();expect(old).to_contain_text('使用中')
+   assert old.get_by_role('button',name='登録を削除').count()==0
+   old.get_by_role('button',name='登録を停止').click()
+   d.get_by_role('checkbox').check()
+   d.get_by_role('button',name='この登録を停止する').click()
+   expect(d).not_to_be_visible()
+   expect(old.get_by_role('button',name='登録を削除')).to_be_visible()
+   old.get_by_role('button',name='登録を削除').click()
+   expect(d).to_be_visible()
+   expect(d.get_by_role('button',name='登録一覧から削除')).to_be_disabled()
+   d.get_by_role('button',name='やめる').click()
+   assert removed_ids==[]
+   old.get_by_role('button',name='登録を削除').click()
+   d.get_by_role('checkbox').check()
+   d.get_by_role('button',name='登録一覧から削除').click()
+   expect(d).not_to_be_visible()
+   expect(old).to_have_count(0)
+   assert removed_ids==['device-old']
+   assert any(x['id']=='device-old' and not x['active'] for x in devices)
+   assert not any(c['method']=='DELETE' for c in calls)
    (ROOT/'test-results').mkdir(exist_ok=True);page.screenshot(path=str(ROOT/f'test-results/management-{width}.png'),full_page=True)
    # A stopped current registration is an explicit sync pause, not a new device.
    devices[0]['active']=False;start=len(calls);page.evaluate('window.sentlogArchiveSync()');page.evaluate('window.sentlogCheckPdfRecovery()')
@@ -91,7 +119,7 @@ try:
    assert not any(c['path'].endswith('/sentlog_project_snapshots') for c in calls[start:])
    assert not unexpected,unexpected
    assert not errors,errors
-   print(f'PASS built app {width}px: retirement confirmation/cancel, shared folder, no record/blob deletion, no automatic retired transfer, device name/stop/resume, current-stop prevention, no silent re-registration')
+   print(f'PASS built app {width}px: retirement confirmation/cancel, shared folder, no record/blob deletion, no automatic retired transfer, device name/stop/resume/remove, current-stop prevention, no silent re-registration')
    context.close()
   browser.close()
 finally:

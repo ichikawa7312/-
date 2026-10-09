@@ -26,6 +26,12 @@ async function registration(path,end,active=true,networkError=false){
   assert(pdf.indexOf('registration[0].active!==true')<pdf.indexOf("const assets=await api('sentlog_assets?"));
   assert(pdf.includes("c.status==='active'&&!c.checking"));
   console.log('PASS PDF recovery checks registration before files and excludes archived/retired projects');
-  const app=fs.readFileSync('sentlog/index.html','utf8');assert(app.includes('management.js?v=135'));assert(app.includes('v1.35 archive'));
-  console.log('PASS v1.35 loader includes management code and preflight');
+  const app=fs.readFileSync('sentlog/index.html','utf8');assert(app.includes('management.js?v=136'));assert(app.includes('v1.35 archive'));
+  console.log('PASS v1.36 loader includes management code and preflight');
+  const mg=fs.readFileSync('sentlog/management.js','utf8');
+  assert(mg.includes("'sentlog_device_registration_v1'"));
+  assert(mg.includes("if(!row.active)"));
+  assert(mg.includes("rows=result.filter(r=>!removed.has(r.id))"));
+  assert(!mg.includes('deleteDBFiles'));
+  console.log('PASS only stopped registrations offer removal, hidden registrations filtered and file deletion unchanged');
 })().catch(e=>{console.error(e);process.exitCode=1;});
