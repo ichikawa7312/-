@@ -13,7 +13,7 @@ class Dir{
   dir(name){const next=new Dir(name);this.dirs.set(name,next);return next;}
   file(name,blob){this.files.set(name,new Entry(name,blob));}
 }
-function node(tag){return {tag,children:[],textContent:'',setAttribute(){},append(...c){this.children.push(...c);},prepend(...c){this.children.unshift(...c);}};}
+function node(tag){return {tag,style:{},children:[],textContent:'',setAttribute(){},append(...c){this.children.push(...c);},prepend(...c){this.children.unshift(...c);}};}
 async function fixture({restore=false,missing=false,denied=false}={}){
  const root=new Dir('保管');root.granted=!denied;
  const folder=root.dir('復旧用').dir('project-id').dir('job-id');
