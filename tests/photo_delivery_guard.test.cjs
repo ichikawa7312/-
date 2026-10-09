@@ -6,7 +6,8 @@ const source=fs.readFileSync('supabase/functions/sentlog-delete-verified/index.t
 const script=source.replace(/^import .*;\s*$/gm,'')
  .replace(/:\s*unknown\b/g,'')
  .replace(/:\s*\{[^{}]*\}(?=\s*\))/g,'')
- .replace(/:\s*string(?=\s*\))/g,'');
+ .replace(/:\s*string(?=\s*\))/g,'')
+ .replace(/:\s*Request(?=\s*\))/g,'');
 assert(!script.includes('device_id:string'),'TS annotations were not removed');
 function makeQuery(table,rows,counters){
  let filters=[],type='select';
