@@ -11,6 +11,8 @@ def change(path,old,new,count=1):
  p.write_text(s.replace(old,new))
 
 p='sentlog/archive.js'
+change(p,"if(window.SentlogCapacity?.isCleared(cp.id))throw Error('この端末への復旧を終えてから使用中に戻してください。');",
+         "if(window.SentlogCapacity?.isCleared(cp.id))throw Error('この端末への復旧を終えてから使用中に戻してください。');if(!getProject(cp.client_key))throw Error('この端末に案件がありません。PCから復旧してから使用中に戻してください。');")
 change(p,"await rpc('reopen',cp.id);",
          "await net('rpc/sentlog_reopen_v2',{p_project_id:cp.id,p_device_id:device()});")
 # Never suggest a legacy manual sync for a remotely archived project absent locally;
