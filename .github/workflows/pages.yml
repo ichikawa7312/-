@@ -26,6 +26,7 @@ jobs:
           node tests/integration.test.cjs
           node tests/management.test.cjs
           node tests/capacity.test.cjs
+          node tests/capacity_pc.test.cjs
       - name: Setup Pages
         uses: actions/configure-pages@v5
         with:
