@@ -20,7 +20,7 @@ storage_code=r'''
   // IndexedDB transaction before any mutation; server authorization is
   // separately required by the capacity UI.
   async function archiveAtomic({writes=[],deleteFiles=[],expectedWorkspace}={}){
-    assertReady();await settled();assertSafe();
+    assertReady();await settled();window.SentlogRecords.assertSafe();
     if(exclusive)throw Error('ほかの保存操作が進行しています');
     const updates=[...writes],files=[...deleteFiles];
     if(typeof expectedWorkspace!=='string'||memory.get(WS)!==expectedWorkspace)
