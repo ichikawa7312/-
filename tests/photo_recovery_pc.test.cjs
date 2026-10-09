@@ -33,7 +33,7 @@ async function fixture({corrupt=false,unknownMime=false}={}){
    localStorage:{getItem:k=>local[k]||null},idbGet:async k=>k==='root'?root:null,
    log:t=>errors.push(t),setTimeout:()=>{},setInterval:()=>{},addEventListener:()=>{},
    fetch:async(url,options={})=>{
-     const u=String(url),body=options.body?JSON.parse(options.body):null;
+     const u=String(url),body=u.includes('/rest/v1/')&&options.body?JSON.parse(options.body):null;
      if(u.includes('/rest/v1/')){
        let result=[];
        if(u.includes('sentlog_pdf_requests'))result=desired;
