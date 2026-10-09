@@ -65,6 +65,7 @@ async function fixture({corrupt=false,unknownMime=false}={}){
 }
 (async()=>{
  const success=await fixture();
+ if(success.posts.length!==1)console.error('PHOTO DEBUG',{posts:success.posts.length,calls:success.calls,errors:success.errors});
  assert.equal(success.posts.length,1,'one photo must be uploaded');
  assert.equal(success.posts[0].headers['Content-Type'],'image/jpeg','MIME comes from archived asset metadata');
  assert.equal(await C.hash(success.posts[0].bytes),success.sha);
