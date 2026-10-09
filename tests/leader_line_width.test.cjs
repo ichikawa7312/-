@@ -58,4 +58,54 @@ for(const zoom of [0.05,0.5,1,2,4,8]){
     assert.equal(lead[0].style.pointerEvents,'none');
   }
 }
+// Photo badges should sit 4 visual pixels beyond the actual label glyphs,
+// not beyond the wider, padded click target. The symbol, count and line are unchanged.
+ctx.makeEl=(tag,attrs)=>{
+  const item=makeEl(tag,attrs);
+  if(tag==='text' && attrs['text-anchor']==='middle')
+    item.getComputedTextLength=()=>[...item.textContent].length*16;
+  return item;
+};
+for(const zoom of [0.25,0.5,1,2,4]){
+  ctx.scale=zoom;
+  for(const selected of [null,shape.id]){
+    ctx.selected=selected;
+    for(const [label,count] of [['腐食①',1],['ひび割れ①',3],['漏水①',12]]){
+      shape.autoLabel=label;
+      shape.photos=Array.from({length:count},(_,i)=>({id:'photo-'+i}));
+      ctx.render();
+      const texts=svg.children.filter(n=>n.tag==='text');
+      const badge=texts.find(n=>n.textContent.startsWith('📷'));
+      const name=texts.find(n=>n.textContent===label);
+      assert.equal(texts.length,2,'one label and one photo badge, no duplicates');
+      assert(badge && name,'photo badge and damage label should both render');
+      assert.equal(badge.textContent,'📷'+count);
+      assert.equal(name.attrs['font-size'],16,'label size unchanged');
+      assert.equal(badge.attrs['font-size'],Math.max(12,13/zoom),'photo badge size unchanged');
+      assert.equal(badge.attrs.y,66+16*.65,'photo badge vertical placement unchanged');
+      assert.equal(badge.attrs['stroke-width'],3,'photo badge text outline unchanged');
+      const labelRight=name.attrs.x+name.getComputedTextLength()/2;
+      const visualGap=(badge.attrs.x-labelRight)*zoom;
+      assert(Math.abs(visualGap-4)<1e-8,
+        'label/badge must have a 4px visual gap regardless of zoom and text length');
+      assert.equal(svg.children.filter(n=>n.tag==='line').length,1,'leader remains present');
+      assert.equal(svg.children.filter(n=>n.tag==='circle').length,1,'leader tip remains present');
+    }
+  }
+}
+shape.photos=[];
+ctx.render();
+assert.equal(svg.children.filter(n=>n.tag==='text').length,1,'no badge without photos');
+// Older browsers and synthetic rendering without SVG text measurement fail safely
+// to the existing label size estimate rather than hiding photos.
+ctx.makeEl=makeEl;
+shape.photos=[{id:'p1'}];
+ctx.scale=1;ctx.render();
+const fallbackBadge=svg.children.find(n=>n.tag==='text' && n.textContent==='📷1');
+assert(fallbackBadge);
+assert.equal(fallbackBadge.attrs.x,52+(90-16)/2+4);
+shape.photos=[];
+shape.autoLabel='ひび割れ①';
+
 console.log('PASS label leader width: 0.6px (vs 0.8px damage) at six zoom levels, selected/unselected; all positions, marker and label unchanged');
+console.log('PASS photo badge spacing: 4px beyond measured label, 5 zoom levels, no photo case, all sizes and drawing controls unchanged');
