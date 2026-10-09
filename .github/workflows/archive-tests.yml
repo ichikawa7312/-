@@ -21,6 +21,7 @@ jobs:
           python scripts/build_management.py
           python scripts/build_capacity.py
           python scripts/build_resilience.py
+          python scripts/build_photo_recovery.py
       - run: |
           node --check sentlog/archive.js
           node --check sentlog/archive-core.js
@@ -30,6 +31,7 @@ jobs:
           node --check sentlog/management.js
           node --check sentlog/archive-capacity.js
           node --check sentlog/archive-restore-pc.js
+          node --check sentlog/photo-recovery.js
           node --check sentlog/capacity-details.js
           node --check sentlog/record-store.js
           node tests/core.test.cjs
@@ -40,6 +42,7 @@ jobs:
           node tests/capacity_pc.test.cjs
           node tests/resilience.test.cjs
           node tests/resilience_pc.test.cjs
+          node tests/photo_recovery_pc.test.cjs
       - run: |
           pip install playwright==1.57.0
           python -m playwright install --with-deps chromium
