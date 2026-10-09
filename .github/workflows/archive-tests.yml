@@ -51,6 +51,7 @@ jobs:
           python tests/full_archive_click.py
           python tests/full_management.py
           python tests/capacity_ui.py
+          python tests/photo_recovery_ui.py
       - uses: actions/upload-artifact@v4
         if: always()
         with:
