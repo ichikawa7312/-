@@ -31,7 +31,7 @@ async function fixture({corrupt=false,unknownMime=false}={}){
    crypto:webcrypto,navigator:{onLine:true},
    document:{hidden:false,querySelector:()=>main,createElement:element,getElementById:()=>null,addEventListener:()=>{}},
    localStorage:{getItem:k=>local[k]||null},idbGet:async k=>k==='root'?root:null,
-   log:t=>errors.push(t),setTimeout:()=>{},setInterval:()=>{},addEventListener:()=>{},
+   log:t=>errors.push(t),setTimeout:()=>{},clearTimeout:()=>{},setInterval:()=>{},addEventListener:()=>{},
    fetch:async(url,options={})=>{
      const u=String(url),body=u.includes('/rest/v1/')&&options.body?JSON.parse(options.body):null;
      if(u.includes('/rest/v1/')){
