@@ -82,7 +82,9 @@ for(const zoom of [0.25,0.5,1,2,4]){
       assert.equal(badge.textContent,'📷'+count);
       assert.equal(name.attrs['font-size'],16,'label size unchanged');
       assert.equal(badge.attrs['font-size'],Math.max(12,13/zoom),'photo badge size unchanged');
-      assert.equal(badge.attrs.y,66+16*.65,'photo badge vertical placement unchanged');
+      assert.equal(name.attrs['dominant-baseline'],'middle','label must use middle baseline');
+      assert.equal(badge.attrs['dominant-baseline'],'middle','photo badge must use same middle baseline');
+      assert.equal(badge.attrs.y,name.attrs.y,'photo badge and damage label must share the exact vertical anchor');
       assert.equal(badge.attrs['stroke-width'],3,'photo badge text outline unchanged');
       const labelRight=name.attrs.x+name.getComputedTextLength()/2;
       const visualGap=(badge.attrs.x-labelRight)*zoom;
@@ -108,4 +110,5 @@ shape.photos=[];
 shape.autoLabel='ひび割れ①';
 
 console.log('PASS label leader width: 0.6px (vs 0.8px damage) at six zoom levels, selected/unselected; all positions, marker and label unchanged');
+console.log('PASS photo badge alignment: same centered y and SVG dominant-baseline as label at 5 zoom levels and 3 label lengths');
 console.log('PASS photo badge spacing: 4px beyond measured label, 5 zoom levels, no photo case, all sizes and drawing controls unchanged');
