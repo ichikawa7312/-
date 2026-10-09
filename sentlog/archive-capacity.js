@@ -225,15 +225,26 @@
         const local=await getDBFile(f.key);
         if(await C.matches(local,f)){received++;continue;}
         if(local instanceof Blob&&local.size>0)throw Error('この端末に別のファイルが存在します：'+f.file_name+'。上書きせず中止しました。');
-        const s=session(),controller=new AbortController(),timer=setTimeout(()=>controller.abort(),120000);
-        let blob;
-        try{
-          const path=f.temp_path.split('/').map(encodeURIComponent).join('/');
-          const response=await fetch(BASE+'/storage/v1/object/authenticated/'+BUCKET+'/'+path,{cache:'no-store',signal:controller.signal,
-            headers:{apikey:KEY,Authorization:'Bearer '+s.access_token}});
-          if(!response.ok)throw Error('PCからのファイル取得に失敗（'+response.status+'）');
-          blob=await response.blob();
-        }finally{clearTimeout(timer);}
+        if(Number(f.byte_size)>FILE_LIMIT)throw Error('128MBを超えるファイルは、この版では自動復旧できません：'+f.file_name);
+        const multipart=Number(f.byte_size)>SINGLE_LIMIT;
+        const partCount=multipart?Math.ceil(Number(f.byte_size)/CHUNK_SIZE):1;
+        const parts=[];
+        for(let i=0;i<partCount;i++){
+          const s=session(),controller=new AbortController(),timer=setTimeout(()=>controller.abort(),120000);
+          try{
+            const rawPath=multipart?partPath(f.temp_path,i):f.temp_path;
+            const encoded=rawPath.split('/').map(encodeURIComponent).join('/');
+            const response=await fetch(BASE+'/storage/v1/object/authenticated/'+BUCKET+'/'+encoded,{cache:'no-store',signal:controller.signal,
+              headers:{apikey:KEY,Authorization:'Bearer '+s.access_token}});
+            if(!response.ok)throw Error('PCからのファイル取得に失敗（'+response.status+'）：'+f.file_name);
+            const part=await response.blob();
+            if(multipart&&part.size!==Math.min(CHUNK_SIZE,Number(f.byte_size)-i*CHUNK_SIZE))
+              throw Error('受信した分割ファイルのサイズが一致しません：'+f.file_name);
+            parts.push(part);
+            if(multipart)view.message('大容量ファイルを受信中：'+f.file_name+'（'+(i+1)+' / '+partCount+'分割）');
+          }finally{clearTimeout(timer);}
+        }
+        const blob=multipart?new Blob(parts,{type:f.mime_type||'application/octet-stream'}):parts[0];
         if(!await C.matches(blob,f))throw Error('受信ファイルの内容照合に失敗：'+f.file_name);
         const named=f.file_name&&typeof File==='function'?new File([blob],f.file_name,{type:f.mime_type||blob.type}):blob;
         await S.writeFile(f.key,named);
