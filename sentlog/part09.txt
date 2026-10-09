@@ -213,7 +213,12 @@ function render(){
         bindLabelTarget(labelHit,s.id);
         svg.appendChild(labelHit);
       }
-      const photoN=s.photos?.length||0;if(photoN){const b=makeEl('text',{x:lp.x+m.width/2-4,y:lp.y+m.fontSize*.65,'font-size':Math.max(12,13/scale),'text-anchor':'start',fill:'#374151','font-weight':'700','paint-order':'stroke','stroke':'#fff','stroke-width':3,'pointer-events':'none'});b.textContent=`📷${photoN}`;svg.appendChild(b)}
+      const photoN=s.photos?.length||0;if(photoN){
+        // Position the badge just beyond the actual text, not the padded label hit area.
+        const width=Number(t.getComputedTextLength?.())||Math.max(0,m.width-16);
+        const b=makeEl('text',{x:lp.x+width/2+4/Math.max(scale,.001),y:lp.y+m.fontSize*.65,'font-size':Math.max(12,13/scale),'text-anchor':'start',fill:'#374151','font-weight':'700','paint-order':'stroke','stroke':'#fff','stroke-width':3,'pointer-events':'none'});
+        b.textContent=`📷${photoN}`;svg.appendChild(b);
+      }
     }
   });
   setSelectionControls();
