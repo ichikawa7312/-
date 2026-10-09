@@ -28,6 +28,7 @@ jobs:
           node tests/resilience_pc.test.cjs
           node tests/photo_recovery_pc.test.cjs
           node tests/photo_delivery_guard.test.cjs
+          node tests/leader_line_width.test.cjs
       - name: Check browser script syntax
         run: |
           node --check sentlog/archive-capacity.js
