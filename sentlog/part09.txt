@@ -196,7 +196,7 @@ function render(){
         const leader=makeEl('line',{
           x1:a.x,y1:a.y,x2:lp.x,y2:lp.y,
           stroke:selectedNow?'#2563eb':'#374151',
-          'stroke-width':Math.max(1,1.2/Math.max(scale,.001))
+          'stroke-width':0.6/Math.max(scale,.001)
         });
         leader.style.pointerEvents='none';
         svg.appendChild(leader);
