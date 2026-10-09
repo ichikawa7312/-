@@ -146,6 +146,38 @@ $$;
 REVOKE ALL ON FUNCTION public.sentlog_reopen_v2(uuid,uuid) FROM public,anon;
 GRANT EXECUTE ON FUNCTION public.sentlog_reopen_v2(uuid,uuid) TO authenticated;
 
+-- Prevent a different device (or an old client) from reopening an archive
+-- while any active registered device may still have released its original bytes.
+-- A 'ready' verification can have been locally committed even if the final
+-- acknowledgement failed; require a later successful restoration.
+CREATE OR REPLACE FUNCTION sentlog_archive_private.capacity_project_guard()
+RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path='' AS $
+BEGIN
+ IF new.status IS DISTINCT FROM old.status AND EXISTS(
+    SELECT 1 FROM sentlog_archive_private.capacity_ops x
+    WHERE x.project_id=old.id AND x.state IN ('requested','ready') AND x.expires_at>now()
+ ) THEN
+   RAISE EXCEPTION '端末の容量整理または復旧が進行中です。終了後に変更してください。';
+ END IF;
+ IF old.status='archived' AND new.status='active' AND EXISTS(
+    SELECT 1 FROM sentlog_archive_private.capacity_ops v
+      JOIN public.sentlog_devices d ON d.id=v.device_id AND d.owner_id=v.owner_id AND d.active
+    WHERE v.project_id=old.id AND v.action='verify' AND v.state IN ('ready','finished')
+      AND NOT EXISTS(SELECT 1 FROM sentlog_archive_private.removed_device_registrations removed
+         WHERE removed.device_id=v.device_id)
+      AND NOT EXISTS(
+        SELECT 1 FROM sentlog_archive_private.capacity_ops r
+          WHERE r.owner_id=v.owner_id AND r.project_id=v.project_id
+            AND r.device_id=v.device_id AND r.action='restore' AND r.state='finished'
+            AND r.finished_at>=coalesce(v.finished_at,v.pc_ready_at)
+      )
+ ) THEN
+   RAISE EXCEPTION '別の端末に容量整理済み・復旧未確認の案件があります。先にその端末でPCから復旧してください。';
+ END IF;
+ RETURN new;
+END $;
+REVOKE ALL ON FUNCTION sentlog_archive_private.capacity_project_guard() FROM public,anon,authenticated;
+
 -- Preserve historical successful events for projects already tested.
 INSERT INTO sentlog_archive_private.audit_v2(owner_id,project_id,device_id,event_type,detail,happened_at)
 SELECT o.owner_id,o.project_id,o.device_id,'capacity_finished',
