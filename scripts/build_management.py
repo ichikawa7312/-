@@ -46,4 +46,4 @@ p='sentlog/sw.js';change(p,"const CACHE='sentlog-pwa-v147';","const CACHE='sentl
 change(p,"'archive-core.js','archive.js','record-store.js'","'archive-core.js','archive.js','management.js','record-store.js'")
 print('Built Sentlog v1.36: stopped registrations can leave list; no local/file/history deletion')
 
-change('tests/full_archive_click.py',"window.SENTLOG_BUILD==='v1.34'","window.SENTLOG_BUILD==='v1.35'")
+change('tests/full_archive_click.py',"window.SENTLOG_BUILD==='v1.34'","window.SENTLOG_BUILD==='v1.36'")
