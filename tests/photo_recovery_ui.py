@@ -73,8 +73,9 @@ try:
       body=json.dumps(data,ensure_ascii=False))
    context.route('**/*',route)
    page=context.new_page();errors=[];page.on('pageerror',lambda e:errors.append(str(e)))
-   page.goto(origin+'/sentlog/photo-recovery.js',wait_until='domcontentloaded') if False else None
-   page.goto(origin+'/',wait_until='domcontentloaded')
+   # Load a same-origin text fixture, not the repo root application: its async
+   # initializers would outlive set_content() and interfere with this isolated test.
+   page.goto(origin+'/sentlog/part01.txt',wait_until='domcontentloaded')
    page.set_content(html,wait_until='domcontentloaded')
    page.wait_for_function("typeof window.sentlogCheckPhotoRecovery==='function'",timeout=15000)
    page.evaluate("window.sentlogCheckPhotoRecovery()")
