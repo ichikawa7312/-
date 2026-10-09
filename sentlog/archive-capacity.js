@@ -1,4 +1,4 @@
-/* Sentlog v1.38. Device-only archived capacity release and verified PC restoration.
+/* Sentlog v1.39. Device-only archived capacity release and verified PC restoration.
    No automatic purge; no mutation of company PC backup or other devices. */
 (function(){
   'use strict';
@@ -8,6 +8,9 @@
   const KEY='sb_publishable_4pCeFn-wPsEYzFLhCMCINw_VEUfxz0-';
   const WORKSPACE='surveyFieldNoteWorkspaceV1',LOCAL='sentlogArchiveLocalV1',PREFIX='surveyFieldNoteDrawingV1:';
   const BUCKET='sentlog-temp';
+  const SINGLE_LIMIT=22*1024*1024,CHUNK_SIZE=4*1024*1024,FILE_LIMIT=128*1024*1024;
+  const storageUsage=async()=>{try{const e=await navigator.storage?.estimate?.();return Number.isFinite(e?.usage)?e.usage:null;}catch{return null;}};
+  const partPath=(path,i)=>path+'.part'+String(i).padStart(5,'0');
   const session=()=>{try{return JSON.parse(localStorage.getItem('sentlogCloudSessionV1')||'null')}catch{return null}};
   const device=()=>localStorage.getItem('sentlogCloudDeviceV1');
   const sleep=ms=>new Promise(r=>setTimeout(r,ms));
@@ -160,7 +163,9 @@
           const mark=state();
           if(mode==='files'&&counter2.deletions.length===0)throw Error('この端末で整理できるPDF・写真はありません。');
           if(!window.confirm('会社PCに案件一式があることを再確認済みです。\nこの端末から'+(mode==='files'?'PDF・写真だけを外しますか？':'案件の記録・PDF・写真を外しますか？')+'\n会社PCやほかの端末の資料は変更しません。')){confirm.disabled=false;return;}
-          const item={mode,project_id:cp.id,job_id:currentInfo.job.id,revision:currentInfo.job.revision,at:Date.now()};
+          const beforeUsage=await storageUsage();
+          const item={mode,project_id:cp.id,job_id:currentInfo.job.id,revision:currentInfo.job.revision,at:Date.now(),
+            removed_bytes:counter2.bytes,removed_count:counter2.deletions.length,estimate_before:beforeUsage};
           mark[cp.id]=item;
           const writes=[[LOCAL,JSON.stringify(mark)]];
           let nextWs=null;
@@ -171,10 +176,13 @@
           }
           await S.archiveAtomic({writes,deleteFiles:counter2.deletions,expectedWorkspace:before.raw});
           applied=true;
+          const afterUsage=await storageUsage();
           if(nextWs){workspace=nextWs;activeProjectId=null;activeDrawingId=null;}
           if(typeof renderProjects==='function')renderProjects();
           try{await rpc('finish',cp.id,{operation_id:opId});}catch(e){view.message('この端末の整理は完了しましたが、完了通知が届きませんでした。PCの控えは残っています：'+e.message);}
-          view.message('この端末の整理が完了しました。削除対象：約'+bytes(counter2.bytes)+'。会社PCや他端末のデータは残しています。');
+          view.message('この端末の整理が完了しました。対象ファイル：'+counter2.deletions.length+'件／合計'+bytes(counter2.bytes)+'。'+
+            (beforeUsage!=null&&afterUsage!=null?'端末全体の推定使用量：'+bytes(beforeUsage)+' → '+bytes(afterUsage)+'（ブラウザの反映には時間差があります）。':'端末全体の使用量は設定の容量バーで確認してください。')+
+            '\n会社PCと他端末の資料は残しています。');
           view.detail.textContent='必要になったら保管フォルダから「PCから復旧」を押してください。';
           view.done();confirm.remove();
           const setting=document.getElementById('sentlogStorageRefresh');if(setting&&!setting.disabled)setting.click();
@@ -190,20 +198,26 @@
     if(active)return;active=true;let view,opId=null,finished=false;
     try{
       contextCheck(cp);
-      const mark=current(cp.id);if(!mark?.mode)throw Error('この端末では容量整理が行われていません。');
-      view=modal('PCの控えから案件を復旧');
-      const started=await rpc('begin',cp.id,{action:'restore',mode:mark.mode});opId=started.id;view.setOp(opId);
+      const mark=current(cp.id),wsStart=JSON.parse(S.getItem(WORKSPACE)||'{"projects":[]}');
+      if(!Array.isArray(wsStart.projects))throw Error('この端末の案件一覧を確認できません。');
+      const localProject=wsStart.projects.some(p=>p.id===cp.client_key);
+      const fresh=!mark?.mode&&!localProject;
+      if(!mark?.mode&&!fresh)throw Error('端末に案件が残っています。上書きせず中止しました。');
+      if(mark?.mode==='files'&&!localProject)throw Error('整理履歴と端末の案件情報が一致しません。上書きせず中止しました。');
+      const restoreMode=mark?.mode||'project';
+      view=modal(fresh?'新しい端末へPCから案件を復旧':'PCの控えから案件を復旧');
+      const started=await rpc('begin',cp.id,{action:'restore',mode:restoreMode});opId=started.id;view.setOp(opId);
       let info=validate(await rpc('inspect',cp.id,{operation_id:opId}),cp);
-      if(info.job.id!==mark.job_id||info.job.revision!==mark.revision)throw Error('保管時の資料が変更されています。自動復旧を止めました。');
+      if(mark&&(info.job.id!==mark.job_id||info.job.revision!==mark.revision))throw Error('保管時の資料が変更されています。自動復旧を止めました。');
       const beforeRaw=S.getItem(WORKSPACE);
-      if(mark.mode==='files')freshRecordCheck(info,cp,'files');
+      if(restoreMode==='files')freshRecordCheck(info,cp,'files');
       else if((JSON.parse(beforeRaw||'{"projects":[]}').projects||[]).some(p=>p.id===cp.client_key))
         throw Error('すでに同じ案件が端末に存在します。自動で上書きしません。');
       view.detail.textContent='会社PCにある案件一式を照合して、PDF・写真をこの端末に取り戻します。会社PCの「PC自動同期」を開いてください。';
       info=validate(await waitForPc(view,cp.id,opId),cp);
       if(view.cancelled())return;
       info=await ensureServerArchive(cp,opId);
-      if(info.operation.action!=='restore'||info.operation.mode!==mark.mode)throw Error('復旧の操作種別が一致しません。');
+      if(info.operation.action!=='restore'||info.operation.mode!==restoreMode)throw Error('復旧の操作種別が一致しません。');
       view.locked(true);
       view.message('PCからの受信を開始しています。画面を閉じないでください。');
       let received=0;
@@ -211,15 +225,26 @@
         const local=await getDBFile(f.key);
         if(await C.matches(local,f)){received++;continue;}
         if(local instanceof Blob&&local.size>0)throw Error('この端末に別のファイルが存在します：'+f.file_name+'。上書きせず中止しました。');
-        const s=session(),controller=new AbortController(),timer=setTimeout(()=>controller.abort(),120000);
-        let blob;
-        try{
-          const path=f.temp_path.split('/').map(encodeURIComponent).join('/');
-          const response=await fetch(BASE+'/storage/v1/object/authenticated/'+BUCKET+'/'+path,{cache:'no-store',signal:controller.signal,
-            headers:{apikey:KEY,Authorization:'Bearer '+s.access_token}});
-          if(!response.ok)throw Error('PCからのファイル取得に失敗（'+response.status+'）');
-          blob=await response.blob();
-        }finally{clearTimeout(timer);}
+        if(Number(f.byte_size)>FILE_LIMIT)throw Error('128MBを超えるファイルは、この版では自動復旧できません：'+f.file_name);
+        const multipart=Number(f.byte_size)>SINGLE_LIMIT;
+        const partCount=multipart?Math.ceil(Number(f.byte_size)/CHUNK_SIZE):1;
+        const parts=[];
+        for(let i=0;i<partCount;i++){
+          const s=session(),controller=new AbortController(),timer=setTimeout(()=>controller.abort(),120000);
+          try{
+            const rawPath=multipart?partPath(f.temp_path,i):f.temp_path;
+            const encoded=rawPath.split('/').map(encodeURIComponent).join('/');
+            const response=await fetch(BASE+'/storage/v1/object/authenticated/'+BUCKET+'/'+encoded,{cache:'no-store',signal:controller.signal,
+              headers:{apikey:KEY,Authorization:'Bearer '+s.access_token}});
+            if(!response.ok)throw Error('PCからのファイル取得に失敗（'+response.status+'）：'+f.file_name);
+            const part=await response.blob();
+            if(multipart&&part.size!==Math.min(CHUNK_SIZE,Number(f.byte_size)-i*CHUNK_SIZE))
+              throw Error('受信した分割ファイルのサイズが一致しません：'+f.file_name);
+            parts.push(part);
+            if(multipart)view.message('大容量ファイルを受信中：'+f.file_name+'（'+(i+1)+' / '+partCount+'分割）');
+          }finally{clearTimeout(timer);}
+        }
+        const blob=multipart?new Blob(parts,{type:f.mime_type||'application/octet-stream'}):parts[0];
         if(!await C.matches(blob,f))throw Error('受信ファイルの内容照合に失敗：'+f.file_name);
         const named=f.file_name&&typeof File==='function'?new File([blob],f.file_name,{type:f.mime_type||blob.type}):blob;
         await S.writeFile(f.key,named);
@@ -228,12 +253,12 @@
       }
       await S.settled();S.assertSafe();
       const markNow=current(cp.id);
-      if(markNow?.job_id!==mark.job_id||markNow?.mode!==mark.mode)
+      if(mark&&(markNow?.job_id!==mark.job_id||markNow?.mode!==mark.mode))
         throw Error('復旧中に整理状態が変更されました。');
       const wsText=S.getItem(WORKSPACE);
       let ws=JSON.parse(wsText||'{"projects":[]}');
       const writes=[];
-      if(mark.mode==='project'){
+      if(restoreMode==='project'){
         if(ws.projects.some(p=>p.id===cp.client_key))throw Error('復旧中に案件が追加されました。自動上書きはしません。');
         const project=info.job.payload.project;
         if(project.id!==cp.client_key)throw Error('案件IDが一致しません。');
@@ -244,13 +269,13 @@
           writes.push([PREFIX+d.meta.id,JSON.stringify(d.state)]);
         }
       }else freshRecordCheck(info,cp,'files');
-      const nextMark=state();delete nextMark[cp.id];writes.push([LOCAL,JSON.stringify(nextMark)]);
+      if(mark){const nextMark=state();delete nextMark[cp.id];writes.push([LOCAL,JSON.stringify(nextMark)]);}
       await S.archiveAtomic({writes,deleteFiles:[],expectedWorkspace:wsText});
-      if(mark.mode==='project'){workspace=ws;activeProjectId=null;activeDrawingId=null;}
+      if(restoreMode==='project'){workspace=ws;activeProjectId=null;activeDrawingId=null;}
       finished=true;
       try{await rpc('finish',cp.id,{operation_id:opId});}catch(e){view.message('端末への復旧は完了しましたが、完了通知は再確認が必要です：'+e.message);}
       if(typeof renderProjects==='function')renderProjects();
-      view.message('復旧完了！ '+info.files.length+'件のファイルと案件記録を確認しました。');
+      view.message('復旧完了！ '+info.files.length+'件のファイルと案件記録を確認しました。'+(fresh?' 新しい端末に案件を追加しました。':''));
       view.detail.textContent='ほかの使用中案件や会社PCの控えには触れていません。保管中の自動同期は停止したままです。';
       view.done();
       const setting=document.getElementById('sentlogStorageRefresh');if(setting&&!setting.disabled)setting.click();
@@ -264,13 +289,17 @@
     const saved=current(cp.id);
     const unavailable=!!cp.retired||!!cp.checking;
     const cleared=!!saved?.mode;
-    const disableRelease=unavailable||cleared;
-    const disableRestore=unavailable||!cleared;
+    let hasLocal=true;
+    try{hasLocal=(JSON.parse(S.getItem(WORKSPACE)||'{"projects":[]}').projects||[]).some(x=>x.id===cp.client_key);}catch{}
+    const newDevice=!cleared&&!hasLocal;
+    const disableRelease=unavailable||cleared||!hasLocal;
+    const disableRestore=unavailable||(!cleared&&!newDevice);
     const reason=cp.retired
       ?'使用終了（不要）の案件は、会社PCへの復旧用一式が確認されていないため操作できません。'
       :cp.checking?'保管前の確認中です。確認が完了するまで操作できません。'
       :cleared?'この端末は容量整理済みです。再び整理するには先に復旧してください。'
-      :'この端末ではまだ容量整理していません。復旧は整理後に利用できます。';
+      :newDevice?'この端末に案件がありません。会社PCの保管内容を再照合して復旧できます。'
+      :'この端末には案件が残っています。復旧は容量整理後に利用できます。';
     function control(label,handler,disabled){
       const button=el('button',label);button.type='button';button.className='sl-capacity-button';
       button.disabled=disabled;
@@ -284,8 +313,9 @@
     const note=el('small',cp.retired
       ?'使用終了（不要）：復旧用の一式バックアップが未確認のため、容量整理・復旧はできません。'
       :cp.checking?'保管の安全確認中です。完了してから操作してください。'
-      :saved?.mode==='project'?'この端末では案件を外しています。PCから復旧できます。'
-      :saved?.mode==='files'?'この端末のPDF・写真は整理済みです。PCから復旧できます。'
+      :saved?.mode==='project'?'この端末では案件を外しています（'+(saved.removed_count||0)+'件・'+bytes(saved.removed_bytes||0)+'）。PCから復旧できます。'
+      :saved?.mode==='files'?'この端末のPDF・写真は整理済み（'+(saved.removed_count||0)+'件・'+bytes(saved.removed_bytes||0)+'）。PCから復旧できます。'
+      :newDevice?'この端末に案件はありません。PCに照合済みの控えがあれば、この端末に復旧できます。'
       :'通常保管：PCにある原本を照合してから端末の容量を空けます。復旧は整理後に使用できます。');
     note.className='sl-capacity-note';
     host.append(note);

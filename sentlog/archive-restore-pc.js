@@ -1,9 +1,13 @@
-/* Sentlog v1.37 - company PC archive checkpoint and one-time restoration transport.
+/* Sentlog v1.39 - company PC archive checkpoint and one-time restoration transport.
  * Only the versioned, previously verified PC bundle is a valid source.
  * Never remove the PC bundle, annotations, photographs or PDF originals. */
 (function(){
   'use strict';
   const C=window.SentlogArchiveCore;
+  const SINGLE_LIMIT=22*1024*1024,CHUNK_SIZE=4*1024*1024,MAX_FILE=128*1024*1024;
+  const multi=f=>Number(f.byte_size)>SINGLE_LIMIT;
+  const partCount=f=>multi(f)?Math.ceil(Number(f.byte_size)/CHUNK_SIZE):1;
+  const partName=(target,i)=>target+'.part'+String(i).padStart(5,'0');
   if(!C)throw Error('保管ファイルの照合機能を確認してください。');
   const section=document.createElement('section');section.className='card';
   const heading=document.createElement('h2');heading.textContent='端末の容量整理・PCからの復旧';
@@ -50,31 +54,40 @@
       if(!found||found.path!=='files/'+f.id)throw Error('PCの復旧ファイル一覧が一致しません。');
       const stored=await (await filesFolder.getFileHandle(f.id)).getFile();
       if(!await C.matches(stored,f))throw Error('PCの保管ファイルが破損・欠損しています：'+f.file_name);
-      if(stored.size>22*1024*1024)throw Error('22MBを超えるファイルがあり、自動復旧できません：'+f.file_name);
+      if(stored.size>MAX_FILE)throw Error('128MBを超えるファイルがあり、この版では自動復旧できません：'+f.file_name);
       checked.push({f,stored});
     }
     return checked;
   }
   const path=(op,f)=>op.owner_id+'/archive-restore/'+op.id+'/'+f.id;
   const encoded=p=>p.split('/').map(encodeURIComponent).join('/');
-  async function uploadVerified(op,f,stored){
-    const target=path(op,f),url=SUPABASE_URL+'/storage/v1/object/'+BUCKET+'/'+encoded(target);
-    // Repeated PC polls are idempotent: an existing object is accepted only
-    // when its SHA-256 matches the immutable archive manifest.
+  async function uploadChunk(target,part,spec,filename){
+    const url=SUPABASE_URL+'/storage/v1/object/'+BUCKET+'/'+encoded(target);
+    // Resume interrupted uploads: retain an already matching piece.
     const existing=await fetch(SUPABASE_URL+'/storage/v1/object/authenticated/'+BUCKET+'/'+encoded(target),
       {headers:authHeaders(),cache:'no-store'}).catch(()=>null);
-    if(existing?.ok){
-      if(await C.matches(await existing.blob(),f))return;
-    }
+    if(existing?.ok&&await C.matches(await existing.blob(),spec))return;
     const response=await fetch(url,{
-      method:'POST',headers:authHeaders({'Content-Type':f.mime_type||stored.type||'application/octet-stream','x-upsert':'true'}),
-      body:stored
+      method:'POST',headers:authHeaders({'Content-Type':part.type||'application/octet-stream','x-upsert':'true'}),
+      body:part
     });
-    if(!response.ok)throw Error('復旧用ファイルをクラウドへ一時送信できません：'+f.file_name+'（'+response.status+'）');
+    if(!response.ok)throw Error('復旧用ファイルの一時送信失敗：'+filename+'（'+response.status+'）');
     const check=await fetch(SUPABASE_URL+'/storage/v1/object/authenticated/'+BUCKET+'/'+encoded(target),
       {headers:authHeaders(),cache:'no-store'});
-    if(!check.ok||!await C.matches(await check.blob(),f))
-      throw Error('一時送信したファイルを照合できません：'+f.file_name);
+    if(!check.ok||!await C.matches(await check.blob(),spec))
+      throw Error('分割送信の照合失敗：'+filename);
+  }
+  async function uploadVerified(op,f,stored){
+    const target=path(op,f);
+    if(stored.size>MAX_FILE)throw Error('大容量ファイルが転送上限を超えています：'+f.file_name);
+    if(!multi(f)){await uploadChunk(target,stored,f,f.file_name);return;}
+    const count=partCount(f);
+    for(let i=0;i<count;i++){
+      const part=stored.slice(i*CHUNK_SIZE,Math.min(stored.size,(i+1)*CHUNK_SIZE),f.mime_type||stored.type);
+      const spec={byte_size:part.size,sha256:await C.hash(part)};
+      say(f.file_name+'：'+(i+1)+' / '+count+'分割を送信・再照合中');
+      await uploadChunk(partName(target,i),part,spec,f.file_name);
+    }
   }
   async function process(entry){
     const op=entry.operation,job=entry.job;
@@ -103,7 +116,10 @@
   async function cleanTemp(entry){
     const id=entry?.id;
     if(!id||entry.action!=='restore')return;
-    const prefixes=(entry.manifest||[]).map(f=>entry.owner_id+'/archive-restore/'+id+'/'+f.id);
+    const prefixes=(entry.manifest||[]).flatMap(f=>{
+      const base=entry.owner_id+'/archive-restore/'+id+'/'+f.id;
+      return multi(f)?Array.from({length:partCount(f)},(_,i)=>partName(base,i)):[base];
+    });
     // Storage API Delete Objects: at most 1000 prefixes per request.
     for(let index=0;index<prefixes.length;index+=500){
       const batch=prefixes.slice(index,index+500);

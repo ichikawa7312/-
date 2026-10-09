@@ -21,12 +21,15 @@ jobs:
           python3 scripts/build_archive.py
           python3 scripts/build_management.py
           python3 scripts/build_capacity.py
+          python3 scripts/build_resilience.py
           node tests/core.test.cjs
           node tests/pc.test.cjs
           node tests/integration.test.cjs
           node tests/management.test.cjs
           node tests/capacity.test.cjs
           node tests/capacity_pc.test.cjs
+          node tests/resilience.test.cjs
+          node tests/resilience_pc.test.cjs
       - name: Setup Pages
         uses: actions/configure-pages@v5
         with:
