@@ -1,5 +1,5 @@
 'use strict';
-// v1.39 regression: upgrade gates, fresh-device actions, history and transfer safety.
+// v1.40 regression: upgrade gates, fresh-device actions, history and transfer safety.
 const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
 const client=fs.readFileSync('sentlog/archive-capacity.js','utf8');
 const details=fs.readFileSync('sentlog/capacity-details.js','utf8');
@@ -10,10 +10,10 @@ const sql=fs.readFileSync('db/resilience_v2.sql','utf8');
 for(const [name,code] of [['client',client],['details',details],['PC',pc]]){
  assert.doesNotThrow(()=>new vm.Script(code),name+' syntax');
 }
-assert(loader.includes("archive-capacity.js?v=139"));
-assert(loader.includes("capacity-details.js?v=139"));
-assert(loader.includes("'v1.39'"));
-assert(pcpage.includes('archive-restore-pc.js?v=139'));
+assert(loader.includes("archive-capacity.js?v=140"));
+assert(loader.includes("capacity-details.js?v=140"));
+assert(loader.includes("'v1.40'"));
+assert(pcpage.includes('archive-restore-pc.js?v=140'));
 assert(client.includes('const fresh=!mark?.mode&&!localProject'));
 assert(client.includes("const restoreMode=mark?.mode||'project'"));
 assert(client.includes("if(mark){const nextMark=state();delete nextMark[cp.id]"));
@@ -22,6 +22,9 @@ assert(client.includes('const partCount=multipart?Math.ceil'));
 assert(client.includes('if(!await C.matches(blob,f))'));
 assert(client.includes('removed_bytes:counter2.bytes'));
 assert(pc.includes('uploadChunk(partName(target,i)'));
+assert(pc.includes("'Content-Type':mime"));
+assert(pc.includes('archiveMime(f)'));
+assert(!pc.includes("'Content-Type':part.type||'application/octet-stream'"));
 assert(pc.includes('const prefixes=(entry.manifest||[]).flatMap'));
 assert(pc.includes('C.validatePack(pack,job)'));
 assert(details.includes('sentlog_backup_status_v2'));
@@ -64,4 +67,4 @@ assert.equal(buttons[0].disabled,true);
 assert.equal(buttons[2].disabled,false,'cleared device can restore');
 container=host();ctx.SentlogCapacity.renderActions(container,{...cp,retired:true},{});
 assert(container.nodes.filter(n=>n.tag==='button').every(n=>n.disabled));
-console.log('PASS v1.39: valid JS, versioned loaders, backup audit, new-device / local / retired gates, chunking and savings');
+console.log('PASS v1.40: valid JS, versioned loaders, backup audit, new-device / local / retired gates, chunking and savings');
