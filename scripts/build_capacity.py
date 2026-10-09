@@ -82,7 +82,7 @@ change(p,"if(cp.retired)throw Error('この端末に残っている記録はあ�
  "if(cp.retired)throw Error('この端末に残っている記録はありません。使用終了の案件は自動で取得しません。');if(window.SentlogCapacity?.isCleared(cp.id))throw Error('この端末から外しています。「PCから復旧」を押してください。');await manual(cp);")
 change(p,"card.append(actions);grid.append(card);",
  "if(archiveView&&!cp?.retired)window.SentlogCapacity?.renderActions(actions,cp,p);\n        card.append(actions);grid.append(card);")
-change(p,"if(archiveView){if(!cp?.retired)actions.append(createButton('この案件を手動同期',()=>action(()=>manual(cp)));",
+change(p,"if(archiveView){if(!cp?.retired)actions.append(createButton('この案件を手動同期',()=>action(()=>manual(cp))));",
  "if(archiveView){if(!cp?.retired&&!window.SentlogCapacity?.isCleared(cp.id))actions.append(createButton('この案件を手動同期',()=>action(()=>manual(cp)));")
 change(p,"if(!getProject(p.id)){if(!cp)throw Error('案件を確認できません。');",
  "if(window.SentlogCapacity?.isCleared(cp?.id))throw Error('この端末のデータは容量整理済みです。「PCから復旧」から戻してください。');if(!getProject(p.id)){if(!cp)throw Error('案件を確認できません。');")
