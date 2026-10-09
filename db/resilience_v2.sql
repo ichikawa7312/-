@@ -151,7 +151,7 @@ GRANT EXECUTE ON FUNCTION public.sentlog_reopen_v2(uuid,uuid) TO authenticated;
 -- A 'ready' verification can have been locally committed even if the final
 -- acknowledgement failed; require a later successful restoration.
 CREATE OR REPLACE FUNCTION sentlog_archive_private.capacity_project_guard()
-RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path='' AS $
+RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path='' AS $guard_v2$
 BEGIN
  IF new.status IS DISTINCT FROM old.status AND EXISTS(
     SELECT 1 FROM sentlog_archive_private.capacity_ops x
@@ -175,7 +175,7 @@ BEGIN
    RAISE EXCEPTION '別の端末に容量整理済み・復旧未確認の案件があります。先にその端末でPCから復旧してください。';
  END IF;
  RETURN new;
-END $;
+END $guard_v2$;
 REVOKE ALL ON FUNCTION sentlog_archive_private.capacity_project_guard() FROM public,anon,authenticated;
 
 -- Preserve historical successful events for projects already tested.
