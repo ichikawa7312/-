@@ -50,7 +50,7 @@ try:
   browser=p.chromium.launch(**launch)
   for corrupt in (False,True):
    context=browser.new_context(viewport={'width':390,'height':844},service_workers='block')
-   stats={'requests':0,'acks':0,'uploaded':False,'unexpected':[]}
+   stats={'requests':0,'acks':0,'downloads':0,'uploaded':False,'unexpected':[]}
    def route(rr):
     u=rr.request.url
     if not u.startswith('https://wiulvaqixphuobdielyy.supabase.co/'):
@@ -66,6 +66,7 @@ try:
     elif path.endswith('/rpc/sentlog_ack_photo'):
      stats['acks']+=1;data={'received':True}
     elif path.startswith('/storage/v1/object/authenticated/'):
+     stats['downloads']+=1
      binary=True;data=b'corrupted-data' if corrupt else content
     else:status=404;stats['unexpected'].append(path);data={'message':'Unsupported route'}
     if binary:rr.fulfill(status=status,content_type='image/jpeg',body=data)
@@ -82,7 +83,9 @@ try:
    page.wait_for_function("document.querySelector('#slPhotoRedeliveryStatus')?.textContent?.includes('PC')",timeout=15000)
    page.evaluate("window.sentlogCheckPhotoRecovery()")
    if corrupt:
-    page.wait_for_function("document.querySelector('#slPhotoRedeliveryStatus')?.textContent?.includes('照合に失敗')",timeout=15000)
+    assert stats['requests']>=1,stats
+    assert stats['downloads']>=1,('corrupt download not attempted',stats,
+      page.locator('#slPhotoRedeliveryStatus').inner_text())
     assert stats['acks']==0
     assert page.evaluate("""async()=>new Promise(res=>{const req=indexedDB.open('surveyFieldNoteDB',1);
       req.onsuccess=()=>{const q=req.result.transaction('files').objectStore('files').get('photo:'+STATE.id+':'+STATE.shapes[0].photos[0].id);q.onsuccess=()=>res(q.result===undefined)}})""")
