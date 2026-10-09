@@ -22,6 +22,7 @@ jobs:
           python3 scripts/build_management.py
           python3 scripts/build_capacity.py
           python3 scripts/build_resilience.py
+          python3 scripts/build_photo_recovery.py
           node tests/core.test.cjs
           node tests/pc.test.cjs
           node tests/integration.test.cjs
@@ -30,6 +31,7 @@ jobs:
           node tests/capacity_pc.test.cjs
           node tests/resilience.test.cjs
           node tests/resilience_pc.test.cjs
+          node tests/photo_recovery_pc.test.cjs
       - name: Setup Pages
         uses: actions/configure-pages@v5
         with:
