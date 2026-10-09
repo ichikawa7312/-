@@ -1,4 +1,4 @@
-/* Sentlog v1.39 - company PC archive checkpoint and one-time restoration transport.
+/* Sentlog v1.40 - company PC archive checkpoint and one-time restoration transport.
  * Only the versioned, previously verified PC bundle is a valid source.
  * Never remove the PC bundle, annotations, photographs or PDF originals. */
 (function(){
@@ -8,6 +8,15 @@
   const multi=f=>Number(f.byte_size)>SINGLE_LIMIT;
   const partCount=f=>multi(f)?Math.ceil(Number(f.byte_size)/CHUNK_SIZE):1;
   const partName=(target,i)=>target+'.part'+String(i).padStart(5,'0');
+  // Files are stored on the company PC under extensionless UUID names.
+  // getFile().type is therefore often empty even when the original was a PDF.
+  // Use the MIME type authenticated by the immutable backup manifest.
+  const supportedMime=new Set(['application/pdf','image/jpeg','image/png','image/webp','image/heic','image/heif']);
+  function archiveMime(f){
+    const type=String(f?.mime_type||'').toLowerCase();
+    if(!supportedMime.has(type))throw Error('保管時のファイル形式を確認できません：'+(f?.file_name||'ファイル'));
+    return type;
+  }
   if(!C)throw Error('保管ファイルの照合機能を確認してください。');
   const section=document.createElement('section');section.className='card';
   const heading=document.createElement('h2');heading.textContent='端末の容量整理・PCからの復旧';
@@ -53,6 +62,7 @@
       const found=pack.files.find(x=>x.id===f.id&&x.key===f.key);
       if(!found||found.path!=='files/'+f.id)throw Error('PCの復旧ファイル一覧が一致しません。');
       const stored=await (await filesFolder.getFileHandle(f.id)).getFile();
+      archiveMime(f);
       if(!await C.matches(stored,f))throw Error('PCの保管ファイルが破損・欠損しています：'+f.file_name);
       if(stored.size>MAX_FILE)throw Error('128MBを超えるファイルがあり、この版では自動復旧できません：'+f.file_name);
       checked.push({f,stored});
@@ -61,17 +71,21 @@
   }
   const path=(op,f)=>op.owner_id+'/archive-restore/'+op.id+'/'+f.id;
   const encoded=p=>p.split('/').map(encodeURIComponent).join('/');
-  async function uploadChunk(target,part,spec,filename){
+  async function uploadChunk(target,part,spec,filename,mime){
     const url=SUPABASE_URL+'/storage/v1/object/'+BUCKET+'/'+encoded(target);
     // Resume interrupted uploads: retain an already matching piece.
     const existing=await fetch(SUPABASE_URL+'/storage/v1/object/authenticated/'+BUCKET+'/'+encoded(target),
       {headers:authHeaders(),cache:'no-store'}).catch(()=>null);
     if(existing?.ok&&await C.matches(await existing.blob(),spec))return;
     const response=await fetch(url,{
-      method:'POST',headers:authHeaders({'Content-Type':part.type||'application/octet-stream','x-upsert':'true'}),
+      method:'POST',headers:authHeaders({'Content-Type':mime,'x-upsert':'true'}),
       body:part
     });
-    if(!response.ok)throw Error('復旧用ファイルの一時送信失敗：'+filename+'（'+response.status+'）');
+    if(!response.ok){
+      const detail=await response.json().catch(()=>null);
+      const code=String(detail?.error||detail?.code||detail?.message||'').slice(0,120);
+      throw Error('復旧用ファイルの一時送信失敗：'+filename+'（'+response.status+(code?'／'+code:'')+'）');
+    }
     const check=await fetch(SUPABASE_URL+'/storage/v1/object/authenticated/'+BUCKET+'/'+encoded(target),
       {headers:authHeaders(),cache:'no-store'});
     if(!check.ok||!await C.matches(await check.blob(),spec))
@@ -80,13 +94,14 @@
   async function uploadVerified(op,f,stored){
     const target=path(op,f);
     if(stored.size>MAX_FILE)throw Error('大容量ファイルが転送上限を超えています：'+f.file_name);
-    if(!multi(f)){await uploadChunk(target,stored,f,f.file_name);return;}
+    const mime=archiveMime(f);
+    if(!multi(f)){await uploadChunk(target,stored,f,f.file_name,mime);return;}
     const count=partCount(f);
     for(let i=0;i<count;i++){
       const part=stored.slice(i*CHUNK_SIZE,Math.min(stored.size,(i+1)*CHUNK_SIZE),f.mime_type||stored.type);
       const spec={byte_size:part.size,sha256:await C.hash(part)};
       say(f.file_name+'：'+(i+1)+' / '+count+'分割を送信・再照合中');
-      await uploadChunk(partName(target,i),part,spec,f.file_name);
+      await uploadChunk(partName(target,i),part,spec,f.file_name,mime);
     }
   }
   async function process(entry){
