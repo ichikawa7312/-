@@ -13,7 +13,7 @@ class Dir{
  file(name,blob){this.files.set(name,blob);return this;}
 }
 function element(tag){return {tag,children:[],style:{},textContent:'',setAttribute(){},append(...a){this.children.push(...a);},prepend(...a){this.children.unshift(...a);}};}
-async function fixture({corrupt=false,unknownMime=false}={}){
+async function fixture({corrupt=false,unknownMime=false,staleRequest=false,recentHeartbeat=false,inactiveDevice=false}={}){
  const data=new Blob(['jpeg-data-test-photo-file']);const sha=await C.hash(data),root=new Dir('保管');
  const original=new File([corrupt?'wrong-photo':data],'image.jpg',{type:''});
  root.dir('2026').dir('テルモ愛鷹工場').dir('写真').dir('01.東側').dir('ひび割れ②').file('image.jpg',original);
@@ -22,7 +22,10 @@ async function fixture({corrupt=false,unknownMime=false}={}){
    byte_size:data.size,sha256:sha,metadata:{drawing_id:'drawing-id',photo_id:'photo-id'}};
  const path='保管\\2026\\テルモ愛鷹工場\\写真\\01.東側\\ひび割れ②\\image.jpg';
  const receipt={pc_path:path,sha256:sha,byte_size:data.size};
- const desired=[{asset_id:a.id,expected_sha256:sha}],calls=[],posts=[],errors=[],main=element('main');
+ const old=new Date(Date.now()-5*24*3600*1000).toISOString(),current=new Date().toISOString();
+ const desired=[{asset_id:a.id,device_id:'browser-test',expected_sha256:sha,requested_at:staleRequest?old:current}];
+ const devices=[{id:'browser-test',active:!inactiveDevice,last_seen_at:recentHeartbeat?current:old}];
+ const calls=[],posts=[],errors=[],main=element('main');
  const session={access_token:'mock-token',expires_at:9999999999,user:{id:'owner-id'}},local={
   sentlogCloudSessionV1:JSON.stringify(session),sentlogPcWebDeviceV1:'pc-id'
  };
@@ -37,6 +40,7 @@ async function fixture({corrupt=false,unknownMime=false}={}){
      if(u.includes('/rest/v1/')){
        let result=[];
        if(u.includes('sentlog_pdf_requests'))result=desired;
+       else if(u.includes('sentlog_devices'))result=devices.filter(d=>d.active);
        else if(u.includes('sentlog_assets'))result=[a];
        else if(u.includes('sentlog_projects'))result=[{id:a.project_id}];
        else if(u.includes('sentlog_pc_receipts'))result=[receipt];
@@ -76,5 +80,16 @@ async function fixture({corrupt=false,unknownMime=false}={}){
  assert.equal(corrupt.calls.includes('claim'),false,'cannot claim before validating PC photo');
  const invalid=await fixture({unknownMime:true});
  assert.equal(invalid.posts.length,0,'unsupported MIME must not upload');
- console.log('PASS photo redelivery PC: missing cloud photo, verified original, JPEG MIME, no overwrite, corruption fails closed');
+ const abandoned=await fixture({staleRequest:true});
+ assert.equal(abandoned.posts.length,0,'5-day-old abandoned InPrivate request must not upload');
+ assert.equal(abandoned.calls.length,0,'stale requests must not claim a new temporary file');
+ assert(abandoned.errors.some(e=>e.includes('古い端末の未受信依頼')),'stale request should show safe idle message');
+ const reopened=await fixture({staleRequest:true,recentHeartbeat:true});
+ assert.equal(reopened.posts.length,1,'reopened and recently active device may recover its old request');
+ const recentlyRequested=await fixture();
+ assert.equal(recentlyRequested.posts.length,1,'fresh request must proceed even with stale device heartbeat');
+ const inactive=await fixture({inactiveDevice:true});
+ assert.equal(inactive.posts.length,0,'stopped/removed device must not trigger uploads');
+ assert.equal(inactive.calls.length,0);
+ console.log('PASS photo redelivery PC: verified source, proper MIME, 5-day stale browser request ignored, recent active device allowed, stopped device ignored, corruption fails closed');
 })().catch(e=>{console.error(e);process.exitCode=1;});
