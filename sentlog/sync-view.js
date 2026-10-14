@@ -38,7 +38,7 @@
     return result;
   };
   function busy(){
-    if(document.hidden || localOperation || drawing || panStart || labelDrag || activeTouches.size)return true;
+    if(document.hidden || localOperation || drawing || panStart || labelDrag || activeTouches.size || window.SentlogShapeMove?.isEditing?.())return true;
     if(loading.style.display==='grid')return true;
     const focus=document.activeElement;
     if(focus && focus.matches('input,select,textarea,[contenteditable="true"]'))return true;
