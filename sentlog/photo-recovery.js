@@ -196,9 +196,24 @@
   else show('写真 '+good+'/'+seen+' 件を確認済み。');
  }
  async function provide(id){
-  const requests=await api('sentlog_pdf_requests?received_at=is.null&select=asset_id,expected_sha256&limit=5000');
-  const desired=new Set((requests||[]).map(r=>r.asset_id+':'+String(r.expected_sha256).toLowerCase()));
-  if(!desired.size){show('写真の再取得依頼はありません。');return;}
+  const requests=await api('sentlog_pdf_requests?received_at=is.null&select=asset_id,device_id,expected_sha256,requested_at&limit=5000');
+  if(!(requests||[]).length){show('写真の再取得依頼はありません。');return;}
+  // InPrivate browser registrations may outlive the browser by days. The server
+  // allows temporary cloud files to expire after 15 minutes of inactivity;
+  // never re-upload an archived original for those expired requests.
+  // Use the same active / requested-at / last-seen check as the cloud deletion guard.
+  const devices=await api('sentlog_devices?active=eq.true&select=id,last_seen_at&limit=5000');
+  const activeDevices=new Map((devices||[]).map(d=>[d.id,d]));
+  const cutoff=Date.now()-15*60*1000;
+  const fresh=(requests||[]).filter(r=>{
+    const d=activeDevices.get(r.device_id);
+    return !!d&&(Date.parse(r.requested_at)>=cutoff||Date.parse(d.last_seen_at)>=cutoff);
+  });
+  const desired=new Set(fresh.map(r=>r.asset_id+':'+String(r.expected_sha256).toLowerCase()));
+  if(!desired.size){
+    show('古い端末の未受信依頼は自動再送しません。新しい端末で再取得が必要になれば再開します。');
+    return;
+  }
   const assets=await assetList(),active=await activeProjectIds();
   const pending=(assets||[]).filter(a=>active.has(a.project_id)&&a.status==='storage_deleted'
     &&desired.has(a.id+':'+String(a.sha256).toLowerCase()));

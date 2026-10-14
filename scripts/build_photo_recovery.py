@@ -29,6 +29,10 @@ change(p,'pdf-recovery.js?v=135','pdf-recovery.js?v=141')
 change(p,'<script type="module" src="../sentlog/pdf-recovery.js?v=141"></script>',
   '<script type="module" src="../sentlog/pdf-recovery.js?v=141"></script>\n<script type="module" src="../sentlog/photo-recovery.js?v=141"></script>')
 change(p,'v1.40 · 容量整理・新端末復旧','v1.41 · 写真の再取得対応')
+# Refresh only the company-PC photo delivery worker; the main app stays v1.41.
+# Cache busting is essential after old InPrivate recovery requests caused repeated uploads.
+change(p,'../sentlog/photo-recovery.js?v=141','../sentlog/photo-recovery.js?v=143')
+change(p,'v1.41 · 写真の再取得対応','v1.43 · 写真再送ループ対策')
 
 change('tests/full_management.py',"window.SENTLOG_BUILD==='v1.40'","window.SENTLOG_BUILD==='v1.41'")
 change('tests/full_archive_click.py',"window.SENTLOG_BUILD==='v1.40'","window.SENTLOG_BUILD==='v1.41'")
