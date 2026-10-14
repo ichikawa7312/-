@@ -68,6 +68,9 @@ async function fixture({corrupt=false,unknownMime=false,staleRequest=false,recen
  return {root,calls,posts,errors,sha,original};
 }
 (async()=>{
+ const pcPage=fs.readFileSync('sentlog-pc/index.html','utf8');
+ assert(pcPage.includes('photo-recovery.js?v=143'),'PC must load the fresh stale-request guard, not cached v1.41');
+ assert(pcPage.includes('v1.43 · 写真再送ループ対策'),'PC must show latest loop-fix version');
  const success=await fixture();
  if(success.posts.length!==1)console.error('PHOTO DEBUG',{posts:success.posts.length,calls:success.calls,errors:success.errors});
  assert.equal(success.posts.length,1,'one photo must be uploaded');
