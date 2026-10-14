@@ -16,6 +16,7 @@ jobs:
           python3 scripts/build_capacity.py
           python3 scripts/build_resilience.py
           python3 scripts/build_photo_recovery.py
+          python3 scripts/build_shape_move.py
       - name: Run regression tests
         run: |
           node tests/core.test.cjs
@@ -29,6 +30,7 @@ jobs:
           node tests/photo_recovery_pc.test.cjs
           node tests/photo_delivery_guard.test.cjs
           node tests/leader_line_width.test.cjs
+          node tests/shape_move.test.cjs
       - name: Check browser script syntax
         run: |
           node --check sentlog/archive-capacity.js
