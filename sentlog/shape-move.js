@@ -55,9 +55,11 @@
    render();
  }
  function dismiss(){
+   const wasVisible=!!ready||!!drag;
    stopHolding();
    if(drag)stopDrag(false);
    ready=null;
+   if(wasVisible&&currentView==='editor')render();
  }
  function chooseHandlePoint(){
    const z=Math.max(scale,.001),r=wrap.getBoundingClientRect();
@@ -130,7 +132,9 @@
      if(tool!=='pan'||gestureLock||activeTouches.size>1||
         (event.pointerType==='mouse'&&event.button!==0))return;
      stopHolding();
+     const wasVisible=!!ready;
      ready=null;
+     if(wasVisible)render();
      const request={id,pointerId:event.pointerId,
        x:event.clientX,y:event.clientY,anchor:point(event),
        page:state.currentPage,drawingId:activeDrawingId,timer:null};
