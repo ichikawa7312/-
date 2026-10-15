@@ -103,12 +103,12 @@ try:
    assert result.get('applied') is False and result.get('reason')=='editing',result
    page.locator('#damageNameClose').click()
    # An IndexedDB failure must never be reported as a completed save.
-   page.evaluate("window.__settled=window.SentlogRecords.settled;window.SentlogRecords.settled=()=>Promise.reject(Error('synthetic storage failure'))")
+   page.evaluate("()=>{window.__settled=window.SentlogRecords.settled;window.SentlogRecords.settled=()=>Promise.reject(Error('synthetic storage failure'));}")
    page.locator('#damageNameSearch').click();page.locator('#damageNameQuery').fill('ポップアウト')
    page.locator('#damageNameResults button[data-damage-name="ポップアウト"]').click()
    expect(page.locator('#damageNameError')).to_contain_text('保存を確認できません')
    expect(page.locator('#damageNameModal')).to_be_visible()
-   page.evaluate('window.SentlogRecords.settled=window.__settled')
+   page.evaluate('()=>{window.SentlogRecords.settled=window.__settled;}')
    page.locator('#damageNameClose').click()
    page.locator('#damageType').select_option('補修材の再剥離')
    page.evaluate('async()=>{await window.SentlogRecords.settled()}')
