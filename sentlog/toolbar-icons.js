@@ -109,7 +109,7 @@
       press.timer=setTimeout(()=>{if(!press||press.b!==b)return;press.held=true;show(b,'hold');},500);
     });
     b.addEventListener('contextmenu',e=>{e.preventDefault();});
-    b.addEventListener('pointerenter',e=>{if(e.pointerType==='mouse'){clearTimeout(hoverTimer);hoverTimer=setTimeout(()=>show(b,'hover'),350);}});
+    b.addEventListener('pointerenter',e=>{if(e.pointerType==='mouse'){clearTimeout(hideTimer);clearTimeout(hoverTimer);hoverTimer=setTimeout(()=>show(b,'hover'),350);}});
     b.addEventListener('pointerleave',()=>{clearTimeout(hoverTimer);scheduleHide();});
     b.addEventListener('focus',()=>{focusItem=b;update();if(keyboard)show(b,'focus');});
     b.addEventListener('blur',()=>{if(tipKind!=='hold')scheduleHide();});
