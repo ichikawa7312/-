@@ -21,6 +21,7 @@ jobs:
           python3 scripts/build_compact_labels.py
           python3 scripts/build_overview_labels.py
           python3 scripts/build_polygon_snap.py
+          python3 scripts/build_polygon_dimensions.py
       - name: Run regression tests
         run: |
           node tests/core.test.cjs
@@ -38,6 +39,7 @@ jobs:
           node tests/instant_damage_type.test.cjs
           node tests/compact_labels.test.cjs
           node tests/polygon_snap.test.cjs
+          node tests/polygon_dimensions.test.cjs
       - name: Check browser script syntax
         run: |
           node --check sentlog/archive-capacity.js

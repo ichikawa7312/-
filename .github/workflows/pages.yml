@@ -28,6 +28,7 @@ jobs:
           python3 scripts/build_compact_labels.py
           python3 scripts/build_overview_labels.py
           python3 scripts/build_polygon_snap.py
+          python3 scripts/build_polygon_dimensions.py
           node tests/core.test.cjs
           node tests/pc.test.cjs
           node tests/integration.test.cjs
@@ -43,6 +44,7 @@ jobs:
           node tests/instant_damage_type.test.cjs
           node tests/compact_labels.test.cjs
           node tests/polygon_snap.test.cjs
+          node tests/polygon_dimensions.test.cjs
       - name: Setup Pages
         uses: actions/configure-pages@v5
         with:
