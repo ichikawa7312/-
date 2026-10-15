@@ -71,7 +71,7 @@ assert(children.some(x=>x.tag==='circle'&&x.attrs.fill==='#2563eb'),'projected e
 const previous=JSON.stringify(ctx.drawing.points);
 assert.equal(JSON.stringify(ctx.drawing.points),previous,'render preview is read only');
 // Adding 4 vertices and touching close should save one area with all angles snapped.
-ctx.drawing=null;ctx.renderPreview=()=>{};
+ctx.scale=1;ctx.drawing=null;ctx.renderPreview=()=>{};
 ctx.commitPolygonVertex(point(200,180));
 ctx.commitPolygonVertex(point(360,215));
 ctx.commitPolygonVertex(point(385,360));
