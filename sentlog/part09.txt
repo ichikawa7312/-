@@ -286,7 +286,7 @@ document.querySelectorAll('[data-tool]').forEach(b=>b.onclick=()=>{
   const clicked=b.dataset.tool;
   const wasActive=b.classList.contains('active') && tool===clicked;
   document.querySelectorAll('[data-tool]').forEach(x=>x.classList.remove('active'));
-  drawing=null;polygonDraftCursor=null;
+  drawing=null;polygonDraftCursor=null;polygonTouch=null;
   if(wasActive){
     tool='pan'; // 何も選択されていない状態＝図面移動
   }else{
@@ -300,7 +300,7 @@ document.querySelectorAll('[data-tool]').forEach(b=>b.onclick=()=>{
 // along 0°, 45°, 90°, 135°... relative to the drawing, not the iPad screen.
 // Projection (instead of raw touch coordinates) avoids accidental skew.
 const POLYGON_DIRECTIONS=[[1,0],[1,1],[0,1],[-1,1],[-1,0],[-1,-1],[0,-1],[1,-1]];
-let polygonDraftCursor=null;
+let polygonDraftCursor=null,polygonTouch=null;
 function snapPolygonPoint(anchor,raw){
   const dx=raw.x-anchor.x,dy=raw.y-anchor.y;
   if(!Number.isFinite(dx)||!Number.isFinite(dy))return {...anchor};
@@ -387,12 +387,31 @@ function polygonPreviewAt(raw){
   const snapped=snapPolygonPoint(last,raw);
   return {closing:false,valid:true,points:[last,snapped]};
 }
+function commitPolygonVertex(p){
+  polygonDraftCursor=null;
+  if(!drawing)drawing={kind:'polygon',points:[p]};
+  else{
+    const points=drawing.points,first=points[0],last=points[points.length-1];
+    if(points.length>=3&&Math.hypot(p.x-first.x,p.y-first.y)<=18/Math.max(scale,.001)){
+      const finish=polygonClosingRoute(points);
+      if(finish!==null){
+        addShape({kind:'polygon',points:[...points,...finish]});
+        drawing=null;
+      }
+    }else{
+      const snapped=snapPolygonPoint(last,p);
+      if(Math.hypot(snapped.x-last.x,snapped.y-last.y)>6/Math.max(scale,.001))
+        points.push(snapped);
+    }
+  }
+  renderPreview();
+}
 
 // Keep each live contact until its own up/cancel event. A second finger is not stale data.
 let pinchFrame=0;
 function cancelPointerDraft(){
   if(labelDrag?.historyPushed)persist();
-  labelDrag=null;drawing=null;polygonDraftCursor=null;panStart=null;
+  labelDrag=null;drawing=null;polygonDraftCursor=null;polygonTouch=null;panStart=null;
 }
 function resetTouchGesture(){
   if(pinchFrame){cancelAnimationFrame(pinchFrame);pinchFrame=0;}
@@ -478,24 +497,16 @@ $('stageWrap').addEventListener('pointerdown',e=>{
   if(tool==='rect'){drawing={kind:'rect',x:p.x,y:p.y,w:0,h:0};return}
   if(tool==='line'){drawing={kind:'line',points:[p,p]};return}
   if(tool==='polygon'){
-    polygonDraftCursor=null;
-    if(!drawing) drawing={kind:'polygon',points:[p]};
-    else{
-      const points=drawing.points,first=points[0],last=points[points.length-1];
-      if(points.length>=3&&Math.hypot(p.x-first.x,p.y-first.y)<=18/Math.max(scale,.001)){
-        const finish=polygonClosingRoute(points);
-        if(finish!==null){
-          addShape({kind:'polygon',points:[...points,...finish]});
-          drawing=null;
-        }
-      }else{
-        const snapped=snapPolygonPoint(last,p);
-        if(Math.hypot(snapped.x-last.x,snapped.y-last.y)>6/Math.max(scale,.001)){
-          points.push(snapped);
-        }
-      }
-    }
-    renderPreview();return;
+    if(e.pointerType==='mouse'&&e.button!==0)return;
+    // Finger/Pencil: touch and SLIDE to preview, release to commit the
+    // snapped vertex. Plain taps also work. Mouse: hover previews, click commits.
+    if(e.pointerType==='touch'||e.pointerType==='pen'){
+      polygonTouch={pointerId:e.pointerId};
+      polygonDraftCursor=polygonPreviewAt(p);
+      renderPreview();
+      try{$('stageWrap').setPointerCapture(e.pointerId)}catch{}
+    }else commitPolygonVertex(p);
+    return;
   }
 });
 $('stageWrap').addEventListener('pointermove',e=>{
@@ -517,6 +528,7 @@ $('stageWrap').addEventListener('pointermove',e=>{
   if(!drawing)return;
   const p=point(e);
   if(tool==='polygon'){
+    if(polygonTouch&&polygonTouch.pointerId!==e.pointerId)return;
     polygonDraftCursor=polygonPreviewAt(p);
     renderPreview();return;
   }
@@ -532,11 +544,18 @@ function finishPointer(e,cancelled=false){
     activeTouches.delete(e.pointerId);
     if(pinchStart||gestureLock){
       if(pinchStart?.ids.includes(e.pointerId))pinchStart=null;
-      panStart=null;drawing=null;polygonDraftCursor=null;labelDrag=null;
+      panStart=null;drawing=null;polygonDraftCursor=null;polygonTouch=null;labelDrag=null;
       if(activeTouches.size===0)gestureLock=false;
       try{stageWrapEl.releasePointerCapture(e.pointerId)}catch{}
       return;
     }
+  }
+  if(polygonTouch && e.pointerId===polygonTouch.pointerId){
+    polygonTouch=null;
+    if(!cancelled&&tool==='polygon')commitPolygonVertex(point(e));
+    else{polygonDraftCursor=null;renderPreview();}
+    try{stageWrapEl.releasePointerCapture(e.pointerId)}catch{}
+    return;
   }
   if(labelDrag && e.pointerId===labelDrag.pointerId){
     if(labelDrag.historyPushed)persist();
@@ -544,7 +563,7 @@ function finishPointer(e,cancelled=false){
     try{$('stageWrap').releasePointerCapture(e.pointerId)}catch{}
     return;
   }
-  if(cancelled){panStart=null;drawing=null;polygonDraftCursor=null;return}
+  if(cancelled){panStart=null;drawing=null;polygonDraftCursor=null;polygonTouch=null;return}
   if(tool==='pan'){const wasTap=panStart&&!panStart.moved;panStart=null;if(wasTap)clearSelection();return}
   if(!drawing)return;
   if(tool==='freehand-line'&&drawing.points.length>1){addShape({kind:'freehand-line',points:drawing.points});drawing=null}
@@ -560,6 +579,9 @@ stageWrapEl.addEventListener('pointerup',e=>{if(e.pointerType!=='touch')finishPo
 stageWrapEl.addEventListener('pointercancel',e=>{if(e.pointerType!=='touch')finishPointer(e,true)});
 stageWrapEl.addEventListener('lostpointercapture',e=>{
   if(e.pointerType==='touch'&&activeTouches.has(e.pointerId)&&!stageWrapEl.hasPointerCapture(e.pointerId))finishPointer(e,true);
+  if(polygonTouch?.pointerId===e.pointerId){
+    polygonTouch=null;polygonDraftCursor=null;renderPreview();
+  }
 });
 window.addEventListener('blur',resetTouchGesture);
 window.addEventListener('pagehide',resetTouchGesture);
