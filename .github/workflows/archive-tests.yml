@@ -28,6 +28,7 @@ jobs:
           python scripts/build_overview_labels.py
           python scripts/build_polygon_snap.py
           python scripts/build_polygon_dimensions.py
+          python scripts/build_polygon_dimensions.py
       - run: |
           node --check sentlog/archive.js
           node --check sentlog/archive-core.js
@@ -39,6 +40,7 @@ jobs:
           node --check sentlog/archive-restore-pc.js
           node --check sentlog/photo-recovery.js
           node --check sentlog/shape-move.js
+          node --check sentlog/polygon-dimensions.js
           node --check sentlog/polygon-dimensions.js
           node --check sentlog/capacity-details.js
           node --check sentlog/record-store.js
@@ -57,6 +59,7 @@ jobs:
           node tests/instant_damage_type.test.cjs
           node tests/compact_labels.test.cjs
           node tests/polygon_snap.test.cjs
+          node tests/polygon_dimensions.test.cjs
           node tests/polygon_dimensions.test.cjs
       - run: |
           pip install playwright==1.57.0
