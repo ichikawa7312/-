@@ -286,7 +286,7 @@ document.querySelectorAll('[data-tool]').forEach(b=>b.onclick=()=>{
   const clicked=b.dataset.tool;
   const wasActive=b.classList.contains('active') && tool===clicked;
   document.querySelectorAll('[data-tool]').forEach(x=>x.classList.remove('active'));
-  drawing=null;
+  drawing=null;polygonDraftCursor=null;
   if(wasActive){
     tool='pan'; // 何も選択されていない状態＝図面移動
   }else{
@@ -296,11 +296,103 @@ document.querySelectorAll('[data-tool]').forEach(b=>b.onclick=()=>{
   render();
 });
 
+// Octilinear ("CAD-style") polygon geometry. Every newly placed edge lies
+// along 0°, 45°, 90°, 135°... relative to the drawing, not the iPad screen.
+// Projection (instead of raw touch coordinates) avoids accidental skew.
+const POLYGON_DIRECTIONS=[[1,0],[1,1],[0,1],[-1,1],[-1,0],[-1,-1],[0,-1],[1,-1]];
+let polygonDraftCursor=null;
+function snapPolygonPoint(anchor,raw){
+  const dx=raw.x-anchor.x,dy=raw.y-anchor.y;
+  if(!Number.isFinite(dx)||!Number.isFinite(dy))return {...anchor};
+  const step=Math.round(Math.atan2(dy,dx)/(Math.PI/4));
+  const [vx,vy]=POLYGON_DIRECTIONS[((step%8)+8)%8];
+  const projection=(dx*vx+dy*vy)/(vx*vx+vy*vy);
+  return {x:anchor.x+vx*projection,y:anchor.y+vy*projection};
+}
+function polygonAligned(a,b){
+  const dx=Math.abs(b.x-a.x),dy=Math.abs(b.y-a.y);
+  const tolerance=1e-7*Math.max(1,dx,dy);
+  return dx<=tolerance||dy<=tolerance||Math.abs(dx-dy)<=tolerance;
+}
+function polygonArea2(points){
+  let a=0;
+  for(let i=0;i<points.length;i++){
+    const p=points[i],q=points[(i+1)%points.length];
+    a+=p.x*q.y-q.x*p.y;
+  }
+  return Math.abs(a);
+}
+function polygonSegmentsCross(a,b,c,d){
+  const orient=(p,q,r)=>(q.x-p.x)*(r.y-p.y)-(q.y-p.y)*(r.x-p.x);
+  const tol=1e-8*Math.max(1,Math.hypot(b.x-a.x,b.y-a.y)*Math.hypot(d.x-c.x,d.y-c.y));
+  const sign=x=>x>tol?1:x< -tol?-1:0;
+  const o1=sign(orient(a,b,c)),o2=sign(orient(a,b,d));
+  const o3=sign(orient(c,d,a)),o4=sign(orient(c,d,b));
+  const on=(p,q,r)=>r.x>=Math.min(p.x,q.x)-1e-7&&r.x<=Math.max(p.x,q.x)+1e-7&&
+    r.y>=Math.min(p.y,q.y)-1e-7&&r.y<=Math.max(p.y,q.y)+1e-7;
+  if(o1===0&&on(a,b,c))return true;
+  if(o2===0&&on(a,b,d))return true;
+  if(o3===0&&on(c,d,a))return true;
+  if(o4===0&&on(c,d,b))return true;
+  return o1!==o2&&o3!==o4;
+}
+function polygonSimple(points){
+  const n=points.length;
+  if(n<3||polygonArea2(points)<1e-5)return false;
+  for(let i=0;i<n;i++){
+    const a=points[i],b=points[(i+1)%n];
+    if(Math.hypot(b.x-a.x,b.y-a.y)<1e-6)return false;
+    for(let j=i+1;j<n;j++){
+      if(j===i+1||(i===0&&j===n-1))continue; // Adjacent edges meet at a vertex.
+      if(polygonSegmentsCross(a,b,points[j],points[(j+1)%n]))return false;
+    }
+  }
+  return true;
+}
+function polygonClosingRoute(points){
+  if(points.length<3)return null;
+  const first=points[0],last=points[points.length-1];
+  if(polygonAligned(last,first))return polygonSimple(points)?[]:null;
+  const dx=first.x-last.x,dy=first.y-last.y;
+  const sx=Math.sign(dx),sy=Math.sign(dy);
+  const diag=Math.min(Math.abs(dx),Math.abs(dy));
+  // At most one new vertex, selected so both final edges remain 0/45/90.
+  // Include diagonal+straight as well as orthogonal closing routes.
+  const choices=[
+    {x:last.x+sx*diag,y:last.y+sy*diag},
+    {x:first.x-sx*diag,y:first.y-sy*diag},
+    {x:first.x,y:last.y},
+    {x:last.x,y:first.y}
+  ];
+  let best=null;
+  for(const bend of choices){
+    if(Math.hypot(bend.x-last.x,bend.y-last.y)<1e-6||
+       Math.hypot(bend.x-first.x,bend.y-first.y)<1e-6||
+       !polygonAligned(last,bend)||!polygonAligned(bend,first))continue;
+    const polygon=[...points,bend];
+    if(!polygonSimple(polygon))continue;
+    const distance=Math.hypot(bend.x-last.x,bend.y-last.y)+
+      Math.hypot(first.x-bend.x,first.y-bend.y);
+    if(!best||distance<best.distance-1e-7)best={bend,distance};
+  }
+  return best?[best.bend]:null;
+}
+function polygonPreviewAt(raw){
+  if(!drawing||drawing.kind!=='polygon'||!drawing.points?.length)return null;
+  const pts=drawing.points,first=pts[0],last=pts[pts.length-1],z=Math.max(scale,.001);
+  if(pts.length>=3&&Math.hypot(raw.x-first.x,raw.y-first.y)<=18/z){
+    const route=polygonClosingRoute(pts);
+    return {closing:true,valid:route!==null,points:route?[last,...route,first]:[]};
+  }
+  const snapped=snapPolygonPoint(last,raw);
+  return {closing:false,valid:true,points:[last,snapped]};
+}
+
 // Keep each live contact until its own up/cancel event. A second finger is not stale data.
 let pinchFrame=0;
 function cancelPointerDraft(){
   if(labelDrag?.historyPushed)persist();
-  labelDrag=null;drawing=null;panStart=null;
+  labelDrag=null;drawing=null;polygonDraftCursor=null;panStart=null;
 }
 function resetTouchGesture(){
   if(pinchFrame){cancelAnimationFrame(pinchFrame);pinchFrame=0;}
@@ -385,7 +477,26 @@ $('stageWrap').addEventListener('pointerdown',e=>{
   if(tool==='freehand-area'){drawing={kind:'freehand-area',points:[p]};try{$('stageWrap').setPointerCapture(e.pointerId)}catch{};return}
   if(tool==='rect'){drawing={kind:'rect',x:p.x,y:p.y,w:0,h:0};return}
   if(tool==='line'){drawing={kind:'line',points:[p,p]};return}
-  if(tool==='polygon'){if(!drawing)drawing={kind:'polygon',points:[p]};else{const first=drawing.points[0],d=Math.hypot(p.x-first.x,p.y-first.y);if(d<18/scale&&drawing.points.length>=3){addShape({kind:'polygon',points:drawing.points});drawing=null}else drawing.points.push(p)}renderPreview()}
+  if(tool==='polygon'){
+    polygonDraftCursor=null;
+    if(!drawing) drawing={kind:'polygon',points:[p]};
+    else{
+      const points=drawing.points,first=points[0],last=points[points.length-1];
+      if(points.length>=3&&Math.hypot(p.x-first.x,p.y-first.y)<=18/Math.max(scale,.001)){
+        const finish=polygonClosingRoute(points);
+        if(finish!==null){
+          addShape({kind:'polygon',points:[...points,...finish]});
+          drawing=null;
+        }
+      }else{
+        const snapped=snapPolygonPoint(last,p);
+        if(Math.hypot(snapped.x-last.x,snapped.y-last.y)>6/Math.max(scale,.001)){
+          points.push(snapped);
+        }
+      }
+    }
+    renderPreview();return;
+  }
 });
 $('stageWrap').addEventListener('pointermove',e=>{
   if(!state.sourceType)return;
@@ -403,7 +514,16 @@ $('stageWrap').addEventListener('pointermove',e=>{
     return;
   }
   if(tool==='pan'&&panStart){const dx=e.clientX-panStart.x,dy=e.clientY-panStart.y;if(Math.hypot(dx,dy)>5)panStart.moved=true;tx=panStart.tx+dx;ty=panStart.ty+dy;applyTransform();return}
-  if(!drawing)return;const p=point(e);if(tool==='freehand-line'||tool==='freehand-area')drawing.points.push(p);if(tool==='rect'){drawing.w=p.x-drawing.x;drawing.h=p.y-drawing.y}if(tool==='line')drawing.points[1]=p;renderPreview()
+  if(!drawing)return;
+  const p=point(e);
+  if(tool==='polygon'){
+    polygonDraftCursor=polygonPreviewAt(p);
+    renderPreview();return;
+  }
+  if(tool==='freehand-line'||tool==='freehand-area')drawing.points.push(p);
+  if(tool==='rect'){drawing.w=p.x-drawing.x;drawing.h=p.y-drawing.y}
+  if(tool==='line')drawing.points[1]=p;
+  renderPreview();
 });
 function finishPointer(e,cancelled=false){
   if(e.pointerType==='touch'){
@@ -412,7 +532,7 @@ function finishPointer(e,cancelled=false){
     activeTouches.delete(e.pointerId);
     if(pinchStart||gestureLock){
       if(pinchStart?.ids.includes(e.pointerId))pinchStart=null;
-      panStart=null;drawing=null;labelDrag=null;
+      panStart=null;drawing=null;polygonDraftCursor=null;labelDrag=null;
       if(activeTouches.size===0)gestureLock=false;
       try{stageWrapEl.releasePointerCapture(e.pointerId)}catch{}
       return;
@@ -424,7 +544,7 @@ function finishPointer(e,cancelled=false){
     try{$('stageWrap').releasePointerCapture(e.pointerId)}catch{}
     return;
   }
-  if(cancelled){panStart=null;drawing=null;return}
+  if(cancelled){panStart=null;drawing=null;polygonDraftCursor=null;return}
   if(tool==='pan'){const wasTap=panStart&&!panStart.moved;panStart=null;if(wasTap)clearSelection();return}
   if(!drawing)return;
   if(tool==='freehand-line'&&drawing.points.length>1){addShape({kind:'freehand-line',points:drawing.points});drawing=null}
@@ -444,7 +564,65 @@ stageWrapEl.addEventListener('lostpointercapture',e=>{
 window.addEventListener('blur',resetTouchGesture);
 window.addEventListener('pagehide',resetTouchGesture);
 document.addEventListener('visibilitychange',()=>{if(document.hidden)resetTouchGesture()});
-function renderPreview(){render();if(!drawing)return;let el;if(drawing.kind==='polygon'||drawing.kind==='freehand-area'){el=makeEl('polyline',{points:drawing.points.map(p=>`${p.x},${p.y}`).join(' '),fill:drawing.kind==='polygon'?'rgba(239,68,68,.06)':'none',stroke:'#ef4444','stroke-width':Number($('lineWidth').value||1.2)/Math.max(scale,.001),'stroke-linecap':'round','stroke-linejoin':'round'});}else if(drawing.kind==='rect'){let{x,y,w,h}=drawing;if(w<0){x+=w;w=-w}if(h<0){y+=h;h=-h}el=makeEl('rect',{x,y,width:w,height:h,fill:'rgba(239,68,68,.06)',stroke:'#ef4444','stroke-width':Number($('lineWidth').value||1.2)/Math.max(scale,.001)})}else{el=makeEl('polyline',{points:drawing.points.map(p=>`${p.x},${p.y}`).join(' '),fill:'none',stroke:'#ef4444','stroke-width':Number($('lineWidth').value||1.2)/Math.max(scale,.001),'stroke-linecap':'round','stroke-linejoin':'round'})}svg.appendChild(el)}
+function renderPreview(){
+  render();
+  if(!drawing)return;
+  const z=Math.max(scale,.001),strokeWidth=Number($('lineWidth').value||1.2)/z;
+  if(drawing.kind==='polygon'){
+    const pts=drawing.points;
+    const confirmed=makeEl('polyline',{
+      points:pts.map(p=>`${p.x},${p.y}`).join(' '),
+      fill:'none',stroke:'#ef4444','stroke-width':strokeWidth,
+      'stroke-linecap':'round','stroke-linejoin':'round'
+    });
+    confirmed.style.pointerEvents='none';svg.appendChild(confirmed);
+    const first=pts[0];
+    const firstMarker=makeEl('circle',{
+      cx:first.x,cy:first.y,r:Math.max(3,6/z),
+      fill:'#fff',stroke:'#ef4444','stroke-width':1.5/z
+    });
+    firstMarker.style.pointerEvents='none';svg.appendChild(firstMarker);
+    if(polygonDraftCursor){
+      const ghost=polygonDraftCursor;
+      if(ghost.points.length>=2){
+        const suggested=makeEl('polyline',{
+          points:ghost.points.map(p=>`${p.x},${p.y}`).join(' '),
+          fill:'none',stroke:ghost.closing?'#16a34a':'#2563eb',
+          'stroke-width':1.7/z,'stroke-dasharray':`${6/z} ${4/z}`,
+          'stroke-linecap':'round','stroke-linejoin':'round'
+        });
+        suggested.style.pointerEvents='none';svg.appendChild(suggested);
+        if(ghost.closing){
+          firstMarker.setAttribute('stroke','#16a34a');
+          firstMarker.setAttribute('stroke-width',2.5/z);
+        }else{
+          const end=ghost.points[ghost.points.length-1];
+          const dot=makeEl('circle',{cx:end.x,cy:end.y,r:3.5/z,
+            fill:'#2563eb',stroke:'#fff','stroke-width':1/z});
+          dot.style.pointerEvents='none';svg.appendChild(dot);
+        }
+      }else if(ghost.closing&&!ghost.valid){
+        firstMarker.setAttribute('stroke','#f97316');
+      }
+    }
+    return;
+  }
+  let el;
+  if(drawing.kind==='freehand-area'){
+    el=makeEl('polyline',{points:drawing.points.map(p=>`${p.x},${p.y}`).join(' '),
+      fill:'none',stroke:'#ef4444','stroke-width':strokeWidth,
+      'stroke-linecap':'round','stroke-linejoin':'round'});
+  }else if(drawing.kind==='rect'){
+    let{x,y,w,h}=drawing;if(w<0){x+=w;w=-w}if(h<0){y+=h;h=-h}
+    el=makeEl('rect',{x,y,width:w,height:h,fill:'rgba(239,68,68,.06)',
+      stroke:'#ef4444','stroke-width':strokeWidth});
+  }else{
+    el=makeEl('polyline',{points:drawing.points.map(p=>`${p.x},${p.y}`).join(' '),
+      fill:'none',stroke:'#ef4444','stroke-width':strokeWidth,
+      'stroke-linecap':'round','stroke-linejoin':'round'});
+  }
+  svg.appendChild(el);
+}
 
 $('newProjectBtn').onclick=createProject;
 $('exportBackupBtn').onclick=()=>exportSentlogBackup().catch(e=>{console.error(e);alert('バックアップの書き出しに失敗しました。')});
