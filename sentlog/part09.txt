@@ -252,6 +252,20 @@ $('clearBtn').onclick=()=>{if(confirm(`${state.currentPage}ページ目の描画
 $('undoBtn').onclick=undo;
 $('redoBtn').onclick=redo;
 $('applyBtn').onclick=()=>{const s=state.shapes.find(x=>x.id===selected);if(!s)return;pushHistory();const newType=$('damageType').value;if(s.type!==newType)reassignTypeNumber(s,newType);s.no=$('damageNo').value;s.member=$('member').value;s.memo=$('memo').value;s.strokeWidth=Number($('lineWidth').value||1.2);rebuildNumberingState();selectShape(s.id);persist()};
+// A change of damage category should not require pressing "選択変状へ反映".
+// Reuse the canonical type counters, keeping geometry, labelPos, photos and
+// unsaved text inputs exactly as they were. One choice = one undo step.
+$('damageType').onchange=()=>{
+  if(currentView!=='editor'||!selected)return;
+  const s=state.shapes.find(x=>x.id===selected&&(x.page||1)===state.currentPage);
+  const next=$('damageType').value;
+  if(!s||!next||s.type===next)return;
+  pushHistory();
+  reassignTypeNumber(s,next);
+  $('typeNo').value=s.autoLabel||autoLabelFor(s);
+  render();
+  persist();
+};
 $('deleteBtn').onclick=()=>{if(!selected)return;pushHistory();state.shapes=state.shapes.filter(x=>x.id!==selected);rebuildNumberingState();selected=null;$('globalNo').value='未選択';$('typeNo').value='未選択';setSelectionControls();updateMeasureResult();render();renderSelectedPhotos();persist()};
 $('cameraBtn').onclick=()=>{if(selected)$('cameraInput').click()};
 $('photoAddBtn').onclick=()=>{if(selected)$('photoInput').click()};
