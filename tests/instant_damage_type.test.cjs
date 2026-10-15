@@ -24,7 +24,7 @@ const initial=[
   x:55,y:65,w:20,h:30,photos:[{id:'photo-c'}]}
 ];
 const deepcopy=x=>JSON.parse(JSON.stringify(x));
-const entries=['damageType','typeNo','damageNo','member','memo','lineWidth','globalNo']
+const entries=['damageType','typeNo','damageNo','member','memo','lineWidth','globalNo','applyBtn']
  .map(k=>[k,{value:''}]);
 const fields=Object.fromEntries(entries);
 fields.damageType.value='ひび割れ';
