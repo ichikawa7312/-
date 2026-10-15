@@ -36,7 +36,7 @@ fields.lineWidth.value='0.8';
 const state={currentPage:1,shapes:deepcopy(initial),nextGlobalNo:5,typeCounters:{}};
 let selected='s1',saves=0,renders=0,historyUpdates=0;
 const ctx={
- console,state,selected,currentView:'editor',Math,JSON,Number,
+ console,state,selected,currentView:'editor',Math,JSON,Number,pageHistory:{},
  $:k=>fields[k],cloneShapes:deepcopy,
  updateHistoryButtons:()=>{historyUpdates++},
  setSelectionControls:()=>{},updateMeasureResult:()=>{},
