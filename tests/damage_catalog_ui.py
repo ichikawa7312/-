@@ -22,7 +22,7 @@ seed="""async()=>{
  state=freshDrawingState(p.name);state.fileName='sample.svg';state.sourceType='image';
  state.width=1000;state.height=700;
  state.shapes=[
-  {id:'old-1',type:'ひび割れ',kind:'line',page:1,points:[{x:100,y:100},{x:400,y:160}],photos:[{id:'ph1',name:'synthetic.png'}],memo:'元のメモ',member:'堰柱',no:'X',strokeWidth:1.2,labelPos:{x:300,y:90}},
+  {id:'old-1',type:'ひび割れ',kind:'line',page:1,points:[{x:100,y:100},{'x':400,'y':160}],photos:[{id:'ph1',name:'synthetic.png'}],memo:'元のメモ',member:'堰柱',no:'X',strokeWidth:1.2,labelPos:{x:300,y:90}},
   {id:'old-2',type:'ひびわれ',kind:'rect',page:1,x:250,y:280,w:100,h:80,photos:[]},
   {id:'old-3',type:'腐食',kind:'rect',page:1,x:600,y:300,w:100,h:80,photos:[]}
  ];
@@ -45,10 +45,10 @@ try:
     url=rr.request.url
     if url.startswith(origin+'/'):rr.continue_();return
     if url.startswith('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/'):
-     rr.fulfill(status=200,content_type='text/javascript',body='window.pdfjsLib={GlobalWorkerOptions:{}};');return
+     rr.fulfill(status=200,content_type='text/javascript',body='window.pdfjsLib={GlobalWorkerOptions:{},getDocument(){throw Error("Synthetic image test: PDF rendering is not used")}};');return
     calls.append(url);rr.abort()
    context.route('**/*',route)
-   page=context.new_page();errors=[];page.on('pageerror',lambda e:errors.append(str(e)))
+   page=context.new_page();errors=[];page.on('pageerror',lambda e:errors.append(e.stack or str(e)))
    page.goto(origin+'/sentlog/',wait_until='domcontentloaded')
    page.wait_for_function("window.SENTLOG_BUILD==='v1.50'&&!!window.SentlogDamageCatalog")
    page.evaluate(seed)
