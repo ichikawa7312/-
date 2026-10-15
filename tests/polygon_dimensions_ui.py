@@ -72,7 +72,7 @@ try:
     tool='polygon';
     document.querySelectorAll('[data-tool]').forEach(b=>b.classList.toggle('active',b.dataset.tool==='polygon'));
     drawing={kind:'polygon',points:[{x:160,y:160},{x:500,y:160},{x:500,y:400},{x:300,y:400}]};
-    polygonDraftCursor={closing:false,valid:true,points:[{x:300,y:400},{x:300,y:570}]};
+    polygonDraftCursor={closing:false,valid:true,points:[{x:300,y:400},{x:300,y:610}]};
     renderPreview();
    }""",{'project':project,'meta':meta,'image':data})
    assert page.evaluate("window.SentlogPolygonDimensions.calibrated")
@@ -83,10 +83,10 @@ try:
    })""")
    assert text['targets']==4,text
    labels=text['labels']
-   for expected in ('8.50m','6.00m','5.00m','4.25m'):
+   for expected in ('8.50m','6.00m','5.00m','5.25m'):
     assert any(x['text']==expected for x in labels),(kind,expected,labels)
    assert any(x['text']=='6.00m' and 'rotate(90 ' in x['transform'] for x in labels)
-   assert any(x['text']=='4.25m' and x['fill']=='#1d4ed8' for x in labels)
+   assert any(x['text']=='5.25m' and x['fill']=='#1d4ed8' for x in labels)
    original=shape_points(page)
    loc=target_center(page,0)
    assert loc and 0<loc['x']<width and 0<loc['y']<height, (kind,loc)
