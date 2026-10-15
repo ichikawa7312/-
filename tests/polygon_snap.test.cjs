@@ -42,9 +42,9 @@ for(const scale of [.05,.25,1,4,8]){
  eq(end,point(170,100)); // Snap uses PDF world coordinates, not display zoom.
 }
 const rectangle=[point(0,0),point(120,0),point(120,80),point(0,80)];
-assert.deepEqual(ctx.polygonClosingRoute(rectangle),[],'90° closing side needs no new corner');
+assert.equal(ctx.polygonClosingRoute(rectangle)?.length,0,'90° closing side needs no new corner');
 const diagonal=[point(0,0),point(100,0),point(100,100)];
-assert.deepEqual(ctx.polygonClosingRoute(diagonal),[],'45° closing side needs no new corner');
+assert.equal(ctx.polygonClosingRoute(diagonal)?.length,0,'45° closing side needs no new corner');
 const awkward=[point(0,0),point(120,0),point(120,100),point(70,100)];
 const close=ctx.polygonClosingRoute(awkward);
 assert(close&&close.length===1,'non-octilinear closing edge gets exactly one auto bend');
