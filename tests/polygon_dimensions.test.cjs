@@ -111,7 +111,7 @@ assert.equal(api.resizeEdge(0,2).error.includes('縮尺'),true);
 ctx.getPaperMm=()=>({w:300,h:200});
 // Preview length can be specified before a vertex is placed: no bottom toolbar.
 ctx.polygonDraftCursor={closing:false,valid:true,
- points:[ctx.drawing.points.at(-1),{x:ctx.drawing.points.at(-1).x+80,y:ctx.drawing.points.at(-1).y}]};
+ points:[ctx.drawing.points.at(-1),{x:ctx.drawing.points.at(-1).x,y:ctx.drawing.points.at(-1).y+80}]};
 ctx.renderPreview();
 targets=svg.children.filter(e=>e.dataset.dimensionLengthTarget==='true');
 assert.equal(targets.length,4,'next preview edge gets an editable length alongside three confirmed sides');
