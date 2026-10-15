@@ -81,7 +81,7 @@ for(const zoom of [0.25,0.5,1,2,4]){
       assert(badge && name,'photo badge and damage label should both render');
       assert.equal(badge.textContent,'📷'+count);
       assert.equal(name.attrs['font-size'],16,'label size unchanged');
-      assert.equal(badge.attrs['font-size'],Math.max(12,13/zoom),'photo badge size unchanged');
+      assert.equal(badge.attrs['font-size'],16*0.85,'photo badge tracks label size without zoom-dependent growth');
       assert.equal(name.attrs['dominant-baseline'],'middle','label must use middle baseline');
       assert.equal(badge.attrs['dominant-baseline'],'middle','photo badge must use same middle baseline');
       assert.equal(badge.attrs.y,name.attrs.y,'photo badge and damage label must share the exact vertical anchor');
