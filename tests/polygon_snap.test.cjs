@@ -38,7 +38,7 @@ for(const [dx,dy] of samples){
 }
 for(const scale of [.05,.25,1,4,8]){
  ctx.scale=scale;
- const end=ctx.snapPolygonPoint(point(100,100),point(170,131));
+ const end=ctx.snapPolygonPoint(point(100,100),point(170,120));
  eq(end,point(170,100)); // Snap uses PDF world coordinates, not display zoom.
 }
 const rectangle=[point(0,0),point(120,0),point(120,80),point(0,80)];
