@@ -54,7 +54,15 @@ function cloneShapes(v){return JSON.parse(JSON.stringify(v))}
 function historyFor(page=state.currentPage){const k=String(page);return pageHistory[k]||(pageHistory[k]={undo:[],redo:[]})}
 function snapshotPage(page=state.currentPage){return cloneShapes(state.shapes.filter(s=>(s.page||1)===page))}
 function pushHistory(page=state.currentPage){const h=historyFor(page);h.undo.push(snapshotPage(page));if(h.undo.length>80)h.undo.shift();h.redo=[];updateHistoryButtons()}
-function restorePageSnapshot(snapshot,page=state.currentPage){state.shapes=state.shapes.filter(s=>(s.page||1)!==page).concat(cloneShapes(snapshot));rebuildNumberingState();selected=null;$('globalNo').value='未選択';$('typeNo').value='未選択';setSelectionControls();updateMeasureResult();render();persist();updateHistoryButtons()}
+function restorePageSnapshot(snapshot,page=state.currentPage){
+  // Preserve original cross-page order when an edit (such as reclassification)
+  // leaves the number of shapes unchanged. Type numbering uses this order.
+  const originals=cloneShapes(snapshot),count=state.shapes.filter(s=>(s.page||1)===page).length;
+  if(count===originals.length){
+    let i=0;state.shapes=state.shapes.map(s=>(s.page||1)===page?originals[i++]:s);
+  }else state.shapes=state.shapes.filter(s=>(s.page||1)!==page).concat(originals);
+  rebuildNumberingState();selected=null;$('globalNo').value='未選択';$('typeNo').value='未選択';setSelectionControls();updateMeasureResult();render();persist();updateHistoryButtons();
+}
 function updateHistoryButtons(){const h=historyFor();const u=$('undoBtn'),r=$('redoBtn');if(u)u.disabled=h.undo.length===0;if(r)r.disabled=h.redo.length===0}
 function clearAllHistory(){Object.keys(pageHistory).forEach(k=>delete pageHistory[k]);updateHistoryButtons()}
 function undo(){const h=historyFor();if(!h.undo.length)return;h.redo.push(snapshotPage());const prev=h.undo.pop();restorePageSnapshot(prev)}
