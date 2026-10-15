@@ -7,7 +7,7 @@ assert(editor.includes("'font-size':m.fontSize*0.85"),'photo icon must follow na
 function element(id=''){
  const children=[];
  return {id,children,dataset:{},style:{},textContent:'',className:'',
-  appendChild(n){children.push(n)},before(n){children.push(n)},
+  appendChild(n){children.push(n)},append(...args){children.push(...args)},before(n){children.push(n)},
   setAttribute(){},getAttribute(k){return this[k]||'0'},
   classList:{toggle(){},contains(){return false}},
  };
