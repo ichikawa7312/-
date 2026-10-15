@@ -53,7 +53,7 @@ manager-brand"><img src="./icon.svg" alt="セントログ"><div><div class="mana
 </aside>
 <main class="workspace">
   <div class="toolbar">
-    <button data-tool="polygon">自由多角形</button>
+    <button data-tool="polygon">多角形（45°/90°）</button>
     <button data-tool="freehand-line">フリーハンド線</button>
     <button data-tool="freehand-area">フリーハンド範囲</button>
     <button data-tool="rect">四角形</button>
