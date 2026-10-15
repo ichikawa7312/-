@@ -28,6 +28,7 @@ jobs:
           python scripts/build_overview_labels.py
           python scripts/build_polygon_snap.py
           python scripts/build_polygon_dimensions.py
+          python scripts/build_damage_catalog.py
       - run: |
           node --check sentlog/archive.js
           node --check sentlog/archive-core.js
@@ -40,6 +41,7 @@ jobs:
           node --check sentlog/photo-recovery.js
           node --check sentlog/shape-move.js
           node --check sentlog/polygon-dimensions.js
+          node --check sentlog/damage-catalog.js
           node --check sentlog/capacity-details.js
           node --check sentlog/record-store.js
           node tests/core.test.cjs
@@ -58,6 +60,7 @@ jobs:
           node tests/compact_labels.test.cjs
           node tests/polygon_snap.test.cjs
           node tests/polygon_dimensions.test.cjs
+          node tests/damage_catalog.test.cjs
       - run: |
           pip install playwright==1.57.0
           python -m playwright install --with-deps chromium
@@ -72,6 +75,7 @@ jobs:
           python tests/overview_labels_ui.py
           python tests/polygon_snap_ui.py
           python tests/polygon_dimensions_ui.py
+          python tests/damage_catalog_ui.py
       - uses: actions/upload-artifact@v4
         if: always()
         with:
