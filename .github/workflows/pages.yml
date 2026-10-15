@@ -30,6 +30,7 @@ jobs:
           python3 scripts/build_polygon_snap.py
           python3 scripts/build_polygon_dimensions.py
           python3 scripts/build_damage_catalog.py
+          python3 scripts/build_toolbar_icons.py
           node tests/core.test.cjs
           node tests/pc.test.cjs
           node tests/integration.test.cjs
@@ -47,6 +48,7 @@ jobs:
           node tests/polygon_snap.test.cjs
           node tests/polygon_dimensions.test.cjs
           node tests/damage_catalog.test.cjs
+          node tests/toolbar_icons.test.cjs
       - name: Setup Pages
         uses: actions/configure-pages@v5
         with:

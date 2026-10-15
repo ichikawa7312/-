@@ -1,0 +1,14 @@
+'use strict';
+const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
+const code=fs.readFileSync('sentlog/toolbar-icons.js','utf8');new vm.Script(code);
+assert.ok(!/\b(?:persist|saveWorkspace|addShape|rebuildNumberingState)\s*\(/.test(code));
+assert.ok(!/\.(?:setItem|removeItem|writeFile)\s*\(/.test(code));
+assert.ok(!/\.onclick\s*=/.test(code),'Must keep original commands');
+assert.ok(!/\bfetch\s*\(/.test(code),'No icon/CDN requests');
+for(const name of ['polygon','freehand-line','freehand-area','rect','line','undoBtn','redoBtn'])assert.ok(code.includes("['"+name+"'"));
+for(const marker of ['aria-pressed','aria-describedby','ArrowRight','Escape','pointercancel','sl-icons-only','min-width:44px','min-height:44px'])assert.ok(code.includes(marker));
+const loader=fs.readFileSync('sentlog/index.html','utf8'),worker=fs.readFileSync('sentlog/sw.js','utf8');
+assert.ok(loader.includes("['toolbar-icons.js?v=151','SentlogToolbarIcons']"));
+assert.ok(loader.includes('src="./toolbar-icons.js?v=151"'));
+assert.ok(loader.includes("'v1.51'"));assert.ok(worker.includes("'toolbar-icons.js'"));assert.ok(worker.includes('sentlog-pwa-v162'));
+console.log('PASS toolbar: seven existing commands, inline SVG, read-only UI, accessible states, versioned loader and offline static cache');
