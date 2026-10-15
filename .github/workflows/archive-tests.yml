@@ -26,6 +26,7 @@ jobs:
           python scripts/build_instant_damage_type.py
           python scripts/build_compact_labels.py
           python scripts/build_overview_labels.py
+          python scripts/build_polygon_snap.py
       - run: |
           node --check sentlog/archive.js
           node --check sentlog/archive-core.js
@@ -53,6 +54,7 @@ jobs:
           node tests/shape_move.test.cjs
           node tests/instant_damage_type.test.cjs
           node tests/compact_labels.test.cjs
+          node tests/polygon_snap.test.cjs
       - run: |
           pip install playwright==1.57.0
           python -m playwright install --with-deps chromium
@@ -65,6 +67,7 @@ jobs:
           python tests/shape_move_ui.py
           python tests/instant_damage_type_ui.py
           python tests/overview_labels_ui.py
+          python tests/polygon_snap_ui.py
       - uses: actions/upload-artifact@v4
         if: always()
         with:
