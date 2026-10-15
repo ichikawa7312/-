@@ -15,6 +15,7 @@ change('sentlog/sw.js',"const CACHE='sentlog-pwa-v155';","const CACHE='sentlog-p
 change('tests/full_management.py',"window.SENTLOG_BUILD==='v1.44'","window.SENTLOG_BUILD==='v1.45'")
 change('tests/full_archive_click.py',"window.SENTLOG_BUILD==='v1.44'","window.SENTLOG_BUILD==='v1.45'")
 change('tests/capacity_ui.py',"window.SENTLOG_BUILD==='v1.44'","window.SENTLOG_BUILD==='v1.45'")
+change('tests/shape_move_ui.py',"window.SENTLOG_BUILD==='v1.44'","window.SENTLOG_BUILD==='v1.45'")
 change('tests/capacity.test.cjs',"'v1.44'","'v1.45'")
 change('tests/resilience.test.cjs',"'v1.44'","'v1.45'",1)
 print('Built Sentlog v1.45: damage category instantly updates labels and numbering')
