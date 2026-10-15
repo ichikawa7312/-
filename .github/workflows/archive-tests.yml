@@ -25,6 +25,7 @@ jobs:
           python scripts/build_shape_move.py
           python scripts/build_instant_damage_type.py
           python scripts/build_compact_labels.py
+          python scripts/build_overview_labels.py
       - run: |
           node --check sentlog/archive.js
           node --check sentlog/archive-core.js
@@ -63,6 +64,7 @@ jobs:
           python tests/photo_recovery_ui.py
           python tests/shape_move_ui.py
           python tests/instant_damage_type_ui.py
+          python tests/overview_labels_ui.py
       - uses: actions/upload-artifact@v4
         if: always()
         with:

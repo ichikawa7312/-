@@ -12,13 +12,17 @@
   const originalBind=bindLabelTarget;
   const originalRender=render;
 
-  // Older drawings without a setting use the new, smaller standard. Do not rewrite data on load.
-  // Keep labels compact in SCREEN pixels, rather than scaling up with the PDF.
-  // Reading the whole drawing no longer makes labels overpower the damages;
-  // zooming in does not magnify names to 25+px. Full zoom .05–8 is supported.
+  // Screen-pixel font size, not PDF/world-point font size. At 25% / 50%
+  // zoom use 8.5px / 9.5px (standard), while at 100% and above preserve the
+  // existing compact 12px+ sizing. At extreme fit-to-page zoom cap at 8.5px.
+  // Do not rewrite old drawings or change the transparent 44px drag target.
   labelFontSize=function(){
     const z=Math.max(scale,.001);
-    const screenPx=Math.max(10.5,Math.min(14.5,12+0.65*Math.log2(z)));
+    const screenPx=z>=1
+      ? Math.min(14.5,12+0.65*Math.log2(z))
+      : z>=0.5
+        ? 9.5+2.5*Math.log2(z/0.5)
+        : Math.max(8.5,9.5+Math.log2(z/0.5));
     return screenPx*factor()/z;
   };
 
