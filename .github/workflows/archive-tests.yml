@@ -24,6 +24,7 @@ jobs:
           python scripts/build_photo_recovery.py
           python scripts/build_shape_move.py
           python scripts/build_instant_damage_type.py
+          python scripts/build_compact_labels.py
       - run: |
           node --check sentlog/archive.js
           node --check sentlog/archive-core.js
@@ -50,6 +51,7 @@ jobs:
           node tests/leader_line_width.test.cjs
           node tests/shape_move.test.cjs
           node tests/instant_damage_type.test.cjs
+          node tests/compact_labels.test.cjs
       - run: |
           pip install playwright==1.57.0
           python -m playwright install --with-deps chromium

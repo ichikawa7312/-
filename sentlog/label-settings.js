@@ -3,7 +3,7 @@
   'use strict';
   const sidebar=document.getElementById('sidebar');
   if(!sidebar || document.getElementById('sentlogLabelSize'))return;
-  const factors=Object.freeze({small:0.65,normal:0.8,large:1});
+  const factors=Object.freeze({small:0.8,normal:1,large:1.2});
   const names={small:'小',normal:'標準',large:'大'};
   const valid=value=>Object.prototype.hasOwnProperty.call(factors,value);
   const choice=()=>valid(state.labelSize)?state.labelSize:'normal';
@@ -13,7 +13,14 @@
   const originalRender=render;
 
   // Older drawings without a setting use the new, smaller standard. Do not rewrite data on load.
-  labelFontSize=function(){return legacyFontSize()*factor();};
+  // Keep labels compact in SCREEN pixels, rather than scaling up with the PDF.
+  // Reading the whole drawing no longer makes labels overpower the damages;
+  // zooming in does not magnify names to 25+px. Full zoom .05–8 is supported.
+  labelFontSize=function(){
+    const z=Math.max(scale,.001);
+    const screenPx=Math.max(10.5,Math.min(14.5,12+0.65*Math.log2(z)));
+    return screenPx*factor()/z;
+  };
 
   // The visible text shrinks; the invisible drag area must not shrink with it.
   bindLabelTarget=function(hit,id){
@@ -39,7 +46,7 @@
   const row=document.createElement('div');row.className='row';row.setAttribute('role','group');
   row.setAttribute('aria-labelledby',title.id);
   const help=document.createElement('div');help.className='meta';help.style.marginTop='8px';
-  help.textContent='この図面の全ページに適用。PDFの文字・囲み線は変わりません。';
+  help.textContent='この図面の全ページに適用。全体表示でも拡大しても文字が大きくなりすぎない設定です。';
   const buttons=[];
   function updateControls(){
     const selectedSize=choice();
@@ -73,9 +80,12 @@
 
   render=function(){
     const result=originalRender.apply(this,arguments);
-    // Scale only the white outline of the label, not the PDF, leaders, damage lines or photo badges.
+    // Constant, fine screen-pixel outline: the old 4 world-pixel stroke
+    // became a bulky halo on zoom. The photo badge uses its own thinner halo.
+    const z=Math.max(scale,.001);
     for(const text of svg.querySelectorAll('text[dominant-baseline="middle"]')){
-      text.setAttribute('stroke-width',String(4*factor()));
+      const photo=String(text.textContent||'').startsWith('📷');
+      text.setAttribute('stroke-width',String((photo?1.6:2.2)/z));
     }
     updateControls();
     return result;
