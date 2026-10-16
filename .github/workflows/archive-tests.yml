@@ -37,6 +37,7 @@ jobs:
           python scripts/build_single_number_ui.py
           python scripts/build_optional_symbol_ui.py
           python scripts/build_image_recovery_view.py
+          python scripts/build_large_image_view.py
       - run: |
           node --check sentlog/archive.js
           node --check sentlog/archive-core.js
@@ -57,7 +58,9 @@ jobs:
           node --check sentlog/record-store.js
           node --check sentlog/inspector-interaction.js
           node --check sentlog/sync-view.js
+          node --check sentlog/image-quality.js
           node tests/image_recovery_view.test.cjs
+          node tests/large_image_view.test.cjs
           node tests/core.test.cjs
           node tests/pc.test.cjs
           node tests/integration.test.cjs
@@ -91,6 +94,7 @@ jobs:
           python tests/full_management.py
           python tests/capacity_ui.py
           python tests/photo_recovery_ui.py
+          python tests/large_image_view_ui.py
           python tests/shape_move_ui.py
           python tests/instant_damage_type_ui.py
           python tests/overview_labels_ui.py
