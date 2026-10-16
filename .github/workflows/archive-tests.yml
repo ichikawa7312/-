@@ -34,6 +34,7 @@ jobs:
           python scripts/build_damage_styles.py
           python scripts/build_label_colors.py
           python scripts/build_plain_numbers.py
+          python scripts/build_single_number_ui.py
       - run: |
           node --check sentlog/archive.js
           node --check sentlog/archive-core.js
@@ -74,6 +75,7 @@ jobs:
           node tests/damage_styles.test.cjs
           node tests/label_colors.test.cjs
           node tests/plain_numbers.test.cjs
+          node tests/single_number_ui.test.cjs
       - run: |
           pip install playwright==1.57.0
           python -m playwright install --with-deps chromium
@@ -94,6 +96,7 @@ jobs:
           python tests/damage_styles_ui.py
           python tests/label_colors_ui.py
           python tests/plain_numbers_ui.py
+          python tests/single_number_ui.py
       - uses: actions/upload-artifact@v4
         if: always()
         with:
