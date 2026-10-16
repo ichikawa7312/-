@@ -32,6 +32,7 @@ jobs:
           python scripts/build_toolbar_icons.py
           python scripts/build_toolbar_help.py
           python scripts/build_damage_styles.py
+          python scripts/build_label_colors.py
       - run: |
           node --check sentlog/archive.js
           node --check sentlog/archive-core.js
@@ -47,6 +48,7 @@ jobs:
           node --check sentlog/damage-catalog.js
           node --check sentlog/toolbar-icons.js
           node --check sentlog/damage-styles.js
+          node --check sentlog/label-colors.js
           node --check sentlog/capacity-details.js
           node --check sentlog/record-store.js
           node tests/core.test.cjs
@@ -69,6 +71,7 @@ jobs:
           node tests/toolbar_icons.test.cjs
           node tests/toolbar_help.test.cjs
           node tests/damage_styles.test.cjs
+          node tests/label_colors.test.cjs
       - run: |
           pip install playwright==1.57.0
           python -m playwright install --with-deps chromium
@@ -87,6 +90,7 @@ jobs:
           python tests/toolbar_icons_ui.py
           python tests/toolbar_help_ui.py
           python tests/damage_styles_ui.py
+          python tests/label_colors_ui.py
       - uses: actions/upload-artifact@v4
         if: always()
         with:
