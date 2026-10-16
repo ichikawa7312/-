@@ -88,7 +88,9 @@ try:
             context.route('**/*', route)
             page = context.new_page()
             errors = []
+            messages = []
             page.on('pageerror', lambda error: errors.append(str(error)))
+            page.on('console', lambda message: messages.append(message.text) if message.type in ('warning', 'error') else None)
             page.goto(origin + '/sentlog/', wait_until='domcontentloaded')
             page.wait_for_function("window.SENTLOG_BUILD==='v1.60'&&!!window.sentlogSyncView", timeout=18000)
             original = page.evaluate("""async()=>{
@@ -114,6 +116,12 @@ try:
                 await window.SentlogRecords.settled();await openDrawing(project.id,meta.id);
                 return JSON.stringify({shapes:state.shapes,settings:state.pageSettings});
             }""")
+            diagnostic = page.evaluate("""()=>({empty:empty.style.display,loading:loading.style.display,
+                error:document.getElementById('errorBanner')?.textContent,hidden:document.hidden,
+                dataset:{...document.getElementById('stageWrap').dataset},type:state.sourceType,
+                activeDrawingId,canvas:[canvas.width,canvas.height]})""")
+            assert diagnostic['empty'] == 'none' and diagnostic['loading'] == 'none', (engine, diagnostic, messages, errors)
+            page.bring_to_front()
             page.wait_for_function("document.getElementById('stageWrap').dataset.imageDrawCount&&loading.style.display==='none'", timeout=30000)
             before = page.evaluate("""()=>{
                 const wrap=document.getElementById('stageWrap'),detail=document.querySelector('.sentlog-image-detail');
