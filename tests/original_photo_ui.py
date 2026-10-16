@@ -39,8 +39,7 @@ with sync_playwright() as p:
       x.fillStyle='white';x.font='120px sans-serif';x.fillText('SHINWA 0.20mm',100,500);
       const source=await new Promise(r=>c.toBlob(r,'image/jpeg',.96));
       const file=new File([source],'IMG_1234.JPG',{type:'image/jpeg',lastModified:Date.UTC(2026,9,17,1,2,3)});
-      const hash=async b=>Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',await b.arrayBuffer()))).map(v=>v.toString(16).padStart(2,'0')).join('');
-      const sourceHash=await hash(file);
+      const exactBytes=async(a,b)=>{const aa=new Uint8Array(await a.arrayBuffer()),bb=new Uint8Array(await b.arrayBuffer());if(aa.length!==bb.length)return false;for(let i=0;i<aa.length;i++)if(aa[i]!==bb[i])return false;return true;};
       await addPhotosToSelected([file]);
       const photo=state.shapes[0].photos[0],original=await SentlogOriginalPhotos.getOriginal('drawing-1',photo.id),meta=(await SentlogOriginalPhotos.listMeta())[0],stats=await SentlogOriginalPhotos.stats();
       const shared=sharedBlob;
@@ -50,11 +49,11 @@ with sync_playwright() as p:
       await SentlogOriginalPhotos.markExported([meta.key],'test.zip');
       const cleanup=await SentlogOriginalPhotos.deleteExported();
       const removed=!(await SentlogOriginalPhotos.getOriginal('drawing-1',photo.id));
-      return {sourceSize:file.size,originalSize:original.size,sourceHash,originalHash:await hash(original),sharedSize:shared.size,sharedDims:sharedSize,
+      return {sourceSize:file.size,originalSize:original.size,exactOriginal:await exactBytes(file,original),sharedSize:shared.size,sharedDims:sharedSize,
         photo,meta,stats,beforeCleanup,stillThere,cleanup,removed,persistCount,historyCount,
         ui:document.getElementById('sentlogOriginalPhotosSection').innerText};
     }''')
-    assert result['sourceSize']==result['originalSize'] and result['sourceHash']==result['originalHash'],result
+    assert result['sourceSize']==result['originalSize'] and result['exactOriginal'],result
     assert max(result['sharedDims'])==1600 and result['sharedSize']<result['sourceSize'],result
     assert result['stats']['count']==1 and result['stats']['unexportedCount']==1,result
     assert result['meta']['projectName']=='依田川農水頭首工' and result['meta']['drawingName']=='下流面' and result['meta']['shapeLabel']=='ひび割れ-12',result
