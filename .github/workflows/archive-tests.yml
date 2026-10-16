@@ -30,6 +30,7 @@ jobs:
           python scripts/build_polygon_dimensions.py
           python scripts/build_damage_catalog.py
           python scripts/build_toolbar_icons.py
+          python scripts/build_toolbar_help.py
       - run: |
           node --check sentlog/archive.js
           node --check sentlog/archive-core.js
@@ -64,6 +65,7 @@ jobs:
           node tests/polygon_dimensions.test.cjs
           node tests/damage_catalog.test.cjs
           node tests/toolbar_icons.test.cjs
+          node tests/toolbar_help.test.cjs
       - run: |
           pip install playwright==1.57.0
           python -m playwright install --with-deps chromium
@@ -80,6 +82,7 @@ jobs:
           python tests/polygon_dimensions_ui.py
           python tests/damage_catalog_ui.py
           python tests/toolbar_icons_ui.py
+          python tests/toolbar_help_ui.py
       - uses: actions/upload-artifact@v4
         if: always()
         with:
