@@ -52,7 +52,7 @@ try:
                     request.continue_()
                 elif request.request.url.startswith('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/'):
                     request.fulfill(status=200, content_type='text/javascript',
-                                    body='window.pdfjsLib={GlobalWorkerOptions:{}};')
+                                    body='window.pdfjsLib={GlobalWorkerOptions:{},getDocument(){throw Error("No PDF needed in synthetic test")}};')
                 else:
                     request.abort()
 
