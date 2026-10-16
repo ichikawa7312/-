@@ -40,6 +40,7 @@ jobs:
           python3 scripts/build_image_recovery_view.py
           python3 scripts/build_large_image_view.py
           python3 scripts/build_image_memory.py
+          python3 scripts/build_image_viewport.py
           node tests/image_recovery_view.test.cjs
           node tests/large_image_view.test.cjs
           node tests/core.test.cjs

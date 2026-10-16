@@ -100,12 +100,13 @@ try:
             page.evaluate("scale=.4;tx=-300;ty=-100;applyTransform();render();")
             page.wait_for_function("""() => {
                 const detail=document.querySelector('.sentlog-image-detail');
-                const left=Number(detail?.style.left.replace('px',''));
+                const left=document.getElementById('stageWrap').dataset.imageViewport==='true'?
+                  Number(svg.getAttribute('viewBox').split(' ')[0]):Number(detail?.style.left.replace('px',''));
                 return left>600&&left<800;
             }""")
             assert page.evaluate("Array.from(document.querySelector('.sentlog-image-detail').getContext('2d').getImageData(5,5,1,1).data)") == [255, 255, 255, 255]
             page.evaluate("scale=.4;tx=-4000;ty=-1900;applyTransform();render();")
-            page.wait_for_function("Number(document.querySelector('.sentlog-image-detail')?.style.left.replace('px',''))>9000")
+            page.wait_for_function("document.getElementById('stageWrap').dataset.imageViewport==='true'?Number(svg.getAttribute('viewBox').split(' ')[0])>9000:Number(document.querySelector('.sentlog-image-detail')?.style.left.replace('px',''))>9000")
             detail = page.evaluate("""() => {
                 const detail=document.querySelector('.sentlog-image-detail');
                 return {width:detail.width,height:detail.height,zoom:[scale,tx,ty],
