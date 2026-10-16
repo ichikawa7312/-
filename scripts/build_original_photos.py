@@ -31,7 +31,7 @@ change('sentlog/phone-runtime.js', 'v1.61', 'v1.62', 4)
 p = 'sentlog/storage-ui.js'
 change(p, '/* v1.32: always compare used space against browser quota. Display only. */',
        '/* v1.62: browser quota with shared photos and device-local originals shown separately. */')
-chane(p, '#sentlogStorageSection [data-category="photos"]{--sl-storage-color:#e99717;}\n#sentlogStorageSection [data-category="archive"]',
+change(p, '#sentlogStorageSection [data-category="photos"]{--sl-storage-color:#e99717;}\n#sentlogStorageSection [data-category="archive"]',
         '#sentlogStorageSection [data-category="photos"]{--sl-storage-color:#e99717;}\n#sentlogStorageSection [data-category="originals"]{--sl-storage-color:#c2410c;}\n#sentlogStorageSection [data-category="archive"]')
 change(p, "{key:'photos',name:'写真',amount:sizes.photos,count:sizes.photoCount+'枚'},\n      {key:'archive'",
        "{key:'photos',name:'写真（共有用）',amount:sizes.photos,count:sizes.photoCount+'枚'},\n      {key:'originals',name:'端末原本',amount:sizes.originals,count:sizes.originalCount+'枚'},\n      {key:'archive'")
