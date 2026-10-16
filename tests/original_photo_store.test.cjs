@@ -18,7 +18,7 @@ assert.equal(crc>>>0,0xcbf43926);
 const index=fs.readFileSync(path.join(root,'sentlog/index.html'),'utf8');
 assert.match(index,/original-photo-store\.js\?v=162/);
 assert.match(index,/SentlogOriginalPhotos/);
-assert.match(index,/SENTLOG_BUILD='v1\.62'|SENTLOG_BUILD="v1\.62"/);
+assert.match(index,/phone-runtime\.js\?v=162/);
 const sw=fs.readFileSync(path.join(root,'sentlog/sw.js'),'utf8');
 assert.match(sw,/sentlog-pwa-v173/);
 assert.match(sw,/original-photo-store\.js/);
