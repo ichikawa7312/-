@@ -35,6 +35,7 @@ jobs:
           python scripts/build_label_colors.py
           python scripts/build_plain_numbers.py
           python scripts/build_single_number_ui.py
+          python scripts/build_optional_symbol_ui.py
       - run: |
           node --check sentlog/archive.js
           node --check sentlog/archive-core.js
@@ -53,6 +54,8 @@ jobs:
           node --check sentlog/label-colors.js
           node --check sentlog/capacity-details.js
           node --check sentlog/record-store.js
+          node --check sentlog/inspector-interaction.js
+          node --check sentlog/sync-view.js
           node tests/core.test.cjs
           node tests/pc.test.cjs
           node tests/integration.test.cjs
@@ -76,6 +79,7 @@ jobs:
           node tests/label_colors.test.cjs
           node tests/plain_numbers.test.cjs
           node tests/single_number_ui.test.cjs
+          node tests/optional_symbol_ui.test.cjs
       - run: |
           pip install playwright==1.57.0
           python -m playwright install --with-deps chromium
@@ -97,6 +101,7 @@ jobs:
           python tests/label_colors_ui.py
           python tests/plain_numbers_ui.py
           python tests/single_number_ui.py
+          python tests/optional_symbol_ui.py
       - uses: actions/upload-artifact@v4
         if: always()
         with:
