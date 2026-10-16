@@ -32,6 +32,7 @@ jobs:
           python3 scripts/build_damage_catalog.py
           python3 scripts/build_toolbar_icons.py
           python3 scripts/build_toolbar_help.py
+          python3 scripts/build_damage_styles.py
           node tests/core.test.cjs
           node tests/pc.test.cjs
           node tests/integration.test.cjs
@@ -51,6 +52,7 @@ jobs:
           node tests/damage_catalog.test.cjs
           node tests/toolbar_icons.test.cjs
           node tests/toolbar_help.test.cjs
+          node tests/damage_styles.test.cjs
       - name: Setup Pages
         uses: actions/configure-pages@v5
         with:
