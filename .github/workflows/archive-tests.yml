@@ -38,6 +38,7 @@ jobs:
           python scripts/build_optional_symbol_ui.py
           python scripts/build_image_recovery_view.py
           python scripts/build_large_image_view.py
+          python scripts/build_image_memory.py
       - run: |
           node --check sentlog/archive.js
           node --check sentlog/archive-core.js
@@ -87,7 +88,7 @@ jobs:
           node tests/optional_symbol_ui.test.cjs
       - run: |
           pip install playwright==1.57.0
-          python -m playwright install --with-deps chromium
+          python -m playwright install --with-deps chromium webkit
           python tests/ui.py
           python tests/archive_click.py
           python tests/full_archive_click.py
@@ -95,6 +96,7 @@ jobs:
           python tests/capacity_ui.py
           python tests/photo_recovery_ui.py
           python tests/large_image_view_ui.py
+          python tests/image_memory_ui.py
           python tests/shape_move_ui.py
           python tests/instant_damage_type_ui.py
           python tests/overview_labels_ui.py
