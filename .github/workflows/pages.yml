@@ -37,6 +37,8 @@ jobs:
           python3 scripts/build_plain_numbers.py
           python3 scripts/build_single_number_ui.py
           python3 scripts/build_optional_symbol_ui.py
+          python3 scripts/build_image_recovery_view.py
+          node tests/image_recovery_view.test.cjs
           node tests/core.test.cjs
           node tests/pc.test.cjs
           node tests/integration.test.cjs

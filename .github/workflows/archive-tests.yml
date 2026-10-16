@@ -36,6 +36,7 @@ jobs:
           python scripts/build_plain_numbers.py
           python scripts/build_single_number_ui.py
           python scripts/build_optional_symbol_ui.py
+          python scripts/build_image_recovery_view.py
       - run: |
           node --check sentlog/archive.js
           node --check sentlog/archive-core.js
@@ -56,6 +57,7 @@ jobs:
           node --check sentlog/record-store.js
           node --check sentlog/inspector-interaction.js
           node --check sentlog/sync-view.js
+          node tests/image_recovery_view.test.cjs
           node tests/core.test.cjs
           node tests/pc.test.cjs
           node tests/integration.test.cjs
