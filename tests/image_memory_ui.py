@@ -1,5 +1,6 @@
 """Real 93MP JPEG decoding plus repeated zoom/pan in Chromium and WebKit.
 Synthetic pixels/records only; no production services, accounts or user files.
+File transport is supplied in memory; IndexedDB receipt is covered separately.
 Linux WebKit is an engine regression test, not a physical iPhone RAM test.
 """
 from pathlib import Path
@@ -102,7 +103,14 @@ try:
                     pageSettings:{'1':{paperSize:'A3',scaleDenom:100}}
                 }));
                 const blob=await(await fetch('/memory-fixture.jpg')).blob();
-                await window.SentlogRecords.writeFile('background:'+meta.id,new File([blob],'large.jpg',{type:'image/jpeg'}));
+                const file=new File([await blob.arrayBuffer()],'large.jpg',{type:'image/jpeg'});
+                // Keep transport outside this renderer memory regression. The
+                // separate receipt test exercises real IndexedDB persistence;
+                // Linux WebKit automation cannot reliably persist large Files.
+                const originalRead=getBackgroundFile;
+                getBackgroundFile=async function(id=activeDrawingId){
+                    return id===meta.id?file:originalRead.apply(this,arguments);
+                };
                 await window.SentlogRecords.settled();await openDrawing(project.id,meta.id);
                 return JSON.stringify({shapes:state.shapes,settings:state.pageSettings});
             }""")
