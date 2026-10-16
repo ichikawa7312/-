@@ -33,7 +33,7 @@ function fixture({patched=true,naturalWidth=11575,naturalHeight=8031}={}){
         value=n;allocations.push({width:c.width,height:c.height,pixels:c.width*c.height});
       }});
     }
-    const drawingContext={clearRect(){},drawImage(...args){
+    const drawingContext={clearRect(){},fillRect(){},drawImage(...args){
       if(context.failPaint)throw Error('synthetic drawing error');
       if(c.width*c.height<=16777216)draws.push({canvas:c,args});
     }};

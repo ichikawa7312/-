@@ -43,6 +43,7 @@
     try{
       const context=buffer.getContext('2d',{alpha:false});
       if(!context)throw Error('画像の拡大表示領域を確保できません');
+      context.fillStyle='#fff';context.fillRect(0,0,pixels.width,pixels.height);
       // Source rectangles remain in the image's coordinate system.
       const sx=v.image.naturalWidth/state.width,sy=v.image.naturalHeight/state.height;
       context.drawImage(v.image,x*sx,y*sy,w*sx,h*sy,0,0,pixels.width,pixels.height);
@@ -101,6 +102,7 @@
       const context=canvas.getContext('2d',{alpha:false});
       if(!context)throw Error('図面画像の表示領域を確保できません。図面を開き直してください');
       context.clearRect(0,0,pixels.width,pixels.height);
+      context.fillStyle='#fff';context.fillRect(0,0,pixels.width,pixels.height);
       context.drawImage(image,0,0,pixels.width,pixels.height);
       state.pdfPageInfo=state.pdfPageInfo||{};delete state.pdfPageInfo['1'];
       view={epoch:stamp,id,image};committed=true;empty.style.display='none';

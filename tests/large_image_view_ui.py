@@ -19,7 +19,7 @@ class Handler(SimpleHTTPRequestHandler):
 server = ThreadingHTTPServer(('127.0.0.1', 0), functools.partial(Handler, directory=str(ROOT)))
 threading.Thread(target=server.serve_forever, daemon=True).start()
 origin = f'http://127.0.0.1:{server.server_port}'
-image = '<svg xmlns="http://www.w3.org/2000/svg" width="11575" height="8031"><rect width="5788" height="8031" fill="#ff0000"/><rect x="5788" width="5787" height="8031" fill="#0000ff"/><path d="M0 0L11575 8031" stroke="black" stroke-width="4"/></svg>'
+image = '<svg xmlns="http://www.w3.org/2000/svg" width="11575" height="8031"><rect y="1000" width="5788" height="7031" fill="#ff0000"/><rect x="5788" width="5787" height="8031" fill="#0000ff"/><path d="M0 0L11575 8031" stroke="black" stroke-width="4"/></svg>'
 meta = {'id': 'large-drawing', 'name': '特大の写真図面', 'fileName': '02.jpg', 'sourceType': 'image', 'pageCount': 1}
 project = {'id': 'large-project', 'name': '大きい画像の受信検証', 'drawings': [meta]}
 try:
@@ -86,6 +86,7 @@ try:
                   logical:[state.width,state.height],raster:[canvas.width,canvas.height],
                   left:pixel(Math.floor(canvas.width*.25),Math.floor(canvas.height*.5)),
                   right:pixel(Math.floor(canvas.width*.75),Math.floor(canvas.height*.5)),
+                  transparent:pixel(Math.floor(canvas.width*.1),Math.floor(canvas.height*.05)),
                   records:JSON.stringify({shapes:state.shapes,settings:state.pageSettings}),
                   original:await(await getBackgroundFile()).text()};
             }""", image)
@@ -94,7 +95,15 @@ try:
             assert max(result['raster']) <= 4096
             assert result['raster'][0] * result['raster'][1] <= 2200000
             assert result['left'] == [255, 0, 0, 255] and result['right'] == [0, 0, 255, 255], result
+            assert result['transparent'] == [255, 255, 255, 255], result
             assert result['records'] == before and result['original'] == image
+            page.evaluate("scale=.4;tx=-300;ty=-100;applyTransform();render();")
+            page.wait_for_function("""() => {
+                const detail=document.querySelector('.sentlog-image-detail');
+                const left=Number(detail?.style.left.replace('px',''));
+                return left>600&&left<800;
+            }""")
+            assert page.evaluate("Array.from(document.querySelector('.sentlog-image-detail').getContext('2d').getImageData(5,5,1,1).data)") == [255, 255, 255, 255]
             page.evaluate("scale=.4;tx=-4000;ty=-1900;applyTransform();render();")
             page.wait_for_function("Number(document.querySelector('.sentlog-image-detail')?.style.left.replace('px',''))>9000")
             detail = page.evaluate("""() => {
