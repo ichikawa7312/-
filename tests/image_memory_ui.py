@@ -120,6 +120,24 @@ try:
                 error:document.getElementById('errorBanner')?.textContent,hidden:document.hidden,
                 dataset:{...document.getElementById('stageWrap').dataset},type:state.sourceType,
                 activeDrawingId,canvas:[canvas.width,canvas.height]})""")
+            if diagnostic['empty'] != 'none':
+                probes = page.evaluate('''async()=>{
+                    const file=await getBackgroundFile(),bytes=new Uint8Array(await file.arrayBuffer());
+                    async function probe(src){
+                        const image=new Image();
+                        try{return await new Promise(resolve=>{
+                            image.onload=()=>resolve({ok:true,width:image.naturalWidth,height:image.naturalHeight});
+                            image.onerror=()=>resolve({ok:false});image.src=src;
+                            setTimeout(()=>resolve({timeout:true}),10000);
+                        });}finally{image.onload=null;image.onerror=null;image.src='';}
+                    }
+                    const blobUrl=URL.createObjectURL(new Blob([bytes],{type:'image/jpeg'}));
+                    const fileUrl=URL.createObjectURL(file);
+                    try{return {size:file.size,type:file.type,byteLength:bytes.length,head:Array.from(bytes.slice(0,4)),
+                        network:await probe('/memory-fixture.jpg'),blob:await probe(blobUrl),file:await probe(fileUrl)};}
+                    finally{URL.revokeObjectURL(blobUrl);URL.revokeObjectURL(fileUrl);}
+                }''')
+                print(f'IMAGE LOAD DIAGNOSTIC {engine}: {diagnostic} probes={probes} messages={messages} errors={errors}', flush=True)
             assert diagnostic['empty'] == 'none' and diagnostic['loading'] == 'none', (engine, diagnostic, messages, errors)
             page.bring_to_front()
             page.wait_for_function("document.getElementById('stageWrap').dataset.imageDrawCount&&loading.style.display==='none'", timeout=30000)
