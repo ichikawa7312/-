@@ -23,6 +23,8 @@ change(p, "['image-quality.js?v=161','drawTouchViewport']",
 change(p, '<script src="./image-quality.js?v=161"><\\/script>',
        '<script src="./image-quality.js?v=161"><\\/script><script src="./original-photo-store.js?v=162"><\\/script>')
 change(p, 'phone-runtime.js?v=161', 'phone-runtime.js?v=162', 2)
+change(p, "['storage-ui.js?v=132','v1.32']", "['storage-ui.js?v=162','v1.62']")
+change(p, 'storage-ui.js?v=132', 'storage-ui.js?v=162')
 change(p, "'v1.61'", "'v1.62'")
 change('sentlog/phone-runtime.js', 'v1.61', 'v1.62', 4)
 
