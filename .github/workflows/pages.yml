@@ -41,8 +41,11 @@ jobs:
           python3 scripts/build_large_image_view.py
           python3 scripts/build_image_memory.py
           python3 scripts/build_image_viewport.py
+          python3 scripts/build_original_photos.py
           node tests/image_recovery_view.test.cjs
+          node --check sentlog/original-photo-store.js
           node tests/large_image_view.test.cjs
+          node tests/original_photo_store.test.cjs
           node tests/core.test.cjs
           node tests/pc.test.cjs
           node tests/integration.test.cjs

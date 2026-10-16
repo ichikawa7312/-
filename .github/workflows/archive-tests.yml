@@ -40,6 +40,7 @@ jobs:
           python scripts/build_large_image_view.py
           python scripts/build_image_memory.py
           python scripts/build_image_viewport.py
+          python scripts/build_original_photos.py
       - run: |
           node --check sentlog/archive.js
           node --check sentlog/archive-core.js
@@ -61,8 +62,10 @@ jobs:
           node --check sentlog/inspector-interaction.js
           node --check sentlog/sync-view.js
           node --check sentlog/image-quality.js
+          node --check sentlog/original-photo-store.js
           node tests/image_recovery_view.test.cjs
           node tests/large_image_view.test.cjs
+          node tests/original_photo_store.test.cjs
           node tests/core.test.cjs
           node tests/pc.test.cjs
           node tests/integration.test.cjs
@@ -91,6 +94,7 @@ jobs:
           pip install playwright==1.57.0
           python -m playwright install --with-deps chromium webkit
           python tests/image_memory_ui.py
+          python tests/original_photo_ui.py
           python tests/ui.py
           python tests/archive_click.py
           python tests/full_archive_click.py
