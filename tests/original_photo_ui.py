@@ -20,6 +20,7 @@ function pushHistory(){historyCount++}
 function persist(){persistCount++}
 async function savePhotoBlob(id,blob,drawingId){sharedBlob=blob}
 async function renderSelectedPhotos(){}
+async function addPhotosToSelected(files){}
 </script></body></html>'''
 
 with sync_playwright() as p:
