@@ -208,19 +208,23 @@ try:
                         return {view:currentView,logical:[state.width,state.height],svg:[s.width,s.height],wrap:[r.width,r.height],
                           raster:d.width*d.height,box:[d.getBoundingClientRect().width,d.getBoundingClientRect().height],
                           stage:getComputedStyle(document.getElementById('stage')).transform,touches:activeTouches.size,
-                          alignment:[screen.x-r.left-r.width/2,screen.y-r.top-r.height/2],zoom:scale};
+                          alignment:[screen.x-r.left-r.width/2,screen.y-r.top-r.height/2],zoom:scale,
+                          colors:[.25,.75].map(x=>Array.from(d.getContext('2d').getImageData(Math.floor(d.width*x),Math.floor(d.height*.5),1,1).data))};
                     }''')
                     assert bounds['view'] == 'editor' and bounds['stage'] == 'none' and bounds['touches'] == 0, bounds
                     assert bounds['logical'] == [11575, 8031] and bounds['raster'] <= 1500000, bounds
                     assert all(a <= b + 1 for a, b in zip(bounds['svg'], bounds['wrap'])), bounds
                     assert all(a <= b + 1 for a, b in zip(bounds['box'], bounds['wrap'])), bounds
                     assert max(abs(n) for n in bounds['alignment']) < .1, bounds
+                    red, blue = bounds['colors']
+                    assert red[0] > 200 and red[2] < 60 and red[3] == 255, bounds
+                    assert blue[2] > 200 and blue[0] < 60 and blue[3] == 255, bounds
                 assert page.evaluate('scale') == 8
                 assert page.evaluate('JSON.stringify({shapes:state.shapes,settings:state.pageSettings})') == original
             page.evaluate('showProjects()')
             assert page.locator('.sentlog-image-detail').count() == 0
             context.close()
             browser.close()
-            print(f'PASS {engine}: real 11575x8031 JPEG, released original image, 40 zoom/pan frames, same bounded surface, two reopen/4-pinch cycles through 800%, screen-size SVG/raster/filter surfaces and aligned hit coordinates, original bytes/records/calibration retained')
+            print(f'PASS {engine}: real 11575x8031 JPEG, released original image, 40 zoom/pan frames, same bounded surface, two reopen/4-pinch cycles through 800%, screen-size SVG/raster/filter surfaces, correct visible JPEG colors and aligned hit coordinates, original bytes/records/calibration retained')
 finally:
     server.shutdown()
