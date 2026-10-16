@@ -53,7 +53,7 @@ with sync_playwright() as p:
       const removed=!(await SentlogOriginalPhotos.getOriginal('drawing-1',photo.id));
       return {sourceSize:file.size,originalSize:original.size,exactOriginal:await exactBytes(file,original),sharedSize:shared.size,sharedDims:sharedSize,
         photo,meta,stats,beforeCleanup,stillThere,cleanup,removed,persistCount,historyCount,
-        ui:document.getElementById('sentlogOriginalPhotosSection').innerText};
+        ui:document.getElementById('sentlogOriginalPhotosSection').textContent};
     }''')
     assert result['sourceSize']==result['originalSize'] and result['exactOriginal'],result
     assert max(result['sharedDims'])==1600 and result['sharedSize']<result['sourceSize'],result
