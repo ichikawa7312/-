@@ -29,7 +29,10 @@ def touch(cdp,kind,points):
  cdp.send('Input.dispatchTouchEvent',{'type':kind,'touchPoints':[{'id':i,'x':x,'y':y,'radiusX':2,'radiusY':2,'force':1} for i,x,y in points]})
 def saved(page):return page.evaluate("JSON.stringify({shapes:state.shapes,record:window.SentlogRecords.getItem(drawingStorageKey(activeDrawingId)),history:historyFor()})")
 def screenshot(page,name):
- (ROOT/'test-results').mkdir(exist_ok=True);page.screenshot(path=str(ROOT/'test-results'/name),full_page=True)
+ # A full-page capture changes the tablet's visual viewport and intentionally hides help.
+ # Capture the actual viewport, then check the same popup is still on screen.
+ (ROOT/'test-results').mkdir(exist_ok=True);page.screenshot(path=str(ROOT/'test-results'/name),full_page=False)
+ expect(page.locator('#sentlogToolTip')).to_be_visible()
 def rect(page,selector):
  return page.locator(selector).bounding_box()
 def unchanged(page):
