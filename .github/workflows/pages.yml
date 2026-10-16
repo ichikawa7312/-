@@ -36,6 +36,7 @@ jobs:
           python3 scripts/build_label_colors.py
           python3 scripts/build_plain_numbers.py
           python3 scripts/build_single_number_ui.py
+          python3 scripts/build_optional_symbol_ui.py
           node tests/core.test.cjs
           node tests/pc.test.cjs
           node tests/integration.test.cjs
@@ -59,6 +60,7 @@ jobs:
           node tests/label_colors.test.cjs
           node tests/plain_numbers.test.cjs
           node tests/single_number_ui.test.cjs
+          node tests/optional_symbol_ui.test.cjs
       - name: Setup Pages
         uses: actions/configure-pages@v5
         with:
