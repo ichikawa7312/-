@@ -95,7 +95,7 @@ try:
    page.evaluate("document.getElementById('inspector').classList.add('open')")
    before=page.evaluate('JSON.stringify(state.shapes)')
    page.locator('#damageType').select_option('腐食');check(page)
-   assert page.locator('[data-damage-label-id="style-1"][data-damage-label-role="name"]').inner_text().startswith('腐食')
+   assert page.locator('[data-damage-label-id="style-1"][data-damage-label-role="name"]').text_content().startswith('腐食')
    page.evaluate('undo()');assert page.evaluate('JSON.stringify(state.shapes)')==before;check(page)
    # Existing custom name group change immediately recolors its whole label chain.
    context.set_offline(True);page.evaluate("selectShape('style-7')")
