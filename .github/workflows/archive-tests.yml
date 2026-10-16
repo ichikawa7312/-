@@ -39,6 +39,7 @@ jobs:
           python scripts/build_image_recovery_view.py
           python scripts/build_large_image_view.py
           python scripts/build_image_memory.py
+          python scripts/build_image_viewport.py
       - run: |
           node --check sentlog/archive.js
           node --check sentlog/archive-core.js

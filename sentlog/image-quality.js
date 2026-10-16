@@ -1,4 +1,4 @@
-/* Sentlog v1.60: bounded image sources and one reusable zoom canvas on touch devices.
+/* Sentlog v1.61: touch images and SVGs stay inside a fixed screen-size viewport.
  * A 11575 x 8031 image must never allocate a full-size 93-megapixel canvas.
  * Zoom detail is drawn only for the visible region, below the annotation SVG.
  */
@@ -10,7 +10,7 @@
   const touch=/iPhone|iPad|iPod/i.test(navigator.userAgent||'') ||
     (navigator.maxTouchPoints>1) || window.matchMedia?.('(pointer:coarse)').matches;
   const SOURCE_PIXELS=4000000,TOUCH_DETAIL_PIXELS=1500000;
-  let epoch=0,view=null,front=null,timer=0,detailKey='',openingSize=null,drawCount=0;
+  let epoch=0,view=null,front=null,timer=0,frame=0,detailKey='',openingSize=null,drawCount=0,viewport=false;
   const dispose=element=>{if(element){element.remove();element.width=1;element.height=1;}};
   function releaseSource(source){
     if(!source)return;
@@ -19,8 +19,19 @@
     else {source.onload=null;source.onerror=null;source.src='';}
   }
   function invalidate(){
-    epoch++;clearTimeout(timer);timer=0;detailKey='';
+    epoch++;clearTimeout(timer);timer=0;cancelAnimationFrame(frame);frame=0;detailKey='';
     if(view)releaseSource(view.source);view=null;dispose(front);front=null;
+    if(viewport){
+      viewport=false;
+      // Keep the closed/loading editor tiny. A following PDF renderer restores
+      // its own dimensions; a new image installs another screen-size viewport.
+      stage.style.width='';stage.style.height='';stage.style.overflow='';
+      canvas.style.display='';canvas.style.width='1px';canvas.style.height='1px';
+      canvas.width=1;canvas.height=1;
+      svg.setAttribute('width',1);svg.setAttribute('height',1);svg.setAttribute('viewBox','0 0 1 1');
+      svg.removeAttribute('preserveAspectRatio');svg.style.overflow='';
+      delete wrap.dataset.imageViewport;
+    }
     return epoch;
   }
   function bounded(w,h,density,budget){
@@ -55,9 +66,68 @@
   }
   function schedule(delay=180){
     if(!view)return;clearTimeout(timer);
+    if(touch){
+      updateViewport();
+      if(!frame)frame=requestAnimationFrame(()=>{frame=0;drawTouchViewport();});
+      return;
+    }
     timer=setTimeout(()=>{timer=0;drawDetail();},delay);
   }
+  function updateViewport(){
+    if(!touch || !current(view) || !(scale>0))return null;
+    const r=wrap.getBoundingClientRect();if(r.width<1 || r.height<1)return null;
+    viewport=true;
+    stage.style.transform='none';stage.style.width=r.width+'px';stage.style.height=r.height+'px';
+    stage.style.overflow='hidden';
+    // The logical drawing coordinates remain unchanged. The SVG camera moves
+    // through that world while its physical, filtered surface stays screen-size.
+    svg.setAttribute('width',r.width);svg.setAttribute('height',r.height);
+    svg.setAttribute('viewBox',`${-tx/scale} ${-ty/scale} ${r.width/scale} ${r.height/scale}`);
+    svg.setAttribute('preserveAspectRatio','none');svg.style.overflow='hidden';
+    // Retain the bounded base raster for recovery/readback, but never ask the
+    // compositor to scale its 11575x8031 CSS box while pinching.
+    canvas.style.display='none';canvas.style.width='0px';canvas.style.height='0px';
+    wrap.dataset.imageViewport='true';
+    return r;
+  }
+  function drawTouchViewport(){
+    const v=view;if(!current(v) || document.hidden)return;
+    const r=updateViewport();if(!r)return;
+    const pixels=bounded(r.width,r.height,Math.min(2,window.devicePixelRatio||1),TOUCH_DETAIL_PIXELS);
+    const key=[epoch,scale,tx,ty,r.width,r.height,pixels.width,pixels.height].join(':');
+    if(key===detailKey)return;
+    const buffer=front||document.createElement('canvas');
+    if(buffer.width!==pixels.width || buffer.height!==pixels.height){
+      buffer.width=1;buffer.height=1;buffer.width=pixels.width;buffer.height=pixels.height;
+    }
+    let committed=false;
+    try{
+      const context=buffer.getContext('2d');
+      if(!context)throw Error('画像の画面表示領域を確保できません');
+      context.clearRect(0,0,pixels.width,pixels.height);
+      const x=Math.max(0,-tx/scale),y=Math.max(0,-ty/scale);
+      const w=Math.min(state.width,(r.width-tx)/scale)-x;
+      const h=Math.min(state.height,(r.height-ty)/scale)-y;
+      if(w>0 && h>0){
+        const sourceW=v.source.naturalWidth||v.source.width,sourceH=v.source.naturalHeight||v.source.height;
+        const sx=sourceW/state.width,sy=sourceH/state.height;
+        const dx=pixels.width/r.width,dy=pixels.height/r.height;
+        const left=(tx+x*scale)*dx,top=(ty+y*scale)*dy,width=w*scale*dx,height=h*scale*dy;
+        context.fillStyle='#fff';context.fillRect(left,top,width,height);
+        context.drawImage(v.source,x*sx,y*sy,w*sx,h*sy,left,top,width,height);
+      }
+      if(!current(v))return;
+      buffer.className='sentlog-image-detail';buffer.setAttribute('aria-hidden','true');
+      buffer.style.cssText='position:absolute;pointer-events:none;background:transparent;left:0;top:0;width:'+r.width+'px;height:'+r.height+'px;';
+      if(!front)stage.insertBefore(buffer,svg);
+      front=buffer;committed=true;detailKey=key;
+      wrap.dataset.imageQuality='画面表示';wrap.dataset.imageDrawCount=String(++drawCount);
+    }catch(error){
+      if(current(v))console.warn('Sentlog image viewport',error);
+    }finally{if(!committed){dispose(buffer);if(front===buffer)front=null;}}
+  }
   function drawDetail(){
+    if(touch){drawTouchViewport();return;}
     const v=view;if(!current(v) || document.hidden || !(scale>0))return;
     if(activeTouches.size || panStart || labelDrag){schedule(120);return;}
     const r=wrap.getBoundingClientRect();if(r.width<1 || r.height<1)return;
@@ -96,7 +166,10 @@
     }finally{if(!committed){dispose(buffer);if(front===buffer)front=null;}}
   }
   const oldTransform=applyTransform;
-  applyTransform=function(){const result=oldTransform.apply(this,arguments);schedule();return result;};
+  applyTransform=function(){
+    if(touch && current(view)){updateZoomUI();schedule();return;}
+    const result=oldTransform.apply(this,arguments);schedule();return result;
+  };
   const oldOpen=openFile,oldOpenDrawing=openDrawing;
   openFile=async function(file,save=true){
     invalidate();

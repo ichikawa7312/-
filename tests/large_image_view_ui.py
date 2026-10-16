@@ -97,15 +97,17 @@ try:
             assert result['left'] == [255, 0, 0, 255] and result['right'] == [0, 0, 255, 255], result
             assert result['transparent'] == [255, 255, 255, 255], result
             assert result['records'] == before and result['original'] == image
-            page.evaluate("scale=.4;tx=-300;ty=-100;applyTransform();render();")
-            page.wait_for_function("""() => {
+            serial = page.evaluate("()=>{const serial=Number(document.getElementById('stageWrap').dataset.imageDrawCount||0);scale=.4;tx=-300;ty=-100;applyTransform();render();return serial;}")
+            page.wait_for_function("""serial => {
                 const detail=document.querySelector('.sentlog-image-detail');
-                const left=Number(detail?.style.left.replace('px',''));
-                return left>600&&left<800;
-            }""")
-            assert page.evaluate("Array.from(document.querySelector('.sentlog-image-detail').getContext('2d').getImageData(5,5,1,1).data)") == [255, 255, 255, 255]
-            page.evaluate("scale=.4;tx=-4000;ty=-1900;applyTransform();render();")
-            page.wait_for_function("Number(document.querySelector('.sentlog-image-detail')?.style.left.replace('px',''))>9000")
+                const left=document.getElementById('stageWrap').dataset.imageViewport==='true'?
+                  Number(svg.getAttribute('viewBox').split(' ')[0]):Number(detail?.style.left.replace('px',''));
+                return left>600&&left<800&&Number(document.getElementById('stageWrap').dataset.imageDrawCount)>serial;
+            }""", arg=serial)
+            white = page.evaluate("Array.from(document.querySelector('.sentlog-image-detail').getContext('2d').getImageData(5,5,1,1).data)")
+            assert white == [255, 255, 255, 255], (kind, white)
+            serial = page.evaluate("()=>{const serial=Number(document.getElementById('stageWrap').dataset.imageDrawCount||0);scale=.4;tx=-4000;ty=-1900;applyTransform();render();return serial;}")
+            page.wait_for_function("serial=>Number(document.getElementById('stageWrap').dataset.imageDrawCount)>serial&&(document.getElementById('stageWrap').dataset.imageViewport==='true'?Number(svg.getAttribute('viewBox').split(' ')[0])>9000:Number(document.querySelector('.sentlog-image-detail')?.style.left.replace('px',''))>9000)", arg=serial)
             detail = page.evaluate("""() => {
                 const detail=document.querySelector('.sentlog-image-detail');
                 return {width:detail.width,height:detail.height,zoom:[scale,tx,ty],

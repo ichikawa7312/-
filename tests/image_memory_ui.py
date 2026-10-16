@@ -99,7 +99,7 @@ try:
             page.on('pageerror', lambda error: errors.append(str(error)))
             page.on('console', lambda message: messages.append(message.text) if message.type in ('warning', 'error') else None)
             page.goto(origin + '/sentlog/', wait_until='domcontentloaded')
-            page.wait_for_function("window.SENTLOG_BUILD==='v1.60'&&!!window.sentlogSyncView", timeout=18000)
+            page.wait_for_function("window.SENTLOG_BUILD==='v1.61'&&!!window.sentlogSyncView", timeout=18000)
             original = page.evaluate("""async()=>{
                 await window.sentlogAppReady;
                 const meta={id:'memory-drawing',name:'JPEG memory fixture',fileName:'large.jpg',sourceType:'image',pageCount:1};
@@ -168,17 +168,63 @@ try:
                 const hash=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',await file.arrayBuffer()))).map(x=>x.toString(16).padStart(2,'0')).join('');
                 return {...window.memoryTest,sameSurface:detail===window.memoryDetail,detailPixels:detail.width*detail.height,
                   records:JSON.stringify({shapes:state.shapes,settings:state.pageSettings}),hash,
-                  selected:selected,zoom:[scale,tx,ty],loading:loading.style.display};
+                  selected:selected,zoom:[scale,tx,ty],loading:loading.style.display,
+                  viewport:document.getElementById('stageWrap').dataset.imageViewport,
+                  svgBox:[svg.getBoundingClientRect().width,svg.getBoundingClientRect().height],
+                  wrapBox:[document.getElementById('stageWrap').clientWidth,document.getElementById('stageWrap').clientHeight],
+                  transform:getComputedStyle(document.getElementById('stage')).transform};
             }""")
             import hashlib
             assert after['hash'] == hashlib.sha256(jpeg).hexdigest()
             assert after['largeReadsAfterReady'] == 0 and after['createdAfterReady'] == 0 and after['urlsAfterReady'] == 0, after
             assert after['sameSurface'] and after['detailPixels'] <= 1500000
             assert after['records'] == original and after['loading'] == 'none' and not errors, (after, errors)
+            assert after['viewport'] == 'true' and after['transform'] == 'none', after
+            assert all(a <= b + 1 for a, b in zip(after['svgBox'], after['wrapBox'])), after
+            # Exercise the reported sequence through the actual two-finger
+            # pointer handlers, not only by assigning scale/translation values.
+            for reopen in range(2):
+                page.evaluate('showProjects()')
+                assert page.locator('.sentlog-image-detail').count() == 0
+                page.evaluate("openDrawing('memory-project','memory-drawing')")
+                page.wait_for_function("document.getElementById('stageWrap').dataset.imageViewport==='true'&&!!document.querySelector('.sentlog-image-detail')")
+                page.evaluate("svg.classList.add('sl-damage-mono')")
+                rect = page.locator('#stageWrap').bounding_box()
+                cx, cy = rect['x'] + rect['width'] / 2, rect['y'] + rect['height'] / 2
+                for pinch in range(4):
+                    previous = page.evaluate('scale')
+                    for pointer, x, primary in [(11, cx-20, True), (12, cx+20, False)]:
+                        page.dispatch_event('#stageWrap', 'pointerdown', {'pointerType': 'touch', 'pointerId': pointer, 'isPrimary': primary, 'clientX': x, 'clientY': cy, 'button': 0, 'buttons': 1})
+                    for pointer, x in [(11, cx-80), (12, cx+80)]:
+                        page.dispatch_event('#stageWrap', 'pointermove', {'pointerType': 'touch', 'pointerId': pointer, 'clientX': x, 'clientY': cy, 'buttons': 1})
+                    page.wait_for_function('previous=>scale>=Math.min(8,previous*3.9)', arg=previous)
+                    for pointer in (11, 12):
+                        page.dispatch_event('#stageWrap', 'pointerup', {'pointerType': 'touch', 'pointerId': pointer, 'clientX': cx, 'clientY': cy, 'buttons': 0})
+                    page.evaluate('()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))')
+                    bounds = page.evaluate('''()=>{
+                        const r=document.getElementById('stageWrap').getBoundingClientRect(),s=svg.getBoundingClientRect(),d=document.querySelector('.sentlog-image-detail');
+                        const world=point({clientX:r.left+r.width/2,clientY:r.top+r.height/2});
+                        const matrix=svg.getScreenCTM(),screen=new DOMPoint(world.x,world.y).matrixTransform(matrix);
+                        return {view:currentView,logical:[state.width,state.height],svg:[s.width,s.height],wrap:[r.width,r.height],
+                          raster:d.width*d.height,box:[d.getBoundingClientRect().width,d.getBoundingClientRect().height],
+                          stage:getComputedStyle(document.getElementById('stage')).transform,touches:activeTouches.size,
+                          alignment:[screen.x-r.left-r.width/2,screen.y-r.top-r.height/2],zoom:scale,
+                          colors:[.25,.75].map(x=>Array.from(d.getContext('2d').getImageData(Math.floor(d.width*x),Math.floor(d.height*.5),1,1).data))};
+                    }''')
+                    assert bounds['view'] == 'editor' and bounds['stage'] == 'none' and bounds['touches'] == 0, bounds
+                    assert bounds['logical'] == [11575, 8031] and bounds['raster'] <= 1500000, bounds
+                    assert all(a <= b + 1 for a, b in zip(bounds['svg'], bounds['wrap'])), bounds
+                    assert all(a <= b + 1 for a, b in zip(bounds['box'], bounds['wrap'])), bounds
+                    assert max(abs(n) for n in bounds['alignment']) < .1, bounds
+                    red, blue = bounds['colors']
+                    assert red[0] > 200 and red[2] < 60 and red[3] == 255, bounds
+                    assert blue[2] > 200 and blue[0] < 60 and blue[3] == 255, bounds
+                assert page.evaluate('scale') == 8
+                assert page.evaluate('JSON.stringify({shapes:state.shapes,settings:state.pageSettings})') == original
             page.evaluate('showProjects()')
             assert page.locator('.sentlog-image-detail').count() == 0
             context.close()
             browser.close()
-            print(f'PASS {engine}: real 11575x8031 JPEG, released original image, 40 zoom/pan frames, same bounded surface, no large-image reread/new image canvases/URLs, original bytes/records/calibration retained')
+            print(f'PASS {engine}: real 11575x8031 JPEG, released original image, 40 zoom/pan frames, same bounded surface, two reopen/4-pinch cycles through 800%, screen-size SVG/raster/filter surfaces, correct visible JPEG colors and aligned hit coordinates, original bytes/records/calibration retained')
 finally:
     server.shutdown()

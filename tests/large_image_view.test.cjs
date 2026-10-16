@@ -19,9 +19,10 @@ function fixture({patched=true,naturalWidth=11575,naturalHeight=8031,touch=false
     empty:{style:{display:'grid'}},loading:{style:{display:'none'}},
     scale:.05,tx:0,ty:0,activeTouches:new Map(),panStart:null,labelDrag:null,devicePixelRatio:3,
     setTimeout:fn=>{const id=++counter;timers.set(id,fn);return id;},clearTimeout:id=>timers.delete(id),
+    requestAnimationFrame:fn=>{const id=++counter;timers.set(id,fn);return id;},cancelAnimationFrame:id=>timers.delete(id),
     addEventListener(){},URL:{createObjectURL:file=>{created.push(file);return 'blob:'+created.length;},revokeObjectURL:url=>revoked.push(url)},
     fit(){fits++;context.scale=.05;context.tx=5;context.ty=10;},render(){},persist(){persists++;},
-    updateScaleStatus(){},updatePageUI(){},showError:error=>errors.push(error),setLoading:on=>{context.loading.style.display=on?'grid':'none';},
+    updateScaleStatus(){},updateZoomUI(){},updatePageUI(){},showError:error=>errors.push(error),setLoading:on=>{context.loading.style.display=on?'grid':'none';},
     saveBackgroundFile:async()=>{},applyTransform(){},openDrawing:async()=>{},showProjects(){context.currentView='projects';},showDrawings(){context.currentView='drawings';},
     Image:class{
       constructor(){images.push(this);}
@@ -50,8 +51,8 @@ function fixture({patched=true,naturalWidth=11575,naturalHeight=8031,touch=false
     c.getContext=()=>context.denyContext || c.width*c.height>16777216?null:drawingContext;
     c.testContext=drawingContext;return c;
   }
-  const stage={children:[],insertBefore(c){this.children.push(c)}},wrap={dataset:{},getBoundingClientRect:()=>({width:390,height:650})};
-  const svg={attributes:{},setAttribute(k,v){this.attributes[k]=String(v)}};
+  const stage={style:{},children:[],insertBefore(c){this.children.push(c)}},wrap={dataset:{},getBoundingClientRect:()=>({width:390,height:650})};
+  const svg={style:{},attributes:{},setAttribute(k,v){this.attributes[k]=String(v)},removeAttribute(k){delete this.attributes[k]}};
   context.canvas=canvas();context.ctx=context.canvas.testContext;context.svg=svg;
   context.$=id=>id==='fileName'?{textContent:''}:null;
   context.document={hidden:false,addEventListener(){},getElementById:id=>({stage,stageWrap:wrap}[id]),createElement:tag=>{assert.equal(tag,'canvas');const result=canvas();elements.push(result);return result;}};
@@ -107,13 +108,21 @@ function fixture({patched=true,naturalWidth=11575,naturalHeight=8031,touch=false
     const shape=JSON.stringify(phone.context.state.shapes),settings=JSON.stringify(phone.context.state.pageSettings);
     assert.equal(phone.images[0].src,'','the full decoded image is released before zooming');
     assert.equal(phone.images[0].onload,null);assert.equal(phone.context.activeBlobUrl,null);
+    assert(Number(phone.context.svg.attributes.width)<=390 && Number(phone.context.svg.attributes.height)<=650,
+      'touch SVG must be bounded by the visible viewport, including before the first pinch');
     assert.equal(phone.wrap.dataset.imageMode,'bounded-memory');
     assert(Number(phone.wrap.dataset.imageSourcePixels)<=4000000);
     const first=phone.stage.children[0],elementCount=phone.elements.length;
     const originalReads=phone.draws.filter(d=>d.args[0]===phone.images[0]).length;
     for(let i=0;i<100;i++){
-      phone.context.scale=[.1,.4,1,2][i%4];phone.context.tx=-400-i*7;phone.context.ty=-150-i*4;
+      phone.context.scale=[.1,.4,1,8][i%4];phone.context.tx=-400-i*7;phone.context.ty=-150-i*4;
       phone.context.applyTransform();phone.flush();
+      assert.equal(phone.stage.style.transform,'none','pinch cannot scale an entire drawing-size layer');
+      assert.equal(phone.context.canvas.style.display,'none');
+      assert(Number(phone.context.svg.attributes.width)<=390 && Number(phone.context.svg.attributes.height)<=650);
+      const box=phone.context.svg.attributes.viewBox.split(' ').map(Number);
+      assert(Math.abs(box[0]+phone.context.tx/phone.context.scale)<1e-8);
+      assert(Math.abs(box[2]*phone.context.scale-390)<1e-8,'SVG camera keeps screen/world coordinates aligned');
     }
     assert.equal(phone.elements.length,elementCount,'100 movements do not create additional canvases');
     assert.equal(phone.stage.children[0],first,'the same zoom surface is reused');
