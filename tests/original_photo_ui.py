@@ -31,7 +31,8 @@ with sync_playwright() as p:
     page=browser.new_page(viewport={'width':390,'height':844})
     errors=[]
     page.on('pageerror',lambda e: errors.append(str(e)))
-    page.set_content(BASE)
+    page.route('https://sentlog.test/',lambda route: route.fulfill(status=200,content_type='text/html',body=BASE))
+    page.goto('https://sentlog.test/')
     page.add_script_tag(content=(ROOT/'sentlog/original-photo-store.js').read_text(encoding='utf-8'))
     page.wait_for_selector('#sentlogOriginalPhotosSection')
     result=page.evaluate('''async()=>{
