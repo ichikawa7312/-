@@ -54,10 +54,17 @@ try:
                                           user_agent='Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 Version/18.0 Mobile/15E148 Safari/604.1',
                                           service_workers='block')
             context.add_init_script("""
-                window.memoryTest={afterReady:false,largeReadsAfterReady:0,createdAfterReady:0,urlsAfterReady:0};
+                window.memoryTest={afterReady:false,largeReadsAfterReady:0,createdAfterReady:0,toolbarMeasurements:0,canvasCallers:[],urlsAfterReady:0};
                 const create=document.createElement.bind(document);
                 document.createElement=function(tag,...args){
-                    if(window.memoryTest.afterReady&&tag.toLowerCase()==='canvas')window.memoryTest.createdAfterReady++;
+                    if(window.memoryTest.afterReady&&tag.toLowerCase()==='canvas'){
+                        const caller=String(new Error().stack||'');
+                        // The existing toolbar measures button text in a tiny
+                        // canvas after a WebKit viewport resize. Track it apart
+                        // from image-rendering allocations; do not hide unknowns.
+                        if(!caller.includes('image-quality.js')&&caller.includes('toolbar-icons.js'))window.memoryTest.toolbarMeasurements++;
+                        else {window.memoryTest.createdAfterReady++;window.memoryTest.canvasCallers.push(caller);}
+                    }
                     return create(tag,...args);
                 };
                 const draw=CanvasRenderingContext2D.prototype.drawImage;
@@ -172,6 +179,6 @@ try:
             assert page.locator('.sentlog-image-detail').count() == 0
             context.close()
             browser.close()
-            print(f'PASS {engine}: real 11575x8031 JPEG, released original image, 40 zoom/pan frames, same bounded surface, no large-image reread/new canvases/URLs, original bytes/records/calibration retained')
+            print(f'PASS {engine}: real 11575x8031 JPEG, released original image, 40 zoom/pan frames, same bounded surface, no large-image reread/new image canvases/URLs, original bytes/records/calibration retained')
 finally:
     server.shutdown()
