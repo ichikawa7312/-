@@ -77,7 +77,7 @@ try:
                 url = request.request.url
                 if url == origin + '/memory-fixture.jpg':
                     request.fulfill(status=200, content_type='image/jpeg', body=jpeg)
-                elif url.startswith(origin + '/'):
+                elif url.startswith((origin + '/', 'blob:', 'data:')):
                     request.continue_()
                 elif url.startswith('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/'):
                     request.fulfill(status=200, content_type='text/javascript',
