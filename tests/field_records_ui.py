@@ -100,13 +100,13 @@ with sync_playwright() as p:
     assert page.locator('#fieldRecordPanel').is_hidden(),'long-press move should not raise details'
     assert page.evaluate("histories[1].undo.length")>=1
 
-    # A quick completed tap, by contrast, opens the record details.
+    # A quick completed tap selects the record but must not raise the mobile sheet.
     sx2=(survey_moved[0]['x']+survey_moved[1]['x'])/2
     sy2=(survey_moved[0]['y']+survey_moved[1]['y'])/2
     page.mouse.click(box['x']+sx2,box['y']+sy2)
     assert page.evaluate("selected")==survey['id']
     assert page.locator('#fieldRecordPanel').is_visible()
-    assert 'open' in (page.locator('#inspector').get_attribute('class') or '')
+    assert 'open' not in (page.locator('#inspector').get_attribute('class') or '')
 
     page.locator('#frSurveyDisplay').select_option('point')
     survey2=page.evaluate("state.shapes.find(x=>x.recordType==='survey')")
@@ -149,10 +149,11 @@ with sync_playwright() as p:
     assert abs(photo_after['point']['x']-photo_before['x']-36)<1.5 and abs(photo_after['point']['y']-photo_before['y']-22)<1.5,(photo_before,photo_after)
     assert page.locator('#fieldRecordPanel').is_hidden()
 
-    # Quick tap after moving opens details at the new location.
+    # Quick tap after moving selects it, but the mobile sheet stays collapsed.
     page.mouse.click(box['x']+photo_after['point']['x'],box['y']+photo_after['point']['y'])
     assert page.evaluate("selected")==photo_after['id']
     assert page.locator('#fieldRecordPanel').is_visible()
+    assert 'open' not in (page.locator('#inspector').get_attribute('class') or '')
 
     # Normal damage selection restores the normal inspector.
     page.evaluate("selectShape('d1')")
@@ -165,4 +166,4 @@ with sync_playwright() as p:
     (ROOT/'test-results').mkdir(exist_ok=True)
     page.screenshot(path=str(ROOT/'test-results/field-records-ui.png'),full_page=True)
     browser.close()
-    print('PASS field-record UI: tap opens details only on release; 500ms hold-drag moves survey/photo records; photo label stays close and opposite')
+    print('PASS field-record UI: tap selects without raising mobile sheet; tolerant 500ms hold-drag moves survey/photo records; photo label stays close and opposite')
