@@ -43,6 +43,7 @@ jobs:
           python scripts/build_original_photos.py
           python scripts/build_crack_width.py
           python scripts/build_field_records.py
+          python scripts/build_short_photo_arrow.py
       - run: |
           node --check sentlog/archive.js
           node --check sentlog/archive-core.js
