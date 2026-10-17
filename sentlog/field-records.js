@@ -1,4 +1,4 @@
-/* Sentlog v1.65: shorter overview-photo direction arrow; field photo points and grouped survey records.
+/* Sentlog v1.66: direction-aware overview-photo label placement; field photo points and grouped survey records.
  * Records live in state.shapes so existing persistence, sync, backup and photo storage keep working.
  */
 (function(root){
@@ -10,6 +10,7 @@
   const PHOTO_CIRCLE_RADIUS=5;
   const PHOTO_ARROW_VISIBLE_LENGTH=20;
   const PHOTO_SCREEN_LENGTH=PHOTO_CIRCLE_RADIUS+PHOTO_ARROW_VISIBLE_LENGTH;
+  const PHOTO_LABEL_OFFSET=36;
   const SURVEY_POINT_RADIUS=7;
   const SURVEY_ARROW_SHAFT=6;
   const SURVEY_ARROW_HEAD_LENGTH=20;
@@ -27,6 +28,10 @@
   function photoEnd(origin,angle,scale=1){
     const z=Math.max(.001,Number(scale)||1),p=normPoint(origin),len=PHOTO_SCREEN_LENGTH/z;
     return {x:p.x+Math.cos(Number(angle)||0)*len,y:p.y+Math.sin(Number(angle)||0)*len};
+  }
+  function photoLabelPos(origin,angle,scale=1){
+    const z=Math.max(.001,Number(scale)||1),p=normPoint(origin),offset=PHOTO_LABEL_OFFSET/z,a=Number(angle)||0;
+    return {x:p.x-Math.cos(a)*offset,y:p.y-Math.sin(a)*offset};
   }
   function surveyArrowPolygon(tail,tip,scale=1){
     const a=normPoint(tail),b=normPoint(tip),z=Math.max(.001,Number(scale)||1);
@@ -53,7 +58,7 @@
     if(s.displayKind==='arrow'&&Array.isArray(s.points)&&s.points[1])return normPoint(s.points[1]);
     return normPoint(s.point||s.points?.[0]);
   }
-  const pure={PHOTO_TYPE,SURVEY_TYPE,SURVEY_ITEMS,PHOTO_CIRCLE_RADIUS,PHOTO_ARROW_VISIBLE_LENGTH,PHOTO_SCREEN_LENGTH,isFieldRecord,recordLabel,angleFrom,photoEnd,surveyArrowPolygon,nextRecordNumber,surveyPointFrom};
+  const pure={PHOTO_TYPE,SURVEY_TYPE,SURVEY_ITEMS,PHOTO_CIRCLE_RADIUS,PHOTO_ARROW_VISIBLE_LENGTH,PHOTO_SCREEN_LENGTH,PHOTO_LABEL_OFFSET,isFieldRecord,recordLabel,angleFrom,photoEnd,photoLabelPos,surveyArrowPolygon,nextRecordNumber,surveyPointFrom};
   if(typeof module!=='undefined'&&module.exports){module.exports=pure;return;}
   if(!root.document||root.SentlogFieldRecords)return;
 
@@ -262,7 +267,7 @@
     const tri=svgEl('polygon',{points:`${end.x},${end.y} ${neck.x+px*wing},${neck.y+py*wing} ${neck.x-px*wing},${neck.y-py*wing}`,fill:color});
     const circle=svgEl('circle',{cx:p.x,cy:p.y,r,fill:'#fff',stroke:color,'stroke-width':1.8/z()});
     for(const e of [line,tri,circle]){e.style.pointerEvents='none';svg.appendChild(e);}
-    drawText(recordLabel(s),p.x,p.y-13/z(),selectedNow);
+    const labelPos=photoLabelPos(p,s.angle,z());drawText(recordLabel(s),labelPos.x,labelPos.y,selectedNow);
     if(tool==='pan'){
       const hit=svgEl('line',{x1:p.x,y1:p.y,x2:end.x,y2:end.y,stroke:'rgba(0,0,0,.001)','stroke-width':24/z(),'pointer-events':'stroke'});
       bindRecordHit(hit,s.id);svg.appendChild(hit);
