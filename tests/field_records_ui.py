@@ -21,11 +21,11 @@ body{font:14px system-ui;margin:0}.toolbar{display:flex;gap:5px;padding:8px}.too
 </div></aside>
 <script>
 const $=id=>document.getElementById(id);
-const svg=$('svg');let tool='pan',drawing=null,polygonDraftCursor=null,polygonTouch=null,gestureLock=false,scale=1,selected=null,currentView='editor';
-let historyCount=0,persistCount=0,cameraClicks=0;
+const svg=$('svg');let tool='pan',drawing=null,polygonDraftCursor=null,polygonTouch=null,gestureLock=false,scale=1,selected=null,currentView='editor',activeDrawingId='d1';
+let historyCount=0,persistCount=0,cameraClicks=0;const histories={1:{undo:[],redo:[]}};
 let state={sourceType:'image',currentPage:1,shapes:[{id:'d1',page:1,kind:'line',type:'ひび割れ',typeNo:1,autoLabel:'ひび割れ-1',points:[{x:20,y:20},{x:80,y:80}],photos:[]}]};
 function point(e){const r=$('stageWrap').getBoundingClientRect();return{x:e.clientX-r.left,y:e.clientY-r.top}}
-function pushHistory(){historyCount++}function persist(){persistCount++}
+function pushHistory(){historyCount++}function persist(){persistCount++}function historyFor(){return histories[1]}function snapshotPage(){return JSON.parse(JSON.stringify(state.shapes))}function updateHistoryButtons(){}
 function rebuildNumberingState(){const seen={};for(const s of state.shapes){seen[s.type]=(seen[s.type]||0)+1;s.typeNo=seen[s.type];s.autoLabel=s.type+'-'+s.typeNo}}
 function currentShapes(){return state.shapes.filter(s=>(s.page||1)===state.currentPage)}
 function render(){svg.innerHTML='';for(const s of currentShapes()){if(s.kind==='line'){const l=document.createElementNS('http://www.w3.org/2000/svg','line');l.setAttribute('x1',s.points[0].x);l.setAttribute('y1',s.points[0].y);l.setAttribute('x2',s.points[1].x);l.setAttribute('y2',s.points[1].y);l.setAttribute('stroke','#b91c1c');svg.appendChild(l)}}}
@@ -77,13 +77,43 @@ with sync_playwright() as p:
     chosen=page.evaluate("state.shapes.find(x=>x.recordType==='survey').surveyItems")
     assert chosen==['鉄筋探査','中性化'],chosen
 
+    # Exit record-creation mode. Pressing the survey arrow must not open details immediately;
+    # a 500ms hold followed by drag moves the whole record.
+    page.locator('[data-field-record-tool="record"]').click()
+    assert page.evaluate("tool")=='pan'
+    page.evaluate("selectShape('d1');document.getElementById('inspector').classList.remove('open')")
+    assert page.locator('#fieldRecordPanel').is_hidden()
+    survey_before=page.evaluate("state.shapes.find(x=>x.recordType==='survey').points.map(p=>({...p}))")
+    sx=(survey_before[0]['x']+survey_before[1]['x'])/2
+    sy=(survey_before[0]['y']+survey_before[1]['y'])/2
+    page.mouse.move(box['x']+sx,box['y']+sy)
+    page.mouse.down()
+    page.wait_for_timeout(220)
+    assert page.locator('#fieldRecordPanel').is_hidden(),'details opened on pointer-down instead of tap'
+    assert page.evaluate("selected")=='d1'
+    page.wait_for_timeout(340)
+    page.mouse.move(box['x']+sx+24,box['y']+sy+18,steps=4)
+    page.mouse.up()
+    survey_moved=page.evaluate("state.shapes.find(x=>x.recordType==='survey').points")
+    assert abs(survey_moved[0]['x']-survey_before[0]['x']-24)<1.5 and abs(survey_moved[0]['y']-survey_before[0]['y']-18)<1.5,(survey_before,survey_moved)
+    assert abs(survey_moved[1]['x']-survey_before[1]['x']-24)<1.5 and abs(survey_moved[1]['y']-survey_before[1]['y']-18)<1.5,(survey_before,survey_moved)
+    assert page.locator('#fieldRecordPanel').is_hidden(),'long-press move should not raise details'
+    assert page.evaluate("histories[1].undo.length")>=1
+
+    # A quick completed tap, by contrast, opens the record details.
+    sx2=(survey_moved[0]['x']+survey_moved[1]['x'])/2
+    sy2=(survey_moved[0]['y']+survey_moved[1]['y'])/2
+    page.mouse.click(box['x']+sx2,box['y']+sy2)
+    assert page.evaluate("selected")==survey['id']
+    assert page.locator('#fieldRecordPanel').is_visible()
+    assert 'open' in (page.locator('#inspector').get_attribute('class') or '')
+
     page.locator('#frSurveyDisplay').select_option('point')
     survey2=page.evaluate("state.shapes.find(x=>x.recordType==='survey')")
     assert survey2['displayKind']=='point',survey2
     assert page.locator('#svg circle').count()>=2
 
-    # Current survey tool stays active for repeated records; first tap exits it, second opens the record chooser.
-    page.locator('[data-field-record-tool="record"]').click()
+    # We are back in pan mode, so one press opens the record chooser.
     page.locator('[data-field-record-tool="record"]').click()
     assert page.locator('#fieldRecordModeModal').evaluate("e=>e.classList.contains('open')")
     page.locator('#fieldRecordModeModal [data-mode="photo"]').click()
@@ -101,6 +131,28 @@ with sync_playwright() as p:
       return e?{x:Number(e.getAttribute('x')),y:Number(e.getAttribute('y'))}:null;
     }""")
     assert label and label['x']<photo['point']['x'] and label['y']>photo['point']['y'],(photo,label)
+    assert ((label['x']-photo['point']['x'])**2+(label['y']-photo['point']['y'])**2)**0.5 < 15,(photo,label)
+
+    # The overview-photo marker uses the same tap-vs-hold behavior and moves as one unit.
+    page.locator('[data-field-record-tool="record"]').click()
+    assert page.evaluate("tool")=='pan'
+    page.evaluate("selectShape('d1');document.getElementById('inspector').classList.remove('open')")
+    photo_before=page.evaluate("({...state.shapes.find(x=>x.recordType==='photo').point})")
+    page.mouse.move(box['x']+photo_before['x'],box['y']+photo_before['y'])
+    page.mouse.down()
+    page.wait_for_timeout(220)
+    assert page.locator('#fieldRecordPanel').is_hidden()
+    page.wait_for_timeout(340)
+    page.mouse.move(box['x']+photo_before['x']+36,box['y']+photo_before['y']+22,steps=4)
+    page.mouse.up()
+    photo_after=page.evaluate("state.shapes.find(x=>x.recordType==='photo')")
+    assert abs(photo_after['point']['x']-photo_before['x']-36)<1.5 and abs(photo_after['point']['y']-photo_before['y']-22)<1.5,(photo_before,photo_after)
+    assert page.locator('#fieldRecordPanel').is_hidden()
+
+    # Quick tap after moving opens details at the new location.
+    page.mouse.click(box['x']+photo_after['point']['x'],box['y']+photo_after['point']['y'])
+    assert page.evaluate("selected")==photo_after['id']
+    assert page.locator('#fieldRecordPanel').is_visible()
 
     # Normal damage selection restores the normal inspector.
     page.evaluate("selectShape('d1')")
@@ -113,4 +165,4 @@ with sync_playwright() as p:
     (ROOT/'test-results').mkdir(exist_ok=True)
     page.screenshot(path=str(ROOT/'test-results/field-records-ui.png'),full_page=True)
     browser.close()
-    print('PASS field-record UI: grouped survey arrow/point, multi-content selection, short overview-photo arrow, opposite-side photo label and camera handoff')
+    print('PASS field-record UI: tap opens details only on release; 500ms hold-drag moves survey/photo records; photo label stays close and opposite')
