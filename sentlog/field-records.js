@@ -77,7 +77,7 @@
     if(s.displayKind==='arrow'&&Array.isArray(s.points)&&s.points[1])return normPoint(s.points[1]);
     return normPoint(s.point||s.points?.[0]);
   }
-  const pure={PHOTO_TYPE,SURVEY_TYPE,SURVEY_ITEMS,PHOTO_CIRCLE_RADIUS,PHOTO_ARROW_VISIBLE_LENGTH,PHOTO_SCREEN_LENGTH,PHOTO_LABEL_GAP,PHOTO_LABEL_VERTICAL_GAP,PHOTO_LABEL_DIAGONAL_SHIFT,RECORD_HOLD_MS,isFieldRecord,recordLabel,angleFrom,photoEnd,photoLabelPos,surveyArrowPolygon,nextRecordNumber,surveyPointFrom};
+  const pure={PHOTO_TYPE,SURVEY_TYPE,SURVEY_ITEMS,PHOTO_CIRCLE_RADIUS,PHOTO_ARROW_VISIBLE_LENGTH,PHOTO_SCREEN_LENGTH,PHOTO_LABEL_GAP,PHOTO_LABEL_VERTICAL_GAP,PHOTO_LABEL_DIAGONAL_SHIFT,RECORD_HOLD_MS,RECORD_HOLD_SLOP,isFieldRecord,recordLabel,angleFrom,photoEnd,photoLabelPos,surveyArrowPolygon,nextRecordNumber,surveyPointFrom};
   if(typeof module!=='undefined'&&module.exports){module.exports=pure;return;}
   if(!root.document||root.SentlogFieldRecords)return;
 
