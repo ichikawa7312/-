@@ -1,0 +1,36 @@
+const assert=require('node:assert/strict');
+const fs=require('node:fs');
+const path=require('node:path');
+const root=path.resolve(__dirname,'..');
+const crack=require(path.join(root,'sentlog/crack-width.js'));
+
+assert.equal(crack.STEP,.05);
+assert.equal(crack.MIN,.05);
+assert.equal(crack.MAX,10);
+assert.equal(crack.values.length,200);
+assert.equal(crack.values[0],.05);
+assert.equal(crack.values.at(-1),10);
+assert.equal(crack.formatWidth(.05),'0.05');
+assert.equal(crack.formatWidth(.10),'0.1');
+assert.equal(crack.formatWidth(.20),'0.2');
+assert.equal(crack.formatWidth(1),'1');
+assert.equal(crack.formatWidth(1.05),'1.05');
+assert.equal(crack.nearestIndex(.20),3);
+assert.equal(crack.isCrackName('ひび割れ'),true);
+assert.equal(crack.isCrackName('床版ひびわれ'),true);
+assert.equal(crack.isCrackName('腐食'),false);
+
+const index=fs.readFileSync(path.join(root,'sentlog/index.html'),'utf8');
+assert.match(index,/crack-width\.js\?v=163/);
+assert.match(index,/SentlogCrackWidth/);
+assert.match(index,/phone-runtime\.js\?v=163/);
+const sw=fs.readFileSync(path.join(root,'sentlog/sw.js'),'utf8');
+assert.match(sw,/sentlog-pwa-v174/);
+assert.match(sw,/crack-width\.js/);
+const source=fs.readFileSync(path.join(root,'sentlog/crack-width.js'),'utf8');
+assert.match(source,/crackWidthMm/);
+assert.match(source,/0\.05mm刻み/);
+assert.match(source,/W='\+formatWidth/);
+assert.match(source,/entry\.group==='concrete'/);
+assert.match(source,/setTimeout\(\(\)=>\{if\(currentShape\(\)\?\.id===s\.id\)openPicker\(s\);\},0\)/);
+console.log('PASS crack width: 0.05mm wheel, concrete-only eligibility, compact W= label, auto-open after drawing');
