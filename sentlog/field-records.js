@@ -91,6 +91,7 @@
 
   function currentRecord(){const s=state?.shapes?.find(x=>x.id===selected);return isFieldRecord(s)?s:null;}
   function z(){return Math.max(.001,Number(scale)||1);}
+  function touchCount(){return typeof activeTouches==='undefined'?0:activeTouches.size;}
   function svgEl(tag,attrs={}){
     const e=document.createElementNS('http://www.w3.org/2000/svg',tag);
     for(const [k,v] of Object.entries(attrs))e.setAttribute(k,String(v));
@@ -302,13 +303,13 @@
   function bindRecordHit(hit,id){
     hit.style.cursor='grab';hit.dataset.fieldRecordId=id;hit.style.touchAction='none';
     hit.addEventListener('pointerdown',e=>{
-      if(tool!=='pan'||gestureLock||(e.pointerType==='mouse'&&e.button!==0)||activeTouches.size>1)return;
+      if(tool!=='pan'||gestureLock||(e.pointerType==='mouse'&&e.button!==0)||touchCount()>1)return;
       cancelRecordInteraction();
       const request={id,pointerId:e.pointerId,x:e.clientX,y:e.clientY,start:point(e),
         page:state.currentPage,drawingId:activeDrawingId,timer:null};
       recordPress=request;
       request.timer=setTimeout(()=>{
-        if(recordPress!==request||tool!=='pan'||gestureLock||activeTouches.size>1||
+        if(recordPress!==request||tool!=='pan'||gestureLock||touchCount()>1||
            currentView!=='editor'||state.currentPage!==request.page||activeDrawingId!==request.drawingId)return;
         const s=sourceRecord(id);if(!s)return;
         recordPress=null;
@@ -421,13 +422,13 @@
 
   function handleRecordMove(e){
     if(recordPress?.pointerId===e.pointerId){
-      if(gestureLock||activeTouches.size>1||
+      if(gestureLock||touchCount()>1||
          Math.hypot(e.clientX-recordPress.x,e.clientY-recordPress.y)>RECORD_HOLD_SLOP){
         clearRecordPress();
       }
     }
     if(!recordMove||recordMove.pointerId!==e.pointerId)return;
-    if(gestureLock||activeTouches.size>1){stopRecordMove(false);return;}
+    if(gestureLock||touchCount()>1){stopRecordMove(false);return;}
     const s=sourceRecord(recordMove.id);
     if(!s||currentView!=='editor'||activeDrawingId!==recordMove.drawingId||state.currentPage!==recordMove.page){
       stopRecordMove(false);return;
@@ -438,7 +439,7 @@
   }
   function finishRecordInteraction(e,cancelled=false){
     if(recordMove?.pointerId===e.pointerId){
-      const canCommit=!cancelled&&!gestureLock&&activeTouches.size<=1;
+      const canCommit=!cancelled&&!gestureLock&&touchCount()<=1;
       stopRecordMove(canCommit);
       try{stageWrap.releasePointerCapture(e.pointerId)}catch{}
       if(e.cancelable)e.preventDefault();e.stopImmediatePropagation();return true;
