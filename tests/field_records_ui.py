@@ -51,10 +51,9 @@ with sync_playwright() as p:
     page.goto('https://sentlog.test/')
     page.add_script_tag(content=(ROOT/'sentlog/field-records.js').read_text(encoding='utf-8'))
 
-    assert page.locator('[data-field-record-tool="photo"]').count()==1
-    assert page.locator('[data-field-record-tool="survey"]').count()==1
+    assert page.locator('[data-field-record-tool="record"]').count()==1
 
-    page.locator('[data-field-record-tool="survey"]').click()
+    page.locator('[data-field-record-tool="record"]').click()
     assert page.locator('#fieldRecordModeModal').evaluate("e=>e.classList.contains('open')")
     page.locator('#fieldRecordModeModal [data-mode="arrow"]').click()
     assert page.evaluate("tool")=='field-survey-arrow'
@@ -83,7 +82,11 @@ with sync_playwright() as p:
     assert survey2['displayKind']=='point',survey2
     assert page.locator('#svg circle').count()>=2
 
-    page.locator('[data-field-record-tool="photo"]').click()
+    # Current survey tool stays active for repeated records; first tap exits it, second opens the record chooser.
+    page.locator('[data-field-record-tool="record"]').click()
+    page.locator('[data-field-record-tool="record"]').click()
+    assert page.locator('#fieldRecordModeModal').evaluate("e=>e.classList.contains('open')")
+    page.locator('#fieldRecordModeModal [data-mode="photo"]').click()
     page.mouse.move(box['x']+360,box['y']+240)
     page.mouse.down()
     page.mouse.move(box['x']+470,box['y']+190,steps=4)
