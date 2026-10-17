@@ -1,0 +1,46 @@
+const assert=require('node:assert/strict');
+const fs=require('node:fs');
+const path=require('node:path');
+const root=path.resolve(__dirname,'..');
+const feature=require(path.join(root,'sentlog/field-records.js'));
+
+assert.equal(feature.PHOTO_TYPE,'全景');
+assert.equal(feature.SURVEY_TYPE,'調査');
+assert.ok(feature.SURVEY_ITEMS.includes('中性化'));
+assert.ok(feature.SURVEY_ITEMS.includes('鉄筋探査'));
+assert.ok(feature.SURVEY_ITEMS.includes('コア採取'));
+
+const photo={recordKind:'field-record',recordType:'photo',typeNo:3};
+const survey={recordKind:'field-record',recordType:'survey',typeNo:2,displayKind:'point',point:{x:12,y:34}};
+assert.equal(feature.isFieldRecord(photo),true);
+assert.equal(feature.recordLabel(photo),'全景-3');
+assert.equal(feature.recordLabel(survey),'調査-2');
+assert.equal(feature.nextRecordNumber([photo,{...photo,typeNo:4}], 'photo'),3);
+assert.deepEqual(feature.surveyPointFrom(survey),{x:12,y:34});
+
+const a={x:10,y:20},b={x:30,y:20};
+assert.equal(feature.angleFrom(a,b),0);
+const e1=feature.photoEnd(a,0,1),e2=feature.photoEnd(a,0,2);
+assert.equal(Math.round(e1.x-a.x),feature.PHOTO_SCREEN_LENGTH);
+assert.equal(Math.round((e2.x-a.x)*2),feature.PHOTO_SCREEN_LENGTH,'photo arrow stays fixed in screen pixels');
+
+const poly=feature.surveyArrowPolygon({x:0,y:0},{x:100,y:0},1);
+assert.equal(poly.length,7);
+assert.deepEqual(poly[3],{x:100,y:0},'outlined survey arrow tip is the survey position');
+assert.ok(poly[0].y>0&&poly.at(-1).y<0,'arrow has a thick shaft');
+
+const index=fs.readFileSync(path.join(root,'sentlog/index.html'),'utf8');
+assert.match(index,/field-records\.js\?v=164/);
+assert.match(index,/SentlogFieldRecords/);
+assert.match(index,/phone-runtime\.js\?v=164/);
+const sw=fs.readFileSync(path.join(root,'sentlog/sw.js'),'utf8');
+assert.match(sw,/sentlog-pwa-v175/);
+assert.match(sw,/field-records\.js/);
+const catalog=fs.readFileSync(path.join(root,'sentlog/damage-catalog.js'),'utf8');
+assert.match(catalog,/recordKind==='field-record'/,'field records must not appear in the normal damage-name catalog');
+const source=fs.readFileSync(path.join(root,'sentlog/field-records.js'),'utf8');
+assert.match(source,/○が撮影位置/);
+assert.match(source,/矢印の長さは図面上で一定/);
+assert.match(source,/fill:'#fff',stroke:color/);
+assert.match(source,/実施内容（複数選択可）/);
+console.log('PASS field records: fixed overview-photo direction, grouped survey contents, point/outlined-arrow display');
