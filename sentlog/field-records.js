@@ -92,6 +92,8 @@
 #fieldRecordPanel .fr-label{display:block;font-size:12px;font-weight:700;margin:9px 0 5px}#fieldRecordPanel .fr-help{font-size:11px;line-height:1.55;color:#64748b;margin:5px 0}
 #fieldRecordPanel .fr-checks{display:grid;grid-template-columns:1fr 1fr;gap:5px 8px}#fieldRecordPanel .fr-checks label{display:flex;align-items:center;gap:5px;font-size:12px;min-width:0}
 #fieldRecordPanel .fr-checks input{width:auto;margin:0;flex:none}#fieldRecordPanel select,#fieldRecordPanel textarea{width:100%;box-sizing:border-box}#fieldRecordPanel textarea{min-height:70px;resize:vertical}
+#sentlogDrawingToolbar.sl-has-record-tool [data-field-record-tool]{width:44px;min-width:44px;padding:0;gap:0}#sentlogDrawingToolbar.sl-has-record-tool [data-field-record-tool] .sl-tool-label{display:none}
+@media(max-width:420px){#sentlogDrawingToolbar.sl-has-record-tool{column-gap:4px;padding-left:4px;padding-right:4px}#sentlogDrawingToolbar.sl-has-record-tool .sl-tool-group{gap:2px}}
 @media(max-width:899px){#fieldRecordModeModal{align-items:flex-end}#fieldRecordModeModal .fr-mode-card{border-radius:16px 16px 10px 10px}#fieldRecordPanel .fr-checks{grid-template-columns:1fr 1fr}}
 `;
     document.head.appendChild(style);
