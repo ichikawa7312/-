@@ -1,4 +1,4 @@
-/* Sentlog v1.67: movable field records and compact direction-aware photo labels.
+/* Sentlog v1.68: field-record selection follows manual mobile-inspector behavior; movement remains long-press.
  * Records live in state.shapes so existing persistence, sync, backup and photo storage keep working.
  */
 (function(root){
@@ -14,7 +14,7 @@
   const PHOTO_LABEL_VERTICAL_GAP=9;
   const PHOTO_LABEL_DIAGONAL_SHIFT=8;
   const RECORD_HOLD_MS=500;
-  const RECORD_HOLD_SLOP=9;
+  const RECORD_HOLD_SLOP=14;
   const RECORD_COMMIT_SLOP=2;
   const SURVEY_POINT_RADIUS=7;
   const SURVEY_ARROW_SHAFT=6;
@@ -77,7 +77,7 @@
     if(s.displayKind==='arrow'&&Array.isArray(s.points)&&s.points[1])return normPoint(s.points[1]);
     return normPoint(s.point||s.points?.[0]);
   }
-  const pure={PHOTO_TYPE,SURVEY_TYPE,SURVEY_ITEMS,PHOTO_CIRCLE_RADIUS,PHOTO_ARROW_VISIBLE_LENGTH,PHOTO_SCREEN_LENGTH,PHOTO_LABEL_GAP,PHOTO_LABEL_VERTICAL_GAP,PHOTO_LABEL_DIAGONAL_SHIFT,RECORD_HOLD_MS,isFieldRecord,recordLabel,angleFrom,photoEnd,photoLabelPos,surveyArrowPolygon,nextRecordNumber,surveyPointFrom};
+  const pure={PHOTO_TYPE,SURVEY_TYPE,SURVEY_ITEMS,PHOTO_CIRCLE_RADIUS,PHOTO_ARROW_VISIBLE_LENGTH,PHOTO_SCREEN_LENGTH,PHOTO_LABEL_GAP,PHOTO_LABEL_VERTICAL_GAP,PHOTO_LABEL_DIAGONAL_SHIFT,RECORD_HOLD_MS,RECORD_HOLD_SLOP,isFieldRecord,recordLabel,angleFrom,photoEnd,photoLabelPos,surveyArrowPolygon,nextRecordNumber,surveyPointFrom};
   if(typeof module!=='undefined'&&module.exports){module.exports=pure;return;}
   if(!root.document||root.SentlogFieldRecords)return;
 
@@ -262,8 +262,9 @@
   }
   function selectRecord(id){
     const s=state.shapes.find(x=>x.id===id);if(!isFieldRecord(s))return;
-    selected=id;render();renderSelectedPhotos();syncInspector();updateMeasureResult?.();
-    if(innerWidth<900)$('inspector')?.classList.add('open');
+    // Match normal damage selection: selecting a record must never raise the
+    // mobile information sheet. The bottom handle remains the only opener.
+    selected=id;render();if(typeof setSelectionControls==='function')setSelectionControls();renderSelectedPhotos();syncInspector();if(typeof updateMeasureResult==='function')updateMeasureResult();
   }
   function sourceRecord(id){
     const s=state.shapes.find(x=>x.id===id&&(x.page||1)===state.currentPage);

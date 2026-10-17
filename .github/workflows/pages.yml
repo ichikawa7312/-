@@ -47,6 +47,7 @@ jobs:
           python3 scripts/build_short_photo_arrow.py
           python3 scripts/build_photo_label_position.py
           python3 scripts/build_field_record_move.py
+          python3 scripts/build_record_inspector_fix.py
           node tests/image_recovery_view.test.cjs
           node --check sentlog/original-photo-store.js
           node --check sentlog/crack-width.js

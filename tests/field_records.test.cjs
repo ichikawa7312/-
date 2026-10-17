@@ -16,6 +16,7 @@ assert.equal(feature.PHOTO_LABEL_GAP,4);
 assert.equal(feature.PHOTO_LABEL_VERTICAL_GAP,9);
 assert.equal(feature.PHOTO_LABEL_DIAGONAL_SHIFT,8);
 assert.equal(feature.RECORD_HOLD_MS,500);
+assert.equal(feature.RECORD_HOLD_SLOP,14);
 
 const photo={recordKind:'field-record',recordType:'photo',typeNo:3};
 const survey={recordKind:'field-record',recordType:'survey',typeNo:2,displayKind:'point',point:{x:12,y:34}};
@@ -65,5 +66,8 @@ assert.match(source,/fill:'#fff',stroke:color/);
 assert.match(source,/実施内容（複数選択可）/);
 assert.match(source,/RECORD_HOLD_MS=500/);
 assert.match(source,/setRecordPosition/);
-assert.match(source,/selectRecord\(request\.id\)/,'details open only after a completed tap');
-console.log('PASS field records: compact photo label, tap-for-details, 500ms long-press move, grouped survey contents and outlined arrows');
+assert.match(source,/selectRecord\(request\.id\)/,'record selection occurs only after a completed tap');
+const selectRecordSource=source.slice(source.indexOf('function selectRecord(id){'),source.indexOf('function sourceRecord(id){'));
+assert.doesNotMatch(selectRecordSource,/classList\.add\(['"]open['"]\)/,'selecting a field record must not raise the mobile inspector');
+assert.match(selectRecordSource,/typeof setSelectionControls==='function'/,'manual inspector handle must still refresh to the selected record');
+console.log('PASS field records: compact photo label, tap selects without auto-opening mobile details, tolerant 500ms long-press move, grouped survey contents and outlined arrows');
