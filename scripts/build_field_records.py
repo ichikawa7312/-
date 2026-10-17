@@ -54,6 +54,20 @@ for name in ('capacity.test.cjs','resilience.test.cjs','toolbar_icons.test.cjs',
 for name in ('toolbar_icons.test.cjs','damage_styles.test.cjs','label_colors.test.cjs','plain_numbers.test.cjs','single_number_ui.test.cjs','optional_symbol_ui.test.cjs'):
     change('tests/'+name,'sentlog-pwa-v174','sentlog-pwa-v175')
 
+# The toolbar now has one compact record-mode button in addition to the original seven controls.
+change('tests/toolbar_icons_ui.py',
+       "assert page.locator('#sentlogDrawingToolbar button').count()==7",
+       "assert page.locator('#sentlogDrawingToolbar button').count()==8")
+change('tests/toolbar_icons_ui.py',
+       "assert page.locator('#sentlogDrawingToolbar svg').count()==7",
+       "assert page.locator('#sentlogDrawingToolbar svg').count()==8")
+change('tests/toolbar_icons_ui.py',
+       "rows=len({round(r['y']) for r in bounds});assert rows==(2 if width==320 else 1),(width,rows,bounds)",
+       "rows=len({round(r['y']) for r in bounds});assert rows==(2 if width<=390 else 1),(width,rows,bounds)")
+change('tests/toolbar_icons_ui.py',
+       "print(f'PASS {width}px: 7 SVGs;",
+       "print(f'PASS {width}px: 8 SVGs;")
+
 # v1.62/v1.63 feature tests remain active while their integration expectations move to v1.64.
 change('tests/original_photo_store.test.cjs',
        "assert.match(index,/phone-runtime\\.js\\?v=163/);",
