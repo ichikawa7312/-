@@ -60,7 +60,7 @@
   const stageWrap=$('stageWrap'),toolbar=document.querySelector('.toolbar'),inspector=$('inspector'),svg=$('svg');
   if(!stageWrap||!toolbar||!inspector||!svg)return;
 
-  let recordDraft=null,recordPanel=null,recordModeModal=null,photoBtn=null,surveyBtn=null;
+  let recordDraft=null,recordPanel=null,recordModeModal=null,recordBtn=null;
   const standard={};
   const defaultDeleteText=$('deleteBtn')?.textContent||'選択変状を削除';
 
@@ -97,28 +97,39 @@
     document.head.appendChild(style);
   }
   function installToolbar(){
-    if(photoBtn)return;
-    photoBtn=document.createElement('button');photoBtn.type='button';photoBtn.dataset.fieldRecordTool='photo';photoBtn.textContent='📷 全景';
-    photoBtn.title='撮影位置を押して、撮影方向へドラッグ';
-    surveyBtn=document.createElement('button');surveyBtn.type='button';surveyBtn.dataset.fieldRecordTool='survey';surveyBtn.textContent='◎ 調査';
-    surveyBtn.title='調査位置をポイントまたは太矢印で記録';
-    const anchor=$('undoBtn')||toolbar.lastElementChild;
-    toolbar.insertBefore(photoBtn,anchor);toolbar.insertBefore(surveyBtn,anchor);
-    photoBtn.onclick=()=>setTool('field-photo',photoBtn);
-    surveyBtn.onclick=()=>openSurveyMode();
+    if(recordBtn)return;
+    recordBtn=document.createElement('button');recordBtn.type='button';recordBtn.dataset.fieldRecordTool='record';
+    recordBtn.classList.add('sl-tool-button');recordBtn.setAttribute('aria-label','写真・調査記録');recordBtn.setAttribute('aria-haspopup','dialog');
+    recordBtn.style.setProperty('--sl-named-width','44px');
+    recordBtn.innerHTML='<svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" focusable="false"><path d="M4 7h4l1.4-2h5.2L16 7h4v11H4Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><circle cx="12" cy="12.5" r="3.2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M18.5 3v4M16.5 5h4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg><span class="sl-tool-label" aria-hidden="true">記録</span>';
+    const settle=()=>{
+      const drawGroup=toolbar.querySelector('.sl-tool-group:not(.sl-tool-history)');
+      if(drawGroup&&!drawGroup.contains(recordBtn))drawGroup.append(recordBtn);
+    };
+    const drawGroup=toolbar.querySelector('.sl-tool-group:not(.sl-tool-history)');
+    if(drawGroup)drawGroup.append(recordBtn);
+    else{const anchor=$('undoBtn');if(anchor?.parentElement===toolbar)toolbar.insertBefore(recordBtn,anchor);else toolbar.append(recordBtn);}
+    toolbar.classList.add('sl-has-record-tool');
+    new MutationObserver(settle).observe(toolbar,{childList:true,subtree:true});
+    setTimeout(()=>{settle();root.SentlogToolbarIcons?.layout?.();},0);
+    recordBtn.onclick=()=>{
+      if(String(tool).startsWith('field-')){setTool(tool,recordBtn);return;}
+      openRecordMode();
+    };
   }
   function installModeModal(){
     if(recordModeModal)return;
     recordModeModal=document.createElement('div');recordModeModal.id='fieldRecordModeModal';recordModeModal.setAttribute('aria-hidden','true');
-    recordModeModal.innerHTML='<div class="fr-mode-card" role="dialog" aria-modal="true" aria-labelledby="frModeTitle"><h2 id="frModeTitle">調査位置の表示</h2><p>図面上での示し方を選んでください。</p><button type="button" data-mode="point"><strong>◎ ポイント</strong><small>その場所を1点で示す</small></button><button type="button" data-mode="arrow"><strong>⇢ 枠付き太矢印</strong><small>矢印の先端を調査位置にする</small></button><button type="button" id="frModeCancel">キャンセル</button></div>';
+    recordModeModal.innerHTML='<div class="fr-mode-card" role="dialog" aria-modal="true" aria-labelledby="frModeTitle"><h2 id="frModeTitle">記録を追加</h2><p>図面に追加する記録を選んでください。</p><button type="button" data-mode="photo"><strong>○→ 全景撮影</strong><small>○を撮影位置、固定長の矢印を撮影方向として記録</small></button><button type="button" data-mode="point"><strong>◎ 調査ポイント</strong><small>調査した場所を1点で示す</small></button><button type="button" data-mode="arrow"><strong>⇢ 調査・枠付き太矢印</strong><small>白抜き太矢印の先端を調査位置として示す</small></button><button type="button" id="frModeCancel">キャンセル</button></div>';
     document.body.append(recordModeModal);
-    recordModeModal.querySelector('[data-mode="point"]').onclick=()=>{closeSurveyMode();setTool('field-survey-point',surveyBtn);};
-    recordModeModal.querySelector('[data-mode="arrow"]').onclick=()=>{closeSurveyMode();setTool('field-survey-arrow',surveyBtn);};
-    recordModeModal.querySelector('#frModeCancel').onclick=closeSurveyMode;
-    recordModeModal.addEventListener('pointerdown',e=>{if(e.target===recordModeModal)closeSurveyMode();});
+    recordModeModal.querySelector('[data-mode="photo"]').onclick=()=>{closeRecordMode();setTool('field-photo',recordBtn);};
+    recordModeModal.querySelector('[data-mode="point"]').onclick=()=>{closeRecordMode();setTool('field-survey-point',recordBtn);};
+    recordModeModal.querySelector('[data-mode="arrow"]').onclick=()=>{closeRecordMode();setTool('field-survey-arrow',recordBtn);};
+    recordModeModal.querySelector('#frModeCancel').onclick=closeRecordMode;
+    recordModeModal.addEventListener('pointerdown',e=>{if(e.target===recordModeModal)closeRecordMode();});
   }
-  function openSurveyMode(){installModeModal();recordModeModal.classList.add('open');recordModeModal.setAttribute('aria-hidden','false');}
-  function closeSurveyMode(){recordModeModal?.classList.remove('open');recordModeModal?.setAttribute('aria-hidden','true');}
+  function openRecordMode(){installModeModal();recordModeModal.classList.add('open');recordModeModal.setAttribute('aria-hidden','false');}
+  function closeRecordMode(){recordModeModal?.classList.remove('open');recordModeModal?.setAttribute('aria-hidden','true');}
 
   function rememberStandardNodes(){
     if(standard.ready)return;standard.ready=true;
