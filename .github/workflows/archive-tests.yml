@@ -46,6 +46,7 @@ jobs:
           python scripts/build_short_photo_arrow.py
           python scripts/build_photo_label_position.py
           python scripts/build_field_record_move.py
+          python scripts/build_record_inspector_fix.py
       - run: |
           node --check sentlog/archive.js
           node --check sentlog/archive-core.js
