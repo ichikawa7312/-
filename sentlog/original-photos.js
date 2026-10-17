@@ -5,7 +5,6 @@
 (function(root){
   'use strict';
   const S=root.SentlogRecords;
-  if(!S||root.SentlogOriginalPhotos)return;
   const DB='surveyFieldNoteDB',STORE='files';
   const WORKSPACE='surveyFieldNoteWorkspaceV1',DRAWING='surveyFieldNoteDrawingV1:';
   const LOCAL='sentlogOriginalPhotoLocalV1',PREFIX='original-photo:';
@@ -163,6 +162,8 @@
     set32(end,12,centralSize);set32(end,16,centralOffset);set16(end,20,0);
     return new Blob([...body,...central,end],{type:'application/zip'});
   }
+  if(typeof module!=='undefined'&&module.exports){module.exports={safe,makeZip};return;}
+  if(!S||root.SentlogOriginalPhotos)return;
   function uniquePaths(items){
     const used=new Map();
     return items.map(item=>{
@@ -288,6 +289,5 @@
   }
   const api={safe,resolvePath,makeZip,storeOriginal,exportScope,confirmLast,deleteConfirmed,status,hasLocalOriginals,key};
   root.SentlogOriginalPhotos=api;
-  if(typeof module!=='undefined'&&module.exports)module.exports={safe,makeZip};
   Promise.resolve(root.sentlogAppReady).then(installUI).catch(()=>installUI());
 })(globalThis);
