@@ -49,11 +49,11 @@ for name in ('toolbar_icons.test.cjs','damage_styles.test.cjs','label_colors.tes
     change('tests/'+name,'sentlog-pwa-v173','sentlog-pwa-v174')
 
 change('tests/original_photo_store.test.cjs',
-       r"/phone-runtime\\.js\\?v=162/",
-       r"/phone-runtime\\.js\\?v=163/")
+       "assert.match(index,/phone-runtime\\.js\\?v=162/);",
+       "assert.match(index,/phone-runtime\\.js\\?v=163/);")
 change('tests/original_photo_store.test.cjs',
-       r"/sentlog-pwa-v173/",
-       r"/sentlog-pwa-v174/")
+       "assert.match(sw,/sentlog-pwa-v173/);",
+       "assert.match(sw,/sentlog-pwa-v174/);")
 
 for path,source in pending.items():
     (ROOT/path).write_text(source,encoding='utf-8')
