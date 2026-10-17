@@ -69,5 +69,5 @@ assert.match(source,/setRecordPosition/);
 assert.match(source,/selectRecord\(request\.id\)/,'record selection occurs only after a completed tap');
 const selectRecordSource=source.slice(source.indexOf('function selectRecord(id){'),source.indexOf('function sourceRecord(id){'));
 assert.doesNotMatch(selectRecordSource,/classList\.add\(['"]open['"]\)/,'selecting a field record must not raise the mobile inspector');
-assert.match(selectRecordSource,/setSelectionControls\?\.\(\)/,'manual inspector handle must still refresh to the selected record');
+assert.match(selectRecordSource,/typeof setSelectionControls==='function'/,'manual inspector handle must still refresh to the selected record');
 console.log('PASS field records: compact photo label, tap selects without auto-opening mobile details, tolerant 500ms long-press move, grouped survey contents and outlined arrows');
