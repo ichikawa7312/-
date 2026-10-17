@@ -80,6 +80,22 @@
     if(tool===next){tool='pan';render();return;}
     tool=next;if(button)button.classList.add('active');render();
   }
+  function installStyle(){
+    if(document.getElementById('fieldRecordStyle'))return;
+    const style=document.createElement('style');style.id='fieldRecordStyle';style.textContent=`
+#fieldRecordModeModal{position:fixed;inset:0;z-index:1160;background:rgba(0,0,0,.46);display:none;align-items:center;justify-content:center;padding:14px;box-sizing:border-box}#fieldRecordModeModal.open{display:flex}
+#fieldRecordModeModal .fr-mode-card{width:min(420px,100%);background:#fff;color:#111827;border-radius:16px;padding:16px;box-sizing:border-box;box-shadow:0 20px 60px #0005}
+#fieldRecordModeModal h2{font-size:18px;margin:0 0 5px}#fieldRecordModeModal p{font-size:12px;color:#64748b;margin:0 0 12px}
+#fieldRecordModeModal button{display:block;width:100%;min-height:52px;margin:8px 0;text-align:left;padding:9px 12px}#fieldRecordModeModal button strong{display:block;font-size:14px}#fieldRecordModeModal button small{display:block;margin-top:3px;color:#64748b}
+#fieldRecordPanel{padding:10px;border:1px solid #dbe2ea;border-radius:10px;background:#f8fafc;color:#111827}#fieldRecordPanel[hidden]{display:none!important}
+#fieldRecordPanel .fr-title{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:8px}#fieldRecordPanel .fr-title strong{font-size:15px}#fieldRecordPanel .fr-title span{font-size:11px;color:#64748b}
+#fieldRecordPanel .fr-label{display:block;font-size:12px;font-weight:700;margin:9px 0 5px}#fieldRecordPanel .fr-help{font-size:11px;line-height:1.55;color:#64748b;margin:5px 0}
+#fieldRecordPanel .fr-checks{display:grid;grid-template-columns:1fr 1fr;gap:5px 8px}#fieldRecordPanel .fr-checks label{display:flex;align-items:center;gap:5px;font-size:12px;min-width:0}
+#fieldRecordPanel .fr-checks input{width:auto;margin:0;flex:none}#fieldRecordPanel select,#fieldRecordPanel textarea{width:100%;box-sizing:border-box}#fieldRecordPanel textarea{min-height:70px;resize:vertical}
+@media(max-width:899px){#fieldRecordModeModal{align-items:flex-end}#fieldRecordModeModal .fr-mode-card{border-radius:16px 16px 10px 10px}#fieldRecordPanel .fr-checks{grid-template-columns:1fr 1fr}}
+`;
+    document.head.appendChild(style);
+  }
   function installToolbar(){
     if(photoBtn)return;
     photoBtn=document.createElement('button');photoBtn.type='button';photoBtn.dataset.fieldRecordTool='photo';photoBtn.textContent='📷 全景';
@@ -324,7 +340,7 @@
     },{capture:true});
   }
 
-  installToolbar();installModeModal();installInspector();installEvents();
+  installStyle();installToolbar();installModeModal();installInspector();installEvents();
 
   const oldRender=render;
   render=function(){
