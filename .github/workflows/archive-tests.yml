@@ -41,6 +41,7 @@ jobs:
           python scripts/build_image_memory.py
           python scripts/build_image_viewport.py
           python scripts/build_original_photos.py
+          python scripts/build_crack_width.py
       - run: |
           node --check sentlog/archive.js
           node --check sentlog/archive-core.js
@@ -63,9 +64,11 @@ jobs:
           node --check sentlog/sync-view.js
           node --check sentlog/image-quality.js
           node --check sentlog/original-photo-store.js
+          node --check sentlog/crack-width.js
           node tests/image_recovery_view.test.cjs
           node tests/large_image_view.test.cjs
           node tests/original_photo_store.test.cjs
+          node tests/crack_width.test.cjs
           node tests/core.test.cjs
           node tests/pc.test.cjs
           node tests/integration.test.cjs
@@ -95,6 +98,7 @@ jobs:
           python -m playwright install --with-deps chromium webkit
           python tests/image_memory_ui.py
           python tests/original_photo_ui.py
+          python tests/crack_width_ui.py
           python tests/ui.py
           python tests/archive_click.py
           python tests/full_archive_click.py
