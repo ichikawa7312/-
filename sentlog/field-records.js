@@ -1,4 +1,4 @@
-/* Sentlog v1.67: movable field records and compact direction-aware photo labels.
+/* Sentlog v1.68: field-record selection follows manual mobile-inspector behavior; movement remains long-press.
  * Records live in state.shapes so existing persistence, sync, backup and photo storage keep working.
  */
 (function(root){
@@ -14,7 +14,7 @@
   const PHOTO_LABEL_VERTICAL_GAP=9;
   const PHOTO_LABEL_DIAGONAL_SHIFT=8;
   const RECORD_HOLD_MS=500;
-  const RECORD_HOLD_SLOP=9;
+  const RECORD_HOLD_SLOP=14;
   const RECORD_COMMIT_SLOP=2;
   const SURVEY_POINT_RADIUS=7;
   const SURVEY_ARROW_SHAFT=6;
@@ -262,8 +262,9 @@
   }
   function selectRecord(id){
     const s=state.shapes.find(x=>x.id===id);if(!isFieldRecord(s))return;
-    selected=id;render();renderSelectedPhotos();syncInspector();updateMeasureResult?.();
-    if(innerWidth<900)$('inspector')?.classList.add('open');
+    // Match normal damage selection: selecting a record must never raise the
+    // mobile information sheet. The bottom handle remains the only opener.
+    selected=id;render();setSelectionControls?.();renderSelectedPhotos();syncInspector();updateMeasureResult?.();
   }
   function sourceRecord(id){
     const s=state.shapes.find(x=>x.id===id&&(x.page||1)===state.currentPage);
