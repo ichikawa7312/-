@@ -1,4 +1,4 @@
-/* Sentlog v1.64: field photo points and grouped survey records.
+/* Sentlog v1.65: shorter overview-photo direction arrow; field photo points and grouped survey records.
  * Records live in state.shapes so existing persistence, sync, backup and photo storage keep working.
  */
 (function(root){
@@ -7,8 +7,9 @@
   const PHOTO_TYPE='全景';
   const SURVEY_TYPE='調査';
   const SURVEY_ITEMS=['写真記録','鉄筋探査','中性化','コア採取','塩化物','はつり','自然電位','圧縮強度','板厚測定','その他'];
-  const PHOTO_SCREEN_LENGTH=68;
   const PHOTO_CIRCLE_RADIUS=5;
+  const PHOTO_ARROW_VISIBLE_LENGTH=20;
+  const PHOTO_SCREEN_LENGTH=PHOTO_CIRCLE_RADIUS+PHOTO_ARROW_VISIBLE_LENGTH;
   const SURVEY_POINT_RADIUS=7;
   const SURVEY_ARROW_SHAFT=6;
   const SURVEY_ARROW_HEAD_LENGTH=20;
@@ -52,7 +53,7 @@
     if(s.displayKind==='arrow'&&Array.isArray(s.points)&&s.points[1])return normPoint(s.points[1]);
     return normPoint(s.point||s.points?.[0]);
   }
-  const pure={PHOTO_TYPE,SURVEY_TYPE,SURVEY_ITEMS,PHOTO_SCREEN_LENGTH,isFieldRecord,recordLabel,angleFrom,photoEnd,surveyArrowPolygon,nextRecordNumber,surveyPointFrom};
+  const pure={PHOTO_TYPE,SURVEY_TYPE,SURVEY_ITEMS,PHOTO_CIRCLE_RADIUS,PHOTO_ARROW_VISIBLE_LENGTH,PHOTO_SCREEN_LENGTH,isFieldRecord,recordLabel,angleFrom,photoEnd,surveyArrowPolygon,nextRecordNumber,surveyPointFrom};
   if(typeof module!=='undefined'&&module.exports){module.exports=pure;return;}
   if(!root.document||root.SentlogFieldRecords)return;
 
