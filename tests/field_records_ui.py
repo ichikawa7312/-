@@ -96,6 +96,11 @@ with sync_playwright() as p:
     assert page.evaluate("cameraClicks")==1
     assert page.locator('#frRecordTitle').inner_text()=='全景-1'
     assert '○が撮影位置' in page.locator('#frPhotoHelp').inner_text()
+    label=page.evaluate("""()=>{
+      const e=[...document.querySelectorAll('#svg text')].find(x=>x.textContent==='全景-1');
+      return e?{x:Number(e.getAttribute('x')),y:Number(e.getAttribute('y'))}:null;
+    }""")
+    assert label and label['x']<photo['point']['x'] and label['y']>photo['point']['y'],(photo,label)
 
     # Normal damage selection restores the normal inspector.
     page.evaluate("selectShape('d1')")
@@ -108,4 +113,4 @@ with sync_playwright() as p:
     (ROOT/'test-results').mkdir(exist_ok=True)
     page.screenshot(path=str(ROOT/'test-results/field-records-ui.png'),full_page=True)
     browser.close()
-    print('PASS field-record UI: grouped survey arrow/point, multi-content selection, fixed-direction overview photo and camera handoff')
+    print('PASS field-record UI: grouped survey arrow/point, multi-content selection, short overview-photo arrow, opposite-side photo label and camera handoff')
