@@ -63,7 +63,7 @@ change('tests/toolbar_icons_ui.py',
        "assert page.locator('#sentlogDrawingToolbar svg').count()==8")
 change('tests/toolbar_icons_ui.py',
        "rows=len({round(r['y']) for r in bounds});assert rows==(2 if width==320 else 1),(width,rows,bounds)",
-       "rows=len({round(r['y']) for r in bounds});assert rows==(2 if width<=390 else 1),(width,rows,bounds)")
+       "rows=len({round(r['y']) for r in bounds});assert rows==(2 if width<=360 else 1),(width,rows,bounds)")
 change('tests/toolbar_icons_ui.py',
        "print(f'PASS {width}px: 7 SVGs;",
        "print(f'PASS {width}px: 8 SVGs;")
