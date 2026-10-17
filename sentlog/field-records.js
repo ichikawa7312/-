@@ -1,4 +1,4 @@
-/* Sentlog v1.66: direction-aware overview-photo label placement; field photo points and grouped survey records.
+/* Sentlog v1.67: movable field records and compact direction-aware photo labels.
  * Records live in state.shapes so existing persistence, sync, backup and photo storage keep working.
  */
 (function(root){
@@ -10,7 +10,12 @@
   const PHOTO_CIRCLE_RADIUS=5;
   const PHOTO_ARROW_VISIBLE_LENGTH=20;
   const PHOTO_SCREEN_LENGTH=PHOTO_CIRCLE_RADIUS+PHOTO_ARROW_VISIBLE_LENGTH;
-  const PHOTO_LABEL_OFFSET=36;
+  const PHOTO_LABEL_GAP=4;
+  const PHOTO_LABEL_VERTICAL_GAP=9;
+  const PHOTO_LABEL_DIAGONAL_SHIFT=8;
+  const RECORD_HOLD_MS=500;
+  const RECORD_HOLD_SLOP=9;
+  const RECORD_COMMIT_SLOP=2;
   const SURVEY_POINT_RADIUS=7;
   const SURVEY_ARROW_SHAFT=6;
   const SURVEY_ARROW_HEAD_LENGTH=20;
@@ -30,8 +35,22 @@
     return {x:p.x+Math.cos(Number(angle)||0)*len,y:p.y+Math.sin(Number(angle)||0)*len};
   }
   function photoLabelPos(origin,angle,scale=1){
-    const z=Math.max(.001,Number(scale)||1),p=normPoint(origin),offset=PHOTO_LABEL_OFFSET/z,a=Number(angle)||0;
-    return {x:p.x-Math.cos(a)*offset,y:p.y-Math.sin(a)*offset};
+    const z=Math.max(.001,Number(scale)||1),p=normPoint(origin),a=Number(angle)||0;
+    const ux=Math.cos(a),uy=Math.sin(a),r=PHOTO_CIRCLE_RADIUS/z;
+    if(Math.abs(ux)>=Math.abs(uy)){
+      const sign=ux>=0?1:-1;
+      return {
+        x:p.x-sign*(r+PHOTO_LABEL_GAP/z),
+        y:p.y-uy*(PHOTO_LABEL_DIAGONAL_SHIFT/z),
+        anchor:sign>0?'end':'start'
+      };
+    }
+    const sign=uy>=0?1:-1;
+    return {
+      x:p.x-ux*(PHOTO_LABEL_DIAGONAL_SHIFT/z),
+      y:p.y-sign*(r+PHOTO_LABEL_VERTICAL_GAP/z),
+      anchor:'middle'
+    };
   }
   function surveyArrowPolygon(tail,tip,scale=1){
     const a=normPoint(tail),b=normPoint(tip),z=Math.max(.001,Number(scale)||1);
@@ -58,7 +77,7 @@
     if(s.displayKind==='arrow'&&Array.isArray(s.points)&&s.points[1])return normPoint(s.points[1]);
     return normPoint(s.point||s.points?.[0]);
   }
-  const pure={PHOTO_TYPE,SURVEY_TYPE,SURVEY_ITEMS,PHOTO_CIRCLE_RADIUS,PHOTO_ARROW_VISIBLE_LENGTH,PHOTO_SCREEN_LENGTH,PHOTO_LABEL_OFFSET,isFieldRecord,recordLabel,angleFrom,photoEnd,photoLabelPos,surveyArrowPolygon,nextRecordNumber,surveyPointFrom};
+  const pure={PHOTO_TYPE,SURVEY_TYPE,SURVEY_ITEMS,PHOTO_CIRCLE_RADIUS,PHOTO_ARROW_VISIBLE_LENGTH,PHOTO_SCREEN_LENGTH,PHOTO_LABEL_GAP,PHOTO_LABEL_VERTICAL_GAP,PHOTO_LABEL_DIAGONAL_SHIFT,RECORD_HOLD_MS,isFieldRecord,recordLabel,angleFrom,photoEnd,photoLabelPos,surveyArrowPolygon,nextRecordNumber,surveyPointFrom};
   if(typeof module!=='undefined'&&module.exports){module.exports=pure;return;}
   if(!root.document||root.SentlogFieldRecords)return;
 
@@ -66,7 +85,7 @@
   const stageWrap=$('stageWrap'),toolbar=document.querySelector('.toolbar'),inspector=$('inspector'),svg=$('svg');
   if(!stageWrap||!toolbar||!inspector||!svg)return;
 
-  let recordDraft=null,recordPanel=null,recordModeModal=null,recordBtn=null;
+  let recordDraft=null,recordPanel=null,recordModeModal=null,recordBtn=null,recordPress=null,recordMove=null;
   const standard={};
   const defaultDeleteText=$('deleteBtn')?.textContent||'選択変状を削除';
 
@@ -245,20 +264,71 @@
     selected=id;render();renderSelectedPhotos();syncInspector();updateMeasureResult?.();
     if(innerWidth<900)$('inspector')?.classList.add('open');
   }
+  function sourceRecord(id){
+    const s=state.shapes.find(x=>x.id===id&&(x.page||1)===state.currentPage);
+    return isFieldRecord(s)?s:null;
+  }
+  function clearRecordPress(){
+    if(recordPress?.timer)clearTimeout(recordPress.timer);
+    recordPress=null;
+  }
+  function recordSpatialSnapshot(s){
+    return {
+      point:s?.point?{...s.point}:null,
+      points:Array.isArray(s?.points)?s.points.map(p=>({...p})):null
+    };
+  }
+  function setRecordPosition(s,original,dx,dy){
+    if(original.point)s.point={...original.point,x:original.point.x+dx,y:original.point.y+dy};
+    if(original.points)s.points=original.points.map(p=>({...p,x:p.x+dx,y:p.y+dy}));
+  }
+  function stopRecordMove(commit){
+    if(!recordMove)return;
+    const m=recordMove;recordMove=null;
+    const s=sourceRecord(m.id);
+    if(!s)return;
+    const moved=commit&&Math.hypot(m.dx,m.dy)*z()>=RECORD_COMMIT_SLOP;
+    if(!moved)setRecordPosition(s,m.original,0,0);
+    else{
+      const h=historyFor(m.page);h.undo.push(m.before);if(h.undo.length>80)h.undo.shift();h.redo=[];
+      updateHistoryButtons();persist();
+    }
+    render();
+  }
+  function cancelRecordInteraction(){
+    clearRecordPress();
+    if(recordMove)stopRecordMove(false);
+  }
   function bindRecordHit(hit,id){
-    hit.style.cursor='pointer';hit.dataset.fieldRecordId=id;
+    hit.style.cursor='grab';hit.dataset.fieldRecordId=id;hit.style.touchAction='none';
     hit.addEventListener('pointerdown',e=>{
-      if(tool!=='pan')return;e.preventDefault();e.stopPropagation();selectRecord(id);
+      if(tool!=='pan'||gestureLock||(e.pointerType==='mouse'&&e.button!==0)||activeTouches.size>1)return;
+      cancelRecordInteraction();
+      const request={id,pointerId:e.pointerId,x:e.clientX,y:e.clientY,start:point(e),
+        page:state.currentPage,drawingId:activeDrawingId,timer:null};
+      recordPress=request;
+      request.timer=setTimeout(()=>{
+        if(recordPress!==request||tool!=='pan'||gestureLock||activeTouches.size>1||
+           currentView!=='editor'||state.currentPage!==request.page||activeDrawingId!==request.drawingId)return;
+        const s=sourceRecord(id);if(!s)return;
+        recordPress=null;
+        recordMove={id,pointerId:e.pointerId,start:request.start,original:recordSpatialSnapshot(s),
+          before:snapshotPage(),dx:0,dy:0,page:request.page,drawingId:request.drawingId};
+        if(innerWidth<900)$('inspector')?.classList.remove('open');
+        render();
+      },RECORD_HOLD_MS);
+      try{stageWrap.setPointerCapture(e.pointerId)}catch{}
+      e.preventDefault();e.stopPropagation();
     });
   }
 
-  function drawText(text,x,y,selectedNow){
-    const fs=Math.max(11,14/z()),t=svgEl('text',{x,y,'font-size':fs,'text-anchor':'middle','dominant-baseline':'middle',
+  function drawText(text,x,y,selectedNow,anchor='middle'){
+    const fs=Math.max(11,14/z()),t=svgEl('text',{x,y,'font-size':fs,'text-anchor':anchor,'dominant-baseline':'middle',
       fill:selectedNow?'#1d4ed8':'#111827','font-weight':'700','paint-order':'stroke fill',stroke:'#fff','stroke-width':3/z(),'pointer-events':'none'});
     t.textContent=text;svg.appendChild(t);return t;
   }
   function drawPhotoRecord(s){
-    const p=normPoint(s.point||s.points?.[0]),end=photoEnd(p,s.angle,z()),selectedNow=s.id===selected;
+    const p=normPoint(s.point||s.points?.[0]),end=photoEnd(p,s.angle,z()),selectedNow=s.id===selected||recordMove?.id===s.id;
     const color=selectedNow?'#2563eb':'#111827',r=PHOTO_CIRCLE_RADIUS/z(),head=8/z(),wing=5/z();
     const ux=Math.cos(s.angle||0),uy=Math.sin(s.angle||0),px=-uy,py=ux;
     const start={x:p.x+ux*(r+2/z()),y:p.y+uy*(r+2/z())};
@@ -267,7 +337,7 @@
     const tri=svgEl('polygon',{points:`${end.x},${end.y} ${neck.x+px*wing},${neck.y+py*wing} ${neck.x-px*wing},${neck.y-py*wing}`,fill:color});
     const circle=svgEl('circle',{cx:p.x,cy:p.y,r,fill:'#fff',stroke:color,'stroke-width':1.8/z()});
     for(const e of [line,tri,circle]){e.style.pointerEvents='none';svg.appendChild(e);}
-    const labelPos=photoLabelPos(p,s.angle,z());drawText(recordLabel(s),labelPos.x,labelPos.y,selectedNow);
+    const labelPos=photoLabelPos(p,s.angle,z());drawText(recordLabel(s),labelPos.x,labelPos.y,selectedNow,labelPos.anchor);
     if(tool==='pan'){
       const hit=svgEl('line',{x1:p.x,y1:p.y,x2:end.x,y2:end.y,stroke:'rgba(0,0,0,.001)','stroke-width':24/z(),'pointer-events':'stroke'});
       bindRecordHit(hit,s.id);svg.appendChild(hit);
@@ -276,7 +346,7 @@
     }
   }
   function drawSurveyPoint(s){
-    const p=surveyPointFrom(s),selectedNow=s.id===selected,color=selectedNow?'#2563eb':'#334155',r=SURVEY_POINT_RADIUS/z();
+    const p=surveyPointFrom(s),selectedNow=s.id===selected||recordMove?.id===s.id,color=selectedNow?'#2563eb':'#334155',r=SURVEY_POINT_RADIUS/z();
     const outer=svgEl('circle',{cx:p.x,cy:p.y,r,fill:'#fff',stroke:color,'stroke-width':2.2/z()});
     const inner=svgEl('circle',{cx:p.x,cy:p.y,r:r*.35,fill:color,stroke:'none'});outer.style.pointerEvents=inner.style.pointerEvents='none';svg.append(outer,inner);
     drawText(recordLabel(s),p.x+30/z(),p.y,selectedNow);
@@ -286,7 +356,7 @@
   }
   function drawSurveyArrow(s){
     const tail=normPoint(s.points?.[0]),tip=normPoint(s.points?.[1]),poly=surveyArrowPolygon(tail,tip,z());if(!poly.length)return;
-    const selectedNow=s.id===selected,color=selectedNow?'#2563eb':'#334155';
+    const selectedNow=s.id===selected||recordMove?.id===s.id,color=selectedNow?'#2563eb':'#334155';
     const arrow=svgEl('polygon',{points:poly.map(p=>p.x+','+p.y).join(' '),fill:'#fff',stroke:color,'stroke-width':2.4/z(),'stroke-linejoin':'round'});
     arrow.style.pointerEvents='none';svg.appendChild(arrow);
     const dx=tip.x-tail.x,dy=tip.y-tail.y,len=Math.hypot(dx,dy)||1,px=-dy/len,py=dx/len;
@@ -349,14 +419,62 @@
     if(s)syncInspector();
   }
 
+  function handleRecordMove(e){
+    if(recordPress?.pointerId===e.pointerId){
+      if(gestureLock||activeTouches.size>1||
+         Math.hypot(e.clientX-recordPress.x,e.clientY-recordPress.y)>RECORD_HOLD_SLOP){
+        clearRecordPress();
+      }
+    }
+    if(!recordMove||recordMove.pointerId!==e.pointerId)return;
+    if(gestureLock||activeTouches.size>1){stopRecordMove(false);return;}
+    const s=sourceRecord(recordMove.id);
+    if(!s||currentView!=='editor'||activeDrawingId!==recordMove.drawingId||state.currentPage!==recordMove.page){
+      stopRecordMove(false);return;
+    }
+    const p=point(e);recordMove.dx=p.x-recordMove.start.x;recordMove.dy=p.y-recordMove.start.y;
+    setRecordPosition(s,recordMove.original,recordMove.dx,recordMove.dy);
+    if(e.cancelable)e.preventDefault();e.stopImmediatePropagation();render();
+  }
+  function finishRecordInteraction(e,cancelled=false){
+    if(recordMove?.pointerId===e.pointerId){
+      const canCommit=!cancelled&&!gestureLock&&activeTouches.size<=1;
+      stopRecordMove(canCommit);
+      try{stageWrap.releasePointerCapture(e.pointerId)}catch{}
+      if(e.cancelable)e.preventDefault();e.stopImmediatePropagation();return true;
+    }
+    if(recordPress?.pointerId===e.pointerId){
+      const request=recordPress,within=Math.hypot(e.clientX-request.x,e.clientY-request.y)<=RECORD_HOLD_SLOP;
+      clearRecordPress();
+      try{stageWrap.releasePointerCapture(e.pointerId)}catch{}
+      if(!cancelled&&within&&tool==='pan'&&currentView==='editor'&&
+         activeDrawingId===request.drawingId&&state.currentPage===request.page&&sourceRecord(request.id)){
+        selectRecord(request.id);
+      }
+      if(e.cancelable)e.preventDefault();e.stopImmediatePropagation();return true;
+    }
+    return false;
+  }
+
   function installEvents(){
     stageWrap.addEventListener('pointerdown',pointerDown,{capture:true,passive:false});
     stageWrap.addEventListener('pointermove',pointerMove,{capture:true,passive:false});
+    stageWrap.addEventListener('pointermove',handleRecordMove,{capture:true,passive:false});
     stageWrap.addEventListener('pointerup',pointerUp,{capture:true,passive:false});
     stageWrap.addEventListener('pointercancel',e=>{if(recordDraft?.pointerId===e.pointerId){recordDraft=null;render();}},{capture:true});
     window.addEventListener('pointerdown',e=>{
       if(recordDraft&&e.pointerType==='touch'&&e.pointerId!==recordDraft.pointerId){recordDraft=null;render();}
+      if((recordPress&&e.pointerId!==recordPress.pointerId)||(recordMove&&e.pointerId!==recordMove.pointerId))cancelRecordInteraction();
     },{capture:true});
+    window.addEventListener('pointerup',e=>finishRecordInteraction(e,false),{capture:true,passive:false});
+    window.addEventListener('pointercancel',e=>finishRecordInteraction(e,true),{capture:true,passive:false});
+    stageWrap.addEventListener('lostpointercapture',e=>{
+      if(recordMove?.pointerId===e.pointerId){stopRecordMove(false);}
+      if(recordPress?.pointerId===e.pointerId)clearRecordPress();
+    });
+    window.addEventListener('blur',cancelRecordInteraction);
+    window.addEventListener('pagehide',cancelRecordInteraction);
+    document.addEventListener('visibilitychange',()=>{if(document.hidden)cancelRecordInteraction();});
   }
 
   installStyle();installToolbar();installModeModal();installInspector();installEvents();
