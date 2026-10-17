@@ -264,7 +264,7 @@
     const s=state.shapes.find(x=>x.id===id);if(!isFieldRecord(s))return;
     // Match normal damage selection: selecting a record must never raise the
     // mobile information sheet. The bottom handle remains the only opener.
-    selected=id;render();setSelectionControls?.();renderSelectedPhotos();syncInspector();updateMeasureResult?.();
+    selected=id;render();if(typeof setSelectionControls==='function')setSelectionControls();renderSelectedPhotos();syncInspector();if(typeof updateMeasureResult==='function')updateMeasureResult();
   }
   function sourceRecord(id){
     const s=state.shapes.find(x=>x.id===id&&(x.page||1)===state.currentPage);
