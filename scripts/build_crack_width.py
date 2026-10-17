@@ -23,7 +23,7 @@ change(p,
        '<script src="./original-photo-store.js?v=162"><\/script>',
        '<script src="./original-photo-store.js?v=162"><\/script><script src="./crack-width.js?v=163"><\/script>')
 change(p,'phone-runtime.js?v=162','phone-runtime.js?v=163',2)
-change(p,"'v1.62'","'v1.63'")
+change(p,"['phone-runtime.js?v=163','v1.62']","['phone-runtime.js?v=163','v1.63']")
 change('sentlog/phone-runtime.js','v1.62','v1.63',4)
 
 p='sentlog/sw.js'
