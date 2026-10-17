@@ -123,7 +123,7 @@
   function rememberStandardNodes(){
     if(standard.ready)return;standard.ready=true;
     const damageHost=$('damageMaterial')?.parentElement||$('damageType')?.parentElement;
-    const globalRow=$('globalNo')?.closest('.row')||$('typeNo')?.closest('.row');
+    const globalRow=$('typeNo')?.closest('.row');
     Object.assign(standard,{
       damageHost,globalRow,
       member:$('member')?.parentElement,
