@@ -1,0 +1,37 @@
+const assert=require('node:assert/strict');
+const fs=require('node:fs');
+const path=require('node:path');
+const root=path.resolve(__dirname,'..');
+const feature=require(path.join(root,'sentlog/original-photo-store.js'));
+
+assert.equal(feature.SHARED_MAX_SIDE,1600);
+assert.equal(feature.SHARED_JPEG_QUALITY,.78);
+assert.equal(feature.safeSegment('A/B:C*D'),'A_B_C_D');
+assert.equal(feature.uniqueName('IMG_0001.jpg',new Set(['IMG_0001.jpg','IMG_0001_2.jpg'])),'IMG_0001_3.jpg');
+assert.equal(feature.localDateKey(new Date(2026,9,17,23,59)),'2026-10-17');
+assert.equal(feature.buildPcPath({createdAt:new Date(2026,9,17),projectName:'依田川農水頭首工',drawingName:'下流面',shapeLabel:'ひび割れ-12',exportName:'IMG_1234.JPG'}),'2026/依田川農水頭首工/写真/下流面/ひび割れ-12/IMG_1234.JPG');
+const batches=feature.planBatches([{size:180},{size:180},{size:180},{size:10}],350,3);
+assert.deepEqual(batches.map(x=>x.length),[1,1,2]);
+const crc=feature.finalizedCrc(feature.crc32Bytes(new TextEncoder().encode('123456789')));
+assert.equal(crc>>>0,0xcbf43926);
+
+const index=fs.readFileSync(path.join(root,'sentlog/index.html'),'utf8');
+assert.match(index,/original-photo-store\.js\?v=162/);
+assert.match(index,/SentlogOriginalPhotos/);
+assert.match(index,/phone-runtime\.js\?v=162/);
+const sw=fs.readFileSync(path.join(root,'sentlog/sw.js'),'utf8');
+assert.match(sw,/sentlog-pwa-v173/);
+assert.match(sw,/original-photo-store\.js/);
+const storage=fs.readFileSync(path.join(root,'sentlog/storage-ui.js'),'utf8');
+assert.match(storage,/写真（共有用）/);
+assert.match(storage,/端末原本/);
+assert.match(storage,/SentlogOriginalPhotos\?\.stats/);
+const cloud=fs.readFileSync(path.join(root,'sentlog/cloud-sync.js'),'utf8');
+assert.match(cloud,/dbGet\('photo:'\+item\.drawingId\+':'\+p\.id\)/);
+assert.doesNotMatch(cloud,/sentlog-original-photos-v1/,'cloud sync must never read the original-photo database');
+const featureSource=fs.readFileSync(path.join(root,'sentlog/original-photo-store.js'),'utf8');
+assert.match(featureSource,/原本はSupabaseへ通常送信しません/);
+assert.match(featureSource,/EXPORT_MAX_FILES=250/);
+assert.match(featureSource,/buildPcPath\(meta\)/);
+assert.match(featureSource,/if\(!confirm\('書き出し確認済みの原本だけを、この端末から削除します。未書き出し原本は削除しません。/);
+console.log('PASS original photo store: exact local source, lighter shared copy, PC-layout export, guarded cleanup');
