@@ -144,6 +144,7 @@ jobs:
           python tests/plain_numbers_ui.py
           python tests/single_number_ui.py
           python tests/optional_symbol_ui.py
+          python tests/dimension_lines_ui.py
       - uses: actions/upload-artifact@v4
         if: always()
         with:
