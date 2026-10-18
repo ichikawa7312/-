@@ -45,6 +45,9 @@ assert.match(cloud,/SYNC_FINGERPRINT_SCHEMA=2/);
 assert.match(cloud,/fingerprint_schema:SYNC_FINGERPRINT_SCHEMA/);
 assert.match(cloud,/!!meta\?\.fingerprint && Number\(meta\?\.fingerprint_schema\|\|0\)<SYNC_FINGERPRINT_SCHEMA/,
   'old stored fingerprints must force one reconciliation pass');
+assert.match(cloud,/currentFingerprint=Number\(meta\?\.fingerprint_schema\|\|0\)>=SYNC_FINGERPRINT_SCHEMA/);
+assert.match(cloud,/meta\.fingerprint&&currentFingerprint\?localFingerprint!==meta\.fingerprint:Number\(lp\.updatedAt\|\|0\)!==Number\(meta\.local_updated_at\|\|0\)/,
+  'pre-v1.72 metadata must use timestamps so deterministic migration is not mistaken for a local edit');
 
 const index=fs.readFileSync(path.join(root,'sentlog/index.html'),'utf8');
 assert.match(index,/drawing-groups\.js\?v=172/);
