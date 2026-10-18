@@ -30,6 +30,7 @@ def edge_text(page,id,index):
   return el?.textContent||null;
  }""",[id,index])
 def click_edge(page,id,index):
+ page.evaluate("(id)=>{if(selected!==id)selectShape(id)}",id)
  loc=page.evaluate("""([id,index])=>{
   const hit=[...svg.querySelectorAll('[data-shape-dimension-hit-id="'+id+'"]')].find(x=>x.dataset.edgeIndex===String(index));
   if(!hit)return null;const r=hit.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2,w:r.width,h:r.height};
@@ -66,9 +67,14 @@ try:
   page.evaluate(seed);page.wait_for_timeout(100)
 
   rect0=shape(page,'rect1');poly0=shape(page,'poly1')
+  assert page.locator('[data-shape-dimension-id]').count()==0
+  page.evaluate("selectShape('rect1')")
   assert edge_text(page,'rect1',0)=='寸法'
   assert edge_text(page,'rect1',1)=='寸法'
+  assert page.locator('[data-shape-dimension-id="poly1"]').count()==0
+  page.evaluate("selectShape('poly1')")
   assert [edge_text(page,'poly1',i) for i in range(4)]==['寸法']*4
+  assert page.locator('[data-shape-dimension-id="rect1"]').count()==0
 
   # Unscaled: values are recorded but geometry must stay exactly where it was drawn.
   edit_edge(page,'rect1',0,'0.800',False)
