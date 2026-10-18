@@ -56,6 +56,9 @@ for name,count in {
     change('tests/'+name,"window.SENTLOG_BUILD==='v1.75'","window.SENTLOG_BUILD==='v1.76'",count)
 for name in ('image_memory_ui.py','dimension_lines_ui.py','shape_dimensions_ui.py','editable_shape_dimensions_ui.py'):
     change('tests/'+name,"window.SENTLOG_BUILD==='v1.75'","window.SENTLOG_BUILD==='v1.76'")
+change('tests/editable_shape_dimensions_ui.py',
+       " assert ('縮尺設定済み' in body)==scaled,body\n assert ('縮尺未設定' in body)==(not scaled),body",
+       " if scaled:\n  assert '辺の実寸を変更' in body,body\n  assert '縮尺未設定' not in body,body\n  assert ('縮尺設定済み' in body) or ('手入力寸法を優先します。' in body),body\n else:\n  assert '縮尺未設定' in body,body")
 
 for name in ('capacity.test.cjs','resilience.test.cjs','toolbar_icons.test.cjs','label_colors.test.cjs','plain_numbers.test.cjs','single_number_ui.test.cjs','optional_symbol_ui.test.cjs'):
     change('tests/'+name,"'v1.75'","'v1.76'")
