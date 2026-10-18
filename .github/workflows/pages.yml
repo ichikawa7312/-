@@ -53,6 +53,7 @@ jobs:
           python3 scripts/build_drawing_groups.py
           python3 scripts/build_group_sync_migration.py
           python3 scripts/build_dimension_lines.py
+          python3 scripts/build_shape_dimensions.py
           node tests/image_recovery_view.test.cjs
           node --check sentlog/original-photo-store.js
           node --check sentlog/crack-width.js
@@ -61,6 +62,7 @@ jobs:
           node --check sentlog/editor-drawing-add.js
           node --check sentlog/drawing-groups.js
           node --check sentlog/dimension-lines.js
+          node --check sentlog/shape-dimensions.js
           node tests/large_image_view.test.cjs
           node tests/original_photo_store.test.cjs
           node tests/crack_width.test.cjs
@@ -70,6 +72,7 @@ jobs:
           node tests/drawing_groups.test.cjs
           node tests/group_sync_migration.test.cjs
           node tests/dimension_lines.test.cjs
+          node tests/shape_dimensions.test.cjs
           node tests/core.test.cjs
           node tests/pc.test.cjs
           node tests/integration.test.cjs
