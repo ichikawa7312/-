@@ -43,6 +43,22 @@
     }
     return {workspace:ws,changed};
   }
+  function normalizeSnapshotPayload(input){
+    const p=JSON.parse(JSON.stringify(input||{}));
+    if(p.project){
+      const wrapped=normalizeWorkspace({projects:[p.project]});
+      p.project=wrapped.workspace.projects[0];
+    }
+    if(Array.isArray(p.drawings)){
+      const metas=p.drawings.map(x=>x?.meta).filter(Boolean);
+      if(metas.length){
+        const wrapped=normalizeWorkspace({projects:[{id:'__sync__',drawings:metas}]});
+        const byId=new Map((wrapped.workspace.projects[0].drawings||[]).map(d=>[d.id,d]));
+        for(const item of p.drawings||[])if(item?.meta?.id&&byId.has(item.meta.id))item.meta=byId.get(item.meta.id);
+      }
+    }
+    return p;
+  }
   function renameGroupInWorkspace(input,projectId,targetGroupId,newName,now=Date.now()){
     const name=String(newName||'').trim().replace(/\s+/g,' ');
     if(!name)throw Error('図面No.名を入力してください。');
@@ -85,7 +101,7 @@
     }).map(f=>({key:String(f.key),size:f.value.size}));
   }
 
-  const pure={GROUP_VERSION,groupId,groupName,sheetName,sortSheets,groupsForProject,normalizeWorkspace,
+  const pure={GROUP_VERSION,groupId,groupName,sheetName,sortSheets,groupsForProject,normalizeWorkspace,normalizeSnapshotPayload,
     renameGroupInWorkspace,removeGroupFromWorkspace,nextSheetOrder,filesForDrawingIds};
   if(typeof module!=='undefined'&&module.exports){module.exports=pure;return;}
   if(!root.document||root.SentlogDrawingGroups)return;
