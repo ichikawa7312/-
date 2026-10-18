@@ -314,13 +314,15 @@ async function ackAsset(assetId,deviceId){
   await rest('/rest/v1/rpc/sentlog_ack_asset',{method:'POST',body:JSON.stringify({p_asset_id:assetId,p_device_id:deviceId})});
 }
 async function pullProjectAssets(cloudProject,deviceId){
+  const ws=workspace(),localProject=(ws.projects||[]).find(p=>p.id===cloudProject.client_key);
+  const allowedDrawingIds=new Set((localProject?.drawings||[]).map(d=>d.id));
   const fields=enc('id,kind,file_name,storage_path,mime_type,byte_size,sha256,status,source_device_id,metadata');
   const assets=await rest('/rest/v1/sentlog_assets?project_id=eq.'+enc(cloudProject.id)+'&status=neq.storage_deleted&select='+fields);
   let received=0;
   for(const a of assets||[]){
     try{
       if(a.kind==='drawing'){
-        const drawingId=a.metadata?.drawing_id;if(!drawingId)continue;
+        const drawingId=a.metadata?.drawing_id;if(!drawingId||!allowedDrawingIds.has(drawingId))continue;
         const key='background:'+drawingId;
         const local=await dbGet(key);
         let same=false;
@@ -336,7 +338,7 @@ async function pullProjectAssets(cloudProject,deviceId){
       }else if(a.kind==='photo'){
         if(a.source_device_id===deviceId)continue;
         const drawingId=a.metadata?.drawing_id,photoId=a.metadata?.photo_id;
-        if(!drawingId||!photoId)continue;
+        if(!drawingId||!photoId||!allowedDrawingIds.has(drawingId))continue;
         const key='photo:'+drawingId+':'+photoId;
         const local=await dbGet(key);
         let same=false;
