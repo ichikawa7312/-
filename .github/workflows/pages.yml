@@ -49,16 +49,19 @@ jobs:
           python3 scripts/build_field_record_move.py
           python3 scripts/build_record_inspector_fix.py
           python3 scripts/build_drawing_list_actions.py
+          python3 scripts/build_editor_drawing_add.py
           node tests/image_recovery_view.test.cjs
           node --check sentlog/original-photo-store.js
           node --check sentlog/crack-width.js
           node --check sentlog/field-records.js
           node --check sentlog/drawing-list-actions.js
+          node --check sentlog/editor-drawing-add.js
           node tests/large_image_view.test.cjs
           node tests/original_photo_store.test.cjs
           node tests/crack_width.test.cjs
           node tests/field_records.test.cjs
           node tests/drawing_list_actions.test.cjs
+          node tests/editor_drawing_add.test.cjs
           node tests/core.test.cjs
           node tests/pc.test.cjs
           node tests/integration.test.cjs
