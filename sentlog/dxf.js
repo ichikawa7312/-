@@ -1,4 +1,4 @@
-/* Sentlog v1.78: original DXF + editable inspection records, offline assets. */
+/* Sentlog v1.79: original DXF + editable inspection records, offline assets. */
 (function(root){'use strict';
 if(!root.document||root.SentlogDxf)return;
 const C=root.SentlogDxfCore;if(!C)throw Error('DXF基本機能を読み込めません。');
@@ -108,15 +108,29 @@ const previousDenom=pageScaleDenom;pageScaleDenom=function(){return state.source
 const previousSettings=openPageSettings;openPageSettings=function(){if(state.sourceType==='dxf'){showInfo();return;}return previousSettings.apply(this,arguments);};
 
 function color(value,alpha=1){if(!value||value==='none'||value==='transparent')return null;const m=value.match(/rgba?\(([^)]+)\)/);if(!m)return null;const n=m[1].split(/[ ,/]+/).map(Number),a=(n.length>3?n[3]:1)*alpha;if(a<.01)return null;return {color:(n[0]<<16)|(n[1]<<8)|n[2],opacity:Math.max(0,Math.min(1,a))};}
+function drawingLayer(e,records){
+ const owner=e.closest('[data-memo-id],[data-dxf-field-record-id],[data-field-record-id],[data-damage-label-id],[data-shape-dimension-id],[data-shape-summary-id],[data-crack-width-id],[data-dxf-photo-count-id],[data-id]'),d=owner?.dataset||{};
+ const id=d.memoId||d.dxfFieldRecordId||d.fieldRecordId||d.damageLabelId||d.shapeDimensionId||d.shapeSummaryId||d.crackWidthId||d.dxfPhotoCountId||d.id,s=records.get(id),text=e.localName==='text';
+ if(d.memoId){
+  const type=s?.memoType||(s?.recordKind==='dimension-line'?'dimension':'line');
+  if(type==='dimension')return {layer:'dimension',layerName:'寸法_'+(text?'文字':e.localName==='polygon'?'矢印':'線')};
+  const names={line:'線',freehand:'フリーハンド',rect:'四角',ellipse:'丸',text:'文字'};
+  const part=type==='text'&&!text?'文字背景':type==='line'&&e.localName==='polygon'?'矢印':names[type]||'図形';
+  return {layer:'memo',layerName:'メモ_'+part};
+ }
+ if((d.dxfFieldRecordId||d.fieldRecordId)&&s?.recordKind==='field-record')return {layer:'record',layerName:(s.recordType==='photo'?'全景写真':'調査')+'_'+(text?'名称':'記号')};
+ const type=String(s?.type||'変状').trim()||'変状';
+ const part=d.shapeDimensionId?'寸法':d.shapeSummaryId?'数量':d.crackWidthId?'幅':d.dxfPhotoCountId?'写真数':d.damageLabelRole==='name'?'名称':d.damageLabelId?'引出線':text?'名称':'図形';
+ return {layer:text?'label':'damage',layerName:type+'_'+part,hatchLayer:part==='図形'?type+'_ハッチング':null};
+}
 function capturePrimitives(){
- const output=[],rootMatrix=svg.getScreenCTM().inverse();
+ const output=[],rootMatrix=svg.getScreenCTM().inverse(),records=new Map(state.shapes.map(s=>[s.id,s]));
  for(const e of svg.querySelectorAll('line,polyline,polygon,rect,circle,ellipse,path,text')){
   if(e.closest('defs')||e.closest('[data-memo-ui]'))continue;const st=getComputedStyle(e);if(st.display==='none'||st.visibility==='hidden'||Number(st.opacity)<.01)continue;
   const matrix=rootMatrix.multiply(e.getScreenCTM()),point=(x,y)=>({x:matrix.a*x+matrix.c*y+matrix.e,y:matrix.b*x+matrix.d*y+matrix.f}),vector=(x,y)=>({x:matrix.a*x+matrix.c*y,y:matrix.b*x+matrix.d*y});
-  const memo=e.closest('[data-memo-id]'),record=memo?state.shapes.find(s=>s.id===memo.dataset.memoId):null;
-  const layer=record?.recordKind==='dimension-line'?'dimension':memo?'memo':e.closest('[data-shape-dimension],[data-sentlog-dimension-id]')?'dimension':e.localName==='text'?'label':'damage';
+  const {layer,layerName,hatchLayer}=drawingLayer(e,records);
   const stroke=color(st.stroke,Number(st.strokeOpacity)*Number(st.opacity)),fill=color(st.fill,Number(st.fillOpacity)*Number(st.opacity)),num=a=>Number(e.getAttribute(a)||0);
-  const base={layer},width=parseFloat(st.strokeWidth)*Math.hypot(matrix.a,matrix.b),dash=st.strokeDasharray==='none'?[]:st.strokeDasharray.split(/[ ,]+/).map(parseFloat).filter(Number.isFinite).map(x=>x*Math.hypot(matrix.a,matrix.b));
+  const base={layer,layerName},width=parseFloat(st.strokeWidth)*Math.hypot(matrix.a,matrix.b),dash=st.strokeDasharray==='none'?[]:st.strokeDasharray.split(/[ ,]+/).map(parseFloat).filter(Number.isFinite).map(x=>x*Math.hypot(matrix.a,matrix.b));
   if(e.localName==='text'){
    if(!fill)continue;const nodes=e.querySelectorAll('tspan').length?[...e.querySelectorAll('tspan')]:[e];
    for(const t of nodes){const text=t.textContent;if(!text?.trim())continue;const box=t.getBBox(),m=rootMatrix.multiply(t.getScreenCTM()),fs=parseFloat(getComputedStyle(t).fontSize),at={x:m.a*box.x+m.c*box.y+m.e,y:m.b*box.x+m.d*box.y+m.f};output.push({...base,...fill,type:'text',text,at,height:fs*.75*Math.hypot(m.a,m.b),angle:Math.atan2(m.b,m.a)*180/Math.PI});}continue;
@@ -130,8 +144,8 @@ function capturePrimitives(){
    if(!stroke&&!fill)continue;const length=e.getTotalLength();const count=Math.min(4096,Math.max(2,Math.ceil(length/2)));points=Array.from({length:count+1},(_,i)=>{const p=e.getPointAtLength(i*length/count);return point(p.x,p.y);});closed=/[zZ]\s*$/.test(e.getAttribute('d')||'');
   }
   if(points.length<2)continue;
-  if(closed&&fill)output.push({...base,...fill,type:'hatch',points});
-  const pattern=e.dataset.damagePattern;if(closed&&pattern&&pattern!=='none'&&st.fill.startsWith('url('))output.push({...base,...(stroke||{color:0,opacity:1}),type:'hatch',points,pattern,opacity:(stroke?.opacity||1)*(pattern==='dots'?.55:.5),spacing:['rise','fall','cross'].includes(pattern)?12/Math.SQRT2:pattern==='sparse'?18:12});
+  if(closed&&fill)output.push({...base,layerName:hatchLayer||layerName,...fill,type:'hatch',points});
+  const pattern=e.dataset.damagePattern;if(closed&&pattern&&pattern!=='none'&&st.fill.startsWith('url('))output.push({...base,layerName:hatchLayer||layerName,...(stroke||{color:0,opacity:1}),type:'hatch',points,pattern,opacity:(stroke?.opacity||1)*(pattern==='dots'?.55:.5),spacing:['rise','fall','cross'].includes(pattern)?12/Math.SQRT2:pattern==='sparse'?18:12});
   if(stroke)output.push({...base,...stroke,...(ellipse?{type:'ellipse',...ellipse}:{type:'polyline',points,closed,width}),dash});
  }
  return output;
@@ -145,6 +159,7 @@ async function exportDxf(includeMemos=true){
  const a=element('a');a.href=URL.createObjectURL(blob);a.download=(getDrawingMeta()?.name||'図面').replace(/[\\/:*?"<>|]/g,'_')+'_記録付き.dxf';document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),60000);return {...result,blob};
 }
 function exportDialog(){const card=dialog('DXFを出力');card.append(element('p','元のDXFと、現在のページの変状・文字・寸法を出力します。添付写真の画像は含みません。'));
+ card.append(element('p','画層は「腐食_図形」「腐食_名称」「メモ_線」など、損傷種別・用途別に分けます。元図と同名の場合は末尾に「_2」などを付けます。'));
  const label=element('label'),check=element('input');check.type='checkbox';check.checked=root.SentlogDrawingMemos.visible;label.append(check,document.createTextNode('図面メモを含める'));card.append(label);
  card.append(element('p','追加寸法は線・矢印・文字として編集できます。元図の寸法は元の形式で保持します。'));
  const error=element('p');error.setAttribute('role','alert');const save=button('DXFを保存',async()=>{save.disabled=true;try{await exportDxf(check.checked);closePanel();}catch(e){error.textContent=e.message;}finally{save.disabled=false;}});card.append(error,save,button('閉じる',closePanel));}
@@ -158,5 +173,5 @@ const previousRender=render;render=function(){const r=previousRender.apply(this,
 for(const id of ['fileInput','drawingAddInput']){const input=$(id);if(input)input.accept=(input.accept||'application/pdf,image/*')+',.dxf,application/dxf';}
 const css=element('style');css.textContent='.sl-dxf-modal{position:fixed;inset:0;z-index:10020;background:#0008;display:grid;place-items:center;padding:14px}.sl-dxf-card{background:white;color:#111827;border-radius:14px;padding:20px;width:min(540px,100%);max-height:90dvh;overflow:auto;box-sizing:border-box}.sl-dxf-card h2{font-size:18px;margin:0 0 12px}.sl-dxf-card p{font-size:13px;line-height:1.65}.sl-dxf-card button{min-height:44px;padding:8px 16px;margin:6px 6px 0 0}.sl-dxf-card select{width:100%;min-height:44px}.sl-dxf-preview{width:100%;max-height:260px;object-fit:contain;background:white;border:1px solid #ddd}.sl-dxf-actions{display:flex;justify-content:flex-end}#sentlogDrawingToolbar #dxfExportBtn,#sentlogDrawingToolbar #dxfInfoBtn{width:auto!important;min-width:0;flex:0 0 auto;padding:6px 9px;font-size:12px}';document.head.append(css);
 new ResizeObserver(schedule).observe(wrap);window.addEventListener('pageshow',schedule);document.addEventListener('visibilitychange',()=>{if(!document.hidden)schedule();});
-root.SentlogDxf={version:'v1.78',prepareFile,exportDxf,capturePrimitives,isDxf,isEditing:()=>busy||!!panel,get frame(){return state.dxf?.frame;}};updateUI();
+root.SentlogDxf={version:'v1.79',prepareFile,exportDxf,capturePrimitives,isDxf,isEditing:()=>busy||!!panel,get frame(){return state.dxf?.frame;}};updateUI();
 })(window);
