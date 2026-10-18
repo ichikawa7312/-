@@ -51,6 +51,7 @@ jobs:
           python3 scripts/build_drawing_list_actions.py
           python3 scripts/build_editor_drawing_add.py
           python3 scripts/build_drawing_groups.py
+          python3 scripts/build_group_sync_migration.py
           node tests/image_recovery_view.test.cjs
           node --check sentlog/original-photo-store.js
           node --check sentlog/crack-width.js
@@ -65,6 +66,7 @@ jobs:
           node tests/drawing_list_actions.test.cjs
           node tests/editor_drawing_add.test.cjs
           node tests/drawing_groups.test.cjs
+          node tests/group_sync_migration.test.cjs
           node tests/core.test.cjs
           node tests/pc.test.cjs
           node tests/integration.test.cjs
