@@ -1,9 +1,10 @@
-/* Sentlog v1.75: editable completed-shape dimensions.
+/* Sentlog v1.76: manual dimensions are authoritative across scale changes.
  * - Uncalibrated drawings: edge dimensions can be entered as records, but geometry never moves.
- * - Calibrated drawings: measured dimensions are shown; editing a dimension changes real geometry.
+ * - Calibrated drawings: entered dimensions stay authoritative; geometry follows them.
  * - Rectangles show horizontal + vertical side values. Polygons show every edge in vertex order.
  * - Representative second-line labels remain separate from crack W=...mm notation.
  * Manual edge dimensions are stored inside the existing shape JSON as edgeDimensionsM.
+ * When page scale/paper settings change, recorded values are preserved and geometry is reconciled.
  * No Supabase schema migration or new record type is introduced. */
 (function(root){
 'use strict';
@@ -165,17 +166,32 @@ function drawText(text,x,y,angle,color,attrs={}){
   if(attrs.edgeIndex!=null)t.dataset.edgeIndex=String(attrs.edgeIndex);
   t.textContent=text;svg.appendChild(t);return t;
 }
+const DIM_TOL_M=.0005;
+function measuredEdgeM(shape,index){
+  if(!shape||!calibrated(shape.page||state.currentPage))return null;
+  let edge=null;
+  if(shape.kind==='rect'){
+    const pts=rectCorners(shape);
+    edge=Number(index)===0?{a:pts[0],b:pts[1]}:Number(index)===1?{a:pts[1],b:pts[2]}:null;
+  }else if(shape.kind==='polygon')edge=orderedEdges(shape.points,true).find(e=>e.index===Number(index))||null;
+  if(!edge)return null;
+  const mm=lineLengthMm([edge.a,edge.b],shape.page||state.currentPage);
+  return Number.isFinite(mm)&&mm>0?mm/1000:null;
+}
 function edgeLengthText(shape,a,b,index){
-  const page=shape?.page||state.currentPage;
+  const page=shape?.page||state.currentPage,manual=manualEdgeM(shape,index);
   if(calibrated(page)){
-    const mm=lineLengthMm([a,b],page);
-    return {text:Number.isFinite(mm)?formatLengthMm(mm):'',placeholder:false};
+    const mm=lineLengthMm([a,b],page),measured=Number.isFinite(mm)&&mm>0?mm/1000:null;
+    if(manual!=null){
+      const warning=measured==null||Math.abs(measured-manual)>DIM_TOL_M;
+      return {text:(warning?'⚠ ':'')+formatLengthM(manual),placeholder:false,warning};
+    }
+    return {text:measured!=null?formatLengthM(measured):'',placeholder:false,warning:false};
   }
-  const manual=manualEdgeM(shape,index);
-  if(manual!=null)return {text:formatLengthM(manual),placeholder:false};
+  if(manual!=null)return {text:formatLengthM(manual),placeholder:false,warning:false};
   // Keep normal drawings clean: an unrecorded placeholder appears only while
   // that damage shape is selected. Recorded values remain visible all the time.
-  return {text:shape?.id===selected?'寸法':'',placeholder:true};
+  return {text:shape?.id===selected?'寸法':'',placeholder:true,warning:false};
 }
 function hitRectForLabel(place,text){
   const width=Math.max(58,String(text||'寸法').length*8+18)/z(),height=36/z();
@@ -183,25 +199,15 @@ function hitRectForLabel(place,text){
     transform:`rotate(${place.angle} ${place.x} ${place.y})`,fill:'rgba(37,99,235,0.001)','pointer-events':'all'});
 }
 function closeEditor(){if(editor){editor.remove();editor=null;}}
-function syncManualFromScale(s){
-  if(!s||!calibrated(s.page||1))return;
-  const values={};
-  if(s.kind==='rect'){
-    const d=rectangleDimensionData(s);
-    if(Number.isFinite(d.widthMm))values['0']=d.widthMm/1000;
-    if(Number.isFinite(d.heightMm))values['1']=d.heightMm/1000;
-  }else if(s.kind==='polygon'){
-    for(const e of orderedEdges(s.points,true)){
-      const mm=lineLengthMm([e.a,e.b],s.page||1);
-      if(Number.isFinite(mm)&&mm>0)values[String(e.index)]=mm/1000;
-    }
-  }
-  s.edgeDimensionsM=values;
+function setManualEdgeValue(s,index,value){
+  const v=Number(value);if(!(v>=.001)||v>10000)return false;
+  s.edgeDimensionsM={...(s.edgeDimensionsM||{}),[String(index)]:Number(v.toFixed(3))};
+  return true;
 }
 function applyManualEdge(s,index,value){
   const v=Number(value);if(!(v>=.001)||v>10000)return '0.001m以上10000m以下の寸法を入力してください。';
   pushHistory(s.page||state.currentPage);
-  s.edgeDimensionsM={...(s.edgeDimensionsM||{}),[String(index)]:Number(v.toFixed(3))};
+  setManualEdgeValue(s,index,v);
   persist();render();return null;
 }
 function clearManualEdge(s,index){
@@ -220,7 +226,7 @@ function applyScaledRect(s,index,targetM){
   const g=result.geometry;if(Math.min(g.w,g.h)*z()<8)return 'この図面倍率では短すぎます。少し拡大して入力してください。';
   pushHistory(s.page||state.currentPage);
   s.x=g.x;s.y=g.y;s.w=g.w;s.h=g.h;
-  syncManualFromScale(s);persist();render();return null;
+  setManualEdgeValue(s,index,targetM);persist();render();return null;
 }
 function applyScaledPolygon(s,index,targetM){
   const edges=orderedEdges(s.points,true),edge=edges.find(e=>e.index===Number(index));if(!edge)return '対象の辺が見つかりません。';
@@ -237,7 +243,7 @@ function applyScaledPolygon(s,index,targetM){
   }
   if(result.points.some((p,i,a)=>Math.hypot(a[(i+1)%a.length].x-p.x,a[(i+1)%a.length].y-p.y)*z()<8))
     return 'この図面倍率では短すぎる辺ができます。少し拡大して入力してください。';
-  pushHistory(s.page||state.currentPage);s.points=result.points;syncManualFromScale(s);persist();render();return null;
+  pushHistory(s.page||state.currentPage);s.points=result.points;setManualEdgeValue(s,index,targetM);persist();render();return null;
 }
 function applyScaledEdge(s,index,value){
   const v=Number(value);if(!(v>=.001)||v>10000)return '0.001m以上10000m以下の長さを入力してください。';
@@ -256,6 +262,7 @@ function openEdgeEditor(id,index,event=null){
   ]:orderedEdges(s.points,true);
   const edge=edges.find(e=>e.index===Number(index));if(!edge)return;
   const measuredMm=isScaled?lineLengthMm([edge.a,edge.b],s.page||1):null;
+  const measuredM=Number.isFinite(measuredMm)&&measuredMm>0?measuredMm/1000:null;
   const manual=manualEdgeM(s,index);
   const panel=document.createElement('form');panel.className='sentlog-shape-dimension-editor';
   panel.setAttribute('role','dialog');panel.setAttribute('aria-label','変状の辺寸法を編集');
@@ -263,17 +270,20 @@ function openEdgeEditor(id,index,event=null){
   const title=document.createElement('strong');title.textContent=isScaled?'辺の実寸を変更':'辺の寸法を記録';title.style.cssText='display:block;margin-bottom:8px;font-size:14px;';
   const label=document.createElement('label');label.textContent=isScaled?'辺の長さ（m）':'記録寸法（m）';label.style.cssText='display:block;font-size:12px;font-weight:700;margin-bottom:5px;';
   const input=document.createElement('input');input.type='number';input.inputMode='decimal';input.step='0.001';input.min='0.001';
-  input.value=isScaled&&Number.isFinite(measuredMm)?(measuredMm/1000).toFixed(3):(manual==null?'':manual.toFixed(3));
+  input.value=manual!=null?manual.toFixed(3):(isScaled&&measuredM!=null?measuredM.toFixed(3):'');
   input.placeholder='例：0.800';input.style.cssText='width:100%;height:42px;box-sizing:border-box;padding:7px 9px;font-size:16px;border:1px solid #94a3b8;border-radius:7px;';
   const note=document.createElement('div');note.style.cssText='font-size:11px;line-height:1.55;color:#64748b;margin-top:7px;';
-  note.textContent=isScaled?'縮尺設定済み：確定すると、この辺が入力した実寸になるよう変状形状を変更します。':'縮尺未設定：寸法値だけを記録します。入力しても変状の形・辺の長さは変わりません。';
+  if(isScaled&&manual!=null){
+    const mismatch=measuredM==null||Math.abs(measuredM-manual)>DIM_TOL_M;
+    note.textContent='手入力寸法を優先します。'+(mismatch&&measuredM!=null?' 現在の図形実寸は '+measuredM.toFixed(3)+' m です。確定すると図形を記録寸法へ合わせます。':' 図形はこの記録寸法に合わせて保持されます。');
+  }else note.textContent=isScaled?'縮尺設定済み：確定すると、この辺が入力した実寸になるよう変状形状を変更します。':'縮尺未設定：寸法値だけを記録します。入力しても変状の形・辺の長さは変わりません。';
   const error=document.createElement('div');error.setAttribute('role','alert');error.style.cssText='min-height:15px;margin-top:5px;font-size:11px;color:#b91c1c;';
   const row=document.createElement('div');row.style.cssText='display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-top:8px;';
   const ok=document.createElement('button');ok.type='submit';ok.textContent='確定';ok.style.cssText='height:40px;border:0;border-radius:8px;background:#1d4ed8;color:#fff;font-weight:700;';
   const cancel=document.createElement('button');cancel.type='button';cancel.textContent='閉じる';cancel.style.cssText='height:40px;border:1px solid #cbd5e1;border-radius:8px;background:#fff;';
   row.append(ok,cancel);panel.append(title,label,input,note,error,row);
-  if(!isScaled&&manual!=null){
-    const clear=document.createElement('button');clear.type='button';clear.textContent='この寸法記録を消す';clear.style.cssText='width:100%;height:38px;margin-top:8px;border:1px solid #cbd5e1;border-radius:8px;background:#fff;color:#475569;';
+  if(manual!=null){
+    const clear=document.createElement('button');clear.type='button';clear.textContent=isScaled?'手入力寸法を解除（自動寸法へ）':'この寸法記録を消す';clear.style.cssText='width:100%;height:38px;margin-top:8px;border:1px solid #cbd5e1;border-radius:8px;background:#fff;color:#475569;';
     clear.onclick=()=>{const current=sourceShape(id);if(current){clearManualEdge(current,index);closeEditor();}};panel.append(clear);
   }
   panel.addEventListener('pointerdown',e=>e.stopPropagation());cancel.onclick=()=>closeEditor();
@@ -325,12 +335,14 @@ function representativeText(s){
   const page=s.page||1;if(isAuxiliary(s))return '';
   if(isConcreteCrack(s))return '';
   if(s.kind==='rect'){
+    const mw=manualEdgeM(s,0),mh=manualEdgeM(s,1);
     if(calibrated(page)){
       const d=rectangleDimensionData(s);
-      return representativeFromMeasurements('rect',{widthMm:d.widthMm,heightMm:d.heightMm});
+      const w=mw!=null?mw:(Number.isFinite(d.widthMm)?d.widthMm/1000:null);
+      const h=mh!=null?mh:(Number.isFinite(d.heightMm)?d.heightMm/1000:null);
+      return w!=null&&h!=null?w.toFixed(3)+' × '+h.toFixed(3)+' m':'';
     }
-    const w=manualEdgeM(s,0),h=manualEdgeM(s,1);
-    return w!=null&&h!=null?w.toFixed(3)+' × '+h.toFixed(3)+' m':'';
+    return mw!=null&&mh!=null?mw.toFixed(3)+' × '+mh.toFixed(3)+' m':'';
   }
   if(!calibrated(page))return '';
   if(s.kind==='polygon'||s.kind==='freehand'||s.kind==='freehand-area'){
@@ -342,6 +354,91 @@ function representativeText(s){
     return representativeFromMeasurements(s.kind,{lengthMm});
   }
   return '';
+}
+function manualEdgeIndexes(s){
+  return Object.keys(s?.edgeDimensionsM||{}).map(Number).filter(Number.isInteger).sort((a,b)=>a-b);
+}
+function shapeWarningName(s){
+  return String(s?.autoLabel||s?.no||s?.type||'変状');
+}
+function reconcileRectManualDimensions(temp){
+  const warnings=[];
+  for(const index of [0,1]){
+    const target=manualEdgeM(temp,index);if(target==null)continue;
+    const current=measuredEdgeM(temp,index);
+    if(current!=null&&Math.abs(current-target)<=DIM_TOL_M)continue;
+    if(!(current>0)){warnings.push({index,target,measured:current,reason:'measure'});continue;}
+    const result=rectResizeGeometry(temp,index,target/current,{width:state.width,height:state.height});
+    if(result.error){warnings.push({index,target,measured:current,reason:result.error});continue;}
+    const g=result.geometry;temp.x=g.x;temp.y=g.y;temp.w=g.w;temp.h=g.h;
+  }
+  for(const index of [0,1]){
+    const target=manualEdgeM(temp,index);if(target==null)continue;
+    const measured=measuredEdgeM(temp,index);
+    if(measured==null||Math.abs(measured-target)>DIM_TOL_M){
+      if(!warnings.some(w=>w.index===index))warnings.push({index,target,measured,reason:'mismatch'});
+    }
+  }
+  return warnings;
+}
+function reconcilePolygonManualDimensions(temp){
+  const indexes=manualEdgeIndexes(temp).filter(i=>i>=0&&i<(temp.points?.length||0)),warnings=[];
+  if(!indexes.length)return warnings;
+  const maxPass=Math.max(2,indexes.length*3);
+  for(let pass=0;pass<maxPass;pass++){
+    let changed=false,allMatched=true;
+    for(const index of indexes){
+      const target=manualEdgeM(temp,index),current=measuredEdgeM(temp,index);
+      if(target==null)continue;
+      if(current!=null&&Math.abs(current-target)<=DIM_TOL_M)continue;
+      allMatched=false;
+      if(!(current>0))continue;
+      const result=resizePolygonEdge(temp.points,index,target/current,{width:state.width,height:state.height},
+        typeof polygonAligned==='function'?polygonAligned:null,
+        typeof polygonSegmentsCross==='function'?polygonSegmentsCross:null);
+      if(!result.error){temp.points=result.points;changed=true;}
+    }
+    if(allMatched||!changed)break;
+  }
+  for(const index of indexes){
+    const target=manualEdgeM(temp,index),measured=measuredEdgeM(temp,index);
+    if(measured==null||Math.abs(measured-target)>DIM_TOL_M)
+      warnings.push({index,target,measured,reason:'geometry'});
+  }
+  return warnings;
+}
+function reconcileManualDimensions(page=state.currentPage){
+  if(!calibrated(page))return {changed:false,warnings:[]};
+  const originals=state.shapes.filter(s=>(s.page||1)===page&&['rect','polygon'].includes(s.kind)&&manualEdgeIndexes(s).length);
+  if(!originals.length)return {changed:false,warnings:[]};
+  const proposals=[],warnings=[];
+  for(const source of originals){
+    const temp=JSON.parse(JSON.stringify(source));
+    const issues=temp.kind==='rect'?reconcileRectManualDimensions(temp):reconcilePolygonManualDimensions(temp);
+    warnings.push(...issues.map(w=>({...w,shapeId:source.id,shapeName:shapeWarningName(source),kind:source.kind})));
+    const geometryChanged=temp.kind==='rect'
+      ?Math.abs(temp.x-source.x)>1e-7||Math.abs(temp.y-source.y)>1e-7||Math.abs(temp.w-source.w)>1e-7||Math.abs(temp.h-source.h)>1e-7
+      :JSON.stringify(temp.points)!==JSON.stringify(source.points);
+    if(geometryChanged)proposals.push({source,temp});
+  }
+  if(proposals.length){
+    pushHistory(page);
+    for(const {source,temp} of proposals){
+      if(source.kind==='rect'){source.x=temp.x;source.y=temp.y;source.w=temp.w;source.h=temp.h;}
+      else source.points=temp.points;
+    }
+  }
+  return {changed:!!proposals.length,warnings};
+}
+function reconcileWarningMessage(result){
+  const warnings=result?.warnings||[];if(!warnings.length)return '';
+  const lines=warnings.slice(0,8).map(w=>{
+    const edge=w.kind==='rect'?(w.index===0?'横辺':'縦辺'):'辺'+(Number(w.index)+1);
+    const actual=Number.isFinite(w.measured)?'（図形実寸 '+w.measured.toFixed(3)+' m）':'';
+    return '・'+w.shapeName+' '+edge+'：記録 '+Number(w.target).toFixed(3)+' m '+actual;
+  });
+  if(warnings.length>8)lines.push('・ほか '+(warnings.length-8)+' 件');
+  return '手入力した寸法はそのまま保持しています。\n形状条件上、次の辺は記録寸法へ合わせられませんでした。\n\n'+lines.join('\n');
 }
 function labelPaint(shape){
   try{
@@ -394,6 +491,6 @@ if(typeof renderPreview==='function'){
 window.addEventListener('blur',closeEditor);window.addEventListener('pagehide',closeEditor);
 document.addEventListener('visibilitychange',()=>{if(document.hidden)closeEditor();});
 
-root.SentlogShapeDimensions={version:'v1.75',...pure,calibrated,representativeText,isEditing:()=>!!editor,openEdgeEditor};
+root.SentlogShapeDimensions={version:'v1.76',...pure,calibrated,representativeText,measuredEdgeM,reconcileManualDimensions,reconcileWarningMessage,isEditing:()=>!!editor,openEdgeEditor};
 if(typeof currentView!=='undefined'&&currentView==='editor')render();
 })(typeof window==='object'?window:globalThis);
