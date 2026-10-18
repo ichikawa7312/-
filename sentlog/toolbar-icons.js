@@ -83,9 +83,21 @@
   }
   function layout(){
     const width=bar.getBoundingClientRect().width;if(!width)return;
-    const ctx=document.createElement('canvas').getContext('2d');let required=32;
-    for(const {b,d} of items){ctx.font=getComputedStyle(b.querySelector('.sl-tool-label')).font;const w=Math.max(44,Math.ceil(ctx.measureText(d[1]).width)+50);b.style.setProperty('--sl-named-width',w+'px');required+=w;}
-    const css=getComputedStyle(bar),available=width-parseFloat(css.paddingLeft)-parseFloat(css.paddingRight);
+    const ctx=document.createElement('canvas').getContext('2d'),named=new Map();
+    for(const {b,d} of items){ctx.font=getComputedStyle(b.querySelector('.sl-tool-label')).font;const w=Math.max(44,Math.ceil(ctx.measureText(d[1]).width)+50);b.style.setProperty('--sl-named-width',w+'px');named.set(b,w);}
+    // Other modules can append compact toolbar controls (for example the record button).
+    // Count those controls and the real group gaps too, otherwise a desktop centre pane
+    // can wrap only Undo/Redo onto a second row even though icon mode would fit in one.
+    const groups=[...bar.querySelectorAll(':scope > .sl-tool-group')];
+    let required=0;
+    for(const group of groups){
+      const buttons=[...group.querySelectorAll(':scope > .sl-tool-button')],gcss=getComputedStyle(group);
+      const gap=parseFloat(gcss.columnGap||gcss.gap)||0;
+      required+=buttons.reduce((sum,b)=>sum+(named.get(b)||44),0)+Math.max(0,buttons.length-1)*gap;
+    }
+    const css=getComputedStyle(bar),barGap=parseFloat(css.columnGap||css.gap)||0;
+    required+=Math.max(0,groups.length-1)*barGap;
+    const available=width-parseFloat(css.paddingLeft)-parseFloat(css.paddingRight);
     bar.classList.toggle('sl-icons-only',required>available);hide();
   }
   function hide(){clearTimeout(hideTimer);clearTimeout(hoverTimer);tip.hidden=true;tipOwner=null;tipKind='';}
