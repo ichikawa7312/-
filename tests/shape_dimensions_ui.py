@@ -64,9 +64,17 @@ try:
    page.evaluate("state.shapes.find(s=>s.id==='rect1').labelPos.y+=40;render()")
    after=page.locator('[data-shape-summary-id="rect1"]').get_attribute('y')
    assert abs(float(after)-float(before)-40)<.2,(before,after)
-   # Uncalibrated pages show no fabricated real dimensions, while crack width remains.
-   page.evaluate("state.pageSettings['1'].scaleDenom=null;render()")
+   # Uncalibrated pages never fabricate measured values. Empty dimension entry
+   # placeholders appear only on the selected damage so the drawing stays clean.
+   page.evaluate("state.pageSettings['1'].scaleDenom=null;selected=null;render()")
    assert page.locator('[data-shape-dimension-id]').count()==0
+   page.evaluate("selectShape('rect1')")
+   assert page.locator('[data-shape-dimension-id="rect1"]').count()==2
+   assert page.locator('[data-shape-dimension-id="poly1"]').count()==0
+   assert set(page.locator('[data-shape-dimension-id="rect1"]').evaluate_all("els=>els.map(x=>x.textContent)"))=={'寸法'}
+   page.evaluate("selectShape('poly1')")
+   assert page.locator('[data-shape-dimension-id="rect1"]').count()==0
+   assert page.locator('[data-shape-dimension-id="poly1"]').count()==4
    assert page.locator('[data-shape-summary-id]').count()==0
    assert page.locator('[data-crack-width-id="crack1"]').text_content()=='W=0.2'
    # Rectangle drawing preview gets the same two parallel side values after calibration.
@@ -75,7 +83,7 @@ try:
    assert page.evaluate('JSON.stringify(state.shapes)')!=baseline or True
    (ROOT/'test-results').mkdir(exist_ok=True);page.screenshot(path=str(ROOT/f'test-results/shape-dimensions-{width}.png'),full_page=True)
    assert not errors,errors;assert not unexpected,unexpected
-   print(f'PASS {width}px: rect 2 parallel sides, polygon all ordered edges, label summaries, crack W preserved, no-scale hide, rect preview')
+   print(f'PASS {width}px: rect 2 parallel sides, polygon all ordered edges, label summaries, crack W preserved, no-scale editable placeholders, rect preview')
    ctx.close()
   browser.close()
 finally:

@@ -54,6 +54,7 @@ jobs:
           python3 scripts/build_group_sync_migration.py
           python3 scripts/build_dimension_lines.py
           python3 scripts/build_shape_dimensions.py
+          python3 scripts/build_editable_shape_dimensions.py
           node tests/image_recovery_view.test.cjs
           node --check sentlog/original-photo-store.js
           node --check sentlog/crack-width.js
@@ -73,6 +74,7 @@ jobs:
           node tests/group_sync_migration.test.cjs
           node tests/dimension_lines.test.cjs
           node tests/shape_dimensions.test.cjs
+          node tests/editable_shape_dimensions.test.cjs
           node tests/core.test.cjs
           node tests/pc.test.cjs
           node tests/integration.test.cjs
