@@ -56,6 +56,9 @@ jobs:
           python3 scripts/build_shape_dimensions.py
           python3 scripts/build_editable_shape_dimensions.py
           python3 scripts/build_manual_dimension_priority.py
+          python3 scripts/build_drawing_memos.py
+          node --check sentlog/drawing-memos.js
+          node tests/drawing_memos.test.cjs
           node tests/image_recovery_view.test.cjs
           node --check sentlog/original-photo-store.js
           node --check sentlog/crack-width.js
