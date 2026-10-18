@@ -377,7 +377,13 @@ async function exportPdf(includeMemos){
     return pdf;
   }finally{if(url)URL.revokeObjectURL(url);if(out){out.width=1;out.height=1;}if(exportScope===pageScope()){chosen=previous.chosen;selected=previous.selected;tool=previous.tool;}visible=previous.visible;exporting=false;render();}
 }
-root.SentlogDrawingMemos={version:'v1.77',...pure,setMode,activate,commitChange,dimensionText,reconcileManualDimensions,exportPdf,
+function captureForExport(includeMemos,callback){
+  if(gesture||panel||exporting)throw Error('メモの編集を確定してから出力してください。');
+  const previous={chosen,selected,tool,visible};
+  try{chosen=null;selected=null;tool='pan';visible=includeMemos;render();return callback();}
+  finally{chosen=previous.chosen;selected=previous.selected;tool=previous.tool;visible=previous.visible;render();}
+}
+root.SentlogDrawingMemos={version:'v1.77',...pure,setMode,activate,commitChange,dimensionText,reconcileManualDimensions,exportPdf,captureForExport,
   isEditing:()=>!!gesture||!!panel||exporting,
   get mode(){return mode;},get visible(){return visible;},get selectedId(){return chosen;},
   get toolLabel(){return 'メモ：'+(names[tool.replace('memo-','')]||'選択・移動');}};
