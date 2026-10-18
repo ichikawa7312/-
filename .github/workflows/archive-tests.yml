@@ -52,6 +52,7 @@ jobs:
           python scripts/build_drawing_groups.py
           python scripts/build_group_sync_migration.py
           python scripts/build_dimension_lines.py
+          python scripts/build_shape_dimensions.py
       - run: |
           node --check sentlog/archive.js
           node --check sentlog/archive-core.js
@@ -80,6 +81,7 @@ jobs:
           node --check sentlog/editor-drawing-add.js
           node --check sentlog/drawing-groups.js
           node --check sentlog/dimension-lines.js
+          node --check sentlog/shape-dimensions.js
           node tests/image_recovery_view.test.cjs
           node tests/large_image_view.test.cjs
           node tests/original_photo_store.test.cjs
@@ -90,6 +92,7 @@ jobs:
           node tests/drawing_groups.test.cjs
           node tests/group_sync_migration.test.cjs
           node tests/dimension_lines.test.cjs
+          node tests/shape_dimensions.test.cjs
           node tests/core.test.cjs
           node tests/pc.test.cjs
           node tests/integration.test.cjs
@@ -145,6 +148,7 @@ jobs:
           python tests/single_number_ui.py
           python tests/optional_symbol_ui.py
           python tests/dimension_lines_ui.py
+          python tests/shape_dimensions_ui.py
       - uses: actions/upload-artifact@v4
         if: always()
         with:
