@@ -172,7 +172,10 @@ function edgeLengthText(shape,a,b,index){
     return {text:Number.isFinite(mm)?formatLengthMm(mm):'',placeholder:false};
   }
   const manual=manualEdgeM(shape,index);
-  return {text:manual==null?'寸法':formatLengthM(manual),placeholder:manual==null};
+  if(manual!=null)return {text:formatLengthM(manual),placeholder:false};
+  // Keep normal drawings clean: an unrecorded placeholder appears only while
+  // that damage shape is selected. Recorded values remain visible all the time.
+  return {text:shape?.id===selected?'寸法':'',placeholder:true};
 }
 function hitRectForLabel(place,text){
   const width=Math.max(58,String(text||'寸法').length*8+18)/z(),height=36/z();
