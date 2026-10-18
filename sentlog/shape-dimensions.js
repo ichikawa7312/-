@@ -87,6 +87,11 @@ function polygonSimple(points,crossFn){
   }
   return true;
 }
+function octilinearDirection(a,b){
+  a=normPoint(a);b=normPoint(b);
+  const dx=b.x-a.x,dy=b.y-a.y;if(Math.hypot(dx,dy)<1e-9)return null;
+  return ((Math.round(Math.atan2(dy,dx)/(Math.PI/4))%8)+8)%8;
+}
 function resizePolygonEdge(points,index,factor,bounds=null,alignedFn=null,crossFn=null){
   const pts=(Array.isArray(points)?points:[]).map(normPoint),n=pts.length;
   index=Number(index);
@@ -95,9 +100,12 @@ function resizePolygonEdge(points,index,factor,bounds=null,alignedFn=null,crossF
   const dx=(b.x-a.x)*(factor-1),dy=(b.y-a.y)*(factor-1);
   const targetLen=Math.hypot((b.x+dx)-a.x,(b.y+dy)-a.y);
   if(targetLen<1e-6)return {error:'invalid'};
-  const originallyAligned=typeof alignedFn==='function'&&orderedEdges(pts,true).every(e=>alignedFn(e.a,e.b));
+  const originalEdges=orderedEdges(pts,true);
+  const originallyAligned=typeof alignedFn==='function'&&originalEdges.every(e=>alignedFn(e.a,e.b));
+  const originalDirections=originallyAligned?originalEdges.map(e=>octilinearDirection(e.a,e.b)):null;
   const inside=c=>!bounds||c.every(p=>p.x>=-1e-7&&p.y>=-1e-7&&p.x<=Number(bounds.width)+1e-7&&p.y<=Number(bounds.height)+1e-7);
-  const valid=c=>inside(c)&&polygonSimple(c,crossFn)&&(!originallyAligned||orderedEdges(c,true).every(e=>alignedFn(e.a,e.b)));
+  const directionsPreserved=c=>!originalDirections||orderedEdges(c,true).every((e,i)=>alignedFn(e.a,e.b)&&octilinearDirection(e.a,e.b)===originalDirections[i]);
+  const valid=c=>inside(c)&&polygonSimple(c,crossFn)&&directionsPreserved(c);
   const candidates=[];
   // Move a forward chain beginning at the edge end. Internal shifted edges retain direction.
   for(let count=1;count<n;count++){
@@ -115,7 +123,7 @@ function resizePolygonEdge(points,index,factor,bounds=null,alignedFn=null,crossF
   candidates.sort((x,y)=>x.moved-y.moved||(x.direction==='forward'?-1:1));
   return candidates[0];
 }
-const pure={normPoint,rectCorners,orderedEdges,averagePoint,edgeLabelPlacement,formatLengthMm,formatLengthM,formatAreaMm2,representativeFromMeasurements,manualEdgeM,rectResizeGeometry,polygonSimple,resizePolygonEdge};
+const pure={normPoint,rectCorners,orderedEdges,averagePoint,edgeLabelPlacement,formatLengthMm,formatLengthM,formatAreaMm2,representativeFromMeasurements,manualEdgeM,rectResizeGeometry,polygonSimple,octilinearDirection,resizePolygonEdge};
 if(typeof module!=='undefined'&&module.exports){module.exports=pure;return;}
 if(!root.document||root.SentlogShapeDimensions)return;
 if(typeof render!=='function'||typeof lineLengthMm!=='function'||typeof polygonAreaMm2!=='function')
