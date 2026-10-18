@@ -1,4 +1,4 @@
-/* Sentlog v1.51: presentation-only toolbar. The original seven buttons and
+/* Sentlog v1.51: presentation-only toolbar. The original drawing/history buttons and
    onclick handlers remain the only drawing/undo commands. No record writes. */
 (function () {
   'use strict';
@@ -10,6 +10,7 @@
     ['freehand-area','手描き範囲','フリーハンド範囲','指やペンで囲んだ範囲を記録します。','M4 7C6 2 11 5 15 4S22 8 19 12S21 20 15 20S9 17 6 20S1 13 4 7Z',true],
     ['rect','四角','四角形','対角の２点を指定して四角い範囲を描きます。','M4 5H20V19H4Z',true],
     ['line','直線','直線','始点から終点まで、まっすぐな線を描きます。','M4 20L20 4',false],
+    ['dimension','寸法','寸法線','任意の2点間に位置出し用の寸法線を入れます。縮尺設定時は実寸を自動表示します。','M4 5V19M20 5V19M4 12H20M7 9L4 12L7 15M17 9L20 12L17 15',false],
     ['undoBtn','戻す','戻す','直前の編集を取り消します。','M9 4L4 9L9 14M4 9H14C22 9 22 20 14 20',false],
     ['redoBtn','やり直す','やり直す','取り消した編集をやり直します。','M15 4L20 9L15 14M20 9H10C2 9 2 20 10 20',false]
   ];
@@ -29,8 +30,8 @@
     icon.append(svg('path',{d:d[4],fill:'none',stroke:'currentColor','stroke-width':'1.8','stroke-linecap':'round','stroke-linejoin':'round'}));
     if(d[0]==='polygon')for(const [cx,cy] of [[4,4],[14,4],[20,10],[20,20],[4,20]])icon.append(svg('circle',{cx,cy,r:'1.4',fill:'currentColor'}));
     const label=make('span',d[1]);label.className='sl-tool-label';label.setAttribute('aria-hidden','true');b.replaceChildren(icon,label);
-    const desc=make('span',d[3]+(i<5?' 同じボタンをもう一度押すと選択・図面移動に戻ります。':''));desc.id='sl-tool-desc-'+i;
-    descriptions.append(desc);b.setAttribute('aria-describedby',desc.id);(i<5?draw:history).append(b);
+    const desc=make('span',d[3]+(i<6?' 同じボタンをもう一度押すと選択・図面移動に戻ります。':''));desc.id='sl-tool-desc-'+i;
+    descriptions.append(desc);b.setAttribute('aria-describedby',desc.id);(i<6?draw:history).append(b);
   }
   bar.prepend(draw,history);bar.append(descriptions);
   const mode=make('span'),status=make('span');status.id='sentlogToolStatus';mode.id='sentlogToolMode';status.append(mode);
@@ -82,9 +83,21 @@
   }
   function layout(){
     const width=bar.getBoundingClientRect().width;if(!width)return;
-    const ctx=document.createElement('canvas').getContext('2d');let required=32;
-    for(const {b,d} of items){ctx.font=getComputedStyle(b.querySelector('.sl-tool-label')).font;const w=Math.max(44,Math.ceil(ctx.measureText(d[1]).width)+50);b.style.setProperty('--sl-named-width',w+'px');required+=w;}
-    const css=getComputedStyle(bar),available=width-parseFloat(css.paddingLeft)-parseFloat(css.paddingRight);
+    const ctx=document.createElement('canvas').getContext('2d'),named=new Map();
+    for(const {b,d} of items){ctx.font=getComputedStyle(b.querySelector('.sl-tool-label')).font;const w=Math.max(44,Math.ceil(ctx.measureText(d[1]).width)+50);b.style.setProperty('--sl-named-width',w+'px');named.set(b,w);}
+    // Other modules can append compact toolbar controls (for example the record button).
+    // Count those controls and the real group gaps too, otherwise a desktop centre pane
+    // can wrap only Undo/Redo onto a second row even though icon mode would fit in one.
+    const groups=[...bar.querySelectorAll(':scope > .sl-tool-group')];
+    let required=0;
+    for(const group of groups){
+      const buttons=[...group.querySelectorAll(':scope > .sl-tool-button')],gcss=getComputedStyle(group);
+      const gap=parseFloat(gcss.columnGap||gcss.gap)||0;
+      required+=buttons.reduce((sum,b)=>sum+(named.get(b)||44),0)+Math.max(0,buttons.length-1)*gap;
+    }
+    const css=getComputedStyle(bar),barGap=parseFloat(css.columnGap||css.gap)||0;
+    required+=Math.max(0,groups.length-1)*barGap;
+    const available=width-parseFloat(css.paddingLeft)-parseFloat(css.paddingRight);
     bar.classList.toggle('sl-icons-only',required>available);hide();
   }
   function hide(){clearTimeout(hideTimer);clearTimeout(hoverTimer);tip.hidden=true;tipOwner=null;tipKind='';}

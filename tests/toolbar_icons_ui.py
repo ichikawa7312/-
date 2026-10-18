@@ -24,7 +24,7 @@ seed="""async()=>{
  await putDBFile('background:icon-d',image);await putDBFile('photo:icon-d:photo1',image);
  await window.SentlogRecords.settled();window.SentlogToolbarIcons.layout();
 }"""
-selectors=['[data-tool="polygon"]','[data-tool="freehand-line"]','[data-tool="freehand-area"]','[data-tool="rect"]','[data-tool="line"]','#undoBtn','#redoBtn']
+selectors=['[data-tool="polygon"]','[data-tool="freehand-line"]','[data-tool="freehand-area"]','[data-tool="rect"]','[data-tool="line"]','[data-tool="dimension"]','#undoBtn','#redoBtn']
 def center(page,sel):
  b=page.locator(sel).bounding_box();return b['x']+b['width']/2,b['y']+b['height']/2
 def touch(cdp,kind,points):
@@ -66,9 +66,10 @@ try:
    assert page.evaluate('document.documentElement.scrollWidth<=innerWidth+1')
    rows=len({round(r['y']) for r in bounds});assert rows==(2 if width==320 else 1),(width,rows,bounds)
    icon_only='sl-icons-only' in page.locator('#sentlogDrawingToolbar').get_attribute('class')
-   assert icon_only==(width<=390),(width,icon_only)
+   # 1280px desktop has two side panels, so its centre drawing pane is narrower than the 820px tablet viewport.
+   assert icon_only==(width<=390 or width==1280),(width,icon_only)
    # Selecting then re-tapping each drawing tool changes only transient tool state.
-   for sel in selectors[:5]:
+   for sel in selectors[:6]:
     page.locator(sel).tap() if touchscreen else page.locator(sel).click()
     assert page.locator(sel).get_attribute('aria-pressed')=='true'
     assert page.evaluate('tool')==page.locator(sel).get_attribute('data-tool')
