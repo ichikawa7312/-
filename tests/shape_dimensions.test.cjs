@@ -26,7 +26,7 @@ assert.equal(d.representativeFromMeasurements('freehand-area',{areaMm2:125000}),
 assert.equal(d.representativeFromMeasurements('line',{lengthMm:1350}),'L=1.350 m');
 
 const source=fs.readFileSync(path.join(root,'sentlog/shape-dimensions.js'),'utf8');
-for(const marker of ["s.kind==='rect'","s.kind==='polygon'","SentlogCrackWidth?.isConcreteCrack","data.shapeSummaryId","sentlog-shape-edge-dimension"])
+for(const marker of ["s.kind==='rect'","s.kind==='polygon'","SentlogCrackWidth?.isConcreteCrack","dataset.shapeSummaryId","sentlog-shape-edge-dimension"])
  assert.ok(source.includes(marker),marker);
 const index=fs.readFileSync(path.join(root,'sentlog/index.html'),'utf8');
 assert.match(index,/shape-dimensions\.js\?v=174/);assert.match(index,/SentlogShapeDimensions/);assert.match(index,/phone-runtime\.js\?v=174/);
