@@ -43,8 +43,8 @@ assert.match(syncView,/groupFingerprintSchema:2/);
 const cloud=fs.readFileSync(path.join(root,'sentlog/cloud-sync.js'),'utf8');
 assert.match(cloud,/SYNC_FINGERPRINT_SCHEMA=2/);
 assert.match(cloud,/fingerprint_schema:SYNC_FINGERPRINT_SCHEMA/);
-assert.match(cloud,/Number\(meta\?\.fingerprint_schema\|\|0\)<SYNC_FINGERPRINT_SCHEMA/,
-  'old fingerprints must force one reconciliation pass');
+assert.match(cloud,/!!meta\?\.fingerprint && Number\(meta\?\.fingerprint_schema\|\|0\)<SYNC_FINGERPRINT_SCHEMA/,
+  'old stored fingerprints must force one reconciliation pass');
 
 const index=fs.readFileSync(path.join(root,'sentlog/index.html'),'utf8');
 assert.match(index,/drawing-groups\.js\?v=172/);
