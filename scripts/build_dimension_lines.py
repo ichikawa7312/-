@@ -35,8 +35,8 @@ change(p,
 
 p='sentlog/sync-view.js'
 change(p,
-       "window.SentlogShapeMove?.isEditing?.() || window.SentlogPolygonDimensions?.isEditing?.())return true;",
-       "window.SentlogShapeMove?.isEditing?.() || window.SentlogPolygonDimensions?.isEditing?.() || window.SentlogDimensionLines?.isEditing?.())return true;")
+       "window.SentlogPolygonDimensions?.isEditing?.()",
+       "window.SentlogPolygonDimensions?.isEditing?.() || window.SentlogDimensionLines?.isEditing?.()")
 
 for name,count in {
     'full_management.py':1,'full_archive_click.py':1,'capacity_ui.py':1,
