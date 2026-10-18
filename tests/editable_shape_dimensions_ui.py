@@ -68,7 +68,9 @@ try:
   page.evaluate(seed);page.wait_for_timeout(100)
 
   rect0=shape(page,'rect1');poly0=shape(page,'poly1')
-  assert page.locator('[data-shape-dimension-id]').count()==0
+  assert page.locator('[data-shape-dimension-id="polyBad"]').count()==1
+  assert edge_text(page,'polyBad',0)=='2.000 m'
+  assert page.locator('[data-shape-dimension-id]').count()==1
   page.evaluate("selectShape('rect1')")
   assert edge_text(page,'rect1',0)=='寸法'
   assert edge_text(page,'rect1',1)=='寸法'
