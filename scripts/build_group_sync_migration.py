@@ -37,6 +37,9 @@ change(p,
 change(p,
        "if(!lp || remoteRev>Number(meta?.revision||0) || !meta){",
        "if(!lp || remoteRev>Number(meta?.revision||0) || !meta || (!!meta?.fingerprint && Number(meta?.fingerprint_schema||0)<SYNC_FINGERPRINT_SCHEMA)){")
+change(p,
+       "const localChanged=lp && meta && (meta.restored_backup || (meta.fingerprint?localFingerprint!==meta.fingerprint:Number(lp.updatedAt||0)!==Number(meta.local_updated_at||0)));",
+       "const currentFingerprint=Number(meta?.fingerprint_schema||0)>=SYNC_FINGERPRINT_SCHEMA;\\n      const localChanged=lp && meta && (meta.restored_backup || (meta.fingerprint&&currentFingerprint?localFingerprint!==meta.fingerprint:Number(lp.updatedAt||0)!==Number(meta.local_updated_at||0)));")
 
 # Fresh URLs/cache markers make sure iPhone Home Screen Safari does not keep the
 # pre-fix synchronizer after the app shell itself has updated.
