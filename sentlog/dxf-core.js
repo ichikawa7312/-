@@ -52,25 +52,38 @@ function makeFrame(bounds){
 }
 function appendPrimitives(bytes,primitives,frame){
  const d=scan(bytes),changes=[],added=[];const k=frame.unitsPerPixel;
+ if(!primitives.length)return {bytes:new Uint8Array(bytes),layers:{},count:0};
  if(!(k>0)||!Number.isFinite(frame.xMin)||!Number.isFinite(frame.yMax))throw Error('図面の座標設定を確認できません。');
  const P=p=>{if(!Number.isFinite(p.x)||!Number.isFinite(p.y))throw Error('記録の座標が正しくありません。');return {x:frame.xMin+p.x*k,y:frame.yMax-p.y*k};};
  let next=d.tags.filter(t=>t.code===5||t.code===105).reduce((n,t)=>Math.max(n,parseInt(t.value,16)||0),0)+1;
  const handle=()=>(next++).toString(16).toUpperCase(),model=d.records.find(r=>r.type==='BLOCK_RECORD'&&val(r,2)==='*Model_Space');
  if(!model)throw Error('モデル空間の情報がありません。AutoCADでDXFを保存し直してください。');
- const names=new Set(d.records.filter(r=>r.type==='LAYER').map(r=>val(r,2)));let prefix='SENTLOG',i=1;while([...names].some(n=>n.startsWith(prefix+'_')))prefix='SENTLOG'+(++i);
- const layers={damage:prefix+'_DAMAGE',label:prefix+'_LABEL',memo:prefix+'_MEMO',dimension:prefix+'_DIMENSION',record:prefix+'_RECORD'};
+ const legacy=Number(d.version.slice(2))<1021,decoder=new TextDecoder(encoding(d),{fatal:true});
+ const symbol=s=>legacy?String(s).replace(/[^\x20-\x7e]/g,c=>'\\U+'+c.charCodeAt(0).toString(16).toUpperCase().padStart(4,'0')):String(s);
+ const readName=s=>decoder.decode(Uint8Array.from(s||'',c=>c.charCodeAt(0))).replace(/\\U\+([0-9a-f]{4})/gi,(_,h)=>String.fromCharCode(parseInt(h,16)));
+ const key=s=>String(s).normalize('NFC').toUpperCase(),used=new Map(),layers=Object.create(null);
+ // Every table has its own namespace. Compare decoded names so a CP932 name,
+ // its Unicode escape spelling, and mixed-case ASCII cannot collide.
+ function allocate(table,requested){
+  if(!used.has(table))used.set(table,new Set(d.records.filter(r=>r.type===table).map(r=>key(readName(val(r,2))))));
+  const names=used.get(table),clean=String(requested).normalize('NFC').replace(/[<>\/\\":;?*|=,`\x00-\x1f\x7f]/g,'_').trim()||'記録';
+  let base='';for(const c of clean){if(new TextEncoder().encode(symbol(base+c)).length>210)break;base+=c;}base=base||'記録';
+  let name=base,i=1;while(names.has(key(name)))name=base+'_'+(++i);names.add(key(name));return name;
+ }
+ const fallback={damage:'変状_図形',label:'変状_名称',memo:'メモ_図形',dimension:'寸法_線',record:'記録_図形'};
+ const requested=p=>String(p.layerName||fallback[p.layer]||fallback.record).normalize('NFC');
  const pair=(c,v)=>`${c}\r\n${typeof v==='number'?Number(v.toPrecision(15)):v}\r\n`,groups=arr=>arr.map(([c,v])=>pair(c,v)).join('');
  function resource(table,type,body){
   const header=d.records.find(r=>r.type==='TABLE'&&r.table===table),end=d.records.find(r=>r.type==='ENDTAB'&&r.table===table);if(!header||!end)throw Error('DXFの設定表が不足しています：'+table);
   const text=groups([[0,type],[5,handle()],[330,val(header,5)],[100,'AcDbSymbolTableRecord'],...body]);let change=changes.find(c=>c.table===table);
   if(!change){change={table,start:end.start,end:end.start,text:'',count:0,header};changes.push(change);}change.text+=text;change.count++;
  }
- for(const [kind,name] of Object.entries(layers))resource('LAYER','LAYER',[[100,'AcDbLayerTableRecord'],[2,name],[70,0],[62,kind==='damage'?1:kind==='dimension'?3:5],[6,'Continuous']]);
- const style=prefix+'_TEXT';resource('STYLE','STYLE',[[100,'AcDbTextStyleTableRecord'],[2,style],[70,0],[40,0],[41,1],[50,0],[71,0],[42,1],[3,'msgothic.ttc'],[4,'']]);
+ for(const p of primitives){const name=requested(p);if(Object.hasOwn(layers,name))continue;layers[name]=allocate('LAYER',name);resource('LAYER','LAYER',[[100,'AcDbLayerTableRecord'],[2,symbol(layers[name])],[70,0],[62,p.layer==='damage'?1:p.layer==='dimension'?3:5],[6,'Continuous']]);}
+ const style=symbol(allocate('STYLE','記録文字'));resource('STYLE','STYLE',[[100,'AcDbTextStyleTableRecord'],[2,style],[70,0],[40,0],[41,1],[50,0],[71,0],[42,1],[3,'msgothic.ttc'],[4,'']]);
  const dashNames=new Map();
- function dashName(dash){const key=dash.join(',');if(dashNames.has(key))return dashNames.get(key);const name=prefix+'_DASH'+dashNames.size;dashNames.set(key,name);const values=dash.length%2?[...dash,...dash]:dash;resource('LTYPE','LTYPE',[[100,'AcDbLinetypeTableRecord'],[2,name],[70,0],[3,'Sentlog'],[72,65],[73,values.length],[40,values.reduce((a,b)=>a+b,0)*k],...values.flatMap((n,i)=>[[49,n*k*(i%2?-1:1)],[74,0]])]);return name;}
+ function dashName(dash){const key=dash.join(',');if(dashNames.has(key))return dashNames.get(key);const name=symbol(allocate('LTYPE','記録破線_'+(dashNames.size+1)));dashNames.set(key,name);const values=dash.length%2?[...dash,...dash]:dash;resource('LTYPE','LTYPE',[[100,'AcDbLinetypeTableRecord'],[2,name],[70,0],[3,'Annotation dash'],[72,65],[73,values.length],[40,values.reduce((a,b)=>a+b,0)*k],...values.flatMap((n,i)=>[[49,n*k*(i%2?-1:1)],[74,0]])]);return name;}
  function aci(rgb){const colors=[0xff0000,0xffff00,0x00ff00,0x00ffff,0x0000ff,0xff00ff,0,0x808080,0xc0c0c0];let best=0,dist=Infinity;colors.forEach((c,i)=>{const d=[16,8,0].reduce((n,b)=>n+(((c>>b)&255)-((rgb>>b)&255))**2,0);if(d<dist){best=i;dist=d;}});return rgb===0xffffff?255:best+1;}
- function entity(type,subclass,p,body){added.push(groups([[0,type],[5,handle()],[330,val(model,5)],[100,'AcDbEntity'],[8,layers[p.layer]||layers.record],[62,aci(p.color??0)],[420,p.color??0],...(p.opacity<.999?[[440,0x02000000|Math.round((1-p.opacity)*255)]]:[]),...(p.dash?.length?[[6,dashName(p.dash)]]:[]),[100,subclass],...body]));}
+ function entity(type,subclass,p,body){added.push(groups([[0,type],[5,handle()],[330,val(model,5)],[100,'AcDbEntity'],[8,symbol(layers[requested(p)])],[62,aci(p.color??0)],[420,p.color??0],...(p.opacity<.999?[[440,0x02000000|Math.round((1-p.opacity)*255)]]:[]),...(p.dash?.length?[[6,dashName(p.dash)]]:[]),[100,subclass],...body]));}
  function poly(p){entity('LWPOLYLINE','AcDbPolyline',p,[[90,p.points.length],[70,p.closed?1:0],...(p.width>0?[[43,p.width*k]]:[]),...p.points.flatMap(q=>{const r=P(q);return [[10,r.x],[20,r.y]];})]);}
  function hatch(p){
   if(p.points.length<3)return;const pts=p.points.map(P),pattern=p.pattern||'solid',angles=pattern==='cross'?[45,135]:pattern==='vertical'?[90]:pattern==='horizontal'?[0]:pattern==='fall'?[135]:[45];
@@ -78,7 +91,7 @@ function appendPrimitives(bytes,primitives,frame){
   if(pattern==='sparse')angles.splice(0,angles.length,0,90);if(pattern==='dots')angles.splice(0,angles.length,0);
   let lines=angles.flatMap(a=>{const r=a*Math.PI/180;return [[53,a],[43,0],[44,0],[45,-Math.sin(r)*space],[46,Math.cos(r)*space],[79,pattern==='dots'?2:0],...(pattern==='dots'?[[49,0],[49,-space]]:[])];});
   if(pattern==='sparse')lines=[[53,0],[43,7*k],[44,-9*k],[45,0],[46,space],[79,2],[49,4*k],[49,-14*k],[53,90],[43,9*k],[44,-11*k],[45,space],[46,0],[79,2],[49,4*k],[49,-14*k]];
-  entity('HATCH','AcDbHatch',p,[[10,0],[20,0],[30,0],[210,0],[220,0],[230,1],[2,solid?'SOLID':'SENTLOG'],[70,solid?1:0],[71,0],[91,1],[92,2],[72,0],[73,1],[93,pts.length],...pts.flatMap(q=>[[10,q.x],[20,q.y]]),[97,0],[75,0],[76,1],...(!solid?[[52,0],[41,1],[77,0],[78,angles.length],...lines]:[]),[98,0]]);
+  entity('HATCH','AcDbHatch',p,[[10,0],[20,0],[30,0],[210,0],[220,0],[230,1],[2,solid?'SOLID':'CUSTOM'],[70,solid?1:0],[71,0],[91,1],[92,2],[72,0],[73,1],[93,pts.length],...pts.flatMap(q=>[[10,q.x],[20,q.y]]),[97,0],[75,0],[76,1],...(!solid?[[52,0],[41,1],[77,0],[78,angles.length],...lines]:[]),[98,0]]);
  }
  for(const p of primitives){
   if(p.type==='polyline')poly(p);

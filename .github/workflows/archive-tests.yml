@@ -58,6 +58,7 @@ jobs:
           python scripts/build_drawing_memos.py
           python -m pip install fonttools==4.61.1
           python scripts/build_dxf.py
+          python scripts/build_dxf_layers.py
           node --check sentlog/dxf.js
           node --check sentlog/dxf-core.js
           node tests/dxf.test.cjs

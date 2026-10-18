@@ -42,16 +42,28 @@ try:
   assert hatch_pixels>100,('hatch not drawn',hatch_pixels)
   page.evaluate("""()=>{const f=state.dxf.frame,P=(x,y)=>({x:(x-f.xMin)/f.unitsPerPixel,y:(f.yMax-y)/f.unitsPerPixel});
    addShape({kind:'polygon',points:[P(3200,2800),P(4600,2800),P(4600,3400),P(3200,3400)]});
+   state.shapes[0].labelPos=P(4600,4000);
    const defs=[['line',[P(500,4500),P(2000,4500)]],['freehand',[P(500,4000),P(800,4200),P(1200,4100)]],['rect',[P(5700,4200),P(6800,3200)]],['ellipse',[P(8000,4400),P(9300,3100)]],['text',[P(1000,3000)]],['dimension',[P(600,1000),P(2600,1000)]]];
    for(const [type,points] of defs)SentlogDrawingMemos.commitChange({id:'dxf-'+type,page:1,kind:type==='dimension'?'dimension':'memo',recordKind:type==='dimension'?'dimension-line':'drawing-memo',memoType:type,points,color:'#1d4ed8',unit:1,strokeWidth:1.5,text:type==='text'?'漏水確認\\n日本語メモ':'',fontSize:14,photos:[],manualText:type==='dimension'?'2.000 m':'',arrow:type==='line',dashed:type==='line'});
-   clearSelection();persist();render();
+   // Distinct damage types, dimensional labels, and field records must own
+   // their exported geometry, including line leaders and filled hatch areas.
+   const leak={id:'leak-test',page:1,kind:'rect',type:'漏水',x:P(7000,2200).x,y:P(7000,2200).y,w:180,h:70,strokeWidth:1.2,photos:[],globalNo:2,typeNo:1};
+   const crack={id:'crack-test',page:1,kind:'line',type:'ひび割れ',points:[P(2000,5000),P(3000,4800)],crackWidthMm:0.3,strokeWidth:1.2,photos:[],globalNo:3,typeNo:1};
+   state.shapes.push(leak,crack,{id:'photo-test',page:1,kind:'field-record',recordKind:'field-record',recordType:'photo',type:'全景',point:P(2000,2000),angle:0,typeNo:1,photos:[]},{id:'survey-test',page:1,kind:'field-record',recordKind:'field-record',recordType:'survey',type:'調査',displayKind:'point',point:P(8000,800),typeNo:1,photos:[]});
+   rebuildNumberingState();clearSelection();persist();render();
   }""")
   saved=page.evaluate('JSON.stringify(state.shapes)')
+  page.evaluate('window.layerCapture=SentlogDxf.capturePrimitives()')
+  names=set(page.evaluate('layerCapture.map(p=>p.layerName)'))
+  required={'腐食_図形','腐食_ハッチング','腐食_名称','腐食_引出線','腐食_寸法','腐食_数量','ひび割れ_幅','漏水_図形','漏水_ハッチング','漏水_名称','漏水_寸法','メモ_線','メモ_矢印','メモ_フリーハンド','メモ_四角','メモ_丸','メモ_文字','メモ_文字背景','寸法_線','寸法_矢印','寸法_文字','全景写真_記号','全景写真_名称','調査_記号','調査_名称'}
+  assert required<=names,(required-names,names)
+  (OUT/'layer-capture.json').write_text(json.dumps(page.evaluate('layerCapture'),ensure_ascii=False))
+
   page.locator('#dxfExportBtn').click()
   with page.expect_download() as download:page.locator('.sl-dxf-card button',has_text='DXFを保存').click()
   download.value.save_as(OUT/'browser-records.dxf')
   assert page.evaluate('JSON.stringify(state.shapes)')==saved
-  text=(OUT/'browser-records.dxf').read_text();assert '漏水確認' in text and 'SENTLOG_MEMO' in text and 'SENTLOG_DIMENSION' in text
+  text=(OUT/'browser-records.dxf').read_text();assert '漏水確認' in text and 'メモ_線' in text and '寸法_文字' in text and 'SENTLOG' not in text
   ids=page.evaluate('({project:activeProjectId,drawing:activeDrawingId})')
   page.evaluate('showProjects()');page.evaluate('(x)=>openDrawing(x.project,x.drawing)',ids)
   page.wait_for_function("document.getElementById('stageWrap').dataset.dxf==='ready'",timeout=60000)
@@ -80,6 +92,14 @@ try:
   page.locator('#dxfExportBtn').click()
   with page.expect_download() as download:page.locator('.sl-dxf-card button',has_text='DXFを保存').click()
   download.value.save_as(OUT/'browser-roundtrip.dxf')
+  # Exporting a reopened output without edits is byte-identical.
+  assert (OUT/'browser-roundtrip.dxf').read_bytes()==(OUT/'browser-records.dxf').read_bytes()
+  # Adding more notes uses a fresh, clearly suffixed Japanese layer.
+  page.evaluate("SentlogDrawingMemos.commitChange({id:'again',page:1,kind:'memo',recordKind:'drawing-memo',memoType:'text',points:[{x:200,y:200}],text:'再追記',fontSize:20,unit:1,color:'#1d4ed8'});render()")
+  page.locator('#dxfExportBtn').click()
+  with page.expect_download() as download:page.locator('.sl-dxf-card button',has_text='DXFを保存').click()
+  download.value.save_as(OUT/'browser-collision.dxf')
+  assert 'メモ_文字_2' in (OUT/'browser-collision.dxf').read_text()
   # Old Japanese codepage file imports and exports without converting originals.
   cp=base64.b64decode((ROOT/'tests/fixtures/dxf-cp932.b64').read_bytes())
   page.locator('#drawingAddInput').set_input_files({'name':'japanese.dxf','mimeType':'application/dxf','buffer':cp})
