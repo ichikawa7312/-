@@ -42,8 +42,8 @@ change(p,
 # pre-fix synchronizer after the app shell itself has updated.
 p='sentlog/index.html'
 change(p,'drawing-groups.js?v=171','drawing-groups.js?v=172',2)
-change(p,'sync-view.js?v=130','sync-view.js?v=172',2)
-change(p,'cloud-sync.js?v=20261008-archive-133','cloud-sync.js?v=20261018-group-sync-172',2)
+change(p,'sync-view.js?v=158','sync-view.js?v=172',2)
+change(p,'cloud-sync.js?v=20261009-management-135','cloud-sync.js?v=20261018-group-sync-172',2)
 change(p,'phone-runtime.js?v=171','phone-runtime.js?v=172',2)
 change(p,"['phone-runtime.js?v=172','v1.71']","['phone-runtime.js?v=172','v1.72']")
 change('sentlog/phone-runtime.js','v1.71','v1.72',4)
@@ -61,6 +61,7 @@ for name,count in {
 }.items():
     change('tests/'+name,"window.SENTLOG_BUILD==='v1.71'","window.SENTLOG_BUILD==='v1.72'",count)
 change('tests/image_memory_ui.py',"window.SENTLOG_BUILD==='v1.71'","window.SENTLOG_BUILD==='v1.72'")
+change('tests/optional_symbol_ui.test.cjs','sync-view.js?v=158','sync-view.js?v=172')
 
 for name in ('capacity.test.cjs','resilience.test.cjs','toolbar_icons.test.cjs','label_colors.test.cjs','plain_numbers.test.cjs','single_number_ui.test.cjs','optional_symbol_ui.test.cjs'):
     change('tests/'+name,"'v1.71'","'v1.72'")
