@@ -86,6 +86,20 @@
     const db=await openDb();return new Promise((resolve,reject)=>{const q=db.transaction(META,'readonly').objectStore(META).getAll();q.onsuccess=()=>resolve(q.result||[]);q.onerror=()=>reject(q.error);});
   }
   async function stats(){const rows=await listMeta();return {bytes:rows.reduce((n,m)=>n+(Number(m.size)||0),0),count:rows.length,unexportedBytes:rows.filter(m=>!m.exportedAt).reduce((n,m)=>n+(Number(m.size)||0),0),unexportedCount:rows.filter(m=>!m.exportedAt).length,exportedCount:rows.filter(m=>!!m.exportedAt).length};}
+  async function drawingStats(drawingId){
+    const rows=(await listMeta()).filter(m=>m.drawingId===drawingId);
+    return {bytes:rows.reduce((n,m)=>n+(Number(m.size)||0),0),count:rows.length,
+      unexportedBytes:rows.filter(m=>!m.exportedAt).reduce((n,m)=>n+(Number(m.size)||0),0),
+      unexportedCount:rows.filter(m=>!m.exportedAt).length,exportedCount:rows.filter(m=>!!m.exportedAt).length};
+  }
+  async function renameDrawing(drawingId,drawingName){
+    const name=String(drawingName||'').trim();if(!drawingId||!name)return 0;
+    const db=await openDb(),tx=db.transaction(META,'readwrite'),done=txDone(tx),store=tx.objectStore(META);let changed=0;
+    await new Promise((resolve,reject)=>{
+      const q=store.openCursor();q.onsuccess=()=>{const c=q.result;if(!c){resolve();return;}const row=c.value;if(row?.drawingId===drawingId&&row.drawingName!==name){c.update({...row,drawingName:name});changed++;}c.continue();};q.onerror=()=>reject(q.error);
+    });
+    await done;return changed;
+  }
   async function markExported(keys,packageName){
     const db=await openDb(),tx=db.transaction(META,'readwrite'),done=txDone(tx),s=tx.objectStore(META),when=Date.now();
     for(const key of keys){const q=s.get(key);q.onsuccess=()=>{if(q.result)s.put({...q.result,exportedAt:when,packageName});};}
@@ -196,7 +210,7 @@
     if(typeof persist==='function')persist();if(status&&added)status.textContent=`${added}枚保存しました（原本はこの端末・共有は軽量版）`;setTimeout(()=>{if(status&&/保存しました/.test(status.textContent))status.textContent='';},1800);if(typeof selected!=='undefined'&&selected===targetId&&typeof renderSelectedPhotos==='function')renderSelectedPhotos();refreshUI();
   }
 
-  const api={...pure,saveOriginal,getOriginal,listMeta,stats,markExported,deleteExported,makeSharedPhoto,makeZip,refreshUI,exportNext};
+  const api={...pure,saveOriginal,getOriginal,listMeta,stats,drawingStats,renameDrawing,markExported,deleteExported,makeSharedPhoto,makeZip,refreshUI,exportNext};
   root.SentlogOriginalPhotos=api;
   try{if(typeof addPhotosToSelected==='function')addPhotosToSelected=registerPhotos;}catch(e){console.warn('Sentlog original photo hook',e);}
   setTimeout(installUI,0);
