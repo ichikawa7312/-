@@ -188,8 +188,7 @@ function syncManualFromScale(s){
   s.edgeDimensionsM=values;
 }
 function applyManualEdge(s,index,value){
-  const v=Number(value);if(!(v>=.001)&&v!==0)return '0.001m以上の寸法を入力してください。';
-  if(!(v>=.001))return '0.001m以上の寸法を入力してください。';
+  const v=Number(value);if(!(v>=.001)||v>10000)return '0.001m以上10000m以下の寸法を入力してください。';
   pushHistory(s.page||state.currentPage);
   s.edgeDimensionsM={...(s.edgeDimensionsM||{}),[String(index)]:Number(v.toFixed(3))};
   persist();render();return null;
@@ -236,7 +235,7 @@ function applyScaledEdge(s,index,value){
   return 'この変状では辺長変更できません。';
 }
 function openEdgeEditor(id,index,event=null){
-  const s=sourceShape(id);if(!s||!['rect','polygon'].includes(s.kind))return;
+  let s=sourceShape(id);if(!s||!['rect','polygon'].includes(s.kind))return;
   if(typeof selectShape==='function'&&selected!==id)selectShape(id);
   s=sourceShape(id);if(!s)return;
   closeEditor();
