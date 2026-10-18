@@ -13,6 +13,18 @@ def change(path,old,new,count=1):
         raise RuntimeError(f'Drawing-list build mismatch: {path}: {old[:100]!r}; expected {count}, found {actual}')
     pending[path]=source.replace(old,new)
 
+# Deleted drawings stay absent even if temporary cloud assets still exist.
+p='sentlog/cloud-sync.js'
+change(p,
+       "async function pullProjectAssets(cloudProject,deviceId){\n  const fields=enc('id,kind,file_name,storage_path,mime_type,byte_size,sha256,status,source_device_id,metadata');",
+       "async function pullProjectAssets(cloudProject,deviceId){\n  const ws=workspace(),localProject=(ws.projects||[]).find(p=>p.id===cloudProject.client_key);\n  const allowedDrawingIds=new Set((localProject?.drawings||[]).map(d=>d.id));\n  const fields=enc('id,kind,file_name,storage_path,mime_type,byte_size,sha256,status,source_device_id,metadata');")
+change(p,
+       "const drawingId=a.metadata?.drawing_id;if(!drawingId)continue;",
+       "const drawingId=a.metadata?.drawing_id;if(!drawingId||!allowedDrawingIds.has(drawingId))continue;")
+change(p,
+       "if(!drawingId||!photoId)continue;",
+       "if(!drawingId||!photoId||!allowedDrawingIds.has(drawingId))continue;")
+
 p='sentlog/index.html'
 change(p,
        "['field-records.js?v=168','SentlogFieldRecords']",
