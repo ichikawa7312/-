@@ -42,6 +42,7 @@ for name,count in {
 }.items():
     change('tests/'+name,"window.SENTLOG_BUILD==='v1.73'","window.SENTLOG_BUILD==='v1.74'",count)
 change('tests/image_memory_ui.py',"window.SENTLOG_BUILD==='v1.73'","window.SENTLOG_BUILD==='v1.74'")
+change('tests/dimension_lines_ui.py',"window.SENTLOG_BUILD==='v1.73'","window.SENTLOG_BUILD==='v1.74'")
 
 for name in ('capacity.test.cjs','resilience.test.cjs','toolbar_icons.test.cjs','label_colors.test.cjs','plain_numbers.test.cjs','single_number_ui.test.cjs','optional_symbol_ui.test.cjs'):
     change('tests/'+name,"'v1.73'","'v1.74'")
