@@ -57,7 +57,7 @@ try:
    assert summaries['line1']=='L=0.200 m',summaries
    assert summaries['poly1'].startswith('A=') and summaries['poly1'].endswith(' m²'),summaries
    assert 'crack1' not in summaries,'concrete crack must keep crack-width notation instead of L='
-   assert page.locator('[data-crack-width-id="crack1"]').inner_text()=='W=0.2'
+   assert page.locator('[data-crack-width-id="crack1"]').text_content()=='W=0.2'
    assert page.evaluate('JSON.stringify(state.shapes)')==baseline,'rendering dimensions must never mutate records'
    # Label-linked representative values follow the moved damage label.
    before=page.locator('[data-shape-summary-id="rect1"]').get_attribute('y')
@@ -68,7 +68,7 @@ try:
    page.evaluate("state.pageSettings['1'].scaleDenom=null;render()")
    assert page.locator('[data-shape-dimension-id]').count()==0
    assert page.locator('[data-shape-summary-id]').count()==0
-   assert page.locator('[data-crack-width-id="crack1"]').inner_text()=='W=0.2'
+   assert page.locator('[data-crack-width-id="crack1"]').text_content()=='W=0.2'
    # Rectangle drawing preview gets the same two parallel side values after calibration.
    page.evaluate("""()=>{state.pageSettings['1'].scaleDenom=1;tool='rect';drawing={kind:'rect',x:180,y:500,w:220,h:90};renderPreview();}""")
    assert page.locator('[data-shape-dimension-id="preview-rect"]').count()==2
