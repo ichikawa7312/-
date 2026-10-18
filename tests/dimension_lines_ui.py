@@ -18,6 +18,16 @@ seed="""async()=>{
  rebuildNumberingState();showEditor();setupStage(1000,700);empty.style.display='none';clearAllHistory();persist();
 }"""
 def dims(page):return page.evaluate("state.shapes.filter(s=>s.recordKind==='dimension-line').map(s=>JSON.parse(JSON.stringify(s)))")
+def click_dimension(page):
+ loc=page.evaluate("""()=>{
+  const hits=[...svg.querySelectorAll('[data-sentlog-dimension-id]')];
+  const hit=hits.find(x=>x.tagName.toLowerCase()==='rect')||hits[0];
+  if(!hit)return null;
+  const r=hit.getBoundingClientRect();
+  return {x:r.x+r.width/2,y:r.y+r.height/2,w:r.width,h:r.height};
+ }""")
+ assert loc and loc['w']>0 and loc['h']>0,loc
+ page.mouse.click(loc['x'],loc['y'])
 try:
  with sync_playwright() as p:
   launch={'headless':True}
@@ -60,13 +70,13 @@ try:
   page.evaluate("state.pageSettings['1']={paperSize:'custom',customW:300,customH:210,scaleDenom:100,orientation:'auto'};render()")
   labels=page.evaluate("[...svg.querySelectorAll('text')].map(x=>x.textContent)")
   assert any(t.endswith(' m') and t!='1.20 m' for t in labels),labels
-  page.locator('[data-sentlog-dimension-id]').first.click()
+  click_dimension(page)
   expect(page.locator('.sentlog-dimension-editor')).to_be_visible()
   assert '縮尺設定済み' in page.locator('.sentlog-dimension-editor').inner_text()
   inp=page.locator('.sentlog-dimension-editor input');current=float(inp.input_value());assert current>0
   inp.fill(f'{current*.8:.3f}');page.locator('.sentlog-dimension-editor button[type=submit]').click()
   after=dims(page)[0]['points'];assert after!=before,'scaled length edit must move the second endpoint'
-  page.locator('[data-sentlog-dimension-id]').first.click();page.locator('.sentlog-dimension-editor button',has_text='この寸法線を削除').click()
+  click_dimension(page);page.locator('.sentlog-dimension-editor button',has_text='この寸法線を削除').click()
   assert len(dims(page))==0;assert page.evaluate("getDrawingMeta().shapeCount")==1
   page.locator('#undoBtn').click();assert len(dims(page))==1
   (ROOT/'test-results').mkdir(exist_ok=True);page.screenshot(path=str(ROOT/'test-results/dimension-lines.png'),full_page=True)
