@@ -55,6 +55,9 @@ jobs:
           python scripts/build_shape_dimensions.py
           python scripts/build_editable_shape_dimensions.py
           python scripts/build_manual_dimension_priority.py
+          python scripts/build_drawing_memos.py
+          node --check sentlog/drawing-memos.js
+          node tests/drawing_memos.test.cjs
       - run: |
           node --check sentlog/archive.js
           node --check sentlog/archive-core.js
@@ -122,6 +125,8 @@ jobs:
           node tests/single_number_ui.test.cjs
           node tests/optional_symbol_ui.test.cjs
       - run: |
+          npm install --prefix "$RUNNER_TEMP/sentlog-dom" linkedom@0.18.12 --no-audit --no-fund
+          NODE_PATH="$RUNNER_TEMP/sentlog-dom/node_modules" node tests/drawing_memos_dom.cjs
           pip install playwright==1.57.0
           python -m playwright install --with-deps chromium webkit
           python tests/image_memory_ui.py
