@@ -58,6 +58,7 @@ manager-brand"><img src="./icon.svg" alt="セントログ"><div><div class="mana
     <button data-tool="freehand-area">フリーハンド範囲</button>
     <button data-tool="rect">四角形</button>
     <button data-tool="line">線</button>
+    <button data-tool="dimension">寸法</button>
     <button id="undoBtn" disabled>戻す</button>
     <button id="redoBtn" disabled>進む</button>
     <span id="mobilePageInfo" class="page-indicator" style="align-self:center"></span>
