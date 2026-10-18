@@ -66,7 +66,8 @@ try:
    assert page.evaluate('document.documentElement.scrollWidth<=innerWidth+1')
    rows=len({round(r['y']) for r in bounds});assert rows==(2 if width==320 else 1),(width,rows,bounds)
    icon_only='sl-icons-only' in page.locator('#sentlogDrawingToolbar').get_attribute('class')
-   assert icon_only==(width<=390),(width,icon_only)
+   # 1280px desktop has two side panels, so its centre drawing pane is narrower than the 820px tablet viewport.
+   assert icon_only==(width<=390 or width==1280),(width,icon_only)
    # Selecting then re-tapping each drawing tool changes only transient tool state.
    for sel in selectors[:6]:
     page.locator(sel).tap() if touchscreen else page.locator(sel).click()
