@@ -120,13 +120,17 @@ function drawLengths(){
     if(!chosen&&manual==null&&(actual==null||crack))continue;
     const placeholder=manual==null&&actual==null,text=displayText(s),p=getLabelPos(s),base=labelFontSize(),font=Math.max(10.5,base*.8);
     const widthLabel=[...svg.querySelectorAll('[data-crack-width-id]')].find(el=>el.dataset.crackWidthId===s.id);
-    const y=widthLabel?Number(widthLabel.getAttribute('y'))+font*1.25:p.y+base*1.02;
+    const nameLabel=[...svg.querySelectorAll('[data-damage-label-role="name"]')].find(el=>el.dataset.damageLabelId===s.id);
+    const nameBox=nameLabel?.getBBox(),nameBottom=nameBox?nameBox.y+nameBox.height+1/z():p.y+base*.5;
+    const y=Math.max(widthLabel?Number(widthLabel.getAttribute('y'))+font*1.25:p.y+base*1.02,nameBottom+font*.5+1/z());
     const style=root.SentlogLabelColors?.labelStyle?.(s.type,getProject(),root.SentlogDamageStyles?.getMode?.()||'hatch',scale);
     const t=makeEl('text',{x:p.x,y,'font-size':font,'text-anchor':'middle','dominant-baseline':'middle',fill:chosen?'#1d4ed8':style?.color||'#111827','font-weight':'700','paint-order':'stroke fill',stroke:'#fff','stroke-width':style?.halo||2.2/z(),'pointer-events':'none'});
     t.dataset.lineLengthId=s.id;if(!placeholder)t.dataset.shapeSummaryId=s.id;t.textContent=text;svg.appendChild(t);
     if(chosen&&tool==='pan'){
       const b=t.getBBox(),w=Math.max(80/z(),b.width+16/z()),h=Math.max(30/z(),b.height+10/z());
-      const hit=makeEl('rect',{x:p.x-w/2,y:y-h/2,width:w,height:h,fill:'rgba(0,0,0,.001)','pointer-events':'all'});
+      // The padded length target must never cover the draggable name text.
+      const top=Math.max(y-h/2,nameBottom);
+      const hit=makeEl('rect',{x:p.x-w/2,y:top,width:w,height:y+h/2-top,fill:'rgba(0,0,0,.001)','pointer-events':'all'});
       hit.dataset.lineLengthHit=s.id;hit.style.touchAction='none';hit.style.cursor='pointer';hit.setAttribute('aria-label','長押しで線の長さを入力');bindHold(hit,s.id);svg.appendChild(hit);
     }
   }
