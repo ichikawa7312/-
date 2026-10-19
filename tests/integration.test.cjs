@@ -9,7 +9,7 @@ async function run(manualProject=null,checking=false,fail=false){
   const ctx=vm.createContext({archive,console,Set,JSON,Number,Date,session:{},syncing:false,navigator:{onLine:true},
     enc:encodeURIComponent,msg(){},syncStatus:{begin:()=>1,finish:(_,r)=>events.push(['status',r.level])},
     rest:async path=>path.includes('sentlog_projects?')?controls:[{revision:1,payload:{project:{}}}],
-    workspace:()=>({projects}),getSyncMeta:()=>({revision:1}),
+    workspace:()=>({projects}),getSyncMeta:()=>({revision:1,base_snapshot:{project:{}}}),
     pullProjectAssets:async cp=>{events.push(['download',cp.id]);return 0;},
     ensureSession:async()=>{},ensureDevice:async()=>'device',
     ensureCloudProject:async lp=>controls.find(c=>c.client_key===lp.id),
