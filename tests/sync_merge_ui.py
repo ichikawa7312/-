@@ -1,5 +1,5 @@
 """Actual built app and IndexedDB in two isolated browsers. All external I/O is mocked."""
-import copy, functools, hashlib, json, os, tempfile, threading, uuid
+import copy, functools, hashlib, json, os, tempfile, threading, uuid, urllib.request
 from datetime import datetime, timezone
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -8,6 +8,7 @@ from playwright.sync_api import sync_playwright, expect
 
 ROOT=Path(__file__).resolve().parents[1]
 profiles=tempfile.TemporaryDirectory(prefix='sentlog-sync-browsers-')
+pdf_runtime=tempfile.TemporaryDirectory(prefix='.sync-pdf-test-',dir=ROOT)
 WS='surveyFieldNoteWorkspaceV1'; DRAW='surveyFieldNoteDrawingV1:d'; META='sentlogCloudProjectSyncV2:p'
 def record(name):
     return dict(id=name,type='ひび割れ',kind='polyline',points=[dict(x=1,y=2),dict(x=10,y=12)],no='手入力-'+name,memo='',photos=[])
@@ -96,6 +97,33 @@ def checkpoints(page):return page.evaluate("window.SentlogRecords.keys().filter(
 def add_record(page,name):
     page.evaluate("""async s=>{const S=window.SentlogRecords,w=JSON.parse(S.getItem('surveyFieldNoteWorkspaceV1')),d=JSON.parse(S.getItem('surveyFieldNoteDrawingV1:d'));d.shapes.push(s);w.projects[0].updatedAt=Date.now();workspace=w;S.batch([['surveyFieldNoteWorkspaceV1',JSON.stringify(w)],['surveyFieldNoteDrawingV1:d',JSON.stringify(d)]]);await S.settled();} """,record(name))
 
+def seven_page_pdf():
+    objects=[b'<< /Type /Catalog /Pages 2 0 R >>',b'<< /Type /Pages /Count 7 /Kids [3 0 R 4 0 R 5 0 R 6 0 R 7 0 R 8 0 R 9 0 R] >>']
+    objects += [b'<< /Type /Page /Parent 2 0 R /MediaBox [0 0 842 595] /Resources << >> >>']*7
+    data=b'%PDF-1.4\n';offsets=[0]
+    for number,obj in enumerate(objects,1):offsets.append(len(data));data+=f'{number} 0 obj\n'.encode()+obj+b'\nendobj\n'
+    start=len(data);data+=b'xref\n0 10\n0000000000 65535 f \n'
+    for offset in offsets[1:]:data+=f'{offset:010} 00000 n \n'.encode()
+    return data+f'trailer\n<< /Size 10 /Root 1 0 R >>\nstartxref\n{start}\n%%EOF'.encode()
+
+def pdf_payload(names,count):
+    p=payload(names);p['drawings'][0]['meta'].update(name='16_操作台',sourceType='pdf',fileName='16_操作台.pdf',pageCount=count)
+    p['project']['drawings'][0]=copy.deepcopy(p['drawings'][0]['meta'])
+    p['drawings'][0]['state'].update(sourceType='pdf',fileName='16_操作台.pdf',pageCount=count)
+    return p
+
+def install_real_pdf_engine(page):
+    for name in ['pdf.min.js','pdf.worker.min.js']:
+        target=Path(pdf_runtime.name)/name
+        if not target.exists():
+            cached=Path(os.getenv('SENTLOG_PDFJS_TEST_RUNTIME','/nonexistent'))/name
+            if cached.exists():target.write_bytes(cached.read_bytes())
+            else:
+                with urllib.request.urlopen('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/'+name,timeout=30) as r:target.write_bytes(r.read())
+    prefix=origin+'/'+Path(pdf_runtime.name).name+'/'
+    page.add_script_tag(url=prefix+'pdf.min.js')
+    page.evaluate('url=>{window.pdfjsLib.GlobalWorkerOptions.workerSrc=url}',prefix+'pdf.worker.min.js')
+
 try:
     with sync_playwright() as pw:
         engine=os.getenv('SENTLOG_TEST_BROWSER','chromium');opts=dict(headless=True)
@@ -152,8 +180,31 @@ try:
         assert len(writes)==before and not checkpoints(c)
         assert not unexpected,unexpected
         cc.close()
+        # Reported case: same original PDF, stale 1-page metadata vs seven pages.
+        # Real PDF.js and native Blob/IndexedDB are used in both engines.
+        raw=seven_page_pdf();assets.clear();blobs.clear();before=len(writes)
+        cloud=dict(revision=2,payload=pdf_payload(['common','phone'],7),updated_at='2026-10-19T00:00:00Z')
+        pack=pdf_payload(['common','ipad'],1);pack['drawings'][0]['state']['shapes'][1]['page']=7
+        assets['drawing:d']=dict(id='asset-pdf',project_id='cloud-p',client_key='drawing:d',kind='drawing',file_name='16_操作台.pdf',storage_path='original.pdf',mime_type='application/pdf',byte_size=len(raw),sha256='0'*64,status='storage_deleted',source_device_id='phone',metadata=dict(drawing_id='d',source_type='pdf'))
+        cd,d=make_page(browser,'pdf-count-ipad',pack);install_real_pdf_engine(d)
+        d.evaluate("bytes=>SentlogRecords.writeFile('background:d',new Blob([new Uint8Array(bytes)],{type:'application/pdf'}))",list(raw))
+        sync(d);open_merge(d);merge_click(d)
+        expect(d.locator('#sentlogMergePanel')).to_contain_text('図面原本の一致を確認できません')
+        assert not checkpoints(d) and len(writes)==before and ids(d)==['common','ipad']
+        assets['drawing:d']['sha256']=hashlib.sha256(raw).hexdigest()
+        merge_click(d);d.wait_for_function("JSON.parse(SentlogRecords.getItem('surveyFieldNoteDrawingV1:d')).pageCount===7")
+        assert set(ids(d))=={'common','phone','ipad'}
+        assert d.evaluate("JSON.parse(SentlogRecords.getItem('surveyFieldNoteDrawingV1:d')).shapes.find(s=>s.id==='ipad').page")==7
+        saved=checkpoints(d);assert saved[0]['local']['drawings'][0]['state']['pageCount']==1 and saved[0]['remote']['drawings'][0]['state']['pageCount']==7
+        assert d.evaluate("JSON.parse(SentlogRecords.getItem('surveyFieldNoteWorkspaceV1')).projects[0].drawings[0].pageCount")==7
+        assert d.evaluate("async()=>Array.from(new Uint8Array(await(await getDBFile('background:d')).arrayBuffer()))")==list(raw)
+        sync(d);assert cloud['payload']['drawings'][0]['state']['pageCount']==7 and len(writes)>before
+        assert not unexpected,unexpected
+        cd.close()
         if browser:browser.close()
         print('PASS two-device live app: conflict repair, native checkpoints, both photo blobs, automatic next edits, stale-revision race, storage/network failure, reload, true-conflict stop, phone layout')
+        print('PASS real seven-page PDF: wrong original blocked, stale count reconciled, page-7 records and original bytes retained, original counts checkpointed, cloud upload successful')
 finally:
     server.shutdown();server.server_close()
     profiles.cleanup()
+    pdf_runtime.cleanup()

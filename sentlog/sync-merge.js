@@ -1,4 +1,4 @@
-/* v1.80: conservative record-level merge. No network or storage side effects. */
+/* v1.81: verified PDF page counts; conservative record-level merge. */
 (function(root){
   'use strict';
   const copy=x=>x===undefined?undefined:JSON.parse(JSON.stringify(x));
@@ -53,7 +53,7 @@
       const lm=map(l,path),rm=map(r,path),bm=map(b||[],path),out=[];
       // Keep the shared order, then append this device's additions. Manual labels stay intact.
       for(const id of new Set([...rm.keys(),...lm.keys(),...bm.keys()])){
-        const a=lm.get(id),z=rm.get(id),ancestor=bm.get(id),label=path+' / '+(a?.no||z?.no||a?.autoLabel||z?.autoLabel||id);
+        const a=lm.get(id),z=rm.get(id),ancestor=bm.get(id),label=path+' / '+(a?.meta?.name||z?.meta?.name||a?.no||z?.no||a?.autoLabel||z?.autoLabel||id);
         const picked=choose(a,z,ancestor,label,clean);
         let value;
         if(picked.done)value=picked.value;
@@ -78,8 +78,9 @@
     function drawing(l,r,b,path){
       const meta=properties(l.meta,r.meta,b?.meta,path+' / 図面設定',['updatedAt','shapeCount','photoCount']);
       if(!l.state||!r.state){clash(path,'図面の記録を読み取れません');return;}
-      for(const key of ['sourceType','fileName','pageCount','pageRotations','pageSettings','dxf']){
-        if(!equal(l.state[key],r.state[key])){clash(path,'図面原本・回転・縮尺の設定が異なります');return;}
+      const frameFields={sourceType:'図面の種類',fileName:'図面ファイル名',pageCount:'ページ数',pageRotations:'図面の回転',pageSettings:'用紙・縮尺',dxf:'CADの座標設定'};
+      for(const [key,label] of Object.entries(frameFields)){
+        if(!equal(l.state[key],r.state[key])){clash(path,label+'が異なります');return;}
       }
       const st=properties(l.state,r.state,b?.state,path+' / 用紙・縮尺',['shapes',...viewKeys]);
       st.shapes=entities(l.state.shapes||[],r.state.shapes||[],b?.state?.shapes||[],path,shapeValue,shape);
@@ -105,6 +106,23 @@
     const ls=validate(local,'この端末'),rs=validate(remote,'共有データ'),bs=base?validate(base,'前回同期'):[];
     if(!local?.project?.id||local.project.id!==remote?.project?.id||(base&&base.project?.id!==local.project.id))clash('案件','別の案件です');
     if(!preserve&&!base)clash('前回同期','共通の同期記録がありません。「両方の記録を残して同期」を選んでください');
+    if(conflicts.length)return {ok:false,conflicts};
+    // Only the caller that has hashed the original PDF and read it with PDF.js
+    // can provide this evidence. Never infer page count from a timestamp or max().
+    for(const [id,count] of Object.entries(options.verifiedPdfPageCounts||{})){
+      const l=ls.find(d=>d.id===id),r=rs.find(d=>d.id===id);
+      if(!Number.isSafeInteger(count)||count<1||l?.state.sourceType!=='pdf'||r?.state.sourceType!=='pdf'){
+        clash(l?.meta.name||id,'PDF原本のページ数を確認できません');continue;
+      }
+      for(const d of [l,r,bs.find(d=>d.id===id)].filter(Boolean)){
+        // An ancestor may describe an older source; never rewrite that source.
+        if(d.state.sourceType!=='pdf')continue;
+        if(d.state.shapes.some(s=>!Number.isSafeInteger(s.page??1)||(s.page??1)<1||(s.page??1)>count)){
+          clash(d.meta.name||id,'PDF原本に存在しないページの記録があります');continue;
+        }
+        d.meta.pageCount=count;d.state.pageCount=count;
+      }
+    }
     if(conflicts.length)return {ok:false,conflicts};
     const project=properties(local.project,remote.project,base?.project,'案件',['drawings','updatedAt']);
     const ds=entities(ls,rs,bs,local.project.name||'図面',drawingValue,drawing);

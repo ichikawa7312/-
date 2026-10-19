@@ -54,3 +54,22 @@ r=M.merge(nullValue,remote,{preserve:true});assert(r.ok);assert.equal(r.payload.
 const memo=shape('memo');memo.recordKind='drawing-memo';const dimension=shape('dimension');dimension.recordKind='dimension-line';
 r=M.merge(make([shape('common'),memo,dimension]),remote,{base});assert(r.ok);assert.equal(r.payload.drawings[0].state.nextGlobalNo,3);assert.equal(r.payload.drawings[0].state.shapes.length,4);
 console.log('PASS merge: independent additions, photos, repeat, three-way edits/deletions, conflicting geometry, malformed data, manual labels, immutable inputs');
+
+// The reported seven-page PDF can carry a stale count from before it was opened.
+function pdfPack(pack,count){
+  const p=clone(pack);Object.assign(p.drawings[0].meta,{sourceType:'pdf',fileName:'16_操作台.pdf',pageCount:count});
+  p.project.drawings[0]=clone(p.drawings[0].meta);Object.assign(p.drawings[0].state,{sourceType:'pdf',fileName:'16_操作台.pdf',pageCount:count});return p;
+}
+const pdfLocal=pdfPack(local,1),pdfRemote=pdfPack(remote,7),pdfBefore=JSON.stringify([pdfLocal,pdfRemote]);
+pdfLocal.drawings[0].state.shapes[1].page=7;
+assert(!M.merge(pdfLocal,pdfRemote,{preserve:true}).ok,'an unverified count mismatch must still stop');
+const verified={preserve:true,verifiedPdfPageCounts:{d:7}};
+r=M.merge(pdfLocal,pdfRemote,verified);assert(r.ok);assert.equal(r.payload.project.drawings[0].pageCount,7);assert.equal(r.payload.drawings[0].state.pageCount,7);
+assert.equal(r.payload.drawings[0].state.shapes.find(s=>s.id==='ipad').page,7);
+assert.equal(pdfLocal.drawings[0].state.pageCount,1);assert.equal(pdfRemote.drawings[0].state.pageCount,7);
+const rotatedPdf=clone(pdfLocal);rotatedPdf.drawings[0].state.pageRotations={'1':90};assert(!M.merge(rotatedPdf,pdfRemote,verified).ok);
+const scaledPdf=clone(pdfLocal);scaledPdf.drawings[0].state.pageSettings={'1':{scaleDenom:100}};assert(!M.merge(scaledPdf,pdfRemote,verified).ok);
+const outside=clone(pdfLocal);outside.drawings[0].state.shapes[1].page=8;assert(!M.merge(outside,pdfRemote,verified).ok);
+assert(!M.merge(pdfLocal,pdfRemote,{preserve:true,verifiedPdfPageCounts:{d:0}}).ok);
+const pdfBase=pdfPack(base,1);assert(M.merge(pdfLocal,pdfRemote,{base:pdfBase,verifiedPdfPageCounts:{d:7}}).ok);
+console.log('PASS verified PDF count: stale 1/7 reconciled, page-7 records retained, genuine rotation/scale and out-of-range pages blocked');

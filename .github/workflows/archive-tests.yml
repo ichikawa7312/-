@@ -60,6 +60,7 @@ jobs:
           python scripts/build_dxf.py
           python scripts/build_dxf_layers.py
           python scripts/build_sync_merge.py
+          python scripts/build_sync_page_count.py
           node tests/sync_merge.test.cjs
           node --check sentlog/dxf.js
           node --check sentlog/dxf-core.js
