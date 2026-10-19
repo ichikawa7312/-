@@ -133,6 +133,19 @@ try:
    captured=page.evaluate("SentlogDrawingMemos.captureForExport(false,()=>SentlogDxf.capturePrimitives()).filter(x=>x.type==='text').map(x=>x.text)")
    assert 'L=0.500 m' in captured and 'L=0.300 m' in captured and 'W=0.2' in captured,captured
    assert '長さを入力' not in captured,captured
+   # Length typography stays readable at overview zoom and compact when zoomed in;
+   # its hit area and visible text cannot cover the draggable name or crack width.
+   for zoom in [.25,.5,1,2,8]:
+    metrics=page.evaluate("""zoom=>{
+      scale=zoom;applyTransform();selectShape('curve');
+      const length=svg.querySelector('[data-line-length-id="curve"]'),hit=svg.querySelector('[data-line-length-hit="curve"]');
+      const name=svg.querySelector('[data-damage-label-id="curve"][data-damage-label-role="name"]'),width=svg.querySelector('[data-crack-width-id="curve"]');
+      const l=length.getBBox(),n=name.getBBox(),w=width.getBBox();
+      return {font:Number(length.getAttribute('font-size'))*scale,gap:(l.y-w.y-w.height)*scale,hitGap:(Number(hit.getAttribute('y'))-n.y-n.height)*scale};
+    }""",zoom)
+    assert 8.4<=metrics['font']<=12,metrics
+    assert metrics['gap']>=-1 and metrics['hitGap']>=0,metrics
+   page.evaluate('fit()')
    page.evaluate("selected=null;render();persist()")
    (ROOT/'test-results').mkdir(exist_ok=True);page.screenshot(path=str(ROOT/f'test-results/line-lengths-{engine}-{width}.png'),full_page=True)
    expected=page.evaluate('JSON.stringify(state.shapes)')
