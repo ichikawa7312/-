@@ -3,7 +3,7 @@ import copy, functools, hashlib, json, os, threading, uuid
 from datetime import datetime, timezone
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, unquote
 from playwright.sync_api import sync_playwright, expect
 
 ROOT=Path(__file__).resolve().parents[1]
@@ -33,11 +33,11 @@ def transport(route):
     if u.netloc!='wiulvaqixphuobdielyy.supabase.co':unexpected.append(req.url);route.abort();return
     if req.method=='OPTIONS':route.fulfill(status=204,headers={'Access-Control-Allow-Origin':'*','Access-Control-Allow-Headers':'*','Access-Control-Allow-Methods':'*'});return
     if path.startswith('/storage/v1/object/authenticated/sentlog-temp/'):
-        key=path.split('/sentlog-temp/',1)[1]
+        key=unquote(path.split('/sentlog-temp/',1)[1])
         route.fulfill(status=200,content_type='image/jpeg',headers={'Access-Control-Allow-Origin':'*'},body=blobs[key]);return
     if path.startswith('/storage/v1/object/sentlog-temp/'):
         assert req.method=='POST',req.method
-        blobs[path.split('/sentlog-temp/',1)[1]]=req.post_data_buffer
+        blobs[unquote(path.split('/sentlog-temp/',1)[1])]=req.post_data_buffer
         respond(route,{'ok':True});return
     body=json.loads(req.post_data) if req.post_data else None
     if path.endswith('/rpc/sentlog_archive_v1'):
@@ -77,7 +77,7 @@ def make_page(browser,name,pack,width=810):
     init='window.sentlogImporting=true;'+''.join(f'localStorage.setItem({json.dumps(k)},{json.dumps(v)});' for k,v in seed.items())
     init+=f"localStorage.setItem('sentlogCloudSessionV1',JSON.stringify({{access_token:'synthetic',expires_at:Date.now()/1000+3600,user:{{id:'owner',email:'test@example.invalid'}}}}));localStorage.setItem('sentlogCloudDeviceV1',{json.dumps(name)});"
     context.add_init_script(init);context.route('**/*',transport)
-    page=context.new_page();page.goto(origin+'/sentlog/',wait_until='domcontentloaded');page.wait_for_function("window.SENTLOG_BUILD==='v1.80'")
+    page=context.new_page();page.goto(origin+'/sentlog/',wait_until='domcontentloaded');page.wait_for_function("window.SENTLOG_BUILD==='v1.80' && typeof window.sentlogCloudIdle==='function'")
     return context,page
 def sync(page):
     page.evaluate('async()=>{window.sentlogImporting=false;await window.sentlogCloudIdle();await window.sentlogArchiveSync();await window.sentlogCloudIdle();window.sentlogImporting=true;}')
@@ -108,10 +108,10 @@ try:
         sync(a);assert not writes;assert ids(a)==['common','ipad']
         open_merge(a)
         # Storage refusal must precede any in-memory record replacement or network write.
-        a.evaluate("window.savedMergeAtomic=window.SentlogRecords.archiveAtomic;window.SentlogRecords.archiveAtomic=async()=>{throw Error('試験用：保存容量不足')}")
+        a.evaluate("()=>{window.savedMergeAtomic=window.SentlogRecords.archiveAtomic;window.SentlogRecords.archiveAtomic=async()=>{throw Error('試験用：保存容量不足')}}")
         merge_click(a);expect(a.locator('#sentlogMergePanel')).to_contain_text('保存容量不足')
         assert ids(a)==['common','ipad'] and not checkpoints(a) and not writes
-        a.evaluate('window.SentlogRecords.archiveAtomic=window.savedMergeAtomic')
+        a.evaluate('()=>{window.SentlogRecords.archiveAtomic=window.savedMergeAtomic}')
         merge_click(a);a.wait_for_function("JSON.parse(window.SentlogRecords.getItem('surveyFieldNoteDrawingV1:d')).shapes.length===3")
         assert set(ids(a))=={'common','phone','ipad'}
         saved=checkpoints(a);assert len(saved)==1

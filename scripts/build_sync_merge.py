@@ -74,6 +74,7 @@ for path in (ROOT/'tests').iterdir():
     text=path.read_text();updated=text.replace("SENTLOG_BUILD==='v1.79'","SENTLOG_BUILD==='v1.80'").replace('sentlog-pwa-v190','sentlog-pwa-v191')
     if path.name in ('capacity.test.cjs','resilience.test.cjs','toolbar_icons.test.cjs','label_colors.test.cjs','plain_numbers.test.cjs','single_number_ui.test.cjs','optional_symbol_ui.test.cjs'):updated=updated.replace("'v1.79'","'v1.80'")
     updated=updated.replace(r'phone-runtime\.js\?v=179',r'phone-runtime\.js\?v=180').replace(r'sync-view\.js\?v=178',r'sync-view\.js\?v=180').replace('sync-view.js?v=178','sync-view.js?v=180').replace('20261018-dxf-178','20261019-merge-180')
+    if path.name=='optional_symbol_ui.test.cjs':updated=updated.replace("'canRestoreDrawing',", "'mergeCommit',")
     if updated!=text:pending[str(path.relative_to(ROOT))]=updated
 for path,text in pending.items():(ROOT/path).write_text(text)
 print('Built Sentlog v1.80: checkpointed record merge, explicit preserve-both for legacy conflicts, conservative three-way sync')
