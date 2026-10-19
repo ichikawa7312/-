@@ -94,7 +94,8 @@ def add_record(page,name):
 try:
     with sync_playwright() as pw:
         engine=os.getenv('SENTLOG_TEST_BROWSER','chromium');opts=dict(headless=True)
-        if engine=='chromium' and os.path.exists('/usr/bin/chromium'):opts.update(executable_path='/usr/bin/chromium',args=['--no-sandbox'])
+        executable=os.getenv('SENTLOG_CHROMIUM_EXECUTABLE','/usr/bin/chromium')
+        if engine=='chromium' and os.path.exists(executable):opts.update(executable_path=executable,args=['--no-sandbox'])
         browser=getattr(pw,engine).launch(**opts)
         ipad=payload(['common','ipad']);phone=payload(['common','phone'])
         for pack,name in [(ipad,'ipad'),(phone,'phone'),(cloud['payload'],'phone')]:

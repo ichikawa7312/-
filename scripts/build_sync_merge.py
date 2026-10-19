@@ -65,7 +65,7 @@ for old,new in [('record-store.js?v=130','record-store.js?v=180'),('sync-view.js
     change(p,old,new,1 if old.startswith('record-store') else 2)
 change(p,"['phone-runtime.js?v=180','v1.79']","['phone-runtime.js?v=180','v1.80']")
 change(p,"['cloud-sync.js?v=20261019-merge-180','archive-v133']","['cloud-sync.js?v=20261019-merge-180','mergeSelectedProject']")
-change(p,"['sync-view.js?v=180','window.SentlogRecords.batch']","['sync-view.js?v=180','mergeCommit'],['record-store.js?v=180','sentlogSyncMergeCheckpointV1:']")
+change(p,"['sync-view.js?v=180','canRestoreDrawing']","['sync-view.js?v=180','mergeCommit'],['record-store.js?v=180','sentlogSyncMergeCheckpointV1:']")
 change('sentlog/phone-runtime.js','v1.79','v1.80',4)
 change('sentlog/sw.js',"const CACHE='sentlog-pwa-v190';","const CACHE='sentlog-pwa-v191';")
 change('sentlog/sw.js',"'record-store.js','storage-ui.js'","'record-store.js','sync-merge.js','storage-ui.js'")
