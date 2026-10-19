@@ -36,9 +36,9 @@ async function tryMergeProject(cp,snap,{manual=false}={}){
   const wsRaw=store.getItem(WORKSPACE_KEY),ws=JSON.parse(wsRaw),lp=ws.projects.find(p=>p.id===cp.client_key);
   if(!lp||snap?.payload?.project?.id!==lp.id)return {applied:false,reason:'案件情報を確認できません。'};
   const meta=getSyncMeta(lp.id),local=projectSnapshot(lp),remote=snap.payload;
+  const expectedRecords=[[WORKSPACE_KEY,wsRaw],...lp.drawings.map(d=>[DRAWING_KEY_PREFIX+d.id,store.getItem(DRAWING_KEY_PREFIX+d.id)])];
   if(!manual&&!meta?.base_snapshot)return {applied:false,reason:'前回の同期内容が未保存です。両方の記録を残す操作を選んでください。'};
   if(!manual&&await snapshotFingerprint(meta.base_snapshot)!==meta.fingerprint)return {applied:false,reason:'前回の同期記録の照合に失敗しました。両方の記録を残す操作を選んでください。'};
-  const expectedRecords=[[WORKSPACE_KEY,wsRaw],...lp.drawings.map(d=>[DRAWING_KEY_PREFIX+d.id,store.getItem(DRAWING_KEY_PREFIX+d.id)])];
   const result=api.merge(normalizeMergeSnapshot(local),normalizeMergeSnapshot(remote),{
     preserve:manual,base:!manual&&meta?.base_snapshot?normalizeMergeSnapshot(meta.base_snapshot):undefined
   });
