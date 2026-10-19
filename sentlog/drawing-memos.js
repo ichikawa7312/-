@@ -223,10 +223,11 @@ function openEditor(item=null,fresh=false){
 }
 function drawOne(s,target=svg,interactive=true,preview=false){
   if(!validGeometry(s)&&!(isDimension(s)&&s.points?.length===2))return;
-  const type=memoType(s),unit=Math.max(.001,finite(s.unit,1/z())),color=s.color||'#111827',stroke=Math.max(.4,finite(s.strokeWidth,1))*unit;
+  const type=memoType(s),unit=Math.max(.001,finite(s.unit,1/z())),styleUnit=type==='dimension'?1/z():unit;
+  const color=s.color||'#111827',stroke=Math.max(.4,finite(s.strokeWidth,1))*styleUnit;
   const group=se('g',{'data-memo-id':s.id||'preview'});target.append(group);
   const attrs={stroke:color,'stroke-width':stroke,fill:'none','stroke-linejoin':'round','stroke-linecap':'round','pointer-events':'none'};
-  if(s.dashed)attrs['stroke-dasharray']=`${7*unit} ${5*unit}`;
+  if(s.dashed)attrs['stroke-dasharray']=`${7*styleUnit} ${5*styleUnit}`;
   if(preview)group.setAttribute('opacity','.72');
   let hit=null;
   const pts=s.points;
@@ -248,7 +249,8 @@ function drawOne(s,target=svg,interactive=true,preview=false){
     for(const [i,line] of b.lines.entries()){const span=se('tspan',{x:0,y:b.fs*(1+i*1.35)});span.textContent=line||' ';t.append(span);}textGroup.append(t);
     hit=se('rect',{x:-b.fs*.15,y:0,width:b.width,height:b.height,fill:'transparent','pointer-events':'all'});if(interactive)textGroup.append(hit);
   }else if(type==='dimension'){
-    const q=D.dimensionGeometry(pts[0],pts[1],finite(s.dimensionOffset,25*unit),8*unit,4*unit);if(!q)return;
+    // Keep the dimension's offset; size arrowheads and extension overshoot on screen.
+    const q=D.dimensionGeometry(pts[0],pts[1],finite(s.dimensionOffset,25*unit),8*styleUnit,4*styleUnit);if(!q)return;
     for(const [a,b] of [[q.a,q.e1],[q.b,q.e2],[q.d1,q.d2]])group.append(se('line',{...attrs,x1:a.x,y1:a.y,x2:b.x,y2:b.y}));
     for(const points of [q.arrow1,q.arrow2])group.append(se('polygon',{points:points.map(p=>p.x+','+p.y).join(' '),fill:color,'pointer-events':'none'}));
     const p={x:q.mid.x,y:q.mid.y-8/z()},fs=root.SentlogDimensionText?.fontSize()??10.5/z();
