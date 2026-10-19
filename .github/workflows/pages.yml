@@ -66,6 +66,8 @@ jobs:
           python3 -m pip install fonttools==4.61.1
           python3 scripts/build_dxf.py
           python3 scripts/build_dxf_layers.py
+          python3 scripts/build_sync_merge.py
+          node tests/sync_merge.test.cjs
           node --check sentlog/dxf.js
           node --check sentlog/dxf-core.js
           node tests/dxf.test.cjs

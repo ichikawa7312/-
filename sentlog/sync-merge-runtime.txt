@@ -1,0 +1,113 @@
+// Integrated in the cloud module by build_sync_merge.py; never imported on its own.
+let mergeBusy=false;
+const syncConflicts=new Map();
+const MERGE_CHECKPOINT_PREFIX='sentlogSyncMergeCheckpointV1:';
+let mergeNotice='';
+
+function normalizeMergeSnapshot(payload){
+  return window.SentlogDrawingGroups?.normalizeSnapshotPayload?.(payload)||JSON.parse(JSON.stringify(payload));
+}
+async function checkMergeFiles(cp,local,remote){
+  const remoteIds=new Set(remote.project.drawings.map(d=>d.id));
+  const shared=local.drawings.filter(d=>remoteIds.has(d.meta.id));
+  if(!shared.some(d=>d.state?.sourceType||d.state?.shapes?.some(s=>s.photos?.length)))return;
+  const assets=await rest('/rest/v1/sentlog_assets?project_id=eq.'+enc(cp.id)+'&select=client_key,kind,sha256,byte_size,metadata');
+  const byKey=new Map((assets||[]).map(a=>[a.client_key,a]));
+  for(const d of shared){
+    if(d.state.sourceType){
+      const blob=await dbGet('background:'+d.meta.id),asset=byKey.get('drawing:'+d.meta.id);
+      if(!(blob instanceof Blob)||!asset||blob.size!==Number(asset.byte_size)||await sha256Hex(blob)!==String(asset.sha256).toLowerCase())
+        throw Error((d.meta.name||'図面')+'：図面原本の一致を確認できません。記録を残して統合を止めました。');
+    }
+    for(const shape of d.state.shapes||[])for(const photo of shape.photos||[]){
+      const key='photo:'+d.meta.id+':'+photo.id,asset=byKey.get(key);
+      if(!asset)continue;
+      const blob=await dbGet(key);
+      if(blob instanceof Blob&&(blob.size!==Number(asset.byte_size)||await sha256Hex(blob)!==String(asset.sha256).toLowerCase()))
+        throw Error((d.meta.name||'図面')+'：同じ写真IDの内容が異なります。写真を残して統合を止めました。');
+    }
+  }
+}
+async function tryMergeProject(cp,snap,{manual=false}={}){
+  const store=window.SentlogRecords,api=window.SentlogSyncMerge;
+  if(!api||!window.sentlogSyncView?.mergeCommit)return {applied:false,reason:'統合機能を読み込めません。'};
+  if(!archive.canSync(cp,null)||cp.status!=='active')return {applied:false,reason:'使用中の案件だけが対象です。'};
+  await store.settled();store.assertSafe();
+  const wsRaw=store.getItem(WORKSPACE_KEY),ws=JSON.parse(wsRaw),lp=ws.projects.find(p=>p.id===cp.client_key);
+  if(!lp||snap?.payload?.project?.id!==lp.id)return {applied:false,reason:'案件情報を確認できません。'};
+  const meta=getSyncMeta(lp.id),local=projectSnapshot(lp),remote=snap.payload;
+  const expectedRecords=[[WORKSPACE_KEY,wsRaw],...lp.drawings.map(d=>[DRAWING_KEY_PREFIX+d.id,store.getItem(DRAWING_KEY_PREFIX+d.id)])];
+  if(!manual&&!meta?.base_snapshot)return {applied:false,reason:'前回の同期内容が未保存です。両方の記録を残す操作を選んでください。'};
+  if(!manual&&await snapshotFingerprint(meta.base_snapshot)!==meta.fingerprint)return {applied:false,reason:'前回の同期記録の照合に失敗しました。両方の記録を残す操作を選んでください。'};
+  const result=api.merge(normalizeMergeSnapshot(local),normalizeMergeSnapshot(remote),{
+    preserve:manual,base:!manual&&meta?.base_snapshot?normalizeMergeSnapshot(meta.base_snapshot):undefined
+  });
+  if(!result.ok)return {applied:false,reason:result.conflicts.slice(0,3).map(c=>c.path+'：'+c.reason).join(' / ')};
+  await checkMergeFiles(cp,local,remote);
+  const incomingFingerprint=await snapshotFingerprint(remote);
+  const checkpoint={format:'sentlog-sync-checkpoint',version:1,createdAt:new Date().toISOString(),
+    projectId:lp.id,cloudRevision:Number(snap.revision),local,remote};
+  const key=MERGE_CHECKPOINT_PREFIX+lp.id+':'+await sha256Hex(new Blob([JSON.stringify(checkpoint)]));
+  // Anchor to the remote revision, but leave the merged local work dirty. A newer
+  // remote revision must be compared again; it must never be overwritten blindly.
+  const nextMeta={revision:Number(snap.revision),local_updated_at:-1,remote_updated_at:snap.updated_at,
+    fingerprint:incomingFingerprint,fingerprint_schema:SYNC_FINGERPRINT_SCHEMA,base_snapshot:remote};
+  const committed=await window.sentlogSyncView.mergeCommit(cp,{payload:result.payload},JSON.stringify(lp),{
+    expectedRecords,extraWrites:[[key,JSON.stringify(checkpoint)],[SYNC_META_PREFIX+lp.id,JSON.stringify(nextMeta)]]
+  });
+  if(!committed?.applied)return {applied:false,waiting:true,reason:'入力・描画を終え、図面を閉じてからもう一度操作してください。'};
+  return {applied:true};
+}
+async function mergeSelectedProject(project){
+  if(mergeBusy)return;
+  mergeBusy=true;mergeNotice='現在の保存と同期が終わるのを待っています。';refreshMergePanel();
+  let done=false;
+  try{
+    await window.sentlogCloudIdle();
+    await ensureSession();await archive.refresh();
+    const cps=await rest('/rest/v1/sentlog_projects?client_key=eq.'+enc(project.client_key)+'&select=id,name,status,client_key');
+    const cp=cps?.[0];
+    if(!cp||!archive.canSync(cp,null)||cp.status!=='active')throw Error('この案件は現在の同期対象ではありません。');
+    const snapshots=await rest('/rest/v1/sentlog_project_snapshots?project_id=eq.'+enc(cp.id)+'&select=revision,payload,updated_at');
+    const result=await tryMergeProject(cp,snapshots?.[0],{manual:true});
+    if(!result.applied)throw Error(result.reason);
+    syncConflicts.delete(cp.client_key);done=true;
+    mergeNotice='統合前の記録を端末内に控えとして保存し、両方の記録をまとめました。送受信の結果は上の同期状況で確認できます。';
+  }catch(e){mergeNotice=e?.message||String(e);}
+  finally{mergeBusy=false;refreshMergePanel();}
+  if(done)await syncNow();
+}
+function refreshMergePanel(){
+  if(typeof document==='undefined')return;
+  const host=document.getElementById('sentlogMergePanel');if(!host)return;
+  host.replaceChildren();host.hidden=!syncConflicts.size&&!mergeNotice;
+  if(syncConflicts.size){
+    const help=document.createElement('p');
+    help.textContent='片方にだけある記録も残してまとめます。削除した記録が戻る場合があります。自動番号は振り直し、手入力の番号は保持します。同じ記録の内容が食い違う場合は止めて表示します。';
+    help.style.cssText='font-size:12px;line-height:1.6';host.appendChild(help);
+    for(const cp of syncConflicts.values()){
+      const name=document.createElement('p');name.textContent=cp.name||'案件';name.style.fontWeight='600';
+      const button=document.createElement('button');button.type='button';button.textContent='両方の記録を残して同期';
+      button.style.cssText='width:100%;min-height:44px;margin:4px 0 10px;background:#065f46;color:#fff';
+      button.disabled=mergeBusy;button.onclick=()=>mergeSelectedProject(cp);host.append(name,button);
+    }
+  }
+  if(mergeNotice){const p=document.createElement('p');p.textContent=mergeNotice;p.setAttribute('role','status');p.style.cssText='font-size:12px;line-height:1.6;overflow-wrap:anywhere';host.appendChild(p);}
+}
+
+function installMergeHistory(){
+  const card=document.querySelector('#sentlogSettingsModal .modal-card');
+  if(!card||document.getElementById('sentlogMergeHistory'))return;
+  const details=document.createElement('details');details.id='sentlogMergeHistory';details.style.marginTop='12px';
+  const title=document.createElement('summary');title.textContent='同期でまとめる前の記録';
+  const description=document.createElement('p');description.textContent='両端末の記録内容を控えとして端末内に保存しています。この控えには写真・図面の画像本体は含みません。';description.style.cssText='font-size:12px;line-height:1.6';
+  const button=document.createElement('button');button.type='button';button.textContent='記録の控えを書き出す';
+  button.onclick=()=>{
+    const S=window.SentlogRecords,checkpoints=S.keys().filter(k=>k.startsWith(MERGE_CHECKPOINT_PREFIX)).map(k=>JSON.parse(S.getItem(k)));
+    if(!checkpoints.length){alert('記録をまとめた履歴はまだありません。');return;}
+    const url=URL.createObjectURL(new Blob([JSON.stringify({format:'sentlog-sync-checkpoints',version:1,checkpoints})],{type:'application/json'}));
+    const a=document.createElement('a');a.href=url;a.download='セントログ_同期前の記録.json';document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),60000);
+  };
+  details.append(title,description,button);card.appendChild(details);
+}
+

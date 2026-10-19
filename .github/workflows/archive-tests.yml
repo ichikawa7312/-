@@ -59,6 +59,8 @@ jobs:
           python -m pip install fonttools==4.61.1
           python scripts/build_dxf.py
           python scripts/build_dxf_layers.py
+          python scripts/build_sync_merge.py
+          node tests/sync_merge.test.cjs
           node --check sentlog/dxf.js
           node --check sentlog/dxf-core.js
           node tests/dxf.test.cjs
@@ -135,6 +137,8 @@ jobs:
           NODE_PATH="$RUNNER_TEMP/sentlog-dom/node_modules" node tests/drawing_memos_dom.cjs
           pip install playwright==1.57.0
           python -m playwright install --with-deps chromium webkit
+          python tests/sync_merge_ui.py
+          SENTLOG_TEST_BROWSER=webkit python tests/sync_merge_ui.py
           python tests/image_memory_ui.py
           python tests/original_photo_ui.py
           python tests/crack_width_ui.py
