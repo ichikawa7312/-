@@ -47,6 +47,16 @@ def transport(route):
         respond(route,[cp]);return
     if path.endswith('/rpc/sentlog_ack_asset') or path.endswith('/rpc/sentlog_request_photo_v1'):
         respond(route,True);return
+    if path.endswith('/rpc/sentlog_ack_photo'):
+        # The background photo verifier may finish between explicit sync calls.
+        # Accept only acknowledgements for the actual synthetic bytes; production
+        # behaviour and validation remain unchanged.
+        assert req.method=='POST' and body['p_device_id'] in ('ipad','phone'),body
+        asset=next(a for a in assets.values() if a['id']==body['p_asset_id'])
+        raw=blobs[asset['storage_path']]
+        assert asset['kind']=='photo' and body['p_byte_size']==len(raw)==asset['byte_size'],body
+        assert body['p_sha256']==hashlib.sha256(raw).hexdigest()==asset['sha256'],body
+        respond(route,True);return
     if path.endswith('/sentlog_devices'):
         device=q.get('id',['eq.device'])[0][3:]
         respond(route,[dict(id=device,active=True)]);return
