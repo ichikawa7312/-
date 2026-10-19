@@ -1,4 +1,5 @@
-/* Sentlog v1.76: manual dimensions are authoritative across scale changes.
+/* SentlogShapeDimensions v1.82: lineLengthM joins authoritative manual dimensions.
+ * Sentlog v1.76: manual dimensions are authoritative across scale changes.
  * - Uncalibrated drawings: edge dimensions can be entered as records, but geometry never moves.
  * - Calibrated drawings: entered dimensions stay authoritative; geometry follows them.
  * - Rectangles show horizontal + vertical side values. Polygons show every edge in vertex order.
@@ -409,12 +410,14 @@ function reconcilePolygonManualDimensions(temp){
 }
 function reconcileManualDimensions(page=state.currentPage){
   if(!calibrated(page))return {changed:false,warnings:[]};
-  const originals=state.shapes.filter(s=>(s.page||1)===page&&['rect','polygon'].includes(s.kind)&&manualEdgeIndexes(s).length);
+  const originals=state.shapes.filter(s=>(s.page||1)===page&&(
+    (['rect','polygon'].includes(s.kind)&&manualEdgeIndexes(s).length)||root.SentlogLineLengths?.hasManual(s)));
   if(!originals.length)return {changed:false,warnings:[]};
   const proposals=[],warnings=[];
   for(const source of originals){
     const temp=JSON.parse(JSON.stringify(source));
-    const issues=temp.kind==='rect'?reconcileRectManualDimensions(temp):reconcilePolygonManualDimensions(temp);
+    const issues=root.SentlogLineLengths?.isLine(temp)?root.SentlogLineLengths.reconcile(temp):
+      temp.kind==='rect'?reconcileRectManualDimensions(temp):reconcilePolygonManualDimensions(temp);
     warnings.push(...issues.map(w=>({...w,shapeId:source.id,shapeName:shapeWarningName(source),kind:source.kind})));
     const geometryChanged=temp.kind==='rect'
       ?Math.abs(temp.x-source.x)>1e-7||Math.abs(temp.y-source.y)>1e-7||Math.abs(temp.w-source.w)>1e-7||Math.abs(temp.h-source.h)>1e-7
@@ -433,12 +436,12 @@ function reconcileManualDimensions(page=state.currentPage){
 function reconcileWarningMessage(result){
   const warnings=result?.warnings||[];if(!warnings.length)return '';
   const lines=warnings.slice(0,8).map(w=>{
-    const edge=w.kind==='rect'?(w.index===0?'横辺':'縦辺'):'辺'+(Number(w.index)+1);
+    const edge=['line','freehand-line'].includes(w.kind)?'線長':w.kind==='rect'?(w.index===0?'横辺':'縦辺'):'辺'+(Number(w.index)+1);
     const actual=Number.isFinite(w.measured)?'（図形実寸 '+w.measured.toFixed(3)+' m）':'';
     return '・'+w.shapeName+' '+edge+'：記録 '+Number(w.target).toFixed(3)+' m '+actual;
   });
   if(warnings.length>8)lines.push('・ほか '+(warnings.length-8)+' 件');
-  return '手入力した寸法はそのまま保持しています。\n形状条件上、次の辺は記録寸法へ合わせられませんでした。\n\n'+lines.join('\n');
+  return '手入力した寸法はそのまま保持しています。\n形状条件上、次の図形は記録寸法へ合わせられませんでした。\n\n'+lines.join('\n');
 }
 function labelPaint(shape){
   try{
@@ -448,6 +451,7 @@ function labelPaint(shape){
   }catch(_){return {color:'#111827',halo:2.2/z()};}
 }
 function drawRepresentative(s){
+  if(root.SentlogLineLengths?.isLine(s))return;
   const text=representativeText(s);if(!text)return;
   const lp=getLabelPos(s),base=typeof labelFontSize==='function'?labelFontSize():18/z(),font=Math.max(10.5,base*.80),paint=labelPaint(s);
   const t=makeEl('text',{x:lp.x,y:lp.y+base*1.02,'font-size':font,'text-anchor':'middle','dominant-baseline':'middle',
