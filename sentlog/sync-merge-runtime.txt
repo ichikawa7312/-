@@ -8,9 +8,10 @@ function normalizeMergeSnapshot(payload){
   return window.SentlogDrawingGroups?.normalizeSnapshotPayload?.(payload)||JSON.parse(JSON.stringify(payload));
 }
 async function checkMergeFiles(cp,local,remote){
+  const verifiedPdfPageCounts={};
   const remoteIds=new Set(remote.project.drawings.map(d=>d.id));
   const shared=local.drawings.filter(d=>remoteIds.has(d.meta.id));
-  if(!shared.some(d=>d.state?.sourceType||d.state?.shapes?.some(s=>s.photos?.length)))return;
+  if(!shared.some(d=>d.state?.sourceType||d.state?.shapes?.some(s=>s.photos?.length)))return verifiedPdfPageCounts;
   const assets=await rest('/rest/v1/sentlog_assets?project_id=eq.'+enc(cp.id)+'&select=client_key,kind,sha256,byte_size,metadata');
   const byKey=new Map((assets||[]).map(a=>[a.client_key,a]));
   for(const d of shared){
@@ -18,6 +19,22 @@ async function checkMergeFiles(cp,local,remote){
       const blob=await dbGet('background:'+d.meta.id),asset=byKey.get('drawing:'+d.meta.id);
       if(!(blob instanceof Blob)||!asset||blob.size!==Number(asset.byte_size)||await sha256Hex(blob)!==String(asset.sha256).toLowerCase())
         throw Error((d.meta.name||'図面')+'：図面原本の一致を確認できません。記録を残して統合を止めました。');
+      const peer=remote.drawings.find(x=>x.meta.id===d.meta.id);
+      const counts=[d.meta.pageCount,d.state.pageCount,peer?.meta.pageCount,peer?.state?.pageCount];
+      if(d.state.sourceType==='pdf'&&peer?.state?.sourceType==='pdf'&&counts.some(n=>n!==counts[0])){
+        if(!window.pdfjsLib?.getDocument)throw Error((d.meta.name||'図面')+'：PDFのページ数を確認できません。通信状態を確認してからもう一度操作してください。');
+        const task=window.pdfjsLib.getDocument({data:new Uint8Array(await blob.arrayBuffer()),isEvalSupported:false});
+        try{
+          const pdf=await task.promise;
+          if(!Number.isSafeInteger(pdf.numPages)||pdf.numPages<1)throw Error('PDFのページ数を読み取れません。');
+          // Snapshot and file uploads are separate requests. If the shared
+          // snapshot describes another page count, a PDF replacement may still
+          // be uploading. Never reinterpret those records using an older file.
+          if(peer.state.pageCount!==pdf.numPages||peer.meta.pageCount!==pdf.numPages)
+            throw Error((d.meta.name||'図面')+'：共有側のページ数とPDF原本が一致しません。図面の送信が終わってからもう一度同期してください。');
+          verifiedPdfPageCounts[d.meta.id]=pdf.numPages;
+        }finally{await task.destroy();}
+      }
     }
     for(const shape of d.state.shapes||[])for(const photo of shape.photos||[]){
       const key='photo:'+d.meta.id+':'+photo.id,asset=byKey.get(key);
@@ -27,6 +44,7 @@ async function checkMergeFiles(cp,local,remote){
         throw Error((d.meta.name||'図面')+'：同じ写真IDの内容が異なります。写真を残して統合を止めました。');
     }
   }
+  return verifiedPdfPageCounts;
 }
 async function tryMergeProject(cp,snap,{manual=false}={}){
   const store=window.SentlogRecords,api=window.SentlogSyncMerge;
@@ -39,11 +57,11 @@ async function tryMergeProject(cp,snap,{manual=false}={}){
   const expectedRecords=[[WORKSPACE_KEY,wsRaw],...lp.drawings.map(d=>[DRAWING_KEY_PREFIX+d.id,store.getItem(DRAWING_KEY_PREFIX+d.id)])];
   if(!manual&&!meta?.base_snapshot)return {applied:false,reason:'前回の同期内容が未保存です。両方の記録を残す操作を選んでください。'};
   if(!manual&&await snapshotFingerprint(meta.base_snapshot)!==meta.fingerprint)return {applied:false,reason:'前回の同期記録の照合に失敗しました。両方の記録を残す操作を選んでください。'};
+  const verifiedPdfPageCounts=await checkMergeFiles(cp,local,remote);
   const result=api.merge(normalizeMergeSnapshot(local),normalizeMergeSnapshot(remote),{
-    preserve:manual,base:!manual&&meta?.base_snapshot?normalizeMergeSnapshot(meta.base_snapshot):undefined
+    preserve:manual,base:!manual&&meta?.base_snapshot?normalizeMergeSnapshot(meta.base_snapshot):undefined,verifiedPdfPageCounts
   });
   if(!result.ok)return {applied:false,reason:result.conflicts.slice(0,3).map(c=>c.path+'：'+c.reason).join(' / ')};
-  await checkMergeFiles(cp,local,remote);
   const incomingFingerprint=await snapshotFingerprint(remote);
   const checkpoint={format:'sentlog-sync-checkpoint',version:1,createdAt:new Date().toISOString(),
     projectId:lp.id,cloudRevision:Number(snap.revision),local,remote};
