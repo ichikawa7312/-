@@ -27,6 +27,11 @@ async function checkMergeFiles(cp,local,remote){
         try{
           const pdf=await task.promise;
           if(!Number.isSafeInteger(pdf.numPages)||pdf.numPages<1)throw Error('PDFのページ数を読み取れません。');
+          // Snapshot and file uploads are separate requests. If the shared
+          // snapshot describes another page count, a PDF replacement may still
+          // be uploading. Never reinterpret those records using an older file.
+          if(peer.state.pageCount!==pdf.numPages||peer.meta.pageCount!==pdf.numPages)
+            throw Error((d.meta.name||'図面')+'：共有側のページ数とPDF原本が一致しません。図面の送信が終わってからもう一度同期してください。');
           verifiedPdfPageCounts[d.meta.id]=pdf.numPages;
         }finally{await task.destroy();}
       }

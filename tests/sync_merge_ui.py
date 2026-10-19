@@ -192,6 +192,12 @@ try:
         expect(d.locator('#sentlogMergePanel')).to_contain_text('図面原本の一致を確認できません')
         assert not checkpoints(d) and len(writes)==before and ids(d)==['common','ipad']
         assets['drawing:d']['sha256']=hashlib.sha256(raw).hexdigest()
+        # A snapshot can arrive before a replacement PDF finishes uploading.
+        # Matching an older asset hash must not overwrite the new page count.
+        cloud['payload']=pdf_payload(['common','phone'],8)
+        merge_click(d);expect(d.locator('#sentlogMergePanel')).to_contain_text('共有側のページ数とPDF原本が一致しません')
+        assert not checkpoints(d) and len(writes)==before and ids(d)==['common','ipad']
+        cloud['payload']=pdf_payload(['common','phone'],7)
         merge_click(d);d.wait_for_function("JSON.parse(SentlogRecords.getItem('surveyFieldNoteDrawingV1:d')).pageCount===7")
         assert set(ids(d))=={'common','phone','ipad'}
         assert d.evaluate("JSON.parse(SentlogRecords.getItem('surveyFieldNoteDrawingV1:d')).shapes.find(s=>s.id==='ipad').page")==7
