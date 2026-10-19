@@ -140,11 +140,11 @@ try:
       scale=zoom;applyTransform();selectShape('curve');
       const length=svg.querySelector('[data-line-length-id="curve"]'),hit=svg.querySelector('[data-line-length-hit="curve"]');
       const name=svg.querySelector('[data-damage-label-id="curve"][data-damage-label-role="name"]'),width=svg.querySelector('[data-crack-width-id="curve"]');
-      const l=length.getBBox(),n=name.getBBox(),w=width.getBBox();
-      return {font:Number(length.getAttribute('font-size'))*scale,gap:(l.y-w.y-w.height)*scale,hitGap:(Number(hit.getAttribute('y'))-n.y-n.height)*scale};
+      const l=length.getBBox(),n=name.getBBox(),w=width.getBBox(),h=hit.getBBox(),cy=l.y+l.height/2;
+      return {font:Number(length.getAttribute('font-size'))*scale,gap:(l.y-w.y-w.height)*scale,hitGap:(h.y-n.y-n.height)*scale,containsText:h.y<=cy&&h.y+h.height>=cy};
     }""",zoom)
     assert 8.4<=metrics['font']<=12,metrics
-    assert metrics['gap']>=-1 and metrics['hitGap']>=0,metrics
+    assert metrics['gap']>=-1 and metrics['hitGap']>=0 and metrics['containsText'],metrics
    page.evaluate('fit()')
    page.evaluate("selected=null;render();persist()")
    (ROOT/'test-results').mkdir(exist_ok=True);page.screenshot(path=str(ROOT/f'test-results/line-lengths-{engine}-{width}.png'),full_page=True)

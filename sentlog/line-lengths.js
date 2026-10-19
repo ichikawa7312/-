@@ -123,15 +123,18 @@ function drawLengths(){
     const nameLabel=[...svg.querySelectorAll('[data-damage-label-role="name"]')].find(el=>el.dataset.damageLabelId===s.id);
     const nameBox=nameLabel?.getBBox(),nameBottom=nameBox?nameBox.y+nameBox.height+1/z():p.y+base*.5;
     const widthBox=widthLabel?.getBBox();
-    const y=Math.max(widthBox?widthBox.y+widthBox.height+font*.5+2/z():p.y+base*1.02,nameBottom+font*.5+1/z());
+    let y=Math.max(widthBox?widthBox.y+widthBox.height+font*.5+2/z():p.y+base*1.02,nameBottom+font*.5+1/z());
     const style=root.SentlogLabelColors?.labelStyle?.(s.type,getProject(),root.SentlogDamageStyles?.getMode?.()||'hatch',scale);
     const t=makeEl('text',{x:p.x,y,'font-size':font,'text-anchor':'middle','dominant-baseline':'middle',fill:chosen?'#1d4ed8':style?.color||'#111827','font-weight':'700','paint-order':'stroke fill',stroke:'#fff','stroke-width':style?.halo||2.2/z(),'pointer-events':'none'});
     t.dataset.lineLengthId=s.id;if(!placeholder)t.dataset.shapeSummaryId=s.id;t.textContent=text;svg.appendChild(t);
+    // System-font ascent differs across platforms; use rendered glyph bounds.
+    const floor=Math.max(nameBottom,widthBox?widthBox.y+widthBox.height+2/z():nameBottom),glyph=t.getBBox();
+    if(glyph.y<floor){y+=floor-glyph.y;t.setAttribute('y',String(y));}
     if(chosen&&tool==='pan'){
       const b=t.getBBox(),w=Math.max(80/z(),b.width+16/z()),h=Math.max(30/z(),b.height+10/z());
       // The padded length target must never cover the draggable name text.
-      const top=Math.max(y-h/2,nameBottom);
-      const hit=makeEl('rect',{x:p.x-w/2,y:top,width:w,height:y+h/2-top,fill:'rgba(0,0,0,.001)','pointer-events':'all'});
+      const center=b.y+b.height/2,top=Math.max(center-h/2,nameBottom);
+      const hit=makeEl('rect',{x:p.x-w/2,y:top,width:w,height:center+h/2-top,fill:'rgba(0,0,0,.001)','pointer-events':'all'});
       hit.dataset.lineLengthHit=s.id;hit.style.touchAction='none';hit.style.cursor='pointer';hit.setAttribute('aria-label','長押しで線の長さを入力');bindHold(hit,s.id);svg.appendChild(hit);
     }
   }
