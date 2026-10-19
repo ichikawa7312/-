@@ -1,5 +1,5 @@
 """Actual built app and IndexedDB in two isolated browsers. All external I/O is mocked."""
-import copy, functools, hashlib, json, os, threading, uuid
+import copy, functools, hashlib, json, os, tempfile, threading, uuid
 from datetime import datetime, timezone
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -7,6 +7,7 @@ from urllib.parse import urlparse, parse_qs, unquote
 from playwright.sync_api import sync_playwright, expect
 
 ROOT=Path(__file__).resolve().parents[1]
+profiles=tempfile.TemporaryDirectory(prefix='sentlog-sync-browsers-')
 WS='surveyFieldNoteWorkspaceV1'; DRAW='surveyFieldNoteDrawingV1:d'; META='sentlogCloudProjectSyncV2:p'
 def record(name):
     return dict(id=name,type='ひび割れ',kind='polyline',points=[dict(x=1,y=2),dict(x=10,y=12)],no='手入力-'+name,memo='',photos=[])
@@ -72,7 +73,11 @@ def transport(route):
     unexpected.append((req.method,path,body));respond(route,{},500)
 
 def make_page(browser,name,pack,width=810):
-    context=browser.new_context(viewport=dict(width=width,height=1000),service_workers='block')
+    context_options=dict(viewport=dict(width=width,height=1000),service_workers='block')
+    # Use an on-disk profile for WebKit's native Blob/IndexedDB path, matching
+    # the installed field app rather than a private ephemeral browser context.
+    context=(browser.new_context(**context_options) if browser else
+             pw.webkit.launch_persistent_context(str(Path(profiles.name)/name),headless=True,**context_options))
     seed={WS:json.dumps({'projects':[pack['project']]}),DRAW:json.dumps(pack['drawings'][0]['state']),META:json.dumps(dict(revision=1,local_updated_at=1,fingerprint='pre-v180-baseline',fingerprint_schema=2))}
     init='window.sentlogImporting=true;'+''.join(f'localStorage.setItem({json.dumps(k)},{json.dumps(v)});' for k,v in seed.items())
     init+=f"localStorage.setItem('sentlogCloudSessionV1',JSON.stringify({{access_token:'synthetic',expires_at:Date.now()/1000+3600,user:{{id:'owner',email:'test@example.invalid'}}}}));localStorage.setItem('sentlogCloudDeviceV1',{json.dumps(name)});"
@@ -96,7 +101,7 @@ try:
         engine=os.getenv('SENTLOG_TEST_BROWSER','chromium');opts=dict(headless=True)
         executable=os.getenv('SENTLOG_CHROMIUM_EXECUTABLE','/usr/bin/chromium')
         if engine=='chromium' and os.path.exists(executable):opts.update(executable_path=executable,args=['--no-sandbox'])
-        browser=getattr(pw,engine).launch(**opts)
+        browser=None if engine=='webkit' else getattr(pw,engine).launch(**opts)
         ipad=payload(['common','ipad']);phone=payload(['common','phone'])
         for pack,name in [(ipad,'ipad'),(phone,'phone'),(cloud['payload'],'phone')]:
             pack['drawings'][0]['state']['shapes'][1]['photos']=[dict(id='photo-'+name,name=name+'.jpg',createdAt=1)]
@@ -146,7 +151,9 @@ try:
         assert cloud['payload']['drawings'][0]['state']['shapes'][0]['memo']=='共有側の説明'
         assert len(writes)==before and not checkpoints(c)
         assert not unexpected,unexpected
-        cc.close();browser.close()
+        cc.close()
+        if browser:browser.close()
         print('PASS two-device live app: conflict repair, native checkpoints, both photo blobs, automatic next edits, stale-revision race, storage/network failure, reload, true-conflict stop, phone layout')
 finally:
     server.shutdown();server.server_close()
+    profiles.cleanup()
