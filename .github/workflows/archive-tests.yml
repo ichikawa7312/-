@@ -63,6 +63,7 @@ jobs:
           python scripts/build_sync_page_count.py
           python scripts/build_line_lengths.py
           python scripts/build_dimension_text.py
+          python scripts/build_dimension_arrows.py
           node --check sentlog/dimension-text.js
           node --check sentlog/line-lengths.js
           node tests/line_lengths.test.cjs
