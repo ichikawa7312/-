@@ -157,7 +157,7 @@ function edgeColor(shape,preview=false,placeholder=false){
 }
 function drawText(text,x,y,angle,color,attrs={}){
   if(!text)return null;
-  const fs=(attrs.fontPx||10.5)/z();
+  const fs=root.SentlogDimensionText?.fontSize()??10.5/z();
   const t=makeEl('text',{x,y,transform:`rotate(${angle||0} ${x} ${y})`,
     'font-size':fs,'text-anchor':'middle','dominant-baseline':'middle',
     fill:color||'#374151','font-weight':attrs.weight||'700','paint-order':'stroke fill',
@@ -309,7 +309,7 @@ function drawEdgeLabel(shape,a,b,center,index,preview=false){
   const data=preview?{text:(calibrated()?formatLengthMm(lineLengthMm([a,b],shape?.page||state.currentPage)):'')||'',placeholder:false}:edgeLengthText(shape,a,b,index);
   if(!data.text)return;
   drawText(data.text,place.x,place.y,place.angle,edgeColor(shape,preview,data.placeholder),{
-    fontPx:preview?11:10.5,haloPx:2.5,weight:preview?'700':data.placeholder?'600':'650',
+    haloPx:2.5,weight:data.placeholder?'600':'700',
     className:'sentlog-shape-edge-dimension',shapeId:shape?.id||'preview',edgeIndex:index
   });
   if(!preview&&shape?.id){
@@ -453,7 +453,7 @@ function labelPaint(shape){
 function drawRepresentative(s){
   if(root.SentlogLineLengths?.isLine(s))return;
   const text=representativeText(s);if(!text)return;
-  const lp=getLabelPos(s),base=typeof labelFontSize==='function'?labelFontSize():18/z(),font=Math.max(10.5,base*.80),paint=labelPaint(s);
+  const lp=getLabelPos(s),base=typeof labelFontSize==='function'?labelFontSize():18/z(),font=root.SentlogDimensionText?.fontSize()??10.5/z(),paint=labelPaint(s);
   const t=makeEl('text',{x:lp.x,y:lp.y+base*1.02,'font-size':font,'text-anchor':'middle','dominant-baseline':'middle',
     fill:paint.color,'font-weight':'700','paint-order':'stroke fill',stroke:'#fff','stroke-width':paint.halo,
     'stroke-linejoin':'round','pointer-events':'none'});

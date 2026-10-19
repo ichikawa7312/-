@@ -251,8 +251,8 @@ function drawOne(s,target=svg,interactive=true,preview=false){
     const q=D.dimensionGeometry(pts[0],pts[1],finite(s.dimensionOffset,25*unit),8*unit,4*unit);if(!q)return;
     for(const [a,b] of [[q.a,q.e1],[q.b,q.e2],[q.d1,q.d2]])group.append(se('line',{...attrs,x1:a.x,y1:a.y,x2:b.x,y2:b.y}));
     for(const points of [q.arrow1,q.arrow2])group.append(se('polygon',{points:points.map(p=>p.x+','+p.y).join(' '),fill:color,'pointer-events':'none'}));
-    const p={x:q.mid.x,y:q.mid.y-8*unit},fs=finite(s.fontSize,12)*unit;
-    const t=se('text',{x:p.x,y:p.y,transform:`rotate(${q.angle} ${p.x} ${p.y})`,'font-size':fs,'font-family':'sans-serif','text-anchor':'middle','dominant-baseline':'middle',fill:color,'paint-order':'stroke fill',stroke:s.white===false?'none':'white','stroke-width':3*unit,'pointer-events':'none'});t.textContent=dimensionText(s);group.append(t);
+    const p={x:q.mid.x,y:q.mid.y-8/z()},fs=root.SentlogDimensionText?.fontSize()??10.5/z();
+    const t=se('text',{x:p.x,y:p.y,transform:`rotate(${q.angle} ${p.x} ${p.y})`,'font-size':fs,'font-weight':'700','text-anchor':'middle','dominant-baseline':'middle',fill:color,'paint-order':'stroke fill',stroke:s.white===false?'none':'white','stroke-width':3/z(),'pointer-events':'none'});t.textContent=dimensionText(s);group.append(t);
     hit=se('line',{x1:q.d1.x,y1:q.d1.y,x2:q.d2.x,y2:q.d2.y,stroke:'transparent','stroke-width':28/z(),'pointer-events':'stroke'});
   }
   if(interactive&&hit){hit.dataset.memoId=s.id;if(type!=='text')group.append(hit);hit.style.cursor='move';}

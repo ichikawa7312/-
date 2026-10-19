@@ -118,7 +118,7 @@ function drawLengths(){
     const manual=manualMetres(s),actual=measuredMetres(s),chosen=selected===s.id;
     const crack=root.SentlogCrackWidth?.isConcreteCrack?.(s);
     if(!chosen&&manual==null&&(actual==null||crack))continue;
-    const placeholder=manual==null&&actual==null,text=displayText(s),p=getLabelPos(s),base=labelFontSize(),font=Math.max(8.5/z(),base*.8);
+    const placeholder=manual==null&&actual==null,text=displayText(s),p=getLabelPos(s),base=labelFontSize(),font=root.SentlogDimensionText?.fontSize()??10.5/z();
     const widthLabel=[...svg.querySelectorAll('[data-crack-width-id]')].find(el=>el.dataset.crackWidthId===s.id);
     const nameLabel=[...svg.querySelectorAll('[data-damage-label-role="name"]')].find(el=>el.dataset.damageLabelId===s.id);
     const nameBox=nameLabel?.getBBox(),nameBottom=nameBox?nameBox.y+nameBox.height+1/z():p.y+base*.5;
