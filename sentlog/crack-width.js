@@ -125,7 +125,7 @@
     for(const old of svg.querySelectorAll('[data-crack-width-id]'))old.remove();
     for(const s of currentShapes()){
       const width=selectedWidth(s);if(width==null||!isConcreteCrack(s))continue;
-      const lp=getLabelPos(s),fs=typeof labelFontSize==='function'?labelFontSize():18/Math.max(scale||1,.001),font=Math.max(11,fs*.82),y=lp.y+fs*1.02,paint=labelPaint(s);
+      const lp=getLabelPos(s),fs=typeof labelFontSize==='function'?labelFontSize():18/Math.max(scale||1,.001),font=root.SentlogDimensionText?.fontSize()??10.5/Math.max(scale||1,.001),y=lp.y+fs*1.02,paint=labelPaint(s);
       const t=makeEl('text',{x:lp.x,y,'font-size':font,'text-anchor':'middle','dominant-baseline':'middle',fill:paint.color,'font-weight':'700','paint-order':'stroke fill','stroke':'#fff','stroke-width':paint.halo,'stroke-linejoin':'round','pointer-events':'none'});
       t.dataset.crackWidthId=s.id;t.textContent='W='+formatWidth(width);svg.appendChild(t);
     }

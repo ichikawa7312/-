@@ -196,9 +196,9 @@ function drawLabel(a,b,m,index,preview=false){
  }
  const rotation='rotate('+angle+' '+x+' '+y+')';
  const label=makeEl('text',{x,y,transform:rotation,
-   'font-size':(preview?12:11)/scaleNow,'text-anchor':'middle',
+   'font-size':window.SentlogDimensionText?.fontSize()??10.5/scaleNow,'text-anchor':'middle',
    'dominant-baseline':'middle',fill:preview?'#1d4ed8':'#334155',
-   'font-weight':preview?'700':'600','paint-order':'stroke',
+   'font-weight':'700','paint-order':'stroke',
    stroke:'#fff','stroke-width':2.2/scaleNow,'pointer-events':'none'});
  label.textContent=text;
  svg.appendChild(label);
@@ -247,8 +247,8 @@ function drawDimensions(){
      const px=(a.x+b.x)/2+(b.y-a.y)/length*13/z();
      const py=(a.y+b.y)/2-(b.x-a.x)/length*13/z();
      const el=makeEl('text',{x:px,y:py,transform:'rotate('+angle+' '+px+' '+py+')',
-       'font-size':11/z(),'text-anchor':'middle','dominant-baseline':'middle',
-       fill:'#15803d','font-weight':'600','paint-order':'stroke',stroke:'#fff',
+       'font-size':window.SentlogDimensionText?.fontSize()??10.5/z(),'text-anchor':'middle','dominant-baseline':'middle',
+       fill:'#15803d','font-weight':'700','paint-order':'stroke',stroke:'#fff',
        'stroke-width':2/z(),'pointer-events':'none'});
      el.textContent=labelText(m);svg.appendChild(el);
    }
