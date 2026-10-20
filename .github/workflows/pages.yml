@@ -74,6 +74,8 @@ jobs:
           python3 scripts/build_sync_asset_paging.py
           python3 scripts/build_sync_review.py
           python3 scripts/build_peer_photos.py
+          python3 scripts/build_drawing_export.py
+          node tests/drawing_export.test.cjs
           node tests/peer_photos.test.cjs
           node tests/sync_review.test.cjs
           node tests/sync_network.test.cjs
