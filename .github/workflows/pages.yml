@@ -72,6 +72,9 @@ jobs:
           python3 scripts/build_dimension_text.py
           python3 scripts/build_dimension_arrows.py
           python3 scripts/build_sync_asset_paging.py
+          python3 scripts/build_sync_review.py
+          node tests/sync_review.test.cjs
+          node tests/sync_network.test.cjs
           node tests/sync_asset_paging.test.cjs
           node --check sentlog/dimension-text.js
           node --check sentlog/line-lengths.js

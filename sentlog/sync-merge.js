@@ -1,4 +1,4 @@
-/* v1.81: verified PDF page counts; conservative record-level merge. */
+/* v1.86: equivalent zero rotations and explicit, snapshot-bound record review. */
 (function(root){
   'use strict';
   const copy=x=>x===undefined?undefined:JSON.parse(JSON.stringify(x));
@@ -16,12 +16,23 @@
   const stateValue=s=>s===undefined?undefined:{...omit(s,viewKeys),shapes:(s.shapes||[]).map(shapeValue)};
   const metaValue=m=>m===undefined?undefined:omit(m,['updatedAt','shapeCount','photoCount']);
   const drawingValue=d=>d===undefined?undefined:{meta:metaValue(d.meta),state:stateValue(d.state)};
+  function rotationValue(value){
+    if(value==null)return {};
+    if(!object(value))return value;
+    return Object.fromEntries(Object.entries(value).flatMap(([page,angle])=>{
+      if(typeof angle!=='number'||!Number.isFinite(angle))return [[page,angle]];
+      const normalized=((angle%360)+360)%360;
+      return normalized===0?[]:[[page,normalized]];
+    }));
+  }
+  const recordChoiceKey=(drawingId,recordId)=>JSON.stringify([drawingId,recordId]);
+  const recordName=s=>s?.recordKind==='drawing-memo'?'図面メモ（'+({rect:'四角',ellipse:'丸',line:'線',freehand:'フリーハンド',text:'文字',dimension:'寸法'}[s.memoType]||'記入')+'）':null;
   function merge(local,remote,options={}){
     const conflicts=[],preserve=options.preserve===true,base=options.base;
     const clash=(path,reason='内容が異なります')=>{conflicts.push({path,reason});return undefined;};
     function choose(l,r,b,path,clean=x=>x){
       if(equal(clean(l),clean(r)))return {done:true,value:copy(r)};
-      if(base&&!preserve){
+      if(base){
         if(equal(clean(l),clean(b)))return {done:true,value:copy(r)};
         if(equal(clean(r),clean(b)))return {done:true,value:copy(l)};
       }
@@ -53,10 +64,17 @@
       const lm=map(l,path),rm=map(r,path),bm=map(b||[],path),out=[];
       // Keep the shared order, then append this device's additions. Manual labels stay intact.
       for(const id of new Set([...rm.keys(),...lm.keys(),...bm.keys()])){
-        const a=lm.get(id),z=rm.get(id),ancestor=bm.get(id),label=path+' / '+(a?.meta?.name||z?.meta?.name||a?.no||z?.no||a?.autoLabel||z?.autoLabel||id);
+        const a=lm.get(id),z=rm.get(id),ancestor=bm.get(id),label=path+' / '+(a?.meta?.name||z?.meta?.name||a?.no||z?.no||a?.autoLabel||z?.autoLabel||recordName(a)||recordName(z)||id);
         const picked=choose(a,z,ancestor,label,clean);
         let value;
-        if(picked.done)value=picked.value;
+        // Manual preservation must recurse even for one-sided edits so that
+        // annotations and photos deleted on only one side are still retained.
+        if(preserve){
+          if(a===undefined||z===undefined)value=copy(a||z);
+          else if(equal(clean(a),clean(z)))value=copy(z);
+          else value=combine(a,z,ancestor,label);
+        }
+        else if(picked.done)value=picked.value;
         else if(a===undefined||z===undefined){
           if(preserve||ancestor===undefined)value=copy(a||z);
           else {clash(label,'片方で削除され、もう片方で変更されています');continue;}
@@ -66,11 +84,14 @@
       return out;
     }
     function photo(l,r,b,path){return properties(l,r,b,path);}
-    function shape(l,r,b,path){
+    function shape(l,r,b,path,drawingId){
       const body=s=>s===undefined?undefined:omit(s,['photos',...numbered]);
       const picked=choose(body(l),body(r),body(b),path);
-      if(!picked.done){clash(path,'同じ記録の位置・寸法・説明が変更されています');return;}
-      const out=picked.value;
+      const choice=preserve?options.recordChoices?.[recordChoiceKey(drawingId,l.id)]:null;
+      if(!picked.done&&choice!=='local'&&choice!=='remote'){
+        conflicts.push({path,reason:'同じ記録の位置・寸法・説明が変更されています',kind:'record',drawingId,recordId:l.id,local:copy(l),remote:copy(r)});return;
+      }
+      const out=picked.done?picked.value:copy(body(choice==='local'?l:r));
       out.photos=entities(l.photos||[],r.photos||[],b?.photos||[],path+' / 写真',x=>x,photo);
       for(const k of numbered)if(r[k]!==undefined)out[k]=copy(r[k]);
       return out;
@@ -83,7 +104,7 @@
         if(!equal(l.state[key],r.state[key])){clash(path,label+'が異なります');return;}
       }
       const st=properties(l.state,r.state,b?.state,path+' / 用紙・縮尺',['shapes',...viewKeys]);
-      st.shapes=entities(l.state.shapes||[],r.state.shapes||[],b?.state?.shapes||[],path,shapeValue,shape);
+      st.shapes=entities(l.state.shapes||[],r.state.shapes||[],b?.state?.shapes||[],path,shapeValue,(a,z,ancestor,label)=>shape(a,z,ancestor,label,l.meta.id));
       for(const k of viewKeys)if(l.state[k]!==undefined)st[k]=copy(l.state[k]);
       meta.updatedAt=Math.max(Number(l.meta.updatedAt)||0,Number(r.meta.updatedAt)||0);
       return {id:l.id,meta,state:st};
@@ -107,6 +128,9 @@
     if(!local?.project?.id||local.project.id!==remote?.project?.id||(base&&base.project?.id!==local.project.id))clash('案件','別の案件です');
     if(!preserve&&!base)clash('前回同期','共通の同期記録がありません。「両方の記録を残して同期」を選んでください');
     if(conflicts.length)return {ok:false,conflicts};
+    // Missing entries and explicit 0 degrees render identically in the editor.
+    // Never coerce malformed values or treat a genuine quarter-turn as equal.
+    for(const d of [...ls,...rs,...bs])d.state.pageRotations=rotationValue(d.state.pageRotations);
     // Only the caller that has hashed the original PDF and read it with PDF.js
     // can provide this evidence. Never infer page count from a timestamp or max().
     for(const [id,count] of Object.entries(options.verifiedPdfPageCounts||{})){
@@ -141,7 +165,7 @@
     project.updatedAt=Math.max(Number(local.project.updatedAt)||0,Number(remote.project.updatedAt)||0,Number(options.now)||Date.now())+1;
     return {ok:true,payload:{project,drawings:ds.map(({meta,state})=>({meta,state}))},conflicts:[]};
   }
-  const api={merge,equal,canonical};
+  const api={merge,equal,canonical,recordChoiceKey};
   if(typeof module!=='undefined'&&module.exports)module.exports=api;
   else root.SentlogSyncMerge=api;
 })(typeof window!=='undefined'?window:globalThis);
