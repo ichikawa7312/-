@@ -1,0 +1,136 @@
+name: Drawing export checks
+on:
+  push:
+    branches: [sentlog-v188-drawing-export]
+  pull_request:
+    paths: ['sentlog/drawing-export*', 'scripts/build_drawing_export.py', 'tests/drawing_export*']
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build and regression checks
+        run: |
+          python3 scripts/build_archive.py
+          python3 scripts/build_management.py
+          python3 scripts/build_capacity.py
+          python3 scripts/build_resilience.py
+          python3 scripts/build_photo_recovery.py
+          python3 scripts/build_shape_move.py
+          python3 scripts/build_instant_damage_type.py
+          python3 scripts/build_compact_labels.py
+          python3 scripts/build_overview_labels.py
+          python3 scripts/build_polygon_snap.py
+          python3 scripts/build_polygon_dimensions.py
+          python3 scripts/build_damage_catalog.py
+          python3 scripts/build_toolbar_icons.py
+          python3 scripts/build_toolbar_help.py
+          python3 scripts/build_damage_styles.py
+          python3 scripts/build_label_colors.py
+          python3 scripts/build_plain_numbers.py
+          python3 scripts/build_single_number_ui.py
+          python3 scripts/build_optional_symbol_ui.py
+          python3 scripts/build_image_recovery_view.py
+          python3 scripts/build_large_image_view.py
+          python3 scripts/build_image_memory.py
+          python3 scripts/build_image_viewport.py
+          python3 scripts/build_original_photos.py
+          python3 scripts/build_crack_width.py
+          python3 scripts/build_field_records.py
+          python3 scripts/build_short_photo_arrow.py
+          python3 scripts/build_photo_label_position.py
+          python3 scripts/build_field_record_move.py
+          python3 scripts/build_record_inspector_fix.py
+          python3 scripts/build_drawing_list_actions.py
+          python3 scripts/build_editor_drawing_add.py
+          python3 scripts/build_drawing_groups.py
+          python3 scripts/build_group_sync_migration.py
+          python3 scripts/build_dimension_lines.py
+          python3 scripts/build_shape_dimensions.py
+          python3 scripts/build_editable_shape_dimensions.py
+          python3 scripts/build_manual_dimension_priority.py
+          python3 scripts/build_drawing_memos.py
+          python3 -m pip install fonttools==4.61.1
+          python3 scripts/build_dxf.py
+          python3 scripts/build_dxf_layers.py
+          python3 scripts/build_sync_merge.py
+          python3 scripts/build_sync_page_count.py
+          python3 scripts/build_line_lengths.py
+          python3 scripts/build_dimension_text.py
+          python3 scripts/build_dimension_arrows.py
+          python3 scripts/build_sync_asset_paging.py
+          python3 scripts/build_sync_review.py
+          python3 scripts/build_peer_photos.py
+          python3 scripts/build_drawing_export.py
+          node tests/drawing_export.test.cjs
+          node tests/peer_photos.test.cjs
+          node tests/sync_review.test.cjs
+          node tests/sync_network.test.cjs
+          node tests/sync_asset_paging.test.cjs
+          node --check sentlog/dimension-text.js
+          node --check sentlog/line-lengths.js
+          node tests/line_lengths.test.cjs
+          node tests/sync_merge.test.cjs
+          node --check sentlog/dxf.js
+          node --check sentlog/dxf-core.js
+          node tests/dxf.test.cjs
+          node --check sentlog/drawing-memos.js
+          node tests/drawing_memos.test.cjs
+          node tests/image_recovery_view.test.cjs
+          node --check sentlog/original-photo-store.js
+          node --check sentlog/crack-width.js
+          node --check sentlog/field-records.js
+          node --check sentlog/drawing-list-actions.js
+          node --check sentlog/editor-drawing-add.js
+          node --check sentlog/drawing-groups.js
+          node --check sentlog/dimension-lines.js
+          node --check sentlog/shape-dimensions.js
+          node tests/large_image_view.test.cjs
+          node tests/original_photo_store.test.cjs
+          node tests/crack_width.test.cjs
+          node tests/field_records.test.cjs
+          node tests/drawing_list_actions.test.cjs
+          node tests/editor_drawing_add.test.cjs
+          node tests/drawing_groups.test.cjs
+          node tests/group_sync_migration.test.cjs
+          node tests/dimension_lines.test.cjs
+          node tests/shape_dimensions.test.cjs
+          node tests/editable_shape_dimensions.test.cjs
+          node tests/manual_dimension_priority.test.cjs
+          node tests/core.test.cjs
+          node tests/pc.test.cjs
+          node tests/integration.test.cjs
+          node tests/management.test.cjs
+          node tests/capacity.test.cjs
+          node tests/capacity_pc.test.cjs
+          node tests/resilience.test.cjs
+          node tests/resilience_pc.test.cjs
+          node tests/photo_recovery_pc.test.cjs
+          node tests/photo_delivery_guard.test.cjs
+          node tests/leader_line_width.test.cjs
+          node tests/shape_move.test.cjs
+          node tests/instant_damage_type.test.cjs
+          node tests/compact_labels.test.cjs
+          node tests/polygon_snap.test.cjs
+          node tests/polygon_dimensions.test.cjs
+          node tests/damage_catalog.test.cjs
+          node tests/toolbar_icons.test.cjs
+          node tests/toolbar_help.test.cjs
+          node tests/damage_styles.test.cjs
+          node tests/label_colors.test.cjs
+          node tests/plain_numbers.test.cjs
+          node tests/single_number_ui.test.cjs
+          node tests/optional_symbol_ui.test.cjs
+      - name: PDF export in Chromium and WebKit
+        run: |
+          pip install playwright==1.57.0 reportlab==4.4.9 pypdf==6.10.0
+          python -m playwright install --with-deps chromium webkit
+          SENTLOG_TEST_BROWSERS=chromium,webkit python tests/drawing_export_ui.py
