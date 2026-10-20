@@ -9,6 +9,12 @@ from playwright.sync_api import sync_playwright
 ROOT=Path(__file__).resolve().parents[1]
 class Handler(SimpleHTTPRequestHandler):
  def log_message(self,*args):pass
+ def do_POST(self):
+  prefix='/storage/v1/object/sentlog-temp/'
+  assert self.path.startswith(prefix) and self.headers.get('x-upsert')=='false'
+  objects[self.path.removeprefix(prefix)]=self.rfile.read(int(self.headers['Content-Length']))
+  stats['uploads']+=1
+  self.send_response(200);self.send_header('Content-Type','application/json');self.end_headers();self.wfile.write(b'{}')
 server=ThreadingHTTPServer(('127.0.0.1',0),functools.partial(Handler,directory=str(ROOT)))
 threading.Thread(target=server.serve_forever,daemon=True).start()
 origin=f'http://127.0.0.1:{server.server_port}'
@@ -26,6 +32,10 @@ state={'id':'drawing','shapes':[{'id':'defect-1','type':'欠損・損傷','page'
 workspace={'projects':[{'id':'local','name':'Synthetic survey','drawings':[{'id':'drawing'}]}]}
 html='''<!doctype html><html><body><main id="projectsView"><div class="manager-shell"></div></main><div id="sentlogCloudLoggedIn"></div>
 <script>
+ // WebKit omits Blob bodies from Playwright's intercepted request metadata.
+ // Send uploads through native fetch to the test HTTP server and verify actual bytes.
+ const nativeFetch=window.fetch.bind(window);
+ window.fetch=(input,options)=>{const u=new URL(input,location.href);return nativeFetch(options?.method==='POST'&&u.pathname.startsWith('/storage/v1/object/sentlog-temp/')?location.origin+u.pathname:input,options);};
  const state=STATE,workspace=WORKSPACE;
  const nativeTimeout=window.setTimeout;window.setTimeout=(f,ms,...a)=>[2500,4500].includes(ms)?0:nativeTimeout(f,ms,...a);
  window.setInterval=()=>0;
@@ -96,9 +106,7 @@ try:
      if key in requests:requests[key]['received_at']='now'
      stats['acks']+=1;data={'received':True}
     elif path.startswith('/storage/v1/object/sentlog-temp/'):
-     assert rr.request.method=='POST';assert rr.request.headers.get('x-upsert')=='false'
-     objects[path.removeprefix('/storage/v1/object/sentlog-temp/')]=rr.request.post_data_buffer
-     stats['uploads']+=1;data={}
+     raise AssertionError('uploads must reach the HTTP server with actual bytes')
     elif path.startswith('/storage/v1/object/authenticated/sentlog-temp/'):
      rr.fulfill(content_type='image/jpeg',headers=headers,body=objects[path.removeprefix('/storage/v1/object/authenticated/sentlog-temp/')]);return
     else:raise AssertionError('unexpected '+path)
