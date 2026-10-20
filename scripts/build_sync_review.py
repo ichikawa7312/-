@@ -24,6 +24,9 @@ replace('sentlog/index.html',"['sync-merge.js?v=186','verifiedPdfPageCounts']","
 replace('sentlog/index.html','cloud-sync.js?v=20261020-assets-185','cloud-sync.js?v=20261020-review-186',2)
 replace('sentlog/index.html',"['cloud-sync.js?v=20261020-review-186','readProjectAssets']","['cloud-sync.js?v=20261020-review-186','sentlogRecordReview']")
 replace('sentlog/index.html','phone-runtime.js?v=185','phone-runtime.js?v=186',2)
+replace('sentlog/index.html','photo-recovery.js?v=141','photo-recovery.js?v=186',2)
+replace('sentlog-pc/index.html','photo-recovery.js?v=143','photo-recovery.js?v=186')
+replace('sentlog-pc/index.html','v1.43 · 写真再送ループ対策','v1.86 · 写真再取得の全件確認')
 replace('sentlog/index.html',"['phone-runtime.js?v=186','v1.85']","['phone-runtime.js?v=186','v1.86']")
 replace('sentlog/phone-runtime.js','v1.85','v1.86',4)
 replace('sentlog/sw.js','sentlog-pwa-v196','sentlog-pwa-v197')
@@ -32,5 +35,6 @@ for p in (ROOT/'tests').iterdir():
     s=p.read_text();updated=s.replace("SENTLOG_BUILD==='v1.85'","SENTLOG_BUILD==='v1.86'").replace("'v1.85'","'v1.86'").replace('sentlog-pwa-v196','sentlog-pwa-v197')
     for name,old,new in [('phone-runtime','185','186'),('sync-merge','181','186'),('cloud-sync','20261020-assets-185','20261020-review-186')]:
         updated=updated.replace(f'{name}.js?v={old}',f'{name}.js?v={new}').replace(rf'{name}\.js\?v={old}',rf'{name}\.js\?v={new}')
+    updated=updated.replace('photo-recovery.js?v=143','photo-recovery.js?v=186').replace('photo-recovery.js?v=141','photo-recovery.js?v=186').replace('v1.43 · 写真再送ループ対策','v1.86 · 写真再取得の全件確認')
     if updated!=s:p.write_text(updated)
 print('Built Sentlog v1.86: equivalent rotations, verified ancestor/manual review, batched asset checks and bounded read retries')

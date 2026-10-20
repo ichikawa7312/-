@@ -13,7 +13,7 @@ class Dir{
  file(name,blob){this.files.set(name,blob);return this;}
 }
 function element(tag){return {tag,children:[],style:{},textContent:'',setAttribute(){},append(...a){this.children.push(...a);},prepend(...a){this.children.unshift(...a);}};}
-async function fixture({corrupt=false,unknownMime=false,staleRequest=false,recentHeartbeat=false,inactiveDevice=false}={}){
+async function fixture({corrupt=false,unknownMime=false,staleRequest=false,recentHeartbeat=false,inactiveDevice=false,manyAssets=false}={}){
  const data=new Blob(['jpeg-data-test-photo-file']);const sha=await C.hash(data),root=new Dir('保管');
  const original=new File([corrupt?'wrong-photo':data],'image.jpg',{type:''});
  root.dir('2026').dir('テルモ愛鷹工場').dir('写真').dir('01.東側').dir('ひび割れ②').file('image.jpg',original);
@@ -41,7 +41,13 @@ async function fixture({corrupt=false,unknownMime=false,staleRequest=false,recen
        let result=[];
        if(u.includes('sentlog_pdf_requests'))result=desired;
        else if(u.includes('sentlog_devices'))result=devices.filter(d=>d.active);
-       else if(u.includes('sentlog_assets'))result=[a];
+       else if(u.includes('sentlog_assets')){
+         const q=new URL(u).searchParams;
+         result=[...(manyAssets?Array.from({length:1100},(_,n)=>({...a,id:'00000000-0000-4000-8000-'+String(n).padStart(12,'0')})):[]),a];
+         if(q.has('id'))result=result.filter(row=>row.id>q.get('id').slice(3));
+         if(q.get('order')==='id.asc')result.sort((a,b)=>a.id.localeCompare(b.id));
+         result=result.slice(0,Math.min(1000,Number(q.get('limit')||1000)));
+       }
        else if(u.includes('sentlog_projects'))result=[{id:a.project_id}];
        else if(u.includes('sentlog_pc_receipts'))result=[receipt];
        else if(u.includes('sentlog_claim_photo_redelivery')){
@@ -94,5 +100,8 @@ async function fixture({corrupt=false,unknownMime=false,staleRequest=false,recen
  const inactive=await fixture({inactiveDevice:true});
  assert.equal(inactive.posts.length,0,'stopped/removed device must not trigger uploads');
  assert.equal(inactive.calls.length,0);
+ const many=await fixture({manyAssets:true});
+ assert.equal(many.posts.length,1,'PC original beyond API cap must be found and verified');
+ assert.equal(await C.hash(many.posts[0].bytes),many.sha);
  console.log('PASS photo redelivery PC: verified source, proper MIME, 5-day stale browser request ignored, recent active device allowed, stopped device ignored, corruption fails closed');
 })().catch(e=>{console.error(e);process.exitCode=1;});

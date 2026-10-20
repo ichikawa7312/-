@@ -55,7 +55,16 @@
    &&(await digest(blob))===String(asset.sha256).toLowerCase();
  }
  async function assetList(){
-  return await api('sentlog_assets?kind=eq.photo&select=id,project_id,status,file_name,mime_type,byte_size,sha256,storage_path,metadata&limit=5000');
+  const out=[];let after='';
+  for(;;){
+   const rows=await api('sentlog_assets?kind=eq.photo&select=id,project_id,status,file_name,mime_type,byte_size,sha256,storage_path,metadata&order=id.asc&limit=400'+(after?'&id=gt.'+enc(after):''));
+   if(!Array.isArray(rows))throw Error('写真一覧を確認できません。');
+   if(!rows.length)return out;
+   for(const row of rows){
+    if(typeof row.id!=='string'||!row.id||row.id<=after)throw Error('写真一覧を最後まで確認できません。');
+    after=row.id;out.push(row);
+   }
+  }
  }
  function currentPhotoKeys(){
   const keys=new Set(),projects=new Set();

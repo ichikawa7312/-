@@ -4,7 +4,7 @@ All external calls are synthetic. No user account, PC files or production data t
 import json,hashlib,threading,functools,os
 from pathlib import Path
 from http.server import SimpleHTTPRequestHandler,ThreadingHTTPServer
-from urllib.parse import urlparse
+from urllib.parse import urlparse,parse_qs
 from playwright.sync_api import sync_playwright
 ROOT=Path(__file__).resolve().parents[1]
 class Handler(SimpleHTTPRequestHandler):
@@ -60,7 +60,9 @@ try:
      rr.fulfill(status=204,headers={'Access-Control-Allow-Origin':'*'});return
     data=[];status=200;binary=False
     if path.endswith('/sentlog_projects'):data=[{'id':cloud_id}]
-    elif path.endswith('/sentlog_assets'):data=[{**asset,'status':'uploaded' if stats['uploaded'] else 'storage_deleted'}]
+    elif path.endswith('/sentlog_assets'):
+     q=parse_qs(urlparse(u).query)
+     data=[] if q.get('id',[''])[0]=='gt.'+asset_id else [{**asset,'status':'uploaded' if stats['uploaded'] else 'storage_deleted'}]
     elif path.endswith('/rpc/sentlog_request_photo'):
      stats['requests']+=1;stats['uploaded']=True;data={'requested':True,'asset_id':asset_id}
     elif path.endswith('/rpc/sentlog_ack_photo'):
