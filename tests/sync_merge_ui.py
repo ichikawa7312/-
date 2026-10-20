@@ -1,5 +1,5 @@
 """Actual built app and IndexedDB in two isolated browsers. All external I/O is mocked."""
-import copy, functools, hashlib, json, os, tempfile, threading, uuid, urllib.request
+import base64, copy, functools, hashlib, json, os, tempfile, threading, uuid, urllib.request
 from datetime import datetime, timezone
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -77,7 +77,9 @@ def transport(route):
                 term=q.get(field,[None])[0]
                 if term and term.startswith('eq.'):rows=[a for a in rows if a.get(field)==term[3:]]
                 if term and term.startswith('neq.'):rows=[a for a in rows if a.get(field)!=term[4:]]
-            respond(route,rows);return
+                if term and term.startswith('gt.'):rows=[a for a in rows if a.get(field,'')>term[3:]]
+            if q.get('order')==['id.asc']:rows.sort(key=lambda a:a['id'])
+            respond(route,rows[:min(1000,int(q.get('limit',['1000'])[0]))]);return
         assert req.method in ('POST','PATCH')
         body['id']=body.get('id',str(uuid.uuid4()));assets[body['client_key']]=body;respond(route,[body]);return
     if path.endswith('/sentlog_pdf_requests'):respond(route,[]);return
@@ -217,9 +219,42 @@ try:
         sync(d);assert cloud['payload']['drawings'][0]['state']['pageCount']==7 and len(writes)>before
         assert not unexpected,unexpected
         cd.close()
+        # Production-sized project: the original and a photo's identity fall
+        # beyond the API's 1,000-row cap. Use native image/IndexedDB bytes.
+        assets.clear();blobs.clear();before=len(writes)
+        raw=base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6YY0AAAAASUVORK5CYII=')
+        pack=payload(['common','ipad']);remote=payload(['common','phone'])
+        for p in (pack,remote):
+            p['drawings'][0]['meta'].update(name='護岸4',sourceType='image',fileName='image.png',pageCount=1)
+            p['project']['drawings'][0]=copy.deepcopy(p['drawings'][0]['meta'])
+            p['drawings'][0]['state'].update(sourceType='image',fileName='image.png',pageCount=1)
+            p['drawings'][0]['state']['shapes'][0]['photos']=[dict(id='late-photo',name='photo.jpg',createdAt=1)]
+        cloud=dict(revision=2,payload=remote,updated_at='2026-10-20T00:00:00Z')
+        for n in range(1100):
+            key=f'photo:other:{n}'
+            assets[key]=dict(id=f'asset-{n:05}',project_id='cloud-p',client_key=key,kind='photo',status='storage_deleted',metadata={})
+        assets['drawing:d']=dict(id='zz-drawing',project_id='cloud-p',client_key='drawing:d',kind='drawing',file_name='image.png',storage_path='image.png',mime_type='image/png',byte_size=len(raw),sha256=hashlib.sha256(raw).hexdigest(),status='storage_deleted',source_device_id='ipad',metadata=dict(drawing_id='d',source_type='image'))
+        photo=b'late verified photo'
+        assets['photo:d:late-photo']=dict(id='zz-photo',project_id='cloud-p',client_key='photo:d:late-photo',kind='photo',file_name='photo.jpg',storage_path='late.jpg',mime_type='image/jpeg',byte_size=len(photo),sha256='0'*64,status='storage_deleted',source_device_id='ipad',metadata=dict(drawing_id='d',photo_id='late-photo'))
+        assert 'drawing:d' not in [a['client_key'] for a in list(assets.values())[:1000]]
+        ce,e=make_page(browser,'many-assets-ipad',pack)
+        e.evaluate("bytes=>SentlogRecords.writeFile('background:d',new Blob([new Uint8Array(bytes)],{type:'image/png'}))",list(raw))
+        e.evaluate("bytes=>SentlogRecords.writeFile('photo:d:late-photo',new Blob([new Uint8Array(bytes)],{type:'image/jpeg'}))",list(photo))
+        sync(e);open_merge(e);merge_click(e)
+        expect(e.locator('#sentlogMergePanel')).to_contain_text('同じ写真IDの内容が異なります')
+        assert ids(e)==['common','ipad'] and not checkpoints(e) and len(writes)==before
+        assets['photo:d:late-photo']['sha256']=hashlib.sha256(photo).hexdigest()
+        merge_click(e);e.wait_for_function("JSON.parse(SentlogRecords.getItem('surveyFieldNoteDrawingV1:d')).shapes.length===3")
+        assert set(ids(e))=={'common','phone','ipad'} and len(checkpoints(e))==1
+        assert e.evaluate("async()=>Array.from(new Uint8Array(await(await getDBFile('background:d')).arrayBuffer()))")==list(raw)
+        assert e.evaluate("async()=>Array.from(new Uint8Array(await(await getDBFile('photo:d:late-photo')).arrayBuffer()))")==list(photo)
+        sync(e);assert {s['id'] for s in cloud['payload']['drawings'][0]['state']['shapes']}=={'common','phone','ipad'}
+        assert not unexpected,unexpected
+        ce.close()
         if browser:browser.close()
         print('PASS two-device live app: conflict repair, native checkpoints, both photo blobs, automatic next edits, stale-revision race, storage/network failure, reload, true-conflict stop, phone layout')
         print('PASS real seven-page PDF: wrong original blocked, stale count reconciled, page-7 records and original bytes retained, original counts checkpointed, cloud upload successful')
+        print('PASS 1,102 assets: image and photo past API cap verified, late photo mismatch blocked, both devices records merged, original blobs retained')
 finally:
     server.shutdown();server.server_close()
     profiles.cleanup()

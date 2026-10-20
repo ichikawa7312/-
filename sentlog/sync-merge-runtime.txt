@@ -7,12 +7,30 @@ let mergeNotice='';
 function normalizeMergeSnapshot(payload){
   return window.SentlogDrawingGroups?.normalizeSnapshotPayload?.(payload)||JSON.parse(JSON.stringify(payload));
 }
+async function readProjectAssets(projectId,fields,{availableOnly=false}={}){
+  const select=[...new Set(['id',...fields.split(',')])].join(',');
+  const base='/rest/v1/sentlog_assets?project_id=eq.'+enc(projectId)+
+    (availableOnly?'&status=neq.storage_deleted':'')+'&select='+enc(select)+'&order=id.asc&limit=400';
+  const assets=[];let after='';
+  // The API caps each response. Continue even after a short page, and use the
+  // immutable ID rather than offsets so concurrent removals cannot shift rows.
+  for(;;){
+    const rows=await rest(base+(after?'&id=gt.'+enc(after):''));
+    if(!Array.isArray(rows))throw Error('図面・写真の一覧を確認できません。もう一度同期してください。');
+    if(!rows.length)return assets;
+    for(const row of rows){
+      if(typeof row.id!=='string'||!row.id||row.id<=after)
+        throw Error('図面・写真の一覧を最後まで確認できません。もう一度同期してください。');
+      after=row.id;assets.push(row);
+    }
+  }
+}
 async function checkMergeFiles(cp,local,remote){
   const verifiedPdfPageCounts={};
   const remoteIds=new Set(remote.project.drawings.map(d=>d.id));
   const shared=local.drawings.filter(d=>remoteIds.has(d.meta.id));
   if(!shared.some(d=>d.state?.sourceType||d.state?.shapes?.some(s=>s.photos?.length)))return verifiedPdfPageCounts;
-  const assets=await rest('/rest/v1/sentlog_assets?project_id=eq.'+enc(cp.id)+'&select=client_key,kind,sha256,byte_size,metadata');
+  const assets=await readProjectAssets(cp.id,'client_key,kind,sha256,byte_size,metadata');
   const byKey=new Map((assets||[]).map(a=>[a.client_key,a]));
   for(const d of shared){
     if(d.state.sourceType){
