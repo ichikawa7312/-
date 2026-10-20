@@ -66,6 +66,8 @@ jobs:
           python scripts/build_dimension_arrows.py
           python scripts/build_sync_asset_paging.py
           python scripts/build_sync_review.py
+          python scripts/build_peer_photos.py
+          node tests/peer_photos.test.cjs
           node tests/sync_review.test.cjs
           node tests/sync_network.test.cjs
           node tests/sync_asset_paging.test.cjs
@@ -149,6 +151,7 @@ jobs:
           NODE_PATH="$RUNNER_TEMP/sentlog-dom/node_modules" node tests/drawing_memos_dom.cjs
           pip install playwright==1.57.0
           python -m playwright install --with-deps chromium webkit
+          SENTLOG_TEST_BROWSERS=chromium,webkit python tests/peer_photos_ui.py
           python tests/dimension_text_ui.py
           SENTLOG_TEST_BROWSER=webkit python tests/dimension_text_ui.py
           python tests/line_lengths_ui.py
