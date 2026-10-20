@@ -3,6 +3,7 @@ let mergeBusy=false;
 const syncConflicts=new Map();
 const MERGE_CHECKPOINT_PREFIX='sentlogSyncMergeCheckpointV1:';
 let mergeNotice='';
+let mergeReview=null;
 
 function normalizeMergeSnapshot(payload){
   return window.SentlogDrawingGroups?.normalizeSnapshotPayload?.(payload)||JSON.parse(JSON.stringify(payload));
@@ -64,7 +65,7 @@ async function checkMergeFiles(cp,local,remote){
   }
   return verifiedPdfPageCounts;
 }
-async function tryMergeProject(cp,snap,{manual=false}={}){
+async function tryMergeProject(cp,snap,{manual=false,review=null}={}){
   const store=window.SentlogRecords,api=window.SentlogSyncMerge;
   if(!api||!window.sentlogSyncView?.mergeCommit)return {applied:false,reason:'統合機能を読み込めません。'};
   if(!archive.canSync(cp,null)||cp.status!=='active')return {applied:false,reason:'使用中の案件だけが対象です。'};
@@ -74,15 +75,20 @@ async function tryMergeProject(cp,snap,{manual=false}={}){
   const meta=getSyncMeta(lp.id),local=projectSnapshot(lp),remote=snap.payload;
   const expectedRecords=[[WORKSPACE_KEY,wsRaw],...lp.drawings.map(d=>[DRAWING_KEY_PREFIX+d.id,store.getItem(DRAWING_KEY_PREFIX+d.id)])];
   if(!manual&&!meta?.base_snapshot)return {applied:false,reason:'前回の同期内容が未保存です。両方の記録を残す操作を選んでください。'};
-  if(!manual&&await snapshotFingerprint(meta.base_snapshot)!==meta.fingerprint)return {applied:false,reason:'前回の同期記録の照合に失敗しました。両方の記録を残す操作を選んでください。'};
+  const verifiedBase=meta?.base_snapshot&&await snapshotFingerprint(meta.base_snapshot)===meta.fingerprint?meta.base_snapshot:null;
+  if(!manual&&!verifiedBase)return {applied:false,reason:'前回の同期記録の照合に失敗しました。両方の記録を残す操作を選んでください。'};
+  const localFingerprint=await snapshotFingerprint(local),remoteFingerprint=await snapshotFingerprint(remote);
+  if(review&&(review.projectId!==lp.id||review.localFingerprint!==localFingerprint||review.remoteFingerprint!==remoteFingerprint))
+    return {applied:false,reason:'確認中に記録が更新されました。「両方の記録を残して同期」から、最新の違いを確認してください。'};
   const verifiedPdfPageCounts=await checkMergeFiles(cp,local,remote);
   const result=api.merge(normalizeMergeSnapshot(local),normalizeMergeSnapshot(remote),{
-    preserve:manual,base:!manual&&meta?.base_snapshot?normalizeMergeSnapshot(meta.base_snapshot):undefined,verifiedPdfPageCounts
+    preserve:manual,base:verifiedBase?normalizeMergeSnapshot(verifiedBase):undefined,verifiedPdfPageCounts,recordChoices:review?.choices
   });
-  if(!result.ok)return {applied:false,reason:result.conflicts.slice(0,3).map(c=>c.path+'：'+c.reason).join(' / ')};
+  if(!result.ok)return {applied:false,reason:result.conflicts.slice(0,3).map(c=>c.path+'：'+c.reason).join(' / '),
+    review:manual&&result.conflicts.every(c=>c.kind==='record')?{projectId:lp.id,localFingerprint,remoteFingerprint,remoteUpdatedAt:snap.updated_at,conflicts:result.conflicts,choices:{}}:null};
   const incomingFingerprint=await snapshotFingerprint(remote);
   const checkpoint={format:'sentlog-sync-checkpoint',version:1,createdAt:new Date().toISOString(),
-    projectId:lp.id,cloudRevision:Number(snap.revision),local,remote};
+    projectId:lp.id,cloudRevision:Number(snap.revision),local,remote,...(review?{recordChoices:review.choices}:{})};
   const key=MERGE_CHECKPOINT_PREFIX+lp.id+':'+await sha256Hex(new Blob([JSON.stringify(checkpoint)]));
   // Anchor to the remote revision, but leave the merged local work dirty. A newer
   // remote revision must be compared again; it must never be overwritten blindly.
@@ -94,7 +100,7 @@ async function tryMergeProject(cp,snap,{manual=false}={}){
   if(!committed?.applied)return {applied:false,waiting:true,reason:'入力・描画を終え、図面を閉じてからもう一度操作してください。'};
   return {applied:true};
 }
-async function mergeSelectedProject(project){
+async function mergeSelectedProject(project,review=null){
   if(mergeBusy)return;
   mergeBusy=true;mergeNotice='現在の保存と同期が終わるのを待っています。';refreshMergePanel();
   let done=false;
@@ -105,7 +111,8 @@ async function mergeSelectedProject(project){
     const cp=cps?.[0];
     if(!cp||!archive.canSync(cp,null)||cp.status!=='active')throw Error('この案件は現在の同期対象ではありません。');
     const snapshots=await rest('/rest/v1/sentlog_project_snapshots?project_id=eq.'+enc(cp.id)+'&select=revision,payload,updated_at');
-    const result=await tryMergeProject(cp,snapshots?.[0],{manual:true});
+    const result=await tryMergeProject(cp,snapshots?.[0],{manual:true,review});
+    mergeReview=result.review?{...result.review,project}:null;
     if(!result.applied)throw Error(result.reason);
     syncConflicts.delete(cp.client_key);done=true;
     mergeNotice='統合前の記録を端末内に控えとして保存し、両方の記録をまとめました。送受信の結果は上の同期状況で確認できます。';
@@ -129,6 +136,36 @@ function refreshMergePanel(){
     }
   }
   if(mergeNotice){const p=document.createElement('p');p.textContent=mergeNotice;p.setAttribute('role','status');p.style.cssText='font-size:12px;line-height:1.6;overflow-wrap:anywhere';host.appendChild(p);}
+  if(mergeReview){
+    const review=mergeReview,section=document.createElement('section');section.id='sentlogRecordReview';
+    const title=document.createElement('h3');title.textContent='内容が違う記録を確認';title.style.fontSize='15px';
+    const help=document.createElement('p');help.textContent='下の記録ごとに、位置・寸法・説明をどちらから採用するか選んでください。片方だけにある記録と添付写真は両方残します。採用前の両方の内容も、この端末に控えを保存します。';help.style.cssText='font-size:12px;line-height:1.6';
+    section.append(title,help);
+    if(review.remoteUpdatedAt){const time=document.createElement('p');time.style.fontSize='12px';time.textContent='共有側の最終送信：'+new Date(review.remoteUpdatedAt).toLocaleString('ja-JP');section.append(time);}
+    const keyOf=c=>window.SentlogSyncMerge.recordChoiceKey(c.drawingId,c.recordId);
+    const apply=document.createElement('button');apply.type='button';apply.textContent='選んだ内容で同期';
+    const update=()=>{apply.disabled=mergeBusy||review.conflicts.some(c=>!['local','remote'].includes(review.choices[keyOf(c)]));};
+    const labels={points:'位置・形状',point:'位置',angle:'矢印の向き',memo:'説明',text:'文字',manualText:'寸法の表示',lineLengthM:'長さ（m）',strokeWidth:'線の太さ',unit:'作成時の表示倍率',type:'変状名',member:'部材',rotation:'文字の回転',color:'色',page:'ページ'};
+    for(const c of review.conflicts){
+      const card=document.createElement('fieldset');card.style.cssText='min-width:0;margin:10px 0;padding:10px;border:1px solid #cbd5e1;border-radius:8px';
+      const legend=document.createElement('legend');legend.textContent=c.path+'（'+(c.local.page||c.remote.page||1)+'ページ）';legend.style.cssText='font-size:12px;overflow-wrap:anywhere';card.append(legend);
+      const details=document.createElement('details'),summary=document.createElement('summary');summary.textContent='違いの詳細';details.append(summary);
+      for(const key of new Set([...Object.keys(c.local),...Object.keys(c.remote)])){
+        if(['photos','globalNo','typeNo','autoLabel','recordNo'].includes(key)||window.SentlogSyncMerge.equal(c.local[key],c.remote[key]))continue;
+        const p=document.createElement('p');p.style.cssText='font-size:11px;white-space:pre-wrap;overflow-wrap:anywhere';
+        const value=v=>v===undefined?'未設定':typeof v==='string'?v:JSON.stringify(v);
+        p.textContent=(labels[key]||key)+'\nこの端末：'+value(c.local[key])+'\n共有側：'+value(c.remote[key]);details.append(p);
+      }
+      card.append(details);
+      const select=document.createElement('select');select.setAttribute('aria-label',c.path+'の採用元');select.style.cssText='width:100%;min-height:44px;margin-top:8px';
+      for(const [value,label] of [['','採用する内容を選択'],['local','この端末の変更を採用'],['remote','共有側（送信済み）の変更を採用']]){
+        const option=document.createElement('option');option.value=value;option.textContent=label;select.append(option);
+      }
+      select.value=review.choices[keyOf(c)]||'';select.disabled=mergeBusy;
+      select.onchange=()=>{review.choices[keyOf(c)]=select.value;update();};card.append(select);section.append(card);
+    }
+    apply.style.cssText='width:100%;min-height:44px;background:#065f46;color:white';update();apply.onclick=()=>mergeSelectedProject(review.project,review);section.append(apply);host.append(section);
+  }
 }
 
 function installMergeHistory(){

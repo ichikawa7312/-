@@ -23,7 +23,7 @@ threading.Thread(target=server.serve_forever,daemon=True).start()
 origin=f'http://127.0.0.1:{server.server_port}'
 cp=dict(id='cloud-p',client_key='p',name='同期検証',status='active',checking=False)
 cloud=dict(revision=2,payload=payload(['common','phone']),updated_at='2026-10-19T00:00:00Z')
-assets={};blobs={};writes=[];unexpected=[];fail_write=False;race_write=False
+assets={};blobs={};writes=[];unexpected=[];fail_write=False;race_write=False;captured_uploads={};asset_key_reads=[]
 def respond(route,value,status=200):
     route.fulfill(status=status,content_type='application/json',headers={'Access-Control-Allow-Origin':'*'},body=json.dumps(value,ensure_ascii=False))
 def transport(route):
@@ -39,7 +39,12 @@ def transport(route):
         route.fulfill(status=200,content_type='image/jpeg',headers={'Access-Control-Allow-Origin':'*'},body=blobs[key]);return
     if path.startswith('/storage/v1/object/sentlog-temp/'):
         assert req.method=='POST',req.method
-        blobs[unquote(path.split('/sentlog-temp/',1)[1])]=req.post_data_buffer
+        captured=captured_uploads.pop(req.headers['x-sentlog-test-upload'])
+        raw=req.post_data_buffer
+        # WebKit's inspector sometimes omits native Blob POST data. The test
+        # binding captures the actual Blob bytes before the unchanged fetch.
+        if raw is not None:assert raw==captured
+        blobs[unquote(path.split('/sentlog-temp/',1)[1])]=captured
         respond(route,{'ok':True});return
     body=json.loads(req.post_data) if req.post_data else None
     if path.endswith('/rpc/sentlog_archive_v1'):
@@ -72,6 +77,7 @@ def transport(route):
         cloud=copy.deepcopy(body);writes.append(copy.deepcopy(body));respond(route,[cloud]);return
     if path.endswith('/sentlog_assets'):
         if req.method=='GET':
+            if 'client_key' in q:asset_key_reads.append(q['client_key'][0])
             rows=list(assets.values())
             for field in ('client_key','kind','project_id','status','id'):
                 term=q.get(field,[None])[0]
@@ -91,9 +97,19 @@ def make_page(browser,name,pack,width=810):
     # the installed field app rather than a private ephemeral browser context.
     context=(browser.new_context(**context_options) if browser else
              pw.webkit.launch_persistent_context(str(Path(profiles.name)/name),headless=True,**context_options))
+    def capture_upload(source,data):
+        key=str(uuid.uuid4());captured_uploads[key]=bytes(data);return key
+    context.expose_binding('sentlogTestCaptureUpload',capture_upload)
     seed={WS:json.dumps({'projects':[pack['project']]}),DRAW:json.dumps(pack['drawings'][0]['state']),META:json.dumps(dict(revision=1,local_updated_at=1,fingerprint='pre-v180-baseline',fingerprint_schema=2))}
     init='window.sentlogImporting=true;'+''.join(f'localStorage.setItem({json.dumps(k)},{json.dumps(v)});' for k,v in seed.items())
     init+=f"localStorage.setItem('sentlogCloudSessionV1',JSON.stringify({{access_token:'synthetic',expires_at:Date.now()/1000+3600,user:{{id:'owner',email:'test@example.invalid'}}}}));localStorage.setItem('sentlogCloudDeviceV1',{json.dumps(name)});"
+    init+="""const originalFetch=window.fetch.bind(window);window.fetch=async(input,options)=>{
+      if(String(input).includes('/storage/v1/object/sentlog-temp/')&&options?.body instanceof Blob){
+        const key=await window.sentlogTestCaptureUpload(Array.from(new Uint8Array(await options.body.arrayBuffer())));
+        const headers=new Headers(options.headers);headers.set('x-sentlog-test-upload',key);
+        return originalFetch(input,{...options,headers});
+      }return originalFetch(input,options);
+    };"""
     context.add_init_script(init);context.route('**/*',transport)
     page=context.new_page();page.goto(origin+'/sentlog/',wait_until='domcontentloaded');page.wait_for_function("window.SENTLOG_BUILD==='v1.80' && typeof window.sentlogCloudIdle==='function'")
     return context,page
@@ -185,12 +201,34 @@ try:
         # Genuine same-record edits remain visible and unchanged, even on explicit preserve.
         cloud=dict(revision=2,payload=payload(['common']),updated_at='2026-10-19T00:00:00Z');cloud['payload']['drawings'][0]['state']['shapes'][0]['memo']='共有側の説明'
         pack=payload(['common']);pack['drawings'][0]['state']['shapes'][0]['memo']='iPad側の説明';before=len(writes)
-        cc,c=make_page(browser,'conflicting-ipad',pack);sync(c);open_merge(c);merge_click(c)
+        cc,c=make_page(browser,'conflicting-ipad',pack,390);sync(c);open_merge(c);merge_click(c)
         expect(c.locator('#sentlogMergePanel')).to_contain_text('同じ記録')
         assert c.evaluate("JSON.parse(SentlogRecords.getItem('surveyFieldNoteDrawingV1:d')).shapes[0].memo")=='iPad側の説明'
         assert cloud['payload']['drawings'][0]['state']['shapes'][0]['memo']=='共有側の説明'
         assert len(writes)==before and not checkpoints(c)
         assert not unexpected,unexpected
+        # Record selection is deliberate; a stale preview must never be applied.
+        expect(c.get_by_role('button',name='選んだ内容で同期')).to_be_disabled()
+        c.locator('#sentlogRecordReview').scroll_into_view_if_needed()
+        c.screenshot(path=str(ROOT/'test-results/sync-record-review-phone.png'),full_page=True)
+        assert c.evaluate('document.documentElement.scrollWidth<=innerWidth')
+        c.locator('#sentlogRecordReview select').select_option('remote')
+        cloud['revision']+=1;cloud['payload']['drawings'][0]['state']['shapes'][0]['memo']='確認中に更新された共有側の説明'
+        c.get_by_role('button',name='選んだ内容で同期').click()
+        expect(c.locator('#sentlogMergePanel')).to_contain_text('確認中に記録が更新')
+        assert len(writes)==before and not checkpoints(c)
+        merge_click(c);c.locator('#sentlogRecordReview select').select_option('remote')
+        add_record(c,'new-local-during-review')
+        c.get_by_role('button',name='選んだ内容で同期').click()
+        expect(c.locator('#sentlogMergePanel')).to_contain_text('確認中に記録が更新')
+        assert len(writes)==before and not checkpoints(c)
+        merge_click(c);c.locator('#sentlogRecordReview select').select_option('remote')
+        c.get_by_role('button',name='選んだ内容で同期').click()
+        c.wait_for_function("JSON.parse(SentlogRecords.getItem('surveyFieldNoteDrawingV1:d')).shapes[0].memo==='確認中に更新された共有側の説明'")
+        assert checkpoints(c)[0]['local']['drawings'][0]['state']['shapes'][0]['memo']=='iPad側の説明'
+        assert checkpoints(c)[0]['recordChoices']
+        assert 'new-local-during-review' in ids(c)
+        sync(c)
         cc.close()
         # Reported case: same original PDF, stale 1-page metadata vs seven pages.
         # Real PDF.js and native Blob/IndexedDB are used in both engines.
@@ -221,7 +259,7 @@ try:
         cd.close()
         # Production-sized project: the original and a photo's identity fall
         # beyond the API's 1,000-row cap. Use native image/IndexedDB bytes.
-        assets.clear();blobs.clear();before=len(writes)
+        assets.clear();blobs.clear();asset_key_reads.clear();before=len(writes)
         raw=base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6YY0AAAAASUVORK5CYII=')
         pack=payload(['common','ipad']);remote=payload(['common','phone'])
         for p in (pack,remote):
@@ -249,12 +287,14 @@ try:
         assert e.evaluate("async()=>Array.from(new Uint8Array(await(await getDBFile('background:d')).arrayBuffer()))")==list(raw)
         assert e.evaluate("async()=>Array.from(new Uint8Array(await(await getDBFile('photo:d:late-photo')).arrayBuffer()))")==list(photo)
         sync(e);assert {s['id'] for s in cloud['payload']['drawings'][0]['state']['shapes']}=={'common','phone','ipad'}
+        assert not asset_key_reads,asset_key_reads
         assert not unexpected,unexpected
         ce.close()
         if browser:browser.close()
         print('PASS two-device live app: conflict repair, native checkpoints, both photo blobs, automatic next edits, stale-revision race, storage/network failure, reload, true-conflict stop, phone layout')
         print('PASS real seven-page PDF: wrong original blocked, stale count reconciled, page-7 records and original bytes retained, original counts checkpointed, cloud upload successful')
         print('PASS 1,102 assets: image and photo past API cap verified, late photo mismatch blocked, both devices records merged, original blobs retained')
+        print('PASS explicit phone record review: selection required, stale remote/local choices blocked, chosen body and both record sets retained, original versions checkpointed')
 finally:
     server.shutdown();server.server_close()
     profiles.cleanup()
