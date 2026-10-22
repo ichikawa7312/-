@@ -41,7 +41,7 @@ script_prefix="""<!doctype html><html lang='ja'><head><meta charset='utf-8'></he
   }};
  window.photoNotices=0;
  window.sentlogSyncView={photoReceived:()=>window.photoNotices++};
-</script><script src='/sentlog/photo-recovery.js'></script></body></html>"""
+</script><script src='/sentlog/sync-traffic.js'></script><script src='/sentlog/photo-recovery.js'></script></body></html>"""
 html=script_prefix.replace('REPLACE_PROJECT',json.dumps(project,ensure_ascii=False)).replace('REPLACE_STATE',json.dumps(state,ensure_ascii=False))
 try:
  with sync_playwright() as p:

@@ -48,7 +48,7 @@ html='''<!doctype html><html><body><main id="projectsView"><div class="manager-s
  window.sentlogAppReady=database().then(db=>db.close());
  window.SentlogRecords={ready:true,getItem:k=>k==='surveyFieldNoteWorkspaceV1'?JSON.stringify(workspace):k==='surveyFieldNoteDrawingV1:drawing'?JSON.stringify(state):null,writeFile:put};
  window.putPhoto=put;window.sentlogManagementSession=async()=>{};window.sentlogSyncView={photoReceived(){}};
-</script><script src="/sentlog/photo-recovery.js"></script><script src="/sentlog/peer-photo-recovery.js"></script></body></html>'''.replace('STATE',json.dumps(state)).replace('WORKSPACE',json.dumps(workspace)).replace('OWNER',owner)
+</script><script src="/sentlog/sync-traffic.js"></script><script src="/sentlog/photo-recovery.js"></script><script src="/sentlog/peer-photo-recovery.js"></script></body></html>'''.replace('STATE',json.dumps(state)).replace('WORKSPACE',json.dumps(workspace)).replace('OWNER',owner)
 try:
  with sync_playwright() as p:
   engines=[(name,getattr(p,name)) for name in os.getenv('SENTLOG_TEST_BROWSERS','chromium').split(',')]
