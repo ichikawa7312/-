@@ -53,3 +53,6 @@ print('Built v1.88: per-drawing multi-page PDF, ZIP and verified folder save')
 # Keep the existing reviewed build order; apply v1.89 only after all v1.88 inputs exist.
 import runpy
 runpy.run_path(str(ROOT/'scripts/build_sync_reliability.py'),run_name='__main__')
+
+# v1.90 is applied after the complete v1.89 output exists.
+runpy.run_path(str(ROOT/'scripts/build_sync_traffic.py'),run_name='__main__')
