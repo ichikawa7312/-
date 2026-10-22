@@ -9,7 +9,7 @@ function renderPcPending(){
 async function pendingAssets(){
  const states=await rest('/rest/v1/rpc/sentlog_archive_v1',{method:'POST',body:JSON.stringify({p_action:'list'})});
  if(!Array.isArray(states))throw Error('案件の同期対象を確認できません。');
- const ids=new Set(states.filter(c=>c.status==='active'&&!c.checking).map(c=>c.id));
+ const ids=new Set(states.filter(c=>c.status==='active'&&!c.checking&&!c.retired).map(c=>c.id));
  const fields=enc('id,project_id,kind,file_name,storage_path,mime_type,byte_size,sha256,status,captured_at,metadata');
  const active=[];let after='';
  for(;;){
@@ -36,7 +36,7 @@ async function syncOnce(){
  if(busy)return;busy=true;setSync('同期中…','busy');
  let problems=0,checked=0;
  try{
-  await ensureSession();if(!(await permission()))throw Error('保存先フォルダへの書き込み許可が必要です');
+  await ensureSession();await ensureDevice();if(!(await permission()))throw Error('保存先フォルダへの書き込み許可が必要です');
   const list=await pendingAssets();
   for(const a of list){
    setSync('確認中 '+(checked+1)+' / '+list.length+'件：'+(a.file_name||'ファイル'),'busy');
