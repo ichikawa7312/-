@@ -73,6 +73,7 @@ change('sentlog/sw.js',"'sync-status.js'","'sync-status.js','session-guard.js'")
 for p in (ROOT/'tests').iterdir():
  if p.suffix not in ('.py','.cjs'):continue
  s=p.read_text();u=s.replace("'v1.88'","'v1.89'").replace('phone-runtime.js?v=188','phone-runtime.js?v=189').replace(r'phone-runtime\.js\?v=188',r'phone-runtime\.js\?v=189').replace('sentlog-pwa-v199','sentlog-pwa-v200').replace('cloud-sync.js?v=20261020-review-186','cloud-sync.js?v=20261022-auth-189').replace(r'cloud-sync\.js\?v=20261020-review-186',r'cloud-sync\.js\?v=20261022-auth-189')
+ u=u.replace('v1.86 · 写真再取得の全件確認','v1.89 · 同期状況の内訳・認証復旧')
  if u!=s:p.write_text(u)
 subprocess.run(['node','tests/session_guard.test.cjs'],cwd=ROOT,check=True)
 subprocess.run(['node','tests/pc_sync_progress.test.cjs'],cwd=ROOT,check=True)
