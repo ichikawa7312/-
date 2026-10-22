@@ -49,3 +49,7 @@ for p in (ROOT/'tests').iterdir():
  s=p.read_text();u=s.replace("'v1.87'","'v1.88'").replace('phone-runtime.js?v=187','phone-runtime.js?v=188').replace(r'phone-runtime\.js\?v=187',r'phone-runtime\.js\?v=188').replace('sentlog-pwa-v198','sentlog-pwa-v199')
  if s!=u:p.write_text(u)
 print('Built v1.88: per-drawing multi-page PDF, ZIP and verified folder save')
+
+# Keep the existing reviewed build order; apply v1.89 only after all v1.88 inputs exist.
+import runpy
+runpy.run_path(str(ROOT/'scripts/build_sync_reliability.py'),run_name='__main__')
