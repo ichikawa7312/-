@@ -97,8 +97,33 @@ async function snapshotTests(){
  revision=2;await api.pullRemoteProjects('device');assert.equal(payloadGets,1);
  revision=1;delete meta.base_snapshot;await api.pullRemoteProjects('device');assert.equal(payloadGets,2,'missing baseline forces a full snapshot');
 }
+async function manualSyncTests(){
+ const cloud=fs.readFileSync('sentlog/cloud-sync.js','utf8');
+ const source=cloud.slice(cloud.indexOf('async function syncNow('),cloud.indexOf('// Integrated in the cloud module'));
+ const alias=cloud.match(/^window\.sentlogArchiveSync=.*;$/m)[0];
+ let timestamp=100000,attempts=0,fail=false;const scopes=[],statuses=[];
+ const c=vm.createContext({Date:{now:()=>timestamp},Map,Set,Number,JSON,console:{warn(){}},session:{},syncing:false,mergeBusy:false,syncNotBefore:0,
+  document:{hidden:false},navigator:{onLine:true},msg(){},refreshMergePanel(){},
+  syncStatus:{begin:()=>1,finish:(_,s)=>statuses.push(s.level)},
+  archive:{refresh:async()=>{attempts++;if(fail)throw Error('network');}},
+  ensureSession:async()=>{},ensureDevice:async()=>'device',workspace:()=>({projects:[]}),
+  pullRemoteProjects:async(_,scope)=>{scopes.push(scope);return {changed:0,files:0,blocked:new Set(),conflicts:0};},
+  window:{sentlogAppReady:Promise.resolve(),SentlogRecords:{settled:async()=>{},assertSafe(){}}}
+ });
+ vm.runInContext(source+';'+alias,c);
+ await c.syncNow();await c.syncNow();assert.equal(attempts,1,'automatic cycles respect debounce');
+ fail=true;await c.window.sentlogArchiveSync();assert.equal(attempts,2);assert.equal(statuses.at(-1),'error');
+ fail=false;await c.syncNow();assert.equal(attempts,2,'automatic retries respect error backoff');
+ await c.window.sentlogArchiveSync({manualProject:'archived-project'});assert.equal(attempts,3);assert.equal(scopes.at(-1),'archived-project');assert.equal(statuses.at(-1),'ok');
+ await c.window.sentlogArchiveSync();assert.equal(attempts,4,'manual retry is not swallowed by debounce');
+ c.window.sentlogImporting=true;await c.window.sentlogArchiveSync();assert.equal(attempts,4,'manual operation retains import safety guard');
+ c.window.sentlogImporting=false;c.syncing=true;await c.window.sentlogArchiveSync();assert.equal(attempts,4,'manual operation retains single-flight guard');
+ c.syncing=false;timestamp+=31000;await c.syncNow();assert.equal(attempts,5);
+ assert(cloud.includes('if(done)await syncNow({force:true});'));
+ console.log('PASS explicit synchronization: immediate retry and archived-project scope, automatic debounce/backoff, import and single-flight guards');
+}
 (async()=>{
- await ledgerTests();await receiverTests();await receiverTests({saveBroken:true});await receiverTests({different:true});await snapshotTests();
+ await manualSyncTests();await ledgerTests();await receiverTests();await receiverTests({saveBroken:true});await receiverTests({different:true});await snapshotTests();
  const index=fs.readFileSync('sentlog/index.html','utf8'),pc=fs.readFileSync('sentlog-pc/index.html','utf8'),sw=fs.readFileSync('sentlog/sw.js','utf8'),cloud=fs.readFileSync('sentlog/cloud-sync.js','utf8');
  assert(index.includes("['sync-traffic.js?v=190','SentlogSyncTraffic v1.90']"));assert(index.includes('src="./sync-traffic.js?v=190"'));assert(pc.includes('src="../sentlog/sync-traffic.js?v=190"'));assert(sw.includes("'sync-traffic.js'"));assert(sw.includes('sentlog-pwa-v201'));
  assert(cloud.includes('cycleAssets.get(cp.id)||await readProjectAssets'));

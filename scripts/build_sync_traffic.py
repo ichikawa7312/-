@@ -71,6 +71,9 @@ change(p,'    const pulled=await pullRemoteProjects(deviceId,manualProject);',' 
 change(p,"const knownAssets=new Map((await readProjectAssets(cp.id,'client_key,kind,sha256,byte_size,status,storage_path')).map(a=>[a.client_key,a]));","const knownAssets=new Map((cycleAssets.get(cp.id)||await readProjectAssets(cp.id,'client_key,kind,sha256,byte_size,status,storage_path')).map(a=>[a.client_key,a]));")
 change(p,"    console.warn('Sentlog cloud sync',e);","    syncNotBefore=Date.now()+30000;\n    console.warn('Sentlog cloud sync',e);")
 change(p,"document.getElementById('sentlogCloudSyncNow').onclick=()=>{closeModal();syncNow()};","document.getElementById('sentlogCloudSyncNow').onclick=()=>{closeModal();syncNow({force:true})};")
+# Explicit user operations bypass automatic debounce/backoff, not safety guards.
+change(p,'window.sentlogArchiveSync=syncNow;','window.sentlogArchiveSync=options=>syncNow({...options,force:true});')
+change(p,'if(done)await syncNow();','if(done)await syncNow({force:true});')
 change(p,"syncTimer=setInterval(()=>{if(session&&navigator.onLine)syncNow()},5000);","syncTimer=setInterval(()=>{if(session&&navigator.onLine&&!document.hidden)syncNow()},15000);")
 
 p='sentlog/photo-recovery.js'
@@ -165,6 +168,8 @@ change('tests/image_recovery_view.test.cjs','  context.window=context;',"""  con
 change('tests/image_recovery_view.test.cjs','x.ms===10000','x.ms===30000')
 change('tests/image_recovery_view.test.cjs','the real ten-second recovery timer','the real thirty-second recovery timer')
 change('tests/image_recovery_view.test.cjs',"assert(f.requests.some(x=>x.includes('/rpc/sentlog_ack_pdf')),'verified-file acknowledgement still runs');","assert.equal(f.requests.filter(x=>x.includes('/rpc/sentlog_ack_pdf')).length,1,'verified-file acknowledgement runs once, not every poll');")
+# Match the live ACK RPC contract in the synthetic network fixture.
+change('tests/sync_merge_ui.py','respond(route,True);return',"respond(route,{'received':True});return",2)
 # Preserve existing tests; only update their explicit release markers/URLs.
 for file in (ROOT/'tests').iterdir():
  if file.suffix not in ('.py','.cjs') or file.name=='sync_traffic.test.cjs':continue
