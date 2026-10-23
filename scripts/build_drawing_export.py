@@ -69,3 +69,8 @@ change('tests/sync_merge_ui.py',
 change('tests/sync_merge_ui.py',
  "assert req.method=='POST' and body['p_device_id'] in ('ipad','phone'),body",
  "assert req.method=='POST' and body['p_device_id']==fixture_devices.get(req.frame.page.context),body")
+
+# v1.91 changes only the isolated PDF export path and its release markers.
+runpy.run_path(str(ROOT/'scripts/build_export_speed.py'),run_name='__main__')
+import subprocess
+subprocess.run(['node','tests/drawing_export_speed.test.cjs'],cwd=ROOT,check=True)
