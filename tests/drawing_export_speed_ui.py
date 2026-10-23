@@ -35,6 +35,12 @@ fixture=io.BytesIO();writer.write(fixture);fixture_b64=base64.b64encode(fixture.
 
 FIXTURE_JS='''async data=>{
  const pdf=new File([Uint8Array.from(atob(data),x=>x.charCodeAt(0))],'source.pdf',{type:'application/pdf'});
+ // Both benchmark versions use the same immutable in-memory source. Linux
+ // WebKit ephemeral profiles can fail while preparing large Blob data for IDB
+ // before export starts. Actual IDB loading/saving is exercised separately by
+ // drawing_export_ui.py; this benchmark isolates PDF processing and quality.
+ const storedBackground=getBackgroundFile;
+ getBackgroundFile=async id=>['speed-0','speed-1'].includes(id)?pdf:storedBackground(id);
  workspace={projects:[{id:'speed-project',name:'合成図面・画質比較',drawings:[],createdAt:1,updatedAt:1}]};
  for(let i=0;i<2;i++){
   const id='speed-'+i,meta={id,name:'比較図面'+i,fileName:'source.pdf',sourceType:'pdf',pageCount:8,updatedAt:1};workspace.projects[0].drawings.push(meta);
@@ -50,7 +56,7 @@ FIXTURE_JS='''async data=>{
    {id:'wide-5',page:5,kind:'rect',type:'欠損',x:3,y:4,w:1300,h:1800,typeNo:1,strokeWidth:2,photos:[]},
    {id:'memo-only-6',page:6,kind:'memo',recordKind:'drawing-memo',memoType:'text',points:[{x:200,y:200}],text:'メモを含む場合のみ',fontSize:22,unit:1,color:'#1d4ed8'}
   ];
-  SentlogRecords.setItem(drawingStorageKey(id),JSON.stringify(s));await SentlogRecords.writeFile('background:'+id,pdf);
+  SentlogRecords.setItem(drawingStorageKey(id),JSON.stringify(s));
  }
  saveWorkspace();await SentlogRecords.settled();showDrawings('speed-project');
 }'''
