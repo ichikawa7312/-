@@ -106,7 +106,7 @@ for name in ['sentlog/index.html','sentlog/drawing-export-view.html']:
  for module in ['drawing-export','drawing-export-core','drawing-export-frame','drawing-export-renderer']:
   s=s.replace(module+'.js?v=188',module+'.js?v=191')
  s=s.replace('SentlogDrawingExport v1.88','SentlogDrawingExport v1.91')
- s=s.replace('phone-runtime.js?v=190','phone-runtime.js?v=191').replace('v1.90','v1.91')
+ s=s.replace('phone-runtime.js?v=190','phone-runtime.js?v=191').replace("'v1.90'","'v1.91'")
  f.write_text(s)
 for name in ['sentlog/phone-runtime.js','sentlog-pc/index.html']:
  f=ROOT/name;f.write_text(f.read_text().replace('v1.90','v1.91'))
