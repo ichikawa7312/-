@@ -29,7 +29,7 @@ async function openDrawing(projectId,drawingId){
   state.project=p.name;state.pageSettings=state.pageSettings||{};state.pdfPageInfo=state.pdfPageInfo||{};state.pageRotations=state.pageRotations||{};state.leaderMarker=state.leaderMarker||'open-circle';state.shapes=state.shapes||[];state.shapes.forEach(s=>s.photos=s.photos||[]);
   selected=null;drawing=null;panStart=null;labelDrag=null;pdfDoc=null;clearAllHistory();showEditor();$('fileName').textContent=state.fileName||d.fileName||'未読込';syncLeaderMarkerUI();rebuildNumberingState();
   empty.style.display='grid';svg.innerHTML='';ctx.clearRect(0,0,canvas.width,canvas.height);updatePageUI();render();renderSelectedPhotos();
-  try{const file=await getBackgroundFile(drawingId);if(file)await openFile(file,false);else showError('この図面の元ファイルが見つかりません。左側の「この図面を差し替え」から再登録してください。')}catch(e){console.warn(e);showError('図面ファイルの復元に失敗しました。')}
+  try{const file=await getBackgroundFile(drawingId);if(file)await openFile(file,false);else{showError('図面を端末へ再取得しています。会社PCの「PC自動同期」を開いたままにしてください。');Promise.resolve(window.sentlogCheckPdfRecovery?.()).catch(e=>console.warn('PDF recovery',e))}}catch(e){console.warn(e);showError('図面ファイルの復元に失敗しました。再取得を確認しています。');Promise.resolve(window.sentlogCheckPdfRecovery?.()).catch(()=>{})}
 }
 async function migrateLegacyIfNeeded(){
   if((workspace.projects||[]).length)return;
