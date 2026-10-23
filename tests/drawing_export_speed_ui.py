@@ -35,10 +35,8 @@ fixture=io.BytesIO();writer.write(fixture);fixture_b64=base64.b64encode(fixture.
 
 FIXTURE_JS='''async data=>{
  const pdf=new File([Uint8Array.from(atob(data),x=>x.charCodeAt(0))],'source.pdf',{type:'application/pdf'});
- // Both benchmark versions use the same immutable in-memory source. Linux
- // WebKit ephemeral profiles can fail while preparing large Blob data for IDB
- // before export starts. Actual IDB loading/saving is exercised separately by
- // drawing_export_ui.py; this benchmark isolates PDF processing and quality.
+ // The same immutable in-memory source isolates PDF processing from IDB.
+ // Actual IDB loading/saving remains covered by drawing_export_ui.py.
  const storedBackground=getBackgroundFile;
  getBackgroundFile=async id=>['speed-0','speed-1'].includes(id)?pdf:storedBackground(id);
  workspace={projects:[{id:'speed-project',name:'合成図面・画質比較',drawings:[],createdAt:1,updatedAt:1}]};
@@ -62,7 +60,6 @@ FIXTURE_JS='''async data=>{
 }'''
 INSTRUMENT='''
 ;(()=>{'use strict';const original=pdfjsLib.getDocument.bind(pdfjsLib);
- // UMD exports are getters; replace the wrapper, not a read-only property.
  window.pdfjsLib={...pdfjsLib,getDocument:(...args)=>{const task=original(...args);
   window.parent.__pdfDocuments=(window.parent.__pdfDocuments||0)+1;
   task.promise.then(doc=>{
@@ -78,7 +75,10 @@ def start_server(root):
  s=ThreadingHTTPServer(('127.0.0.1',0),functools.partial(Quiet,directory=str(root)))
  threading.Thread(target=s.serve_forever,daemon=True).start();return s
 
-servers=[start_server(BASE),start_server(ROOT)];all_results=[]
+# Instrument test-local bytes, rather than only intercepted responses: cached
+# iframe scripts must contain the same counters. Restore all bytes in finally.
+# No counter is ever added to the source repository or release artifact.
+original_scripts={};servers=[];all_results=[]
 def exact_page_proof(old_page,new_page,rendered_page,label):
  def forms(page):
   return [(o.get_object().get_data(),list(o.get_object()['/BBox'])) for o in page['/Resources']['/XObject'].values() if o.get_object()['/Subtype']=='/Form']
@@ -96,14 +96,11 @@ def exact_page_proof(old_page,new_page,rendered_page,label):
  rect=rects[0];page_rect=rendered_page.rect
  x=rect.x0/page_rect.width*original.width;y=rect.y0/page_rect.height*original.height
  width=rect.width/page_rect.width*original.width;height=rect.height/page_rect.height*original.height
- # MuPDF exposes float32 coordinates; 0.001 original-image pixel is sufficient.
  assert abs(x-round(x))<.001 and abs(y-round(y))<.001,(label,'subpixel crop shift',x,y)
  assert abs(width-image.width)<.001 and abs(height-image.height)<.001,(label,'annotation pixel density changed')
  x,y=round(x),round(y)
  restored=Image.new('RGBA',original.size);restored.paste(image,(x,y))
  assert ImageChops.difference(original.getchannel('A'),restored.getchannel('A')).getbbox() is None,(label,'annotation alpha changed or clipped')
- # RGB values of fully transparent pixels are immaterial; every visible RGB
- # pixel, including alpha=1 antialiasing, must be byte-for-byte identical.
  rgb_difference=ImageChops.difference(original.convert('RGB'),restored.convert('RGB'))
  visible=original.getchannel('A').point(lambda value:255 if value else 0)
  rgb_difference.paste((0,0,0),(0,0),ImageChops.invert(visible))
@@ -124,10 +121,8 @@ def compare_pdfs(before,after,label):
   diff=ImageChops.difference(ia,ib);hist=diff.histogram();pixels=ia.width*ia.height
   mae=sum(ImageStat.Stat(diff).mean)/3
   changed=sum(sum(hist[ch*256+8:(ch+1)*256]) for ch in range(3))/(pixels*3)
-  # Exact data/placement checks above detect even one missing or altered pixel.
-  # Viewer interpolation may still vary with cropped image extent (observed
-  # Chromium mean 0.269/255 and <0.9% channels >7; blank layer removal also
-  # changes sub-one-level vector antialiasing via transparency compositing).
+  # Source and visible annotation bytes/geometry must be exact above. A viewer
+  # can still interpolate cropped image extents differently at fractional zoom.
   assert mae<.5 and changed<.02,(label,i,'viewer difference exceeds interpolation bounds',mae,changed)
   record=dict(page=i+1,mean_channel_error=round(mae,6),fraction_over_7=round(changed,8),source_text_preserved=True,**proof)
   if i==0:
@@ -145,6 +140,11 @@ def compare_pdfs(before,after,label):
  old.close();new.close();return stats
 
 try:
+ for root in (BASE,ROOT):
+  script=root/'sentlog/vendor/export-pdf.min.js'
+  original_scripts[script]=script.read_bytes()
+  script.write_bytes(original_scripts[script]+INSTRUMENT.encode())
+ servers=[start_server(BASE),start_server(ROOT)]
  with sync_playwright() as p:
   for engine in os.getenv('SENTLOG_TEST_BROWSERS','chromium,webkit').split(','):
    options=dict(headless=True)
@@ -152,12 +152,11 @@ try:
    browser=getattr(p,engine).launch(**options);measurements={}
    for which,root,server in [('before',BASE,servers[0]),('after',ROOT,servers[1])]:
     origin=f'http://127.0.0.1:{server.server_port}'
-    context=browser.new_context(viewport={'width':1100,'height':850});page=context.new_page();errors=[];external=[]
+    context=browser.new_context(viewport={'width':1100,'height':850},service_workers='block')
+    page=context.new_page();errors=[];external=[]
     def route(rr):
      url=rr.request.url
-     if url.startswith(origin) and '/vendor/export-pdf.min.js' in url:
-      rr.fulfill(content_type='text/javascript',body=(root/'sentlog/vendor/export-pdf.min.js').read_text()+INSTRUMENT)
-     elif url.startswith(origin) or url.startswith('blob:'):rr.continue_()
+     if url.startswith(origin) or url.startswith('blob:'):rr.continue_()
      elif url.startswith('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/'):
       rr.fulfill(content_type='text/javascript',body=(root/'sentlog/vendor'/('export-'+url.rsplit('/',1)[-1])).read_bytes())
      else:external.append(url);rr.abort()
@@ -167,15 +166,18 @@ try:
     unchanged="JSON.stringify([workspace,...workspace.projects[0].drawings.map(d=>SentlogRecords.getItem(drawingStorageKey(d.id)))])"
     records=page.evaluate(unchanged);times=[]
     for run in range(2):
+     print('START',engine,which,run,flush=True)
      result=page.evaluate('''async memos=>{
       window.__pdfPaints=0;window.__pdfDocuments=0;const item=SentlogDrawingExport.inputSnapshot('speed-project',['speed-0'],memos)[0];
-      const start=performance.now(),result=await SentlogDrawingExport.createPdf(item,()=>{});
+      const start=performance.now(),stages=[];
+      const result=await SentlogDrawingExport.createPdf(item,(n,count)=>stages.push({page:n,ms:performance.now()-start}),stage=>stages.push({stage,ms:performance.now()-start}));
       const ms=performance.now()-start;
       const encoded=await new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result.split(',')[1]);r.onerror=rej;r.readAsDataURL(result.blob);});
-      return {ms,pages:result.pages,bytes:result.blob.size,pdf:encoded,paints:window.__pdfPaints,documents:window.__pdfDocuments};
+      return {ms,pages:result.pages,bytes:result.blob.size,pdf:encoded,paints:window.__pdfPaints,documents:window.__pdfDocuments,stages};
      }''',run==0)
      path=OUT/f'{engine}-{which}-{run}.pdf';path.write_bytes(base64.b64decode(result.pop('pdf')))
-     times.append(result);print('MEASUREMENT',engine,which,run,json.dumps(result),flush=True)
+     times.append(result);print('MEASUREMENT',engine,which,run,json.dumps(result,ensure_ascii=False),flush=True)
+     (OUT/f'{engine}-{which}-timings.json').write_text(json.dumps(times,ensure_ascii=False,indent=2))
      assert result['pages']==8 and page.evaluate(unchanged)==records
      assert page.evaluate("document.querySelectorAll('iframe').length")==0
      assert result['documents']>=1,'PDF.js instrumentation must be active in both versions'
@@ -187,10 +189,11 @@ try:
    old_ms=statistics.mean(x['ms'] for x in measurements['before']);new_ms=statistics.mean(x['ms'] for x in measurements['after'])
    record=dict(engine=engine,pages_per_run=8,runs=measurements,before_ms=round(old_ms),after_ms=round(new_ms),speedup=round(old_ms/new_ms,3),visual_checks=checks)
    all_results.append(record)
+   (OUT/'summary.json').write_text(json.dumps(all_results,ensure_ascii=False,indent=2))
    assert new_ms<old_ms,(engine,'no measured improvement',old_ms,new_ms)
-   print('COMPARISON',json.dumps({k:v for k,v in record.items() if k!='visual_checks'}),flush=True)
+   print('COMPARISON',json.dumps({k:v for k,v in record.items() if k!='visual_checks'},ensure_ascii=False),flush=True)
    browser.close()
- (OUT/'summary.json').write_text(json.dumps(all_results,ensure_ascii=False,indent=2))
  print('PASS: exact source and visible annotation pixels/density; empty layers skipped; zero PDF canvas paints; measured speed improvement',flush=True)
 finally:
  for server in servers:server.shutdown()
+ for script,content in original_scripts.items():script.write_bytes(content)
