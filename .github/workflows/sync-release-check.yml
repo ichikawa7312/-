@@ -1,0 +1,66 @@
+name: Bounded sync release verification
+on:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      PYTHONUNBUFFERED: '1'
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Run every existing archive check with per-command deadlines
+        run: |
+          python - <<'PY'
+          import os, pathlib, signal, subprocess, time, json
+          source=pathlib.Path('.github/workflows/archive-tests.yml').read_text().splitlines()
+          commands=[]; inside=False
+          for line in source:
+              if line == '      - run: |':
+                  inside=True
+              elif inside and line.startswith('          '):
+                  command=line[10:].strip()
+                  if command: commands.append(command)
+              elif inside and line.strip():
+                  inside=False
+          if len(commands)<80: raise RuntimeError('Unexpected archive workflow layout; no checks were skipped')
+          commands += [
+              'pip install reportlab==4.4.9 pypdf==6.10.0',
+              'SENTLOG_TEST_BROWSERS=chromium,webkit python tests/drawing_export_ui.py'
+          ]
+          out=pathlib.Path('release-diagnostics');out.mkdir(exist_ok=True)
+          results=[]
+          try:
+              for i,command in enumerate(commands,1):
+                  print(f'::group::Check {i}/{len(commands)}: {command}',flush=True)
+                  start=time.monotonic();limit=420 if ('install' in command or 'build_dxf.py' in command) else 180
+                  with (out/f'{i:03d}.log').open('w') as log:
+                      process=subprocess.Popen(command,shell=True,executable='/bin/bash',stdout=log,stderr=subprocess.STDOUT,start_new_session=True)
+                      try: code=process.wait(timeout=limit)
+                      except subprocess.TimeoutExpired:
+                          os.killpg(process.pid,signal.SIGTERM)
+                          try: process.wait(timeout=5)
+                          except subprocess.TimeoutExpired: os.killpg(process.pid,signal.SIGKILL);process.wait()
+                          code=124
+                  print((out/f'{i:03d}.log').read_text(errors='replace'),flush=True)
+                  results.append(dict(command=command,returncode=code,seconds=round(time.monotonic()-start,1)))
+                  print('::endgroup::',flush=True)
+                  if code: raise SystemExit(f'Check failed or timed out ({code}): {command}')
+          finally:
+              (out/'summary.json').write_text(json.dumps(results,ensure_ascii=False,indent=2))
+          print('All existing archive and export checks completed successfully.',flush=True)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bounded-release-diagnostics
+          path: release-diagnostics

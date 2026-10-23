@@ -1,0 +1,19 @@
+name: Sentlog sync traffic browser check
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  browser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install playwright==1.56.0
+      - run: python -m playwright install --with-deps chromium
+      - name: Verify real receipt persistence and Web Locks
+        run: python tests/sync_traffic_ui.py
