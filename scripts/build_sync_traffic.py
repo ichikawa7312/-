@@ -1,4 +1,5 @@
 """v1.90: stop duplicate ACKs and reduce unchanged-sync traffic. No user-data migration."""
+# Safari hotfix: keep PDF re-delivery progressing even if a receipt lock stalls.
 from pathlib import Path
 import subprocess
 ROOT=Path(__file__).resolve().parents[1]
