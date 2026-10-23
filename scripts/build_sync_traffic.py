@@ -128,11 +128,19 @@ change(p,'setInterval(run,15000)','setInterval(run,30000)')
 # PDF confirmations use the same durable ledger but retain the existing SHA/size RPC.
 p='sentlog/pdf-recovery.js'
 change(p,'const acked=new Set();','// Receipt persistence is shared with the other synchronizers.')
-section(p,'async function acknowledge(a,id){','async function supply(a,id){', '''async function acknowledge(a,id,force=false){
-  return window.SentlogSyncTraffic.ack('pdf',a,id,args=>rpc('sentlog_ack_pdf',args),{force});
+section(p,'async function acknowledge(a,id){','async function supply(a,id){', '''async function waitPdfReceipt(task,ms=1200){
+  let timer;
+  try{return await Promise.race([task,new Promise(resolve=>{timer=setTimeout(()=>resolve(null),ms)})]);}
+  finally{clearTimeout(timer);task.catch(()=>{});}
+}
+async function acknowledge(a,id,force=false){
+  return waitPdfReceipt(window.SentlogSyncTraffic.ack('pdf',a,id,args=>rpc('sentlog_ack_pdf',args),{force}));
+}
+async function forgetPdfReceipt(a,id){
+  return waitPdfReceipt(window.SentlogSyncTraffic.forget('pdf',a,id));
 }''')
-change(p,"        await rpc('sentlog_request_pdf',{p_asset_id:a.id,p_device_id:id});", "        await window.SentlogSyncTraffic.forget('pdf',a,id);\n        await rpc('sentlog_request_pdf',{p_asset_id:a.id,p_device_id:id});")
-change(p,'        await acknowledge(a,id);available++;','        await acknowledge(a,id,true);available++;')
+change(p,"        await rpc('sentlog_request_pdf',{p_asset_id:a.id,p_device_id:id});\n        if(a.status==='storage_deleted'){missing++;missingNames.push(a.file_name||'図面PDF');continue}", "        if(a.status==='storage_deleted'){\n          await forgetPdfReceipt(a,id);\n          await rpc('sentlog_request_pdf',{p_asset_id:a.id,p_device_id:id});\n          missing++;missingNames.push(a.file_name||'図面PDF');continue\n        }")
+change(p,'        await acknowledge(a,id);available++;','        available++;await acknowledge(a,id,true);')
 change(p,'setInterval(run,10000)','setInterval(run,30000)')
 
 # Static boot dependencies are versioned together; no CacheStorage user API entries.
