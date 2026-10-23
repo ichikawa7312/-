@@ -56,3 +56,16 @@ runpy.run_path(str(ROOT/'scripts/build_sync_reliability.py'),run_name='__main__'
 
 # v1.90 is applied after the complete v1.89 output exists.
 runpy.run_path(str(ROOT/'scripts/build_sync_traffic.py'),run_name='__main__')
+
+# Bind synthetic ACKs to their actual originating test profile. The merge suite
+# also creates conflict/PDF/pagination profiles; a two-name allowlist rejects
+# those valid fixtures and leaves Playwright network callbacks unresolved.
+change('tests/sync_merge_ui.py',
+ 'assets={};blobs={};writes=[];unexpected=[];fail_write=False;race_write=False;captured_uploads={};asset_key_reads=[]',
+ 'assets={};blobs={};writes=[];unexpected=[];fail_write=False;race_write=False;captured_uploads={};asset_key_reads=[];fixture_devices={}')
+change('tests/sync_merge_ui.py',
+ "    context.expose_binding('sentlogTestCaptureUpload',capture_upload)",
+ "    fixture_devices[context]=name\n    context.expose_binding('sentlogTestCaptureUpload',capture_upload)")
+change('tests/sync_merge_ui.py',
+ "assert req.method=='POST' and body['p_device_id'] in ('ipad','phone'),body",
+ "assert req.method=='POST' and body['p_device_id']==fixture_devices.get(req.frame.page.context),body")
