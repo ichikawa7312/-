@@ -56,11 +56,16 @@ FIXTURE_JS='''async data=>{
  saveWorkspace();await SentlogRecords.settled();showDrawings('speed-project');
 }'''
 INSTRUMENT='''
-;(()=>{const original=pdfjsLib.getDocument.bind(pdfjsLib);
- pdfjsLib.getDocument=(...args)=>{const task=original(...args);task.promise.then(doc=>{
-  const get=doc.getPage.bind(doc);doc.getPage=async n=>{const page=await get(n);if(!page.__exportCounted){page.__exportCounted=true;
-   const render=page.render.bind(page);page.render=(...a)=>{window.parent.__pdfPaints=(window.parent.__pdfPaints||0)+1;return render(...a);};}return page;};
- });return task;};})();
+;(()=>{'use strict';const original=pdfjsLib.getDocument.bind(pdfjsLib);
+ // PDF.js exposes getDocument as a getter. Replace the wrapper object rather
+ // than silently assigning to a read-only export (as the app's quality shim does).
+ window.pdfjsLib={...pdfjsLib,getDocument:(...args)=>{const task=original(...args);
+  window.parent.__pdfDocuments=(window.parent.__pdfDocuments||0)+1;
+  task.promise.then(doc=>{
+   const get=doc.getPage.bind(doc);doc.getPage=async n=>{const page=await get(n);if(!page.__exportCounted){page.__exportCounted=true;
+    const render=page.render.bind(page);page.render=(...a)=>{window.parent.__pdfPaints=(window.parent.__pdfPaints||0)+1;return render(...a);};}return page;};
+  },()=>{});return task;}};
+})();
 '''
 class Quiet(SimpleHTTPRequestHandler):
  def log_message(self,*args):pass
@@ -130,18 +135,19 @@ try:
     for run in range(2):
      include_memos=run==0
      result=page.evaluate('''async memos=>{
-      window.__pdfPaints=0;const item=SentlogDrawingExport.inputSnapshot('speed-project',['speed-0'],memos)[0];
+      window.__pdfPaints=0;window.__pdfDocuments=0;const item=SentlogDrawingExport.inputSnapshot('speed-project',['speed-0'],memos)[0];
       const start=performance.now(),result=await SentlogDrawingExport.createPdf(item,()=>{});
       const ms=performance.now()-start;
       const encoded=await new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result.split(',')[1]);r.onerror=rej;r.readAsDataURL(result.blob);});
-      return {ms,pages:result.pages,bytes:result.blob.size,pdf:encoded,paints:window.__pdfPaints};
+      return {ms,pages:result.pages,bytes:result.blob.size,pdf:encoded,paints:window.__pdfPaints,documents:window.__pdfDocuments};
      }''',include_memos)
      path=OUT/f'{engine}-{which}-{run}.pdf';path.write_bytes(base64.b64decode(result.pop('pdf')))
+     times.append(result);print('MEASUREMENT',engine,which,run,json.dumps(result),flush=True)
      assert result['pages']==8 and page.evaluate(unchanged)==records
      assert page.evaluate("document.querySelectorAll('iframe').length")==0
+     assert result['documents']>=1,'PDF.js instrumentation must be active in both versions'
      if which=='after':assert result['paints']==0,result
      else:assert result['paints']>=8,result
-     times.append(result);print('MEASUREMENT',engine,which,run,json.dumps(result),flush=True)
     assert not errors,errors;assert not external,external
     measurements[which]=times;context.close()
    checks=[]
