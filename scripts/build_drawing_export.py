@@ -37,7 +37,7 @@ html=html.replace('</body>',''.join(scripts)+'</body>')
 # Full-frame DXF capture is independent of the screen's pan/zoom.
 change('sentlog/dxf.js',"root.SentlogDxf={version:'v1.79',", "root.SentlogDxf={version:'v1.79',pdfBackground:(w,h)=>{if(!current())throw Error('DXFを開いてください。');const f=state.dxf.frame;try{view(active,f.xMin+f.width*f.unitsPerPixel/2,f.yMax-f.height*f.unitsPerPixel/2,f.width*f.unitsPerPixel,w,h);return active.viewer.GetCanvas().toDataURL('image/png');}finally{viewport();}},")
 change('sentlog/index.html',"['dxf.js?v=179','SentlogDxf']","['dxf.js?v=188','SentlogDxf'],['drawing-export-core.js?v=188','SentlogDrawingExportCore'],['drawing-export.js?v=188','SentlogDrawingExport v1.88']")
-change('sentlog/index.html','src="./dxf.js?v=179"','src="./dxf.js?v=188"><\\/script><script src="./drawing-export-core.js?v=188"><\\/script><script src="./drawing-export.js?v=188"')
+change('sentlog/index.html','src="./dxf.js?v=179"','src="./dxf.js?v=188"><\/script><script src="./drawing-export-core.js?v=188"><\/script><script src="./drawing-export.js?v=188"')
 change('sentlog/index.html','phone-runtime.js?v=187','phone-runtime.js?v=188',2)
 change('sentlog/index.html',"['phone-runtime.js?v=188','v1.87']","['phone-runtime.js?v=188','v1.88']")
 change('sentlog/phone-runtime.js','v1.87','v1.88',4)
@@ -69,3 +69,6 @@ change('tests/sync_merge_ui.py',
 change('tests/sync_merge_ui.py',
  "assert req.method=='POST' and body['p_device_id'] in ('ipad','phone'),body",
  "assert req.method=='POST' and body['p_device_id']==fixture_devices.get(req.frame.page.context),body")
+
+# v1.91 changes only the isolated PDF export path and its release markers.
+runpy.run_path(str(ROOT/'scripts/build_export_speed.py'),run_name='__main__')
