@@ -143,6 +143,50 @@ async function forgetPdfReceipt(a,id){
 change(p,"        await rpc('sentlog_request_pdf',{p_asset_id:a.id,p_device_id:id});\n        if(a.status==='storage_deleted'){missing++;missingNames.push(a.file_name||'図面PDF');continue}", "        if(a.status==='storage_deleted'){\n          await forgetPdfReceipt(a,id);\n          await rpc('sentlog_request_pdf',{p_asset_id:a.id,p_device_id:id});\n          missing++;missingNames.push(a.file_name||'図面PDF');continue\n        }")
 change(p,'        await acknowledge(a,id);available++;','        available++;await acknowledge(a,id,true);')
 change(p,'setInterval(run,10000)','setInterval(run,30000)')
+change(p,'window.sentlogCheckPdfRecovery=run;', '''async function recoverDrawingNow(drawingId){
+  if(!drawingId||!navigator.onLine)return false;
+  const s=session(),id=device();
+  if(!s?.access_token||!id)return false;
+  const assets=await api('sentlog_assets?kind=eq.drawing&select=id,project_id,status,file_name,mime_type,byte_size,sha256,storage_path,metadata&limit=1000');
+  const a=(assets||[]).find(x=>x.metadata?.drawing_id===drawingId);
+  if(!a)throw Error('この図面のクラウド登録を確認できません。');
+  let blob=await localFile(a);
+  if(await matches(blob,a)){
+    if(window.sentlogRestoreDrawingView)await window.sentlogRestoreDrawingView(drawingId,blob);
+    return true;
+  }
+  if(blob instanceof Blob&&blob.size>0)throw Error('端末内に内容が異なる図面があります。上書きせず停止しました。');
+  if(a.status==='storage_deleted'){
+    await rpc('sentlog_request_pdf',{p_asset_id:a.id,p_device_id:id});
+    status('この図面を再取得しています：'+(a.file_name||'図面')+'。図面が残っているiPadまたは会社PCでセントログを開いてください。');
+    return false;
+  }
+  const path=a.storage_path.split('/').map(enc).join('/');
+  const downloaded=await(await net('/storage/v1/object/authenticated/'+BUCKET+'/'+path)).blob();
+  if(!await matches(downloaded,a))throw Error('再取得した図面の内容照合に失敗しました。');
+  const named=new File([downloaded],a.file_name||'drawing.pdf',{type:a.mime_type||downloaded.type||'application/pdf'});
+  await db('surveyFieldNoteDB','files',fileKey(a),named);
+  blob=await localFile(a);
+  if(!await matches(blob,a))throw Error('端末内への図面保存照合に失敗しました。');
+  if(window.sentlogRestoreDrawingView)await window.sentlogRestoreDrawingView(drawingId,blob);
+  acknowledge(a,id,true).catch(()=>{});
+  status('図面を再取得しました：'+(a.file_name||'図面'));
+  return true;
+}
+const targeted=new Map();
+window.sentlogRequestDrawingRecovery=drawingId=>{
+  if(targeted.has(drawingId))return targeted.get(drawingId);
+  const task=(async()=>{
+    const deadline=Date.now()+90000;
+    do{
+      try{if(await recoverDrawingNow(drawingId))return true;}catch(e){console.warn('Targeted PDF recovery',e);status('図面再取得の確認が必要です：'+e.message);}
+      await new Promise(resolve=>setTimeout(resolve,2500));
+    }while(Date.now()<deadline&&navigator.onLine);
+    return false;
+  })().finally(()=>targeted.delete(drawingId));
+  targeted.set(drawingId,task);return task;
+};
+window.sentlogCheckPdfRecovery=run;''')
 
 # Static boot dependencies are versioned together; no CacheStorage user API entries.
 p='sentlog/index.html'
