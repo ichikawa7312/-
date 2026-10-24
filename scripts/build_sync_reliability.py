@@ -53,12 +53,19 @@ runtime=(ROOT/'sentlog/pc-sync-progress.txt').read_text()
 cut=runtime.index('async function syncOnce(){')
 section(p,'async function pendingAssets(){','async function downloadAsset(a){',runtime[:cut])
 section(p,'async function syncOnce(){','function start(){',runtime[cut:])
+change(p,
+"""  const j=await r.json().catch(()=>({}));if(!r.ok)throw Error(j.error||j.detail||'クラウド削除失敗');
+  deletedCount++;$('deletedCount').textContent=deletedCount;log('Supabase一時ファイル削除: '+a.file_name)""",
+"""  const j=await r.json().catch(()=>({}));if(!r.ok)throw Error(j.error||j.detail||'クラウド削除失敗');
+  if(j.retained){log('PC同期済み・クラウド保持: '+a.file_name);return}
+  deletedCount++;$('deletedCount').textContent=deletedCount;log('Supabase一時ファイル削除: '+a.file_name)""")
+
 # Retain byte-size + SHA-256 verification. Download only if the selected PC file differs.
 change(p,'  const blob=await downloadAsset(a);\n  const project=', '  const project=')
 change(p,'if(!ok){const w=await fh.createWritable();await w.write(blob);', 'if(!ok){const blob=await downloadAsset(a);const w=await fh.createWritable();await w.write(blob);')
-change(p,'<b id="pendingCount">0</b><small>クラウド待機</small>', '<b id="pendingCount">—</b><small>クラウドに残っている件数</small>')
+change(p,'<b id="pendingCount">0</b><small>クラウド待機</small>', '<b id="pendingCount">—</b><small>PC同期未完了</small>')
 change(p,'<small>今回PC保存</small>', '<small>今回PC保存・再照合</small>')
-change(p,'  <div class="card">\n    <h2>動作ログ</h2>', '  <div class="card">\n    <p id="pendingDetail" class="muted">内訳は同期開始時に確認します。</p>\n    <p id="pendingTime" class="muted"></p>\n    <p class="muted">クラウドの残件には、PC保存済みで別端末への配信・整理を待っているデータも含みます。PC未保存件数とは異なります。</p>\n    <h2>動作ログ</h2>')
+change(p,'  <div class="card">\n    <h2>動作ログ</h2>', '  <div class="card">\n    <p id="pendingDetail" class="muted">内訳は同期開始時に確認します。</p>\n    <p id="pendingTime" class="muted"></p>\n    <p class="muted">使用中案件の図面PDFは、PC保存・照合後もiPhone/iPad表示用にクラウドへ保持します。保持中の図面はPC同期済みとして未完了件数から除外します。</p>\n    <h2>動作ログ</h2>')
 change(p,'v1.86 · 写真再取得の全件確認','v1.89 · 同期状況の内訳・認証復旧')
 
 p='sentlog/index.html'
