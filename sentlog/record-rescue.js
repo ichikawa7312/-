@@ -1,4 +1,4 @@
-/* SentlogRecordRescue v1.95: visible single-project local rescue. */
+/* SentlogRecordRescue v2.01: header emergency rescue for project list. */
 (function(root){
   'use strict';
   if(!root.document||root.SentlogRecordRescue)return;
@@ -43,22 +43,18 @@
     actions.append(cancel,go);card.append(h,note,select,actions);overlay.append(card);document.body.append(overlay);
   }
   function install(){
+    const oldPanel=document.getElementById('sentlogRecordRescuePanel');if(oldPanel)oldPanel.remove();
     if(document.getElementById('sentlogRecordRescueBtn'))return;
-    const shell=document.querySelector('#projectsView .manager-shell');
-    const legacy=document.querySelector('#projectsView .manager-subbar');
-    if(!shell&&!legacy)return;
+    const header=document.querySelector('header');if(!header)return;
     const b=document.createElement('button');b.id='sentlogRecordRescueBtn';b.type='button';b.className='small';
-    b.textContent='緊急：案件を選んで救出';b.style.cssText='border-color:#f59e0b;background:#fffbeb;color:#92400e;min-height:44px;';
+    b.textContent='緊急救出';b.title='端末内の案件記録を緊急書き出し';b.setAttribute('aria-label',b.title);
+    b.style.cssText='border-color:#f59e0b;background:#fffbeb;color:#92400e;min-height:34px;padding:6px 10px;white-space:nowrap;';
     b.onclick=chooseProject;
-    if(shell){
-      const panel=document.createElement('div');panel.id='sentlogRecordRescuePanel';
-      panel.style.cssText='display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:0 0 14px;padding:12px 14px;border:1px solid #f59e0b;border-radius:10px;background:#fffbeb;';
-      const label=document.createElement('strong');label.textContent='記録救出';
-      const note=document.createElement('span');note.className='manager-card-meta';note.textContent='端末内の1案件だけを書き出します';
-      panel.append(label,b,note);
-      const grid=document.getElementById('projectsGrid');
-      if(grid&&grid.parentElement===shell)shell.insertBefore(panel,grid);else shell.append(panel);
-    }else legacy.append(b);
+    const save=document.getElementById('saveStatus');
+    if(save)header.insertBefore(b,save);else header.append(b);
+    const style=document.createElement('style');style.id='sentlogRecordRescueHeaderStyle';
+    style.textContent='#sentlogRecordRescueBtn{display:none}#projectsView:not(.hidden)~*{} body:has(#projectsView:not(.hidden)) #sentlogRecordRescueBtn{display:inline-flex;align-items:center;justify-content:center}@media(max-width:700px){body:has(#projectsView:not(.hidden)) #sentlogRecordRescueBtn{font-size:0;width:54px;min-width:54px;padding:0 7px}body:has(#projectsView:not(.hidden)) #sentlogRecordRescueBtn::after{content:"救出";font-size:11px}}';
+    document.head.append(style);
   }
   root.SentlogRecordRescue={build,save,install};
   Promise.resolve(root.sentlogAppReady).catch(()=>{}).then(install);
