@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>セントログ 記録救出</title>
+<style>
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:0;background:#f3f4f6;color:#111827}
+main{max-width:680px;margin:auto;padding:18px}
+.card{background:#fff;border:1px solid #d1d5db;border-radius:14px;padding:16px;margin-bottom:14px}
+h1{font-size:22px;margin:0 0 10px}p{line-height:1.6;margin:8px 0}
+.safe{background:#ecfdf5;border-color:#a7f3d0;color:#065f46}.warn{background:#fffbeb;border-color:#fde68a;color:#92400e}
+button{width:100%;min-height:48px;border:1px solid #d1d5db;border-radius:10px;background:#111827;color:#fff;font-weight:700;font-size:16px;margin-top:10px}
+button.secondary{background:#fff;color:#111827}button:disabled{opacity:.45}
+#status{font-weight:700}.small{font-size:12px;color:#6b7280}.project{padding:10px 0;border-top:1px solid #e5e7eb}.project:first-child{border-top:0}
+code{word-break:break-all;font-size:11px}
+</style>
+</head>
+<body>
+<main>
+<div class="card safe">
+<h1>セントログ 記録救出</h1>
+<p><strong>このページはクラウド同期を行いません。</strong><br>端末内に残っている案件・図面・変状・写真リンクだけを読み取ります。PDF・写真ファイル・端末内データの変更や削除は行いません。</p>
+</div>
+<div class="card">
+<p id="status">端末内の記録を確認しています…</p>
+<div id="summary"></div>
+<button id="saveBtn" disabled>記録バックアップを保存</button>
+<button id="copyBtn" class="secondary" disabled>JSONをクリップボードへコピー</button>
+<p class="small">保存ではiPhoneの共有画面が開きます。「ファイルに保存」を選んでください。</p>
+</div>
+<div class="card warn">
+<p>この救出が終わるまでは、ホーム画面の通常のセントログは開かないでください。</p>
+</div>
+</main>
+<script>
+(async()=>{
+'use strict';
+const DB='surveyFieldNoteDB',STORE='files',PREFIX='__sentlog_record__:',WS='surveyFieldNoteWorkspaceV1',DRAW='surveyFieldNoteDrawingV1:';
+const status=document.getElementById('status'),summary=document.getElementById('summary'),save=document.getElementById('saveBtn'),copy=document.getElementById('copyBtn');
+let payload=null,text='';
+const open=()=>new Promise((resolve,reject)=>{const q=indexedDB.open(DB,1);q.onsuccess=()=>resolve(q.result);q.onerror=()=>reject(q.error);q.onupgradeneeded=()=>{try{q.transaction.abort()}catch{};reject(Error('この端末側にセントログの保存領域が見つかりません。'));}});
+const get=(db,key)=>new Promise((resolve,reject)=>{const tx=db.transaction(STORE,'readonly'),q=tx.objectStore(STORE).get(PREFIX+key);q.onsuccess=()=>resolve(q.result??null);q.onerror=()=>reject(q.error);});
+try{
+ const db=await open();if(!db.objectStoreNames.contains(STORE))throw Error('セントログの保存領域を確認できません。');
+ const raw=await get(db,WS);if(!raw)throw Error('このブラウザ側には案件データが見つかりません。');
+ const workspace=JSON.parse(raw),drawingStates={};let shapes=0,photos=0,drawings=0;
+ const rows=[];
+ for(const p of workspace.projects||[]){
+   let ps=0,pp=0,pd=0;
+   for(const d of p.drawings||[]){
+     const sraw=await get(db,DRAW+d.id);if(!sraw)continue;
+     const s=JSON.parse(sraw);drawingStates[d.id]=s;drawings++;pd++;
+     const list=Array.isArray(s.shapes)?s.shapes:[];ps+=list.length;shapes+=list.length;
+     const pn=list.reduce((n,x)=>n+(Array.isArray(x.photos)?x.photos.length:0),0);pp+=pn;photos+=pn;
+   }
+   rows.push({name:p.name||'案件',drawings:pd,shapes:ps,photos:pp});
+ }
+ db.close();
+ payload={format:'sentlog-record-rescue',version:1,exportedAt:new Date().toISOString(),workspace,drawingStates};
+ text=JSON.stringify(payload);
+ status.textContent='端末内の記録を読み取れました。';
+ summary.innerHTML='<p><strong>案件 '+(workspace.projects||[]).length+'件 / 図面 '+drawings+'枚 / 記録 '+shapes+'件 / 写真リンク '+photos+'件</strong></p>'+rows.map(r=>'<div class="project"><strong>'+escapeHtml(r.name)+'</strong><br><span class="small">図面 '+r.drawings+' / 記録 '+r.shapes+' / 写真リンク '+r.photos+'</span></div>').join('');
+ save.disabled=false;copy.disabled=false;
+}catch(e){status.textContent='救出用データを読み取れませんでした。';summary.innerHTML='<p>'+escapeHtml(e?.message||String(e))+'</p>';}
+function escapeHtml(v){return String(v).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+function stamp(){const d=new Date(),p=n=>String(n).padStart(2,'0');return d.getFullYear()+p(d.getMonth()+1)+p(d.getDate())+'_'+p(d.getHours())+p(d.getMinutes())+p(d.getSeconds());}
+save.onclick=async()=>{if(!payload)return;const file=new File([text],'セントログ_記録救出_'+stamp()+'.json',{type:'application/json'});try{if(navigator.canShare?.({files:[file]})&&navigator.share)await navigator.share({files:[file],title:'セントログ 記録救出'});else{const u=URL.createObjectURL(file),a=document.createElement('a');a.href=u;a.download=file.name;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(u),60000);}}catch(e){if(e?.name!=='AbortError')alert('保存できませんでした：'+(e?.message||e));}};
+copy.onclick=async()=>{try{await navigator.clipboard.writeText(text);alert('記録JSONをクリップボードにコピーしました。');}catch(e){alert('コピーできませんでした。');}};
+})();
+</script>
+</body>
+</html>
