@@ -1,4 +1,4 @@
-/* SentlogRecordRescue v1.94: export one selected local project only. */
+/* SentlogRecordRescue v1.95: visible single-project local rescue. */
 (function(root){
   'use strict';
   if(!root.document||root.SentlogRecordRescue)return;
@@ -43,11 +43,22 @@
     actions.append(cancel,go);card.append(h,note,select,actions);overlay.append(card);document.body.append(overlay);
   }
   function install(){
-    const host=document.querySelector('#projectsView .manager-subbar');
-    if(!host||document.getElementById('sentlogRecordRescueBtn'))return;
+    if(document.getElementById('sentlogRecordRescueBtn'))return;
+    const shell=document.querySelector('#projectsView .manager-shell');
+    const legacy=document.querySelector('#projectsView .manager-subbar');
+    if(!shell&&!legacy)return;
     const b=document.createElement('button');b.id='sentlogRecordRescueBtn';b.type='button';b.className='small';
-    b.textContent='緊急：案件を選んで救出';b.style.cssText='border-color:#f59e0b;background:#fffbeb;color:#92400e;';
-    b.onclick=chooseProject;host.append(b);
+    b.textContent='緊急：案件を選んで救出';b.style.cssText='border-color:#f59e0b;background:#fffbeb;color:#92400e;min-height:44px;';
+    b.onclick=chooseProject;
+    if(shell){
+      const panel=document.createElement('div');panel.id='sentlogRecordRescuePanel';
+      panel.style.cssText='display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:0 0 14px;padding:12px 14px;border:1px solid #f59e0b;border-radius:10px;background:#fffbeb;';
+      const label=document.createElement('strong');label.textContent='記録救出';
+      const note=document.createElement('span');note.className='manager-card-meta';note.textContent='端末内の1案件だけを書き出します';
+      panel.append(label,b,note);
+      const grid=document.getElementById('projectsGrid');
+      if(grid&&grid.parentElement===shell)shell.insertBefore(panel,grid);else shell.append(panel);
+    }else legacy.append(b);
   }
   root.SentlogRecordRescue={build,save,install};
   Promise.resolve(root.sentlogAppReady).catch(()=>{}).then(install);
