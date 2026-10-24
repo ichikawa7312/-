@@ -76,6 +76,7 @@ jobs:
           python3 scripts/build_page_replacement.py
           python3 scripts/build_record_transfer.py
           python3 scripts/build_compact_controls.py
+          python3 scripts/build_rescue_header.py
           node tests/drawing_export.test.cjs
           node tests/peer_photos.test.cjs
           node tests/sync_review.test.cjs
