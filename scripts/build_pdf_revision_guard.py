@@ -155,6 +155,16 @@ for t in (ROOT/'tests').iterdir():
              lambda _: r'cloud-sync\.js\?v=20261025-pdf-revision-203',u)
     if u!=q:t.write_text(u)
 
+# The integration test evaluates syncNow in an isolated VM slice, so provide
+# the upload-block set that normally lives in the module's top-level scope.
+integration=ROOT/'tests/integration.test.cjs'
+it=integration.read_text()
+if 'drawingUploadBlocks:new Set()' not in it:
+    it,n=re.subn(r'syncing:false,','syncing:false,drawingUploadBlocks:new Set(),',it,count=1)
+    if n!=1:
+        raise RuntimeError('integration upload-block fixture anchor mismatch: '+str(n))
+    integration.write_text(it)
+
 subprocess.run(['node','--check','sentlog/cloud-sync.js'],cwd=ROOT,check=True)
 subprocess.run(['node','tests/page_replacement.test.cjs'],cwd=ROOT,check=True)
 subprocess.run(['node','tests/pdf_revision_guard.test.cjs'],cwd=ROOT,check=True)
