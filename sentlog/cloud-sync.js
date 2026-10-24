@@ -285,6 +285,9 @@ async function uploadDrawing(cloudProject,deviceId,item){
   let blob=await dbGet(key);
   if(!(blob instanceof Blob))return {status:'missing'};
   const fileName=item.fileName||item.drawingName||('drawing-'+item.drawingId);
+  if(blob instanceof File && blob.name && fileName && blob.name!==fileName){
+    throw new Error('端末内のPDF「'+blob.name+'」と記録上のPDF「'+fileName+'」が異なるため、自動上書きを停止しました。図面を確認してから差し替えてください。');
+  }
   let optimization={blob,optimized:false,originalSize:blob.size};
   const isPdf=item.sourceType==='pdf'||blob.type==='application/pdf'||/\.pdf$/i.test(fileName);
   if(isPdf)optimization=await optimizePdfForSync(blob);
