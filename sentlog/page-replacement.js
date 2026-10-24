@@ -33,16 +33,21 @@
       return {ok:false,reason:'元ページと差し替えページの用紙寸法が異なります。'};
     return {ok:true};
   }
-  function nextMarker(markers,page,fileName,now=Date.now(),restored=false){
+  function nextMarker(markers,page,fileName,now=Date.now(),restored=false,pdfHash='',pdfSize=0){
     const all=markers&&typeof markers==='object'&&!Array.isArray(markers)?markers:{};
     const key=String(page),old=all[key]&&typeof all[key]==='object'?all[key]:{};
-    return {...all,[key]:{
+    const marker={
       revision:Math.max(0,Number(old.revision)||0)+1,
       updatedAt:Number(now)||Date.now(),
       fileName:String(fileName||''),
       preservedRecords:true,
       restored:!!restored
-    }};
+    };
+    const normalizedHash=String(pdfHash||'').trim().toLowerCase();
+    if(/^[0-9a-f]{64}$/.test(normalizedHash))marker.pdfHash=normalizedHash;
+    const size=Number(pdfSize);
+    if(Number.isFinite(size)&&size>0)marker.pdfSize=size;
+    return {...all,[key]:marker};
   }
 
   const pure={VERSION,normalizeRotation,pageRecordStats,frameCompatible,nextMarker};
@@ -184,7 +189,7 @@
       const keepPage=page;
       await openFile(merged,false);
       state.currentPage=keepPage;
-      state.pageReplacements=nextMarker(state.pageReplacements,page,name,Date.now(),false);
+      state.pageReplacements=nextMarker(state.pageReplacements,page,name,Date.now(),false,mergedHash,merged.size);
       persist();
       await root.SentlogRecords.flush();
       await writeMeta({...meta,applied:true,replacementName:name,replacementHash:mergedHash,replacementSize:merged.size});
@@ -221,7 +226,7 @@
       const page=Math.min(Math.max(1,Number(meta.page)||1),Number(state.pageCount)||1);
       await openFile(backup,false);
       state.currentPage=page;
-      state.pageReplacements=nextMarker(state.pageReplacements,page,'差し替え前に復元',Date.now(),true);
+      state.pageReplacements=nextMarker(state.pageReplacements,page,'差し替え前に復元',Date.now(),true,meta.sourceHash,backup.size);
       persist();await root.SentlogRecords.flush();
       await writeMeta({...meta,applied:false,restoredAt:new Date().toISOString()});
       render();renderSelectedPhotos();updatePageUI();
