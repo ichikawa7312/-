@@ -25,13 +25,14 @@ function makeQuery(table,rows,counters){
  };
  return q;
 }
-async function scenario({pending=[],devices=[],legacyReceipts=[],photo=true}={}){
+async function scenario({pending=[],devices=[],legacyReceipts=[],photo=true,projectStatus='archived'}={}){
  const now=Date.now();
- const asset={id:'asset-1',owner_id:'account-1',kind:photo?'photo':'drawing',status:'pc_verified',
+ const asset={id:'asset-1',owner_id:'account-1',project_id:'project-1',kind:photo?'photo':'drawing',status:'pc_verified',
   storage_path:'account-1/project/photo-redelivery.jpg',storage_deleted_at:null,
   sha256:'f'.repeat(64),byte_size:101,source_device_id:'iphone-original'};
  const rows={
   sentlog_assets:[asset],
+  sentlog_projects:[{id:'project-1',status:projectStatus}],
   sentlog_pc_receipts:[{asset_id:asset.id,sha256:asset.sha256,byte_size:asset.byte_size}],
   sentlog_pdf_requests:pending.map(p=>({asset_id:asset.id,owner_id:'account-1',expected_sha256:asset.sha256,
     received_at:null,...p})),
@@ -83,8 +84,11 @@ async function scenario({pending=[],devices=[],legacyReceipts=[],photo=true}={})
  assert.equal(other.code,200,'removed/inactive device must not block cleanup');
  const ipad=await scenario({devices:[{id:'ipad-1',device_type:'ipad'}]});
  assert.equal(ipad.code,409);assert.equal(ipad.data.error,'device_delivery_pending');
- const pdf=await scenario({photo:false,pending:[{device_id:'ipad-1',requested_at:fresh}],
+ const pdf=await scenario({photo:false,projectStatus:'archived',pending:[{device_id:'ipad-1',requested_at:fresh}],
   devices:[{id:'ipad-1',device_type:'ipad'}]});
  assert.equal(pdf.code,409);assert.equal(pdf.data.error,'pdf_delivery_pending');
- console.log('PASS v1.42 delete-verified: active browser waits for ACK; stale request expires; inactive ignored; iPad/PDF existing guards preserved');
+ const activePdf=await scenario({photo:false,projectStatus:'active'});
+ assert.equal(activePdf.code,200);assert.equal(activePdf.data.retained,true);
+ assert.equal(activePdf.removed,0,'active project drawing must stay in cloud storage');
+ console.log('PASS delete-verified: active browser waits for ACK; stale request expires; inactive ignored; archived PDF guard preserved; active PDF retained');
 })().catch(e=>{console.error(e);process.exitCode=1;});
