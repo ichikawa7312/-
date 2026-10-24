@@ -181,6 +181,8 @@
   }
   function locked(){const c=byLocal(activeProjectId);return !!c&&(c.status==='archived'||c.checking);}
   async function install(){
+    const earlyGrid=document.getElementById('projectsGrid');
+    if(earlyGrid)earlyGrid.style.visibility='hidden';
     await window.sentlogAppReady;account();
     const shell=document.querySelector('#projectsView .manager-shell');if(!shell)return;
     const style=document.createElement('style');style.textContent=`
@@ -219,7 +221,10 @@
     for(const id of ['fileInput','drawingAddInput','cameraInput','photoInput'])document.getElementById(id)?.addEventListener('change',event=>{if(locked()){event.stopImmediatePropagation();event.target.value='';tell('保管中のファイル変更は停止しています。');}},true);
     const oldDrawings=showDrawings;showDrawings=function(){const result=oldDrawings.apply(this,arguments);renderBanner();return result;};
     const oldProjects=showProjects;showProjects=function(){const result=oldProjects.apply(this,arguments);renderBanner();return result;};
-    installed=true;renderProjects();
+    try{await refresh();}catch(e){console.warn('Archive initial refresh',e);tell('案件の保管状態を確認できません。通信を確認して画面を更新してください。');}
+    installed=true;
+    if(earlyGrid)earlyGrid.style.visibility='';
+    renderProjects();
   }
   window.SentlogArchive={refresh,canSync,includeLocal,isAuto,byCloud,byLocal,get ready(){return fresh;},core:C};
   install().catch(e=>console.error('Archive UI',e));
