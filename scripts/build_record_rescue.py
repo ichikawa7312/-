@@ -1,4 +1,4 @@
-"""Sentlog v1.94: emergency record-only backup for iPhone/PWA rescue.
+"""Sentlog v1.95: emergency record-only backup for iPhone/PWA rescue.
 
 Runs after v1.93. It adds a local-only share/export module; no cloud/database writes.
 """
@@ -16,15 +16,15 @@ def change(path,old,new,count=1):
 p='sentlog/index.html'
 change(p,
        "['page-management.js?v=193','SentlogPageManagement v1.93']",
-       "['page-management.js?v=193','SentlogPageManagement v1.93'],['record-rescue.js?v=194','SentlogRecordRescue']")
+       "['page-management.js?v=193','SentlogPageManagement v1.93'],['record-rescue.js?v=195','SentlogRecordRescue']")
 change(p,
        '<script src="./page-management.js?v=193"><\\/script>',
        '<script src="./page-management.js?v=193"><\\/script><script src="./record-rescue.js?v=194"><\\/script>')
-change(p,'phone-runtime.js?v=193','phone-runtime.js?v=194',2)
-change(p,"['phone-runtime.js?v=194','v1.93']","['phone-runtime.js?v=194','v1.94']")
-change('sentlog/phone-runtime.js','v1.93','v1.94',4)
+change(p,'phone-runtime.js?v=193','phone-runtime.js?v=195',2)
+change(p,"['phone-runtime.js?v=194','v1.93']","['phone-runtime.js?v=194','v1.95']")
+change('sentlog/phone-runtime.js','v1.93','v1.95',4)
 change('sentlog-pc/index.html','v1.93','v1.94',1)
-change('sentlog/sw.js','sentlog-pwa-v204','sentlog-pwa-v205')
+change('sentlog/sw.js','sentlog-pwa-v204','sentlog-pwa-v206')
 change('sentlog/sw.js',"'page-management.js'","'page-management.js','record-rescue.js'")
 
 for f in (ROOT/'tests').iterdir():
@@ -35,4 +35,4 @@ for f in (ROOT/'tests').iterdir():
 
 subprocess.run(['node','--check','sentlog/record-rescue.js'],cwd=ROOT,check=True)
 subprocess.run(['node','tests/record_rescue.test.cjs'],cwd=ROOT,check=True)
-print('Built Sentlog v1.94: local-only emergency record backup via iOS share sheet')
+print('Built Sentlog v1.95: visible single-project emergency rescue via iOS share sheet')
