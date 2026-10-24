@@ -52,8 +52,29 @@
     }
     return {damage,dimensions,memos,photos,total:list.length};
   }
+  function replacementRecordSummary(value){
+    const shapes=value?.shapes||[],photos=shapes.reduce((n,s)=>n+(s?.photos?.length||0),0);
+    return {shapes:shapes.length,photos,pages:new Set(shapes.map(s=>Number(s?.page)||1))};
+  }
+  function replacementFrameCompatible(previous,probe){
+    if(previous?.sourceType!==probe?.sourceType)return {ok:false,reason:'図面の種類（PDF／画像）が変わります。'};
+    if(Number(previous?.pageCount||1)!==Number(probe?.pageCount||1))return {ok:false,reason:'ページ数が '+(previous?.pageCount||1)+' → '+probe.pageCount+' に変わります。'};
+    if(previous?.sourceType==='pdf'){
+      const records=replacementRecordSummary(previous);
+      for(const page of records.pages){
+        const a=previous?.pdfPageInfo?.[String(page)],b=probe?.pdfPageInfo?.[String(page)];
+        if(!a||!b)continue;
+        if(Math.abs(Number(a.wMm)-Number(b.wMm))>1||Math.abs(Number(a.hMm)-Number(b.hMm))>1)
+          return {ok:false,reason:page+'ページ目の用紙寸法が変わります。'};
+      }
+    }else if(Number(previous?.width)>0&&Number(previous?.height)>0&&
+      (Math.abs(Number(previous.width)-Number(probe?.width))>1||Math.abs(Number(previous.height)-Number(probe?.height))>1)){
+      return {ok:false,reason:'画像サイズが変わります。'};
+    }
+    return {ok:true};
+  }
 
-  const pure={VERSION,normalizeEntry,normalizePageStates,pageState,isHidden,visiblePages,setHidden,nearestVisible,pageRecordStats};
+  const pure={VERSION,normalizeEntry,normalizePageStates,pageState,isHidden,visiblePages,setHidden,nearestVisible,pageRecordStats,replacementRecordSummary,replacementFrameCompatible};
   if(typeof module!=='undefined'&&module.exports){module.exports=pure;return;}
   if(!root.document||root.SentlogPageManagement)return;
 
@@ -205,6 +226,43 @@
     updateButtons();
   }
 
+  async function inspectReplacementFile(file){
+    const isPDF=file.type==='application/pdf'||/\.pdf$/i.test(file.name||'');
+    if(isPDF){
+      if(!root.pdfjsLib)throw Error('PDF表示エンジンを読み込めません。');
+      const buf=await file.arrayBuffer(),doc=await pdfjsLib.getDocument({data:new Uint8Array(buf)}).promise,info={};
+      try{
+        for(let n=1;n<=doc.numPages;n++){
+          const page=await doc.getPage(n),intrinsic=normalizeRotation(page.rotate||0),v=page.getViewport({scale:1,rotation:intrinsic});
+          info[String(n)]={wMm:v.width*25.4/72,hMm:v.height*25.4/72};
+        }
+        return {sourceType:'pdf',pageCount:doc.numPages,pdfPageInfo:info};
+      }finally{try{await doc.destroy?.()}catch{}}
+    }
+    const url=URL.createObjectURL(file);
+    try{
+      const size=await new Promise((resolve,reject)=>{const image=new Image();image.onload=()=>resolve({width:image.naturalWidth,height:image.naturalHeight});image.onerror=()=>reject(Error('画像を読み取れません。'));image.src=url;});
+      return {sourceType:'image',pageCount:1,...size};
+    }finally{URL.revokeObjectURL(url)}
+  }
+  async function replaceRecordedDrawing(file,input){
+    const previous=JSON.parse(JSON.stringify(state)),summary=replacementRecordSummary(previous),probe=await inspectReplacementFile(file);
+    const compatible=replacementFrameCompatible(previous,probe);
+    if(!compatible.ok){
+      alert('この図面には記録があるため、安全に差し替えできません。\n\n'+compatible.reason+'\n\n記録と写真は変更していません。新しいPDFは「この図面No.に追加」から別シートとして登録してください。');
+      return;
+    }
+    if(!confirm('この図面には変状・記録 '+summary.shapes+'件、写真 '+summary.photos+'枚があります。\n\n記録・写真・縮尺設定を残したまま背景PDFだけ差し替えます。\n元の記録は削除しません。\n\n差し替えますか？'))return;
+    const backupKey='sentlogReplaceBackupV1:'+activeDrawingId;
+    root.SentlogRecords.setItem(backupKey,JSON.stringify({savedAt:new Date().toISOString(),drawingId:activeDrawingId,state:previous}));
+    await root.SentlogRecords.flush();
+    state.pageStates={};state.pdfPageInfo={};
+    state.currentPage=Math.min(Math.max(1,Number(previous.currentPage)||1),probe.pageCount);
+    selected=null;drawing=null;clearAllHistory();
+    await openFile(file,true);
+    rebuildNumberingState();render();renderSelectedPhotos();persist();
+  }
+
   function install(){
     const controls=byId('pageControls');
     if(controls&&!byId('sentlogPageManagementActions')){
@@ -216,6 +274,20 @@
     const prev=byId('prevPageBtn'),next=byId('nextPageBtn');
     if(prev)prev.onclick=()=>go(-1);
     if(next)next.onclick=()=>go(1);
+
+    const input=byId('fileInput');
+    if(input?.onchange&&!input.dataset.safeReplacementWrapped){
+      const legacy=input.onchange;input.dataset.safeReplacementWrapped='1';
+      input.onchange=async function(e){
+        const file=e?.target?.files?.[0];
+        if(!file)return;
+        const summary=replacementRecordSummary(state);
+        if(!summary.shapes&&!summary.photos)return legacy.call(this,e);
+        try{await replaceRecordedDrawing(file,input);}
+        catch(err){console.error('drawing replacement',err);alert('図面の差し替えを中止しました。記録と写真は変更していません。\n'+(err?.message||err));}
+        finally{if(e?.target)e.target.value='';}
+      };
+    }
 
     if(!byId('sentlogPageManagementStyle')){
       const style=document.createElement('style');style.id='sentlogPageManagementStyle';
