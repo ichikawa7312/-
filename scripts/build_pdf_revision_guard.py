@@ -127,14 +127,16 @@ s=s.replace(old_status,new_status,1)
 
 p.write_text(s)
 
-# Force clients to request the revised sync module.
+# Force clients to request the revised sync module. Earlier build stages may
+# already have advanced the cache-busting token, so match the current token
+# instead of depending on a historical version string.
 idx=ROOT/'sentlog/index.html'
 x=idx.read_text()
-old_version='cloud-sync.js?v=20261020-review-186'
 new_version='cloud-sync.js?v=20261025-pdf-revision-203'
-if x.count(old_version)!=2:
-    raise RuntimeError('cloud sync loader version mismatch: '+str(x.count(old_version)))
-idx.write_text(x.replace(old_version,new_version))
+x,n=re.subn(r'cloud-sync\.js\?v=[0-9A-Za-z._-]+',new_version,x)
+if n!=2:
+    raise RuntimeError('cloud sync loader count unexpected: '+str(n))
+idx.write_text(x)
 
 # Advance the service worker cache after every prior build step.
 sw=ROOT/'sentlog/sw.js'
@@ -148,8 +150,9 @@ for t in (ROOT/'tests').iterdir():
     if t.suffix not in ('.cjs','.py') or t.name=='pdf_revision_guard.test.cjs': continue
     q=t.read_text()
     u=q.replace(old_cache,new_cache)
-    u=u.replace(old_version,new_version)
-    u=u.replace(r'cloud-sync\.js\?v=20261020-review-186',r'cloud-sync\.js\?v=20261025-pdf-revision-203')
+    u=re.sub(r'cloud-sync\.js\?v=[0-9A-Za-z._-]+',new_version,u)
+    u=re.sub(r'cloud-sync\\\.js\\\?v=[0-9A-Za-z._-]+',
+             lambda _: r'cloud-sync\.js\?v=20261025-pdf-revision-203',u)
     if u!=q:t.write_text(u)
 
 subprocess.run(['node','--check','sentlog/cloud-sync.js'],cwd=ROOT,check=True)
