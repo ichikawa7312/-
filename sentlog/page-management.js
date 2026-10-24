@@ -1,4 +1,4 @@
-/* SentlogPageManagement v1.92: reversible per-page visibility without modifying source PDFs. */
+/* SentlogPageManagement v1.93: reversible per-page visibility without modifying source PDFs. */
 (function(root){
   'use strict';
 
