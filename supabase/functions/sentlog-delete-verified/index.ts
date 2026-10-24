@@ -13,11 +13,16 @@ Deno.serve(async(req:Request)=>{
   if(authError||!identity.user)return json({error:'invalid_session'},401);
   const body=await req.json().catch(()=>null);
   if(typeof body?.asset_id!=='string')return json({error:'asset_id_required'},400);
-  const {data:asset,error:assetError}=await client.from('sentlog_assets').select('id,owner_id,kind,storage_path,status,storage_deleted_at,source_device_id,sha256,byte_size').eq('id',body.asset_id).single();
+  const {data:asset,error:assetError}=await client.from('sentlog_assets').select('id,owner_id,project_id,kind,storage_path,status,storage_deleted_at,source_device_id,sha256,byte_size').eq('id',body.asset_id).single();
   if(assetError||!asset)return json({error:'asset_not_found'},404);
   if(asset.owner_id!==identity.user.id)return json({error:'forbidden'},403);
   if(asset.status==='storage_deleted'||asset.storage_deleted_at)return json({ok:true,already_deleted:true,asset_id:asset.id});
   if(asset.status!=='pc_verified')return json({error:'pc_verification_required'},409);
+  if(asset.kind==='drawing'){
+    const {data:project,error:projectError}=await client.from('sentlog_projects').select('status').eq('id',asset.project_id).single();
+    if(projectError||!project)return json({error:'project_status_check_failed'},500);
+    if(project.status==='active')return json({ok:true,retained:true,asset_id:asset.id,reason:'active_project_drawing'});
+  }
   const {data:pc,error:pcError}=await client.from('sentlog_pc_receipts').select('sha256,byte_size,verified_at').eq('asset_id',asset.id).single();
   if(pcError||!pc||pc.sha256!==asset.sha256||Number(pc.byte_size)!==Number(asset.byte_size))return json({error:'matching_pc_receipt_required'},409);
   const admin=createClient(url,Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,{auth:{persistSession:false,autoRefreshToken:false}});
