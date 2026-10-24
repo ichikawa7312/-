@@ -72,6 +72,7 @@ jobs:
           python3 scripts/build_safe_replace.py
           python3 scripts/build_record_rescue.py
           python3 scripts/build_drawing_upload_guard.py
+          python3 scripts/build_targeted_pdf_recovery.py
           node tests/drawing_export.test.cjs
           node tests/peer_photos.test.cjs
           node tests/sync_review.test.cjs
