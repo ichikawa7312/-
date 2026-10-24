@@ -28,6 +28,21 @@ new_line="""        if(blob instanceof Blob && blob.size>0 && !requestedForThisD
 if s.count(old_line)!=1:
     raise RuntimeError('pdf recovery mismatch gate integration mismatch: '+str(s.count(old_line)))
 s=s.replace(old_line,new_line)
+
+old_same="""        if(await matches(blob,a)){
+          available++;await acknowledge(a,id);
+          if(window.sentlogRestoreDrawingView)await window.sentlogRestoreDrawingView(a.metadata.drawing_id,blob);
+          continue;
+        }"""
+new_same="""        if(await matches(blob,a)){
+          const requestKey=a.id+':'+String(a.sha256).toLowerCase();
+          available++;await acknowledge(a,id,requestedForThisDevice.has(requestKey));
+          if(window.sentlogRestoreDrawingView)await window.sentlogRestoreDrawingView(a.metadata.drawing_id,blob);
+          continue;
+        }"""
+if s.count(old_same)!=1:
+    raise RuntimeError('pdf recovery matched-file ACK integration mismatch: '+str(s.count(old_same)))
+s=s.replace(old_same,new_same)
 p.write_text(s)
 
 idx=ROOT/'sentlog/index.html'
@@ -41,4 +56,5 @@ subprocess.run(['node','--check','sentlog/pdf-recovery.js'],cwd=ROOT,check=True)
 final=p.read_text()
 assert 'select=asset_id,device_id,expected_sha256' in final
 assert 'requestedForThisDevice.has' in final
+assert 'await acknowledge(a,id,requestedForThisDevice.has(requestKey))' in final
 print('Built Sentlog v1.97: explicit per-device PDF recovery may replace mismatched local PDF')
