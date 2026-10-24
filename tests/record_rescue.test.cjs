@@ -9,7 +9,10 @@ records.set('surveyFieldNoteWorkspaceV1',JSON.stringify({projects:[{id:'p1',name
 records.set('surveyFieldNoteDrawingV1:d1',JSON.stringify({shapes:[{id:'s1',photos:[{id:'ph1'},{id:'ph2'}]}]}));
 records.set('surveyFieldNoteDrawingV1:d2',JSON.stringify({shapes:[{id:'s2',photos:[]}]}));
 
-const body={children:[],append(x){this.children.push(x)}},host={children:[],append(x){this.children.push(x)}};
+const inserted=[],head={children:[],append(x){this.children.push(x)}};
+const saveStatus={id:'saveStatus'};
+const header={append(x){inserted.push(x)},insertBefore(x,before){assert.equal(before,saveStatus);inserted.push(x)}};
+const body={children:[],append(x){this.children.push(x)}};
 const context=vm.createContext({
   console,JSON,Date,Blob,File,
   navigator:{canShare:()=>false},
@@ -17,10 +20,13 @@ const context=vm.createContext({
   setTimeout:()=>{},
   alert:()=>{},
   document:{
-    body,
-    querySelector:s=>s==='#projectsView .manager-subbar'?host:null,
-    getElementById:()=>null,
-    createElement:tag=>({tag,type:'',className:'',style:{cssText:''},textContent:'',disabled:false,append(){},remove(){},click(){this.clicked=true;}})
+    body,head,
+    querySelector:s=>s==='header'?header:null,
+    getElementById:id=>id==='saveStatus'?saveStatus:null,
+    createElement:tag=>({
+      tag,id:'',type:'',className:'',style:{cssText:''},textContent:'',title:'',disabled:false,
+      setAttribute(){},append(){},remove(){},click(){this.clicked=true;}
+    })
   },
   SentlogRecords:{
     settled:async()=>{},
@@ -42,7 +48,9 @@ vm.runInContext(code,context);
   assert.equal(result.payload.drawingStates.d1.shapes[0].photos.length,2);
   assert.ok(!('files' in result.payload),'record rescue must stay small and never serialize photo/PDF blobs');
   await Promise.resolve();await Promise.resolve();
-  assert.equal(host.children.length,1);
-  assert.equal(host.children[0].textContent,'緊急：案件を選んで救出');
-  console.log('PASS record rescue: local records/photo links exported without cloud or binary payloads');
+  assert.equal(inserted.length,1);
+  assert.equal(inserted[0].id,'sentlogRecordRescueBtn');
+  assert.equal(inserted[0].textContent,'緊急救出');
+  assert.equal(head.children.length,1,'header visibility style is installed');
+  console.log('PASS record rescue: local rescue stays lossless and mounts as compact header action');
 })().catch(e=>{console.error(e);process.exitCode=1});
