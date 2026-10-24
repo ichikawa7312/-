@@ -29,7 +29,7 @@ assert.equal(api.resolvePdfVersion(legacy,A,B,true,false,190000),'local-authorit
 assert.equal(api.resolvePdfVersion(legacy,A,B,true,false,100000),'block');
 assert.equal(api.resolvePdfVersion(legacy,A,B,true,true,100000),'take-remote');
 
-assert.match(source,/drawingUploadBlocks\.add\(drawingId\)/);
+assert.match(source,/drawingUploadBlocks\.add\(item\.drawingId\)/);
 assert.match(source,/drawingUploadBlocks\.has\(item\.drawingId\)/);
 assert.match(source,/status:'blocked-stale'/);
 assert.match(source,/PDF更新待ち/);
