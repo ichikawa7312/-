@@ -68,7 +68,6 @@ jobs:
           python scripts/build_sync_review.py
           python scripts/build_peer_photos.py
           python3 scripts/build_drawing_export.py
-          python3 scripts/build_pc_sync_retained.py
           node tests/drawing_export.test.cjs
           node tests/peer_photos.test.cjs
           node tests/sync_review.test.cjs
