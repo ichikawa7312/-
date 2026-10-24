@@ -75,39 +75,9 @@ new_global="let syncTimer=null;\nconst drawingUploadBlocks=new Set();"
 if s.count(old_global)!=1: raise RuntimeError('sync global anchor mismatch')
 s=s.replace(old_global,new_global,1)
 
-old_pull="""        const local=await dbGet(key);
-        let same=false;
-        if(local instanceof Blob && local.size===Number(a.byte_size)){
-          same=(await sha256Hex(local)).toLowerCase()===String(a.sha256).toLowerCase();
-        }
-        if(!same){
-          if(local instanceof Blob && local.size && window.sentlogSyncView && !window.sentlogSyncView.canReplaceDrawing(drawingId))continue;
-          const file=await downloadPrivateAsset(a);await dbPut(key,file);received++;
-          await window.sentlogSyncView?.fileReceived(drawingId,file);
-        }
-        if(a.source_device_id!==deviceId)await ackAsset(a.id,deviceId);"""
-new_pull="""        const local=await dbGet(key);
-        const remoteHash=normalizePdfHash(a.sha256);
-        const revision=expectedDrawingRevision(drawingId);
-        let localHash='',same=false;
-        if(local instanceof Blob && local.size===Number(a.byte_size)){
-          localHash=(await sha256Hex(local)).toLowerCase();
-          same=localHash===remoteHash;
-        }
-        if(!same){
-          if(!localHash&&revision&&local instanceof Blob&&local.size)localHash=(await sha256Hex(local)).toLowerCase();
-          const hasLocal=local instanceof Blob&&!!local.size;
-          const canReplace=!hasLocal||!window.sentlogSyncView||window.sentlogSyncView.canReplaceDrawing(drawingId);
-          const decision=resolvePdfVersion(revision,localHash,remoteHash,hasLocal,canReplace,local instanceof File?local.lastModified:0);
-          if(decision==='local-authoritative')continue;
-          if(decision==='block'||decision==='conflict'){drawingUploadBlocks.add(drawingId);continue;}
-          const file=await downloadPrivateAsset(a);await dbPut(key,file);received++;
-          await window.sentlogSyncView?.fileReceived(drawingId,file);
-        }
-        if(a.source_device_id!==deviceId)await ackAsset(a.id,deviceId);"""
-if s.count(old_pull)!=1:
-    raise RuntimeError('drawing pull guard anchor mismatch: '+str(s.count(old_pull)))
-s=s.replace(old_pull,new_pull,1)
+# Pull-side code is transformed by earlier build stages. Do not patch that
+# large block here: upload-side revision validation is the authoritative guard
+# that prevents a stale open device from overwriting the newer cloud PDF.
 
 pattern=r"(async function uploadDrawing\(cloudProject,deviceId,item,knownAssets\)\{\n  const key='background:'\+item\.drawingId;\n  let blob=await dbGet\(key\);\n  if\(!\(blob instanceof Blob\)\)return \{status:'missing'\};)"
 m=re.search(pattern,s)
