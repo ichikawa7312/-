@@ -19,18 +19,18 @@ change(p,
        "['page-management.js?v=193','SentlogPageManagement v1.93'],['record-rescue.js?v=195','SentlogRecordRescue']")
 change(p,
        '<script src="./page-management.js?v=193"><\\/script>',
-       '<script src="./page-management.js?v=193"><\\/script><script src="./record-rescue.js?v=194"><\\/script>')
+       '<script src="./page-management.js?v=193"><\\/script><script src="./record-rescue.js?v=195"><\\/script>')
 change(p,'phone-runtime.js?v=193','phone-runtime.js?v=195',2)
-change(p,"['phone-runtime.js?v=194','v1.93']","['phone-runtime.js?v=194','v1.95']")
+change(p,"['phone-runtime.js?v=195','v1.93']","['phone-runtime.js?v=195','v1.95']")
 change('sentlog/phone-runtime.js','v1.93','v1.95',4)
-change('sentlog-pc/index.html','v1.93','v1.94',1)
+change('sentlog-pc/index.html','v1.93','v1.95',1)
 change('sentlog/sw.js','sentlog-pwa-v204','sentlog-pwa-v206')
 change('sentlog/sw.js',"'page-management.js'","'page-management.js','record-rescue.js'")
 
 for f in (ROOT/'tests').iterdir():
     if f.suffix not in ('.py','.cjs'):continue
     s=f.read_text()
-    u=s.replace('v1.93','v1.94').replace('phone-runtime.js?v=193','phone-runtime.js?v=194').replace(r'phone-runtime\.js\?v=193',r'phone-runtime\.js\?v=194').replace('sentlog-pwa-v204','sentlog-pwa-v205')
+    u=s.replace('v1.93','v1.95').replace('phone-runtime.js?v=193','phone-runtime.js?v=195').replace(r'phone-runtime\.js\?v=193',r'phone-runtime\.js\?v=195').replace('sentlog-pwa-v204','sentlog-pwa-v206')
     if u!=s:f.write_text(u)
 
 subprocess.run(['node','--check','sentlog/record-rescue.js'],cwd=ROOT,check=True)
