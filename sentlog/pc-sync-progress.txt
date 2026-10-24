@@ -1,9 +1,9 @@
 // v1.89: cloud inventory includes redelivery, not just unsaved files.
-let pcPendingRows=new Map(),pcInventoryTime='';
+let pcPendingRows=new Map(),pcInventoryTime='',pcRetainedDrawingCount=0;
 function renderPcPending(){
  const rows=[...pcPendingRows.values()],verified=rows.filter(a=>a.pcReceiptVerified).length;
  $('pendingCount').textContent=String(rows.length);
- const detail=$('pendingDetail');if(detail)detail.textContent='PC保存・照合待ち：'+(rows.length-verified)+'件 ／ PC保存記録あり（配信・整理待ち）：'+verified+'件';
+ const detail=$('pendingDetail');if(detail)detail.textContent='PC保存・照合待ち：'+(rows.length-verified)+'件 ／ PC保存記録あり（配信・整理待ち）：'+verified+'件 ／ 図面クラウド保持中（PC同期済み）：'+pcRetainedDrawingCount+'件';
  const time=$('pendingTime');if(time)time.textContent=pcInventoryTime?'一覧確認：'+pcInventoryTime+'（処理済み件数は順次反映）':'';
 }
 async function pendingAssets(){
@@ -29,7 +29,10 @@ async function pendingAssets(){
   if(!Array.isArray(rows))throw Error('PC保存記録を確認できません。');
   for(const r of rows)receipts.set(r.asset_id,r);
  }
- pcPendingRows=new Map(active.map(a=>{const r=receipts.get(a.id);return [a.id,{...a,pcReceiptVerified:!!r&&String(r.sha256).toLowerCase()===String(a.sha256).toLowerCase()&&Number(r.byte_size)===Number(a.byte_size)}]}));
+ const inventory=active.map(a=>{const r=receipts.get(a.id);return {...a,pcReceiptVerified:!!r&&String(r.sha256).toLowerCase()===String(a.sha256).toLowerCase()&&Number(r.byte_size)===Number(a.byte_size)}});
+ const retained=inventory.filter(a=>a.kind==='drawing'&&a.status==='pc_verified'&&a.pcReceiptVerified);
+ pcRetainedDrawingCount=retained.length;
+ pcPendingRows=new Map(inventory.filter(a=>!retained.includes(a)).map(a=>[a.id,a]));
  pcInventoryTime=new Date().toLocaleTimeString('ja-JP');renderPcPending();return [...pcPendingRows.values()];
 }
 async function syncOnce(){
@@ -56,7 +59,7 @@ async function syncOnce(){
    checked++;
   }
   const remaining=await pendingAssets();
-  setSync(remaining.length?'未完了：クラウド残り '+remaining.length+'件'+(problems?'（今回の処理保留 '+problems+'件）':''):'同期完了：クラウドの残件はありません',remaining.length?'warn':'ok');
+  setSync(remaining.length?'未完了：PC処理待ち '+remaining.length+'件'+(problems?'（今回の処理保留 '+problems+'件）':''):'PC同期完了：未処理データはありません',remaining.length?'warn':'ok');
  }catch(e){setSync('同期は完了していません：'+e.message,'err');log('同期確認: '+e.message)}
  finally{busy=false}
 }
