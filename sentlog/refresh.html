@@ -24,7 +24,7 @@ main{text-align:center;padding:24px}strong{font-size:20px}p{opacity:.78;line-hei
       await Promise.all(keys.filter(k=>k.startsWith('sentlog-')).map(k=>caches.delete(k)));
     }
   }catch(e){}
-  location.replace('./?fresh=20260925-1');
+  location.replace('./?fresh='+Date.now());
 })();
 </script>
 </body>
