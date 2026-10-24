@@ -68,6 +68,6 @@ function clearAllHistory(){Object.keys(pageHistory).forEach(k=>delete pageHistor
 function undo(){const h=historyFor();if(!h.undo.length)return;h.redo.push(snapshotPage());const prev=h.undo.pop();restorePageSnapshot(prev)}
 function redo(){const h=historyFor();if(!h.redo.length)return;h.undo.push(snapshotPage());const next=h.redo.pop();restorePageSnapshot(next)}
 const NS='http://www.w3.org/2000/svg';
-if(window.pdfjsLib){pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js'}
+if(window.pdfjsLib){pdfjsLib.GlobalWorkerOptions.workerSrc='./vendor/export-pdf.worker.min.js'}
 
 function uid(){return crypto.randomUUID?crypto.randomUUID():'id-'+Date.now()+'-'+Math.rand
