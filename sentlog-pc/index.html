@@ -20,7 +20,7 @@ button{border:1px solid #cbd5e1;background:#fff;border-radius:9px;padding:10px 1
 </style>
 </head>
 <body>
-<header><h1>セントログ PC自動同期</h1><span>v1.26 · PDF再配信対応</span></header>
+<header><h1>セントログ PC自動同期</h1><span>v1.27 · PC同期済み図面保持対応</span></header>
 <main>
   <div class="card">
     <h2>1. セントログへログイン</h2>
@@ -49,7 +49,7 @@ button{border:1px solid #cbd5e1;background:#fff;border-radius:9px;padding:10px 1
 
   <div class="card">
     <h2>3. 自動同期</h2>
-    <p class="muted">この画面をEdgeで開いておけば、新しい写真・図面PDFを約5秒ごとに確認します。PCへ保存後、ファイルサイズとSHA-256を照合し、必要端末への配信も確認できたデータだけSupabaseから削除します。</p>
+    <p class="muted">この画面をEdgeで開いておけば、新しい写真・図面PDFを約5秒ごとに確認します。PCへ保存後、ファイルサイズとSHA-256を照合します。使用中案件の図面PDFは端末表示用にクラウドへ保持し、PC同期済みとして再処理しません。</p>
     <div class="row">
       <button id="startBtn" class="primary" disabled>自動同期を開始</button>
       <button id="stopBtn" disabled>停止</button>
@@ -147,8 +147,15 @@ async function getProjectName(id){const q=await rest('/rest/v1/sentlog_projects?
 
 async function pendingAssets(){
   const fields=enc('id,project_id,kind,file_name,storage_path,mime_type,byte_size,sha256,status,captured_at,metadata');
-  const q=await rest('/rest/v1/sentlog_assets?kind=in.(photo,drawing)&status=in.(uploaded,pc_verified)&select='+fields+'&order=uploaded_at.asc');
-  $('pendingCount').textContent=q?.length||0;return q||[]
+  const [q,activeProjects]=await Promise.all([
+    rest('/rest/v1/sentlog_assets?kind=in.(photo,drawing)&status=in.(uploaded,pc_verified)&select='+fields+'&order=uploaded_at.asc'),
+    rest('/rest/v1/sentlog_projects?status=eq.active&select=id')
+  ]);
+  const active=new Set((activeProjects||[]).map(p=>p.id));
+  // Active-project drawings that are already PC-verified intentionally remain in cloud
+  // so iPhone/iPad can keep opening them. They are complete for PC sync and must not loop.
+  const pending=(q||[]).filter(a=>!(a.kind==='drawing'&&a.status==='pc_verified'&&active.has(a.project_id)));
+  $('pendingCount').textContent=pending.length;return pending
 }
 async function downloadAsset(a){
   const parts=String(a.storage_path).split('/').map(enc).join('/');
@@ -187,6 +194,7 @@ async function saveVerified(a){
 async function deleteVerified(a){
   const r=await fetch(SUPABASE_URL+'/functions/v1/sentlog-delete-verified',{method:'POST',headers:authHeaders({'Content-Type':'application/json'}),body:JSON.stringify({asset_id:a.id})});
   const j=await r.json().catch(()=>({}));if(!r.ok)throw Error(j.error||j.detail||'クラウド削除失敗');
+  if(j.retained){log('PC同期済み・クラウド保持: '+a.file_name);return}
   deletedCount++;$('deletedCount').textContent=deletedCount;log('Supabase一時ファイル削除: '+a.file_name)
 }
 async function syncOnce(){
