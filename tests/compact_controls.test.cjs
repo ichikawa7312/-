@@ -1,0 +1,23 @@
+'use strict';
+const assert=require('node:assert/strict');
+const fs=require('node:fs');
+const part3=fs.readFileSync('sentlog/part03.txt','utf8');
+const part4=fs.readFileSync('sentlog/part04.txt','utf8');
+const manager=fs.readFileSync('sentlog/page-management.js','utf8');
+const replacement=fs.readFileSync('sentlog/page-replacement.js','utf8');
+const transfer=fs.readFileSync('sentlog/record-transfer.js','utf8');
+
+assert.match(part3,/>図面全体差替<\/label>/);
+assert.match(part3,/>↺90°<\/button>/);
+assert.match(part3,/>↻90°<\/button>/);
+assert.match(part3,/>ページ描画を全削除<\/button>/);
+assert.match(part4,/id="deleteBtn" disabled title="選択中の記録を削除">削除<\/button>/);
+assert.match(manager,/manage\.textContent='管理'/);
+assert.match(manager,/hide\.textContent='非表示'/);
+assert.match(manager,/grid-template-columns:repeat\(2,minmax\(0,1fr\)\)/);
+assert.match(replacement,/replace\.textContent='差し替え'/);
+assert.match(replacement,/undo\.textContent='差替を戻す'/);
+assert.match(replacement,/host\.append\(rotations\)/);
+assert.match(replacement,/#sentlogPageManagementActions #rotationControls\{display:contents!important\}/);
+assert.match(transfer,/button\('コピー／移動',open\)/);
+console.log('PASS compact controls: concise labels, two-column page actions, semantic colors and accessible titles');
