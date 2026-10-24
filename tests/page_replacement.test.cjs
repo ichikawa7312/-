@@ -28,11 +28,15 @@ const stats=P.pageRecordStats([
 ],3);
 assert.deepEqual(stats,{damage:1,dimensions:1,memos:1,photos:3,total:3});
 
-const first=P.nextMarker({},3,'3F.pdf',100,false);
-const second=P.nextMarker(first,3,'restore',200,true);
+const first=P.nextMarker({},3,'3F.pdf',100,false,'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',7125326);
+const second=P.nextMarker(first,3,'restore',200,true,'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',6892202);
 assert.equal(first['3'].revision,1);
+assert.equal(first['3'].pdfHash,'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
+assert.equal(first['3'].pdfSize,7125326);
 assert.equal(second['3'].revision,2);
 assert.equal(second['3'].restored,true);
+assert.equal(second['3'].pdfHash,'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb');
+assert.equal(second['3'].pdfSize,6892202);
 
 const source=fs.readFileSync('sentlog/page-replacement.js','utf8');
 assert.match(source,/sourceDoc\.removePage\(pageNo-1\)/);
