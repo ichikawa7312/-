@@ -56,7 +56,12 @@ change(p,"async function pendingAssets(){", "async function pendingAssets(){\n  
 change(p,"  $('pendingCount').textContent=q?.length||0;return q||[]", "  const active=(q||[]).filter(a=>states.some(c=>c.id===a.project_id&&c.status==='active'&&!c.checking)&&!(a.kind==='drawing'&&a.status==='pc_verified'));\n  $('pendingCount').textContent=active.length;return active;")
 change(p,'v1.26 · PDF再配信対応','v1.35 · PC同期済み図面保持対応')
 change(p,'この画面をEdgeで開いておけば、新しい写真・図面PDFを約5秒ごとに確認します。PCへ保存後、ファイルサイズとSHA-256を照合し、必要端末への配信も確認できたデータだけSupabaseから削除します。','この画面をEdgeで開いておけば、新しい写真・図面PDFを約5秒ごとに確認します。PCへ保存後、ファイルサイズとSHA-256を照合します。使用中案件の図面PDFは端末表示用にクラウドへ保持し、PC同期済みとして再処理しません。')
-change(p,"  const j=await r.json().catch(()=>({}));if(!r.ok)throw Error(j.error||j.detail||'クラウド削除失敗');\\n  deletedCount++;$('deletedCount').textContent=deletedCount;log('Supabase一時ファイル削除: '+a.file_name)","  const j=await r.json().catch(()=>({}));if(!r.ok)throw Error(j.error||j.detail||'クラウド削除失敗');\\n  if(j.retained){log('PC同期済み・クラウド保持: '+a.file_name);return}\\n  deletedCount++;$('deletedCount').textContent=deletedCount;log('Supabase一時ファイル削除: '+a.file_name)")
+change(p,
+"""  const j=await r.json().catch(()=>({}));if(!r.ok)throw Error(j.error||j.detail||'クラウド削除失敗');
+  deletedCount++;$('deletedCount').textContent=deletedCount;log('Supabase一時ファイル削除: '+a.file_name)""",
+"""  const j=await r.json().catch(()=>({}));if(!r.ok)throw Error(j.error||j.detail||'クラウド削除失敗');
+  if(j.retained){log('PC同期済み・クラウド保持: '+a.file_name);return}
+  deletedCount++;$('deletedCount').textContent=deletedCount;log('Supabase一時ファイル削除: '+a.file_name)""")
 change(p,'<script type="module" src="../sentlog/pdf-recovery.js?v=126"></script>', '<script src="../sentlog/archive-core.js?v=133"></script>\n<script src="../sentlog/archive-pc.js?v=133"></script>\n<script type="module" src="../sentlog/pdf-recovery.js?v=133"></script>')
 
 p = 'sentlog/index.html'
