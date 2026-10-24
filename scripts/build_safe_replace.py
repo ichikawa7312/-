@@ -46,12 +46,11 @@ change(p,"['phone-runtime.js?v=193','v1.92']","['phone-runtime.js?v=193','v1.93'
 change('sentlog/phone-runtime.js','v1.92','v1.93',4)
 change('sentlog-pc/index.html','v1.92','v1.93',1)
 change('sentlog/sw.js','sentlog-pwa-v203','sentlog-pwa-v204')
-change('sentlog/sw.js',"'page-management.js'","'page-management.js'")
 
 for f in (ROOT/'tests').iterdir():
     if f.suffix not in ('.py','.cjs'):continue
     s=f.read_text()
-    u=s.replace("'v1.92'","'v1.93'").replace('phone-runtime.js?v=192','phone-runtime.js?v=193').replace(r'phone-runtime\.js\?v=192',r'phone-runtime\.js\?v=193').replace('page-management.js?v=192','page-management.js?v=193').replace('sentlog-pwa-v203','sentlog-pwa-v204')
+    u=s.replace('v1.92','v1.93').replace('phone-runtime.js?v=192','phone-runtime.js?v=193').replace(r'phone-runtime\.js\?v=192',r'phone-runtime\.js\?v=193').replace('page-management.js?v=192','page-management.js?v=193').replace('sentlog-pwa-v203','sentlog-pwa-v204')
     if u!=s:f.write_text(u)
 
 subprocess.run(['node','--check','sentlog/page-management.js'],cwd=ROOT,check=True)
