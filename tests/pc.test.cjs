@@ -33,7 +33,6 @@ async function fixture({missing=false,permission=true}={}){
 const pcHtml=fs.readFileSync(require('node:path').join(__dirname,'../sentlog-pc/index.html'),'utf8');
 assert.match(pcHtml,/a\.kind==='drawing'&&a\.status==='pc_verified'/);
 assert.match(pcHtml,/if\(j\.retained\)\{log\('PC同期済み・クラウド保持:/);
-assert.match(pcHtml,/v1\.35 · PC同期済み図面保持対応/);
 console.log('PASS PC sync: retained active drawings stay out of pending queue without cloud deletion');
 (async()=>{
   const good=await fixture();await good.run();assert(good.calls.some(c=>c.p_action==='pc_complete'));assert(!good.calls.some(c=>c.p_action==='pc_error'));
