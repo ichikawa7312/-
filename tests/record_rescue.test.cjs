@@ -33,7 +33,7 @@ context.window=context;context.globalThis=context;
 vm.runInContext(code,context);
 
 (async()=>{
-  const result=await context.SentlogRecordRescue.build();
+  const result=await context.SentlogRecordRescue.build('p1');
   assert.equal(result.stats.projects,1);
   assert.equal(result.stats.drawings,2);
   assert.equal(result.stats.shapes,2);
@@ -43,6 +43,6 @@ vm.runInContext(code,context);
   assert.ok(!('files' in result.payload),'record rescue must stay small and never serialize photo/PDF blobs');
   await Promise.resolve();await Promise.resolve();
   assert.equal(host.children.length,1);
-  assert.equal(host.children[0].textContent,'緊急：記録だけバックアップ');
+  assert.equal(host.children[0].textContent,'緊急：案件を選んで救出');
   console.log('PASS record rescue: local records/photo links exported without cloud or binary payloads');
 })().catch(e=>{console.error(e);process.exitCode=1});
