@@ -24,14 +24,17 @@
       const sheet=group.sheets[sheetOrder],raw=states[sheet.id];
       if(raw==null){errors.push((sheet.sheetName||sheet.name||sheet.id)+'：変状データが見つかりません。未記録のシートも含め、図面No.内の全シートを確認してください');continue;}
       if(!raw||!Array.isArray(raw.shapes)){errors.push((sheet.sheetName||sheet.name||sheet.id)+'：変状データが不正です');continue;}
+      let declaredPhotos=0;
       for(let shapeOrder=0;shapeOrder<raw.shapes.length;shapeOrder++){
         const s=raw.shapes[shapeOrder];
         if(!Array.isArray(s?.photos)){if(s?.photos)errors.push('写真の登録形式が不正です：'+(sheet.sheetName||sheet.name));continue;}
+        declaredPhotos+=s.photos.length;
         for(let photoOrder=0;photoOrder<s.photos.length;photoOrder++){
           const photo=s.photos[photoOrder];
           if(!photo?.id||!s?.id){errors.push('写真または変状のIDがありません：'+(sheet.sheetName||sheet.name));continue;}
           const key=[sheet.id,s.id,photo.id].join(':');
-          if(seen.has(key))continue;seen.add(key);
+          if(seen.has(key)){errors.push('同じ変状に写真IDが重複しています：'+(sheet.sheetName||sheet.name));continue;}
+          seen.add(key);
           const type=category(s);
           entries.push({key,drawingId:sheet.id,shapeId:s.id,photoId:photo.id,
             type,damage:damageLabel(s),typeNo:number(s.typeNo)||number(s.recordNo),
@@ -41,6 +44,11 @@
             description:String(s.memo||''),included:true});
         }
       }
+      // A higher indexed photo count may indicate a partially synced snapshot.
+      // Do not reject smaller stale metadata or mutate any source records.
+      const indexedCount=Number(sheet.photoCount);
+      if(Number.isSafeInteger(indexedCount)&&indexedCount>declaredPhotos)
+        errors.push((sheet.sheetName||sheet.name||sheet.id)+'：図面情報の写真'+indexedCount+'枚に対して変状記録は'+declaredPhotos+'枚です。同期状況を確認してください');
     }
     entries.sort((a,b)=>((a.type===OTHER&&b.type===OTHER)?0:a.type===OTHER?-1:b.type===OTHER?1:a.type.localeCompare(b.type,'ja'))||
       ((a.typeNo??Infinity)-(b.typeNo??Infinity))||(a.sheetOrder-b.sheetOrder)||
