@@ -53,12 +53,20 @@ fixture = r"""async()=>{
  const g=canvas.getContext('2d');g.fillStyle='#edf4fa';g.fillRect(0,0,96,72);g.fillStyle='#2069a0';g.fillRect(12,15,58,36);
  const jpeg=await new Promise((ok,fail)=>canvas.toBlob(x=>x?ok(x):fail(Error('JPEG fixture failed')),'image/jpeg',.86));
  const bytes=await jpeg.arrayBuffer();
- // Store independent byte-backed images, just like separate camera files.
- // A canvas-backed Blob cannot be reused as an IndexedDB fixture on some Linux WebKit builds.
  window.__ledgerJpeg=new Blob([bytes],{type:'image/jpeg'});
+ if(window.__ledgerSyntheticBlobBackend){
+   // The Playwright WebKit Linux runner may reject ALL IndexedDB Blob writes.
+   // Use an explicitly test-only photo map to verify UI/XLSX behavior, never
+   // misrepresent this as a real iPhone/iPad IndexedDB persistence test.
+   const sourceGetDBFile=getDBFile;
+   window.__ledgerSyntheticBlobs=new Map();
+   getDBFile=async key=>key.startsWith('photo:ledger-')?(window.__ledgerSyntheticBlobs.get(key)||null):sourceGetDBFile(key);
+ }
  for(let n=1;n<=8;n++){
-  const id=n<=3?'ledger-sheet-1':'ledger-sheet-2';
-  await SentlogRecords.writeFile('photo:'+id+':p'+n,new Blob([bytes.slice(0)],{type:'image/jpeg'}));
+  const id=n<=3?'ledger-sheet-1':'ledger-sheet-2',key='photo:'+id+':p'+n;
+  const image=new Blob([bytes.slice(0)],{type:'image/jpeg'});
+  if(window.__ledgerSyntheticBlobBackend)window.__ledgerSyntheticBlobs.set(key,image);
+  else await SentlogRecords.writeFile(key,image);
  }
  await SentlogRecords.settled();
  showDrawings('ledger-project');
@@ -107,6 +115,9 @@ try:
         page.on('pageerror',lambda e:errors.append(str(e)))
         page.goto(origin+'/sentlog/',wait_until='domcontentloaded')
         page.wait_for_function("window.SentlogPhotoLedger&&window.SentlogDrawingGroups&&window.SentlogRecords?.ready",timeout=30000)
+        if engine=='webkit':
+            page.evaluate("window.__ledgerSyntheticBlobBackend=true")
+            print('WEBKIT BROWSER TEST: in-memory JPEG fixtures; native WebKit IndexedDB Blob storage requires real-device verification',flush=True)
         page.evaluate(fixture)
         baseline=source_snapshot(page)
         assert page.locator('#drawingsGrid .manager-card[data-drawing-group-id="ledger-group"]').count()==1
@@ -135,7 +146,14 @@ try:
         assert source_snapshot(page)==baseline,'Failed export changed source records'
 
         # Restore only the synthetic JPEG and export without any network.
-        page.evaluate("async()=>{await SentlogRecords.writeFile('photo:ledger-sheet-2:p9',window.__ledgerJpeg);await SentlogRecords.settled();}")
+        page.evaluate("""async()=>{
+          if(window.__ledgerSyntheticBlobBackend){
+            window.__ledgerSyntheticBlobs.set('photo:ledger-sheet-2:p9',window.__ledgerJpeg);
+          }else{
+            await SentlogRecords.writeFile('photo:ledger-sheet-2:p9',window.__ledgerJpeg);
+            await SentlogRecords.settled();
+          }
+        }""")
         context.set_offline(True)
         with page.expect_download(timeout=45000) as event:
             page.locator('.ledger-export').click()
