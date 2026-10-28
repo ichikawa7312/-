@@ -235,7 +235,7 @@
         total+=entry.jpeg.byteLength;
         if(total>MAX_XLSX_BYTES/2)throw Error('画像が多いため端末のメモリ上限を超えるおそれがあります。出力対象を分けてください。');
       }catch(e){
-        if(/画像が多いため|写真の読み込みが時間内に完了しませんでした/.test(e?.message||''))throw e;
+        if(/画像が多いため|時間内に完了しませんでした/.test(e?.message||''))throw e;
         console.warn('Photo ledger source unavailable',entry.key,e);
         missing.push(entry);
       }
@@ -262,8 +262,9 @@
   function imageDataUrl(blob){
     return new Promise((resolve,reject)=>{
       const reader=new FileReader();
-      reader.onload=()=>resolve(reader.result);
-      reader.onerror=()=>reject(Error('写真データを読み取れませんでした'));
+      const timer=setTimeout(()=>{reader.abort();reject(Error('写真データの読み取りが時間内に完了しませんでした'));},12000);
+      reader.onload=()=>{clearTimeout(timer);resolve(reader.result);};
+      reader.onerror=()=>{clearTimeout(timer);reject(Error('写真データを読み取れませんでした'));};
       reader.readAsDataURL(blob);
     });
   }
@@ -284,7 +285,12 @@
       const k=Math.min(w/img.naturalWidth,h/img.naturalHeight);
       if(!Number.isFinite(k)||k<=0)throw Error('写真の寸法が不正です');
       const iw=img.naturalWidth*k,ih=img.naturalHeight*k;ctx.drawImage(img,(w-iw)/2,(h-ih)/2,iw,ih);
-      const out=await new Promise((resolve,reject)=>cv.toBlob(x=>x?resolve(x):reject(Error('画像のJPEG変換に失敗しました')),'image/jpeg',.78));
+      const out=await new Promise((resolve,reject)=>{
+        const timer=setTimeout(()=>reject(Error('写真のJPEG変換が時間内に完了しませんでした')),12000);
+        cv.toBlob(x=>{
+          clearTimeout(timer);x?resolve(x):reject(Error('画像のJPEG変換に失敗しました'));
+        },'image/jpeg',.78);
+      });
       return new Uint8Array(await out.arrayBuffer());
     }finally{URL.revokeObjectURL(url);}
   }
