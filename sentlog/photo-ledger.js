@@ -22,7 +22,7 @@
     if(!group||!Array.isArray(group.sheets))throw Error('図面No.の情報を取得できません。');
     for(let sheetOrder=0;sheetOrder<group.sheets.length;sheetOrder++){
       const sheet=group.sheets[sheetOrder],raw=states[sheet.id];
-      if(raw==null){if(Number(sheet.photoCount)>0||Number(sheet.shapeCount)>0)errors.push((sheet.sheetName||sheet.name||sheet.id)+'：変状データが見つかりません');continue;}
+      if(raw==null){errors.push((sheet.sheetName||sheet.name||sheet.id)+'：変状データが見つかりません。未記録のシートも含め、図面No.内の全シートを確認してください');continue;}
       if(!raw||!Array.isArray(raw.shapes)){errors.push((sheet.sheetName||sheet.name||sheet.id)+'：変状データが不正です');continue;}
       for(let shapeOrder=0;shapeOrder<raw.shapes.length;shapeOrder++){
         const s=raw.shapes[shapeOrder];
