@@ -221,12 +221,26 @@
     const pages=groupOrder(current).reduce((n,t)=>n+Math.ceil(current.entries.filter(e=>e.included&&e.type===t).length/3),0);
     modal.querySelector('[data-ledger=count]').textContent=`${chosen}枚 / ${pages}ページ / ${types.filter(t=>current.entries.some(e=>e.included&&e.type===t)).length}シート（A4縦・3枚/ページ）`;
   }
-  async function verifyPhotos(entries){
-    const missing=[],blobs=[];for(let i=0;i<entries.length;i++){
-      status('写真を確認しています… '+(i+1)+' / '+entries.length);
-      try{const blob=await loadShared(entries[i].drawingId,entries[i].photoId);if(!blob)missing.push(entries[i]);else blobs.push({entry:entries[i],blob});}
-      catch(_){missing.push(entries[i]);}
-    }return {missing,blobs};
+  async function preparePhotos(entries){
+    // Keep no collection of full-size Blobs: on iPhone/iPad that could exhaust
+    // memory long before the XLSX is ready. Process exactly one image at a time.
+    const missing=[];let total=0;
+    for(let i=0;i<entries.length;i++){
+      const entry=entries[i];
+      status('Excel用写真を確認・変換しています… '+(i+1)+' / '+entries.length);
+      try{
+        const blob=await loadShared(entry.drawingId,entry.photoId);
+        if(!blob){missing.push(entry);continue;}
+        entry.jpeg=await jpegOf(blob);
+        total+=entry.jpeg.byteLength;
+        if(total>MAX_XLSX_BYTES/2)throw Error('画像が多いため端末のメモリ上限を超えるおそれがあります。出力対象を分けてください。');
+      }catch(e){
+        if(/画像が多いため/.test(e?.message||''))throw e;
+        console.warn('Photo ledger source unavailable',entry.key,e);
+        missing.push(entry);
+      }
+    }
+    return {missing};
   }
   async function jpegOf(blob){
     const url=URL.createObjectURL(blob);
@@ -251,12 +265,8 @@
     current.exporting=true;const btn=modal.querySelector('[data-ledger=export]');btn.disabled=true;
     try{
       await S.settled();S.assertSafe();
-      const {missing,blobs}=await verifyPhotos(entries);
-      if(missing.length){status('写真を'+missing.length+'枚取得できません。Excel出力を停止しました：'+missing.slice(0,5).map(x=>x.damage+' / '+x.sheetName).join('、')+(missing.length>5?' ほか':''),true);return;}
-      for(let i=0;i<blobs.length;i++){
-        status('Excel用写真を準備しています… '+(i+1)+' / '+blobs.length);
-        try{blobs[i].entry.jpeg=await jpegOf(blobs[i].blob);}catch(e){throw Error(blobs[i].entry.damage+'：'+e.message);}
-      }
+      const {missing}=await preparePhotos(entries);
+      if(missing.length){status('写真を'+missing.length+'枚取得・変換できません。Excel出力を停止しました：'+missing.slice(0,5).map(x=>x.damage+' / '+x.sheetName).join('、')+(missing.length>5?' ほか':''),true);return;}
       const categories=groupsFor(current.entries,current.groupOrder);
       // No source records, images or sync metadata are modified; jpeg exists only in memory.
       const file=await buildXlsx(current.project.name,current.group.name,categories);
