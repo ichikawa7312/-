@@ -1,0 +1,152 @@
+"""End-to-end photo-ledger test against the assembled Sentlog app.
+Synthetic records/images only; no account, real project, or external API writes.
+"""
+import functools
+import os
+import threading
+import zipfile
+import xml.etree.ElementTree as ET
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+
+from playwright.sync_api import sync_playwright, expect
+
+ROOT = Path(__file__).resolve().parents[1]
+OUT = ROOT / 'test-results' / 'photo-ledger'
+OUT.mkdir(parents=True, exist_ok=True)
+
+
+class Handler(SimpleHTTPRequestHandler):
+    def log_message(self, *args):
+        pass
+
+
+server = ThreadingHTTPServer(('127.0.0.1', 0), functools.partial(Handler, directory=str(ROOT)))
+threading.Thread(target=server.serve_forever, daemon=True).start()
+origin = f'http://127.0.0.1:{server.server_port}'
+
+fixture = r"""async()=>{
+ await window.sentlogAppReady;
+ const project={id:'ledger-project',name:'合成試験 案件',drawings:[
+  {id:'ledger-sheet-1',name:'上流面',sheetName:'上流面',groupId:'ledger-group',groupName:'調査①',sheetOrder:1,sourceType:'pdf',pageCount:1,photoCount:3,shapeCount:2,createdAt:1,updatedAt:1},
+  {id:'ledger-sheet-2',name:'下流面',sheetName:'下流面',groupId:'ledger-group',groupName:'調査①',sheetOrder:2,sourceType:'pdf',pageCount:1,photoCount:6,shapeCount:2,createdAt:2,updatedAt:2}
+ ],createdAt:1,updatedAt:2};
+ const states={
+  'ledger-sheet-1':[
+   {id:'shape-51',kind:'rect',page:1,type:'ひび割れ',typeNo:51,member:'主桁 G1',memo:'既存の所見',photos:[{id:'p1',name:'A.jpg'},{id:'p2',name:'B.jpg'}]},
+   {id:'overview',recordKind:'field-record',recordType:'photo',type:'全景',typeNo:1,page:1,photos:[{id:'p3',name:'C.jpg'}]}
+  ],
+  'ledger-sheet-2':[
+   {id:'shape-2',kind:'rect',page:1,type:'ひび割れ',typeNo:2,member:'床版',photos:[{id:'p4'},{id:'p5'},{id:'p6'},{id:'p7'},{id:'p8'}]},
+   {id:'leak',kind:'rect',type:'漏水',typeNo:1,page:1,photos:[{id:'p9'}]}
+  ]
+ };
+ workspace={projects:[project]};
+ for(const [id,shapes] of Object.entries(states)){
+  const st=freshDrawingState(project.name);
+  st.shapes=shapes;st.sourceType='pdf';st.fileName=id+'.pdf';
+  SentlogRecords.setItem(drawingStorageKey(id),JSON.stringify(st));
+ }
+ saveWorkspace();
+ const canvas=document.createElement('canvas');canvas.width=96;canvas.height=72;
+ const g=canvas.getContext('2d');g.fillStyle='#edf4fa';g.fillRect(0,0,96,72);g.fillStyle='#2069a0';g.fillRect(12,15,58,36);
+ const jpeg=await new Promise((ok,fail)=>canvas.toBlob(x=>x?ok(x):fail(Error('JPEG fixture failed')),'image/jpeg',.86));
+ window.__ledgerJpeg=jpeg;
+ for(let n=1;n<=8;n++){
+  const id=n<=3?'ledger-sheet-1':'ledger-sheet-2';
+  await SentlogRecords.writeFile('photo:'+id+':p'+n,jpeg);
+ }
+ await SentlogRecords.settled();
+ showDrawings('ledger-project');
+}"""
+
+def source_snapshot(page):
+    return page.evaluate("""()=>{
+      const ids=['ledger-sheet-1','ledger-sheet-2'];
+      return JSON.stringify(ids.map(id=>SentlogRecords.getItem(drawingStorageKey(id))));
+    }""")
+
+try:
+    with sync_playwright() as p:
+        launch=dict(headless=True,args=['--no-sandbox','--disable-dev-shm-usage'])
+        if os.path.exists('/usr/bin/chromium'):
+            launch['executable_path']='/usr/bin/chromium'
+        browser=p.chromium.launch(**launch)
+        context=browser.new_context(viewport={'width':390,'height':844},service_workers='block',accept_downloads=True)
+        external=[]
+        def route(rr):
+            url=rr.request.url
+            if url.startswith(origin+'/') or url.startswith('blob:'):
+                rr.continue_()
+            elif url.startswith('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/'):
+                rr.fulfill(status=200,content_type='text/javascript',body='window.pdfjsLib={GlobalWorkerOptions:{},getDocument(){throw Error("photo ledger fixture")}};')
+            elif 'supabase.co/' in url:
+                rr.abort()
+            else:
+                external.append(url)
+                rr.abort()
+        context.route('**/*',route)
+        page=context.new_page()
+        errors=[]
+        page.on('pageerror',lambda e:errors.append(str(e)))
+        page.goto(origin+'/sentlog/',wait_until='domcontentloaded')
+        page.wait_for_function("window.SentlogPhotoLedger&&window.SentlogDrawingGroups&&window.SentlogRecords?.ready",timeout=30000)
+        page.evaluate(fixture)
+        baseline=source_snapshot(page)
+        assert page.locator('#drawingsGrid .manager-card[data-drawing-group-id="ledger-group"]').count()==1
+        button=page.locator('[data-drawing-group-id="ledger-group"] [data-ledger-button]')
+        expect(button).to_have_count(1)
+        button.click()
+        expect(page.locator('.ledger-summary')).to_contain_text('9枚 / 5ページ / 3シート')
+        assert page.locator('.ledger-section-head strong').all_text_contents()[0].startswith('全景・その他')
+        assert page.locator('.ledger-item').count()==9
+        assert page.locator('.ledger-item',has_text='ひび割れ-51').count()==2
+
+        changed=page.locator('.ledger-item',has_text='ひび割れ-51').first.locator('textarea')
+        changed.fill('写真台帳だけの説明')
+        page.locator('.ledger-save').click()
+        expect(page.locator('.ledger-status')).to_contain_text('下書きを保存しました')
+        page.locator('.ledger-close').click()
+        button.click()
+        assert page.locator('.ledger-item',has_text='ひび割れ-51').first.locator('textarea').input_value()=='写真台帳だけの説明'
+
+        # One photo exists in the saved record but its Blob is missing. Fail closed.
+        downloads=[]
+        page.on('download',lambda d: downloads.append(d.suggested_filename))
+        page.locator('.ledger-export').click()
+        expect(page.locator('.ledger-status')).to_contain_text('写真を1枚取得・変換できません',timeout=30000)
+        assert downloads==[],downloads
+        assert source_snapshot(page)==baseline,'Failed export changed source records'
+
+        # Restore only the synthetic JPEG and export without any network.
+        page.evaluate("async()=>{await SentlogRecords.writeFile('photo:ledger-sheet-2:p9',window.__ledgerJpeg);await SentlogRecords.settled();}")
+        context.set_offline(True)
+        with page.expect_download(timeout=45000) as event:
+            page.locator('.ledger-export').click()
+        dest=OUT/'photo-ledger.xlsx'
+        event.value.save_as(dest)
+        expect(page.locator('.ledger-status')).to_contain_text('Excelを出力しました')
+        assert source_snapshot(page)==baseline,'Successful export changed source records'
+        with zipfile.ZipFile(dest,'r') as z:
+            assert z.testzip() is None,'Corrupt ZIP/XLSX payload'
+            names=z.namelist()
+            assert len([n for n in names if n.startswith('xl/media/image')])==9
+            book=ET.fromstring(z.read('xl/workbook.xml'))
+            ns={'s':'http://schemas.openxmlformats.org/spreadsheetml/2006/main'}
+            worksheets=book.findall('s:sheets/s:sheet',ns)
+            assert [s.attrib['name'] for s in worksheets]==['全景・その他','ひび割れ','漏水'],worksheets
+            xml=ET.fromstring(z.read('xl/worksheets/sheet2.xml'))
+            setup=xml.find('s:pageSetup',ns)
+            assert setup is not None and setup.attrib['paperSize']=='9' and setup.attrib['orientation']=='portrait'
+            breaks=xml.find('s:rowBreaks',ns)
+            assert breaks is not None and [int(x.attrib['id']) for x in breaks.findall('s:brk',ns)]==[30,60]
+            assert 'ひび割れ-51' in z.read('xl/worksheets/sheet2.xml').decode()
+            assert '写真台帳だけの説明' in z.read('xl/worksheets/sheet2.xml').decode()
+        assert not errors,errors
+        assert not external,external
+        print('PASS photo-ledger browser: two-PDF grouping, exact -51 labels, draft, missing-photo block, offline XLSX, 3-up page breaks, unchanged records',flush=True)
+        context.close()
+        browser.close()
+finally:
+    server.shutdown()
+    server.server_close()
