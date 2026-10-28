@@ -5,10 +5,8 @@ ROOT=Path(__file__).resolve().parents[1]
 index=ROOT/'sentlog/index.html'
 s=index.read_text(encoding='utf-8')
 if "photo-ledger.js?v=204" not in s:
-    # One preflight check for this offline-capable asset, plus one script load.
-    before='const deps=['
-    assert s.count(before)==1, 'photo ledger: preload anchor missing'
-    s=s.replace(before,"const deps=[['photo-ledger.js?v=204','SentlogPhotoLedger'],",1)
+    # Load as an optional enhancement: a missing photo-ledger asset must never
+    # prevent the existing drawing/editor/sync screens from starting.
     anchor='document.open();document.write(html);document.close()'
     assert s.count(anchor)==1, 'photo ledger: document anchor missing'
     s=s.replace(anchor,"html=html.replace('</body>','<script src=\"./photo-ledger.js?v=204\"><\\/script></body>');"+anchor,1)
