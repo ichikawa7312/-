@@ -163,16 +163,26 @@ try:
             check_number(page, '腐食-1')
             assert shapes(page) == baseline
             assert page.locator('#damageNo').input_value() == 'G1-①'
-            # Exercise file-replacement reset against only this throwaway fixture.
+            # The v1.93 safe-replacement guard must reject a mismatch instead
+            # of silently deleting a recorded drawing. This synthetic image
+            # intentionally reports two pages, while the replacement has one.
+            before_replacement = shapes(page)
+            original_background = page.evaluate("async()=>await (await getBackgroundFile('single-d')).text()")
+            original_photo = page.evaluate("async()=>await (await getPhotoBlob('single-photo','single-d')).text()")
+            dialogs = []
+            page.once('dialog', lambda d: (dialogs.append(d.message), d.dismiss()))
             page.evaluate("""async()=>{
              const f=new File(['<svg xmlns="http://www.w3.org/2000/svg" width="800" height="1000"></svg>'],'replacement.svg',{type:'image/svg+xml'});
              await $('fileInput').onchange({target:{files:[f],value:'replacement.svg'}});
             }""")
-            check_number(page, '未採番')
-            assert page.evaluate('state.shapes.length') == 0
+            assert dialogs and '安全に差し替えできません' in dialogs[0], dialogs
+            check_number(page, '腐食-1')
+            assert shapes(page) == before_replacement, 'Blocked replacement must preserve every shape'
+            assert page.evaluate("async()=>await (await getBackgroundFile('single-d')).text()") == original_background
+            assert page.evaluate("async()=>await (await getPhotoBlob('single-photo','single-d')).text()") == original_photo
             assert not errors, errors
             assert not calls, calls
-            print(f'PASS {width}px: one full-width number; no global input; read-only select/clear; multi-page types; reclassify/delete/add/undo; photos; offline backup/reopen; file reset')
+            print(f'PASS {width}px: one full-width number; no global input; read-only select/clear; multi-page types; reclassify/delete/add/undo; photos; offline backup/reopen; incompatible file replacement rejected without data loss')
             context.close()
         browser.close()
 finally:
