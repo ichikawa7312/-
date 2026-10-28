@@ -23,7 +23,11 @@ try:
    if 'supabase.co/' in url:rr.abort();return
    unexpected.append(url);rr.abort()
   ctx.route('**/*',route);page=ctx.new_page();errors=[];page.on('pageerror',lambda e:errors.append(str(e)))
-  page.on('dialog',lambda d:d.accept('DXF検証') if d.type=='prompt' else d.accept())
+  dialogs=[]
+  def handle_dialog(d):
+   dialogs.append((d.type,d.message))
+   d.accept('DXF検証') if d.type=='prompt' else d.accept()
+  page.on('dialog',handle_dialog)
   page.goto(origin+'/sentlog/',wait_until='domcontentloaded');page.wait_for_function("window.SENTLOG_BUILD==='v1.78'&&!!window.SentlogDxf",timeout=25000)
   page.evaluate("async()=>{await sentlogAppReady;workspace={projects:[{id:'dxf-project',name:'DXF検証',drawings:[]}]};saveWorkspace();showDrawings('dxf-project');}")
   page.locator('#drawingAddInput').set_input_files(str(ROOT/'tests/fixtures/dxf-model.dxf'))
@@ -73,15 +77,30 @@ try:
    assert page.evaluate('Number(document.getElementById("stageWrap").dataset.dxfPixels)<=1505000')
    assert page.evaluate('document.documentElement.scrollWidth<=innerWidth+1')
   page.evaluate('fit();render()');page.screenshot(path=OUT/'dxf-editor.png',full_page=True)
-  # Import cancellation / malformed file do not erase the loaded records.
+  # Since v1.93 a DXF with recorded annotations cannot be replaced via
+  # the simple file-replacement control. A rejected operation must preserve
+  # the state, original DXF bytes, and attached records/photos.
   before=page.evaluate('JSON.stringify(state)')
+  hash_file="""async()=>{
+   const f=await getBackgroundFile(activeDrawingId);
+   if(!f)throw Error('DXF source disappeared');
+   const h=await crypto.subtle.digest('SHA-256',await f.arrayBuffer());
+   return Array.from(new Uint8Array(h)).map(x=>x.toString(16).padStart(2,'0')).join('');
+  }"""
+  original_hash=page.evaluate(hash_file)
+  dialogs.clear()
   page.locator('#fileInput').set_input_files(str(ROOT/'tests/fixtures/dxf-model.dxf'))
-  expect(page.locator('.sl-dxf-card h2')).to_have_text('DXFを取り込む',timeout=60000)
-  page.locator('.sl-dxf-card button',has_text='キャンセル').click()
-  assert page.evaluate('JSON.stringify(state)')==before
+  page.wait_for_timeout(500)
+  assert any('記録と写真は変更していません' in m or '安全に差し替えできません' in m for _,m in dialogs),dialogs
+  assert page.locator('.sl-dxf-card').count()==0,'Recorded DXF must not open a destructive importer'
+  assert page.evaluate('JSON.stringify(state)')==before,'Recorded DXF state changed after rejected replacement'
+  assert page.evaluate(hash_file)==original_hash,'Recorded DXF original file was changed'
 
-  page.locator('#fileInput').set_input_files({'name':'broken.dxf','mimeType':'application/dxf','buffer':b'0\nSECTION\n2\n'})
-  page.wait_for_timeout(100);assert page.evaluate('JSON.stringify(state)')==before
+  dialogs.clear()
+  page.locator('#fileInput').set_input_files({'name':'broken.dxf','mimeType':'application/dxf','buffer':b'0\\nSECTION\\n2\\n'})
+  page.wait_for_timeout(250)
+  assert page.evaluate('JSON.stringify(state)')==before,'Malformed DXF replacement changed recorded state'
+  assert page.evaluate(hash_file)==original_hash,'Malformed DXF replacement changed original DXF'
   # Exported annotations are themselves importable DXF; original-unit scale remains exact.
   page.locator('#drawingAddInput').set_input_files(str(OUT/'browser-records.dxf'))
   expect(page.locator('.sl-dxf-card h2')).to_have_text('DXFを取り込む',timeout=60000)
