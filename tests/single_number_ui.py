@@ -163,16 +163,16 @@ try:
             check_number(page, '腐食-1')
             assert shapes(page) == baseline
             assert page.locator('#damageNo').input_value() == 'G1-①'
-            # The v1.93 safe-replacement guard must reject a mismatch instead
-            # of silently deleting a recorded drawing. This synthetic image
-            # intentionally reports two pages, while the replacement has one.
+            # The v1.93 safe-replacement guard must reject a size mismatch
+            # instead of silently deleting a recorded drawing. The source image
+            # is 800x1000; the replacement is deliberately 900x1000.
             before_replacement = shapes(page)
             original_background = page.evaluate("async()=>await (await getBackgroundFile('single-d')).text()")
             original_photo = page.evaluate("async()=>await (await getPhotoBlob('single-photo','single-d')).text()")
             dialogs = []
             page.once('dialog', lambda d: (dialogs.append(d.message), d.dismiss()))
             page.evaluate("""async()=>{
-             const f=new File(['<svg xmlns="http://www.w3.org/2000/svg" width="800" height="1000"></svg>'],'replacement.svg',{type:'image/svg+xml'});
+             const f=new File(['<svg xmlns="http://www.w3.org/2000/svg" width="900" height="1000"></svg>'],'replacement.svg',{type:'image/svg+xml'});
              await $('fileInput').onchange({target:{files:[f],value:'replacement.svg'}});
             }""")
             assert dialogs and '安全に差し替えできません' in dialogs[0], dialogs
