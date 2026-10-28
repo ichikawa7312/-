@@ -47,7 +47,7 @@ function unzip(buffer){const files=new Map();let i=0;while(i+30<buffer.length&&b
     jpeg:fake,description:'合成写真',member:'床版',sheetName:'上部工',photoName:'fixture.jpg',page:1
   }));
   const big=unzip(Buffer.from(await (await L.buildXlsx('大量写真検証','図面No.1',[{name:'ひび割れ',photos:large}])).arrayBuffer()));
-  assert.equal([...big.keys()].filter(x=>/^xl\\/media\\/image\\d+\\.jpeg$/.test(x)).length,120);
+  assert.equal([...big.keys()].filter(x=>x.startsWith('xl/media/image')&&x.endsWith('.jpeg')).length,120);
   const bigSheet=big.get('xl/worksheets/sheet1.xml').toString();
   assert.match(bigSheet,/<rowBreaks count="39" manualBreakCount="39">/);
   assert.match(bigSheet,/<brk id="1170"/);
