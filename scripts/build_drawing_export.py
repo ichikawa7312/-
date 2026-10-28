@@ -1,6 +1,6 @@
 """v1.88 after build_peer_photos.py: isolated complete-drawing PDF export."""
 from pathlib import Path
-import hashlib,re,urllib.request
+import hashlib,re,time,urllib.error,urllib.request
 ROOT=Path(__file__).resolve().parents[1]
 def change(path,old,new,count=1):
  p=ROOT/path;s=p.read_text()
@@ -14,7 +14,19 @@ assets=[
 for name,url,sha in assets:
  target=vendor/name
  if not target.exists():
-  with urllib.request.urlopen(url,timeout=45) as response:target.write_bytes(response.read())
+  # Only pinned upstream files are accepted. Retry transient CI network failures;
+  # verify the complete bytes BEFORE ever writing to the build directory.
+  for attempt in range(3):
+   try:
+    with urllib.request.urlopen(url,timeout=50) as response:
+     data=response.read()
+    if hashlib.sha256(data).hexdigest()!=sha:
+     raise RuntimeError('Export asset checksum mismatch: '+name)
+    target.write_bytes(data)
+    break
+   except (TimeoutError,urllib.error.URLError,ConnectionError) as error:
+    if attempt==2:raise RuntimeError('Pinned export asset unavailable after retries: '+name) from error
+    time.sleep(2**attempt)
  if hashlib.sha256(target.read_bytes()).hexdigest()!=sha:raise RuntimeError('Export asset checksum mismatch: '+name)
 (vendor/'export-NOTICE.txt').write_text('PDF-LIB 1.17.1\n'+(ROOT/'tools/drawing-export/pdf-lib-LICENSE.txt').read_text()+'\nPDF.js 3.11.174\n'+(ROOT/'tools/drawing-export/pdfjs-LICENSE.txt').read_text())
 # A separate document reuses the drawing renderers, with memory-only records.
