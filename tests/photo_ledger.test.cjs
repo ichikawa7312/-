@@ -1,6 +1,10 @@
 const assert=require('node:assert/strict');
 const fs=require('node:fs');
 const L=require('../sentlog/photo-ledger.js');
+const builder=fs.readFileSync(require('node:path').join(__dirname,'../scripts/build_photo_ledger.py'),'utf8');
+assert.ok(builder.includes('html=html.replace'), 'feature module is loaded as separate script');
+assert.ok(!builder.includes("const deps=[['photo-ledger.js"), 'optional feature must not block app startup');
+
 const group={id:'group-1',name:'調査⑫',sheets:[
   {id:'sheet1',sheetName:'PDF 1',groupId:'group-1'},
   {id:'sheet2',sheetName:'PDF 2',groupId:'group-1'}]};
