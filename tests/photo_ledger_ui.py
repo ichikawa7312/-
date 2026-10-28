@@ -68,11 +68,17 @@ def source_snapshot(page):
 
 try:
     with sync_playwright() as p:
-        launch=dict(headless=True,args=['--no-sandbox','--disable-dev-shm-usage'])
-        if os.path.exists('/usr/bin/chromium'):
-            launch['executable_path']='/usr/bin/chromium'
-        browser=p.chromium.launch(**launch)
-        context=browser.new_context(viewport={'width':390,'height':844},service_workers='block',accept_downloads=True)
+        engine=os.getenv('SENTLOG_TEST_BROWSER','chromium')
+        width=int(os.getenv('SENTLOG_TEST_WIDTH','390'))
+        if engine not in ('chromium','webkit') or width not in (390,820,1280):
+            raise ValueError('Unexpected test browser/viewport')
+        launch={'headless':True}
+        if engine=='chromium':
+            launch['args']=['--no-sandbox','--disable-dev-shm-usage']
+            if os.path.exists('/usr/bin/chromium'):
+                launch['executable_path']='/usr/bin/chromium'
+        browser=getattr(p,engine).launch(**launch)
+        context=browser.new_context(viewport={'width':width,'height':1000 if width==820 else 844 if width==390 else 900},service_workers='block',accept_downloads=True)
         external=[]
         def route(rr):
             url=rr.request.url
@@ -123,7 +129,7 @@ try:
         context.set_offline(True)
         with page.expect_download(timeout=45000) as event:
             page.locator('.ledger-export').click()
-        dest=OUT/'photo-ledger.xlsx'
+        dest=OUT/f'photo-ledger-{engine}-{width}.xlsx'
         event.value.save_as(dest)
         expect(page.locator('.ledger-status')).to_contain_text('Excelを出力しました')
         assert source_snapshot(page)==baseline,'Successful export changed source records'
@@ -144,7 +150,7 @@ try:
             assert '写真台帳だけの説明' in z.read('xl/worksheets/sheet2.xml').decode()
         assert not errors,errors
         assert not external,external
-        print('PASS photo-ledger browser: two-PDF grouping, exact -51 labels, draft, missing-photo block, offline XLSX, 3-up page breaks, unchanged records',flush=True)
+        print(f'PASS photo-ledger {engine} {width}px: two-PDF grouping, exact -51 labels, draft, missing-photo block, offline XLSX, 3-up page breaks, unchanged records',flush=True)
         context.close()
         browser.close()
 finally:
