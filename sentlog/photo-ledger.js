@@ -167,7 +167,7 @@
   function element(tag,cls,text){const el=document.createElement(tag);if(cls)el.className=cls;if(text!=null)el.textContent=text;return el;}
   function button(text,fn,cls=''){const b=element('button',cls,text);b.type='button';b.onclick=fn;return b;}
   function cleanPreview(){for(const u of previewUrls)URL.revokeObjectURL(u);previewUrls=[];}
-  function close(){if(!modal)return;if(current?.exporting){status('Excel出力中は画面を閉じられません。');return;}if(current?.changed&&!confirm('保存していない台帳の編集内容があります。閉じますか？'))return;cleanPreview();modal.remove();modal=null;current=null;}
+  function close(){if(!modal)return;if(current?.exporting){status('Excel出力中は画面を閉じられません。');return;}if(current?.changed&&!confirm('保存していない台帳の編集内容があります。閉じますか？'))return;cleanPreview();if(current?.downloadUrl)URL.revokeObjectURL(current.downloadUrl);modal.remove();modal=null;current=null;}
   function status(msg,bad=false){const el=modal?.querySelector('[data-ledger=status]');if(el){el.textContent=msg;el.style.color=bad?'#b91c1c':'#374151';}}
   async function loadShared(drawingId,photoId){
     // Reads the shared IndexedDB copy; no writes and no sync commands.
@@ -256,7 +256,19 @@
       return new Uint8Array(await out.arrayBuffer());
     }finally{URL.revokeObjectURL(url);}
   }
-  function download(blob,filename){const u=URL.createObjectURL(blob);const a=element('a');a.href=u;a.download=filename;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(u),60000);}
+  function download(blob,filename){
+    // Some Safari/WebKit builds reject a synthetic click after asynchronous
+    // image conversion. Keep an explicit, user-clickable download link as a
+    // fallback. Hold the Blob URL until this dialog closes or is regenerated.
+    if(current?.downloadUrl)URL.revokeObjectURL(current.downloadUrl);
+    const previous=modal?.querySelector('.ledger-download-ready');previous?.remove();
+    const u=URL.createObjectURL(blob),a=element('a','ledger-download-ready','Excelを保存');
+    a.href=u;a.download=filename;
+    modal?.querySelector('.ledger-controls')?.append(a);
+    if(current)current.downloadUrl=u;
+    a.click();
+    return a;
+  }
   async function exportLedger(){
     if(!current||current.exporting)return;
     const entries=current.entries.filter(x=>x.included);
@@ -313,7 +325,7 @@
     .ledger-item{display:flex;align-items:center;gap:10px;padding:9px;border-top:1px solid #e5e7eb}.ledger-item input[type=checkbox]{width:20px;height:20px;flex:none}.ledger-thumb,.ledger-missing{width:100px;height:75px;flex:none;object-fit:contain;background:#f1f5f9;border-radius:5px}.ledger-missing{display:grid;place-items:center;font-size:11px;color:#b91c1c}
     .ledger-detail{display:flex;flex:1;min-width:0;flex-direction:column;gap:3px}.ledger-detail b{font-size:13px}.ledger-detail small{font-size:11px;color:#4b5563}.ledger-detail textarea{width:100%;min-height:45px;resize:vertical;border:1px solid #d1d5db;border-radius:5px;padding:5px;font-size:12px}
     .ledger-order{display:flex;flex-direction:column;gap:3px}.ledger-order button,.ledger-small{padding:4px 8px;font-size:12px}
-    .ledger-footer{border-top:1px solid #d1d5db;padding:10px 16px}.ledger-status{min-height:22px;font-size:12px;word-break:break-word}.ledger-controls{display:flex;justify-content:flex-end;gap:8px;margin-top:8px}.ledger-export{background:#176a43;color:white;border-color:#176a43}
+    .ledger-footer{border-top:1px solid #d1d5db;padding:10px 16px}.ledger-status{min-height:22px;font-size:12px;word-break:break-word}.ledger-controls{display:flex;justify-content:flex-end;gap:8px;margin-top:8px}.ledger-export{background:#176a43;color:white;border-color:#176a43}.ledger-download-ready{display:inline-flex;align-items:center;justify-content:center;border:1px solid #176a43;background:#eaf7ef;color:#155d3b;text-decoration:none;border-radius:7px;padding:9px 12px;font-size:12px;font-weight:700;min-height:40px}
     @media(max-width:600px){.ledger-overlay{padding:0}.ledger-panel{height:100dvh;border-radius:0}.ledger-thumb,.ledger-missing{width:65px;height:56px}.ledger-item{gap:6px;padding:6px}.ledger-scroll{padding:0 8px 12px}.ledger-head{padding:10px}.ledger-section-head strong{font-size:12px}.ledger-footer{padding:8px}.ledger-detail small{font-size:10px}}`;
     document.head.append(style);
   }
