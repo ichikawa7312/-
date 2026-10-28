@@ -155,11 +155,25 @@ try:
           }
         }""")
         context.set_offline(True)
-        with page.expect_download(timeout=45000) as event:
+        if engine=='webkit':
+            # The finished link is a real user gesture, supported when WebKit
+            # blocks the original asynchronous automatic download.
             page.locator('.ledger-export').click()
+            page.wait_for_function("""()=>{
+              const s=document.querySelector('.ledger-status')?.textContent||'';
+              return s.includes('Excelを出力しました')||s.includes('出力できませんでした');
+            }""",timeout=30000)
+            result=page.locator('.ledger-status').inner_text()
+            assert 'Excelを出力しました' in result,('WebKit Excel generation failed',result)
+            with page.expect_download(timeout=20000) as event:
+                page.locator('.ledger-download-ready').click()
+        else:
+            with page.expect_download(timeout=45000) as event:
+                page.locator('.ledger-export').click()
         dest=OUT/f'photo-ledger-{engine}-{width}.xlsx'
         event.value.save_as(dest)
         expect(page.locator('.ledger-status')).to_contain_text('Excelを出力しました')
+        expect(page.locator('.ledger-download-ready')).to_have_count(1)
         assert source_snapshot(page)==baseline,'Successful export changed source records'
         with zipfile.ZipFile(dest,'r') as z:
             assert z.testzip() is None,'Corrupt ZIP/XLSX payload'
