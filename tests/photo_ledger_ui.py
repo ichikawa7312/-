@@ -4,6 +4,7 @@ Synthetic records/images only; no account, real project, or external API writes.
 import functools
 import os
 import threading
+import tempfile
 import zipfile
 import xml.etree.ElementTree as ET
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -51,10 +52,13 @@ fixture = r"""async()=>{
  const canvas=document.createElement('canvas');canvas.width=96;canvas.height=72;
  const g=canvas.getContext('2d');g.fillStyle='#edf4fa';g.fillRect(0,0,96,72);g.fillStyle='#2069a0';g.fillRect(12,15,58,36);
  const jpeg=await new Promise((ok,fail)=>canvas.toBlob(x=>x?ok(x):fail(Error('JPEG fixture failed')),'image/jpeg',.86));
- window.__ledgerJpeg=jpeg;
+ const bytes=await jpeg.arrayBuffer();
+ // Store independent byte-backed images, just like separate camera files.
+ // A canvas-backed Blob cannot be reused as an IndexedDB fixture on some Linux WebKit builds.
+ window.__ledgerJpeg=new Blob([bytes],{type:'image/jpeg'});
  for(let n=1;n<=8;n++){
   const id=n<=3?'ledger-sheet-1':'ledger-sheet-2';
-  await SentlogRecords.writeFile('photo:'+id+':p'+n,jpeg);
+  await SentlogRecords.writeFile('photo:'+id+':p'+n,new Blob([bytes.slice(0)],{type:'image/jpeg'}));
  }
  await SentlogRecords.settled();
  showDrawings('ledger-project');
@@ -77,8 +81,14 @@ try:
             launch['args']=['--no-sandbox','--disable-dev-shm-usage']
             if os.path.exists('/usr/bin/chromium'):
                 launch['executable_path']='/usr/bin/chromium'
-        browser=getattr(p,engine).launch(**launch)
-        context=browser.new_context(viewport={'width':width,'height':1000 if width==820 else 844 if width==390 else 900},service_workers='block',accept_downloads=True)
+        viewport={'width':width,'height':1000 if width==820 else 844 if width==390 else 900}
+        profile=tempfile.TemporaryDirectory() if engine=='webkit' else None
+        if profile:
+            browser=None
+            context=p.webkit.launch_persistent_context(profile.name,headless=True,viewport=viewport,service_workers='block',accept_downloads=True)
+        else:
+            browser=p.chromium.launch(**launch)
+            context=browser.new_context(viewport=viewport,service_workers='block',accept_downloads=True)
         external=[]
         def route(rr):
             url=rr.request.url
@@ -152,7 +162,10 @@ try:
         assert not external,external
         print(f'PASS photo-ledger {engine} {width}px: two-PDF grouping, exact -51 labels, draft, missing-photo block, offline XLSX, 3-up page breaks, unchanged records',flush=True)
         context.close()
-        browser.close()
+        if browser:
+            browser.close()
+        if profile:
+            profile.cleanup()
 finally:
     server.shutdown()
     server.server_close()
