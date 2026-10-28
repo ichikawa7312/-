@@ -235,17 +235,49 @@
         total+=entry.jpeg.byteLength;
         if(total>MAX_XLSX_BYTES/2)throw Error('画像が多いため端末のメモリ上限を超えるおそれがあります。出力対象を分けてください。');
       }catch(e){
-        if(/画像が多いため/.test(e?.message||''))throw e;
+        if(/画像が多いため|写真の読み込みが時間内に完了しませんでした/.test(e?.message||''))throw e;
         console.warn('Photo ledger source unavailable',entry.key,e);
         missing.push(entry);
       }
     }
     return {missing};
   }
+  function imageFromSrc(src,limitMs=10000){
+    return new Promise((resolve,reject)=>{
+      const img=new Image();let finished=false;
+      const timer=setTimeout(()=>{
+        if(finished)return;finished=true;img.onload=img.onerror=null;
+        reject(Error('写真の読み込みが時間内に完了しませんでした'));
+      },limitMs);
+      img.onload=()=>{
+        if(finished)return;finished=true;clearTimeout(timer);resolve(img);
+      };
+      img.onerror=()=>{
+        if(finished)return;finished=true;clearTimeout(timer);
+        reject(Error('写真の画像形式を読み込めません'));
+      };
+      img.src=src;
+    });
+  }
+  function imageDataUrl(blob){
+    return new Promise((resolve,reject)=>{
+      const reader=new FileReader();
+      reader.onload=()=>resolve(reader.result);
+      reader.onerror=()=>reject(Error('写真データを読み取れませんでした'));
+      reader.readAsDataURL(blob);
+    });
+  }
   async function jpegOf(blob){
     const url=URL.createObjectURL(blob);
     try{
-      const img=new Image();await new Promise((ok,fail)=>{img.onload=ok;img.onerror=()=>fail(Error('写真の画像形式を読み込めません'));img.src=url;});
+      let img;
+      try{img=await imageFromSrc(url);}
+      catch(primary){
+        // Offline Safari/WebKit can fail to resolve a Blob URL. A data URL is
+        // read from the same local bytes without network or source mutations.
+        try{img=await imageFromSrc(await imageDataUrl(blob));}
+        catch(_){throw primary;}
+      }
       const cv=document.createElement('canvas'),w=960,h=720;cv.width=w;cv.height=h;
       const ctx=cv.getContext('2d');if(!ctx)throw Error('画像の変換機能を利用できません');
       ctx.fillStyle='#ffffff';ctx.fillRect(0,0,w,h);
