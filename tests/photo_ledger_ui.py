@@ -154,7 +154,15 @@ try:
             await SentlogRecords.settled();
           }
         }""")
-        context.set_offline(True)
+        # Chromium verifies the real browser offline flag. Headless Linux
+        # WebKit rejects locally generated Blob/data URLs when Playwright's
+        # offline flag is enabled; this runner can only verify network-denied
+        # WebKit UI and Excel download. Real iOS offline remains a release gate.
+        if engine=='chromium':
+            context.set_offline(True)
+        else:
+            assert not external,'WebKit runner unexpectedly requested external assets'
+            print('WEBKIT NETWORK-DENIED UI CHECK (not real offline mode)',flush=True)
         if engine=='webkit':
             # The finished link is a real user gesture, supported when WebKit
             # blocks the original asynchronous automatic download.
@@ -196,7 +204,7 @@ try:
             assert '写真台帳だけの説明' in z.read('xl/worksheets/sheet2.xml').decode()
         assert not errors,errors
         assert not external,external
-        print(f'PASS photo-ledger {engine} {width}px: two-PDF grouping, exact -51 labels, draft, missing-photo block, offline XLSX, 3-up page breaks, unchanged records',flush=True)
+        print(f'PASS photo-ledger {engine} {width}px: two-PDF grouping, exact -51 labels, draft, missing-photo block, '+('real offline' if engine=='chromium' else 'network-denied WebKit')+' XLSX, 3-up page breaks, unchanged records',flush=True)
         context.close()
         if browser:
             browser.close()
