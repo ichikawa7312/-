@@ -10,7 +10,7 @@ import xml.etree.ElementTree as ET
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from playwright.sync_api import sync_playwright, expect
+from playwright.sync_api import sync_playwright, expect, TimeoutError as PlaywrightTimeout
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / 'test-results' / 'photo-ledger'
@@ -159,10 +159,14 @@ try:
             # The finished link is a real user gesture, supported when WebKit
             # blocks the original asynchronous automatic download.
             page.locator('.ledger-export').click()
-            page.wait_for_function("""()=>{
-              const s=document.querySelector('.ledger-status')?.textContent||'';
-              return s.includes('Excelを出力しました')||s.includes('出力できませんでした');
-            }""",timeout=30000)
+            try:
+                page.wait_for_function("""()=>{
+                  const s=document.querySelector('.ledger-status')?.textContent||'';
+                  return s.includes('Excelを出力しました')||s.includes('出力できませんでした');
+                }""",timeout=35000)
+            except PlaywrightTimeout:
+                print('WEBKIT STATUS WHEN STALLED:',page.locator('.ledger-status').inner_text(),flush=True)
+                raise
             result=page.locator('.ledger-status').inner_text()
             assert 'Excelを出力しました' in result,('WebKit Excel generation failed',result)
             with page.expect_download(timeout=20000) as event:
