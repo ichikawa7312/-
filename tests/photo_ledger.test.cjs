@@ -40,5 +40,21 @@ function unzip(buffer){const files=new Map();let i=0;while(i+30<buffer.length&&b
   assert.equal([...files.keys()].filter(x=>x.startsWith('xl/media/image')).length,9);
   let missing=got.entries[0];delete missing.jpeg;
   await assert.rejects(()=>L.buildXlsx('x','y',groups),/未取得/);
+  // Large synthetic case: ensure many photos are not truncated or renumbered,
+  // and every A4 sheet has exactly three image slots without silent omissions.
+  const large=Array.from({length:120},(_,i)=>({
+    key:'large:'+i,damage:'ひび割れ-'+(i+1),type:'ひび割れ',
+    jpeg:fake,description:'合成写真',member:'床版',sheetName:'上部工',photoName:'fixture.jpg',page:1
+  }));
+  const big=unzip(Buffer.from(await (await L.buildXlsx('大量写真検証','図面No.1',[{name:'ひび割れ',photos:large}])).arrayBuffer()));
+  assert.equal([...big.keys()].filter(x=>/^xl\\/media\\/image\\d+\\.jpeg$/.test(x)).length,120);
+  const bigSheet=big.get('xl/worksheets/sheet1.xml').toString();
+  assert.match(bigSheet,/<rowBreaks count="39" manualBreakCount="39">/);
+  assert.match(bigSheet,/<brk id="1170"/);
+  assert.match(bigSheet,/写真番号：120/);
+  assert.match(bigSheet,/ひび割れ-120/);
+  const over=Array.from({length:L.MAX_PHOTOS+1},(_,i)=>({...large[0],key:'over:'+i}));
+  await assert.rejects(()=>L.buildXlsx('過大','図面',[{name:'ひび割れ',photos:over}]),/600枚を超え/);
+  console.log('PASS photo ledger: 120-photo pagination, image count, uninterrupted numbering and safe max guard');
   console.log('PASS photo ledger: multi-PDF aggregation, exact -51 labels, A4/3-up XLSX, 3-page breaks, photo guards');
 })().catch(e=>{console.error(e);process.exitCode=1;});
