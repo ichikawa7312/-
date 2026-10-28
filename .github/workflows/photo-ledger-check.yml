@@ -5,6 +5,7 @@ on:
       - 'sentlog/photo-ledger.js'
       - 'scripts/build_photo_ledger.py'
       - 'tests/photo_ledger.test.cjs'
+      - 'tests/photo_ledger_ui.py'
       - '.github/workflows/pages.yml'
       - '.github/workflows/photo-ledger-check.yml'
 permissions:
@@ -146,3 +147,8 @@ jobs:
           node tests/plain_numbers.test.cjs
           node tests/single_number_ui.test.cjs
           node tests/optional_symbol_ui.test.cjs
+      - name: Verify actual offline photo-ledger UI and XLSX download
+        run: |
+          python3 -m pip install playwright==1.57.0
+          python3 -m playwright install --with-deps chromium
+          python3 tests/photo_ledger_ui.py
