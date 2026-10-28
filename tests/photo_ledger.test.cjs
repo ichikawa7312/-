@@ -23,7 +23,7 @@ assert.equal(got.entries[0].type,L.OTHER);
 const c=got.entries.filter(e=>e.type==='ひび割れ');assert.equal(c.length,7);
 assert.equal(c[0].typeNo,2);assert.equal(c[0].drawingId,'sheet2');
 assert.equal(c[5].typeNo,51);
-assert.equal(L.collect(group,{sheet1:st.sheet1}).errors.length,0,'empty metadata counts may skip a missing sheet');
+assert.equal(L.collect(group,{sheet1:st.sheet1}).errors.length,1,'missing sheet state must never be silently omitted even when metadata counts are stale or empty');
 assert.equal(L.collect({sheets:[{id:'s',photoCount:1,sheetName:'lost.pdf'}]},{}).errors.length,1);
 const groups=L.groupsFor(got.entries,['全景・その他','ひび割れ','剥離']);
 let fake=new Uint8Array([255,216,255,217]);for(const e of got.entries)e.jpeg=fake;
