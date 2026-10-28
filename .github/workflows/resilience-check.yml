@@ -1,4 +1,4 @@
-name: Sentlog v1.39 safety checks
+name: Sentlog safety checks (production-equivalent build)
 on:
   pull_request:
     branches: [main]
@@ -7,42 +7,39 @@ permissions:
 jobs:
   tests:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
-      - name: Build latest Sentlog without touching user data
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build exactly the deployed Sentlog and run regression tests
         run: |
-          python3 scripts/build_archive.py
-          python3 scripts/build_management.py
-          python3 scripts/build_capacity.py
-          python3 scripts/build_resilience.py
-          python3 scripts/build_photo_recovery.py
-          python3 scripts/build_shape_move.py
-          python3 scripts/build_instant_damage_type.py
-          python3 scripts/build_compact_labels.py
-          python3 scripts/build_overview_labels.py
-          python3 scripts/build_polygon_snap.py
-          python3 scripts/build_polygon_dimensions.py
-      - name: Run regression tests
-        run: |
-          node tests/core.test.cjs
-          node tests/pc.test.cjs
-          node tests/integration.test.cjs
-          node tests/management.test.cjs
-          node tests/capacity.test.cjs
-          node tests/capacity_pc.test.cjs
-          node tests/resilience.test.cjs
-          node tests/resilience_pc.test.cjs
-          node tests/photo_recovery_pc.test.cjs
-          node tests/photo_delivery_guard.test.cjs
-          node tests/leader_line_width.test.cjs
-          node tests/shape_move.test.cjs
-          node tests/instant_damage_type.test.cjs
-          node tests/compact_labels.test.cjs
-          node tests/polygon_snap.test.cjs
-          node tests/polygon_dimensions.test.cjs
-      - name: Check browser script syntax
-        run: |
-          node --check sentlog/archive-capacity.js
-          node --check sentlog/capacity-details.js
-          node --check sentlog/archive-restore-pc.js
-          node --check sentlog/photo-recovery.js
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+          source=Path('.github/workflows/pages.yml').read_text(encoding='utf-8')
+          start='      - name: Build archive, management and capacity integration\n        run: |\n'
+          end='      - name: Setup Pages'
+          if source.count(start)!=1 or source.count(end)!=1:
+              raise RuntimeError('Production build anchors changed; safety checks cannot be skipped')
+          block=source.split(start,1)[1].split(end,1)[0]
+          lines=block.splitlines()
+          if not lines or any(x.strip() and not x.startswith('          ') for x in lines):
+              raise RuntimeError('Unexpected production build indentation')
+          commands='\n'.join(x[10:] if x.strip() else '' for x in lines)+'\n'
+          required=('python3 scripts/build_archive.py',
+                    'python3 scripts/build_sync_merge.py',
+                    'python3 scripts/build_pdf_revision_guard.py',
+                    'python3 scripts/build_photo_ledger.py',
+                    'node tests/pc.test.cjs',
+                    'node tests/core.test.cjs',
+                    'node tests/photo_ledger.test.cjs')
+          for item in required:
+              if item not in commands:
+                  raise RuntimeError('Required safety check missing: '+item)
+          subprocess.run(['bash','-e','-o','pipefail','-c',commands],check=True)
+          PY
