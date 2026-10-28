@@ -150,5 +150,7 @@ jobs:
       - name: Verify actual offline photo-ledger UI and XLSX download
         run: |
           python3 -m pip install playwright==1.57.0
-          python3 -m playwright install --with-deps chromium
-          python3 tests/photo_ledger_ui.py
+          python3 -m playwright install --with-deps chromium webkit
+          SENTLOG_TEST_BROWSER=chromium SENTLOG_TEST_WIDTH=1280 python3 tests/photo_ledger_ui.py
+          SENTLOG_TEST_BROWSER=webkit SENTLOG_TEST_WIDTH=390 python3 tests/photo_ledger_ui.py
+          SENTLOG_TEST_BROWSER=webkit SENTLOG_TEST_WIDTH=820 python3 tests/photo_ledger_ui.py
