@@ -25,6 +25,9 @@ assert.equal(c[0].typeNo,2);assert.equal(c[0].drawingId,'sheet2');
 assert.equal(c[5].typeNo,51);
 assert.equal(L.collect(group,{sheet1:st.sheet1}).errors.length,1,'missing sheet state must never be silently omitted even when metadata counts are stale or empty');
 assert.equal(L.collect({sheets:[{id:'s',photoCount:1,sheetName:'lost.pdf'}]},{}).errors.length,1);
+assert.equal(L.collect({sheets:[{id:'s',sheetName:'stale-photo-count',photoCount:2}]},{s:{shapes:[{id:'a',type:'腐食',typeNo:1,photos:[{id:'one'}]}]}}).errors.length,1,'missing references must stop export even when a sheet state exists');
+assert.equal(L.collect({sheets:[{id:'s',sheetName:'duplicate',photoCount:2}]},{s:{shapes:[{id:'a',type:'腐食',typeNo:1,photos:[{id:'same'},{id:'same'}]}]}}).errors.length,1,'duplicate IDs on one shape cannot be silently discarded');
+
 const groups=L.groupsFor(got.entries,['全景・その他','ひび割れ','剥離']);
 let fake=new Uint8Array([255,216,255,217]);for(const e of got.entries)e.jpeg=fake;
 function unzip(buffer){const files=new Map();let i=0;while(i+30<buffer.length&&buffer.readUInt32LE(i)===0x04034b50){const size=buffer.readUInt32LE(i+18),len=buffer.readUInt16LE(i+26),extra=buffer.readUInt16LE(i+28);const name=buffer.subarray(i+30,i+30+len).toString();const a=i+30+len+extra;files.set(name,buffer.subarray(a,a+size));i=a+size;}return files;}
