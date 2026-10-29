@@ -51,13 +51,21 @@ function unzip(buffer){const files=new Map();let i=0;while(i+30<buffer.length&&b
   assert.match(sheet, /<row r="13" ht="25" customHeight="1">/,'second photo frame begins after spacer');
   assert.match(sheet, /<row r="23" ht="25" customHeight="1">/,'third photo frame begins after spacer');
   assert.match(sheet, /E13:H13/,'second photo detail fields still merge');
-  assert.match(sheet, /<row r="32" ht="18" customHeight="1">/,'footer stays on same printed page');
+  assert.match(sheet, /<row r="32" ht="18" customHeight="1"\/>/,'footer row stays in print range, without a number');
   assert.match(files.get('xl/workbook.xml').toString(), /\$H\$96/,'print area uses 32-row pages');
   const totalHeight=26+20+3*9*25+2*18+18;
   const availableHeight=297/25.4*72-2*0.35*72;
   assert.ok(totalHeight<=availableHeight,'three photo cards and gaps fit A4 print height');
 
   assert.ok(!sheet.includes('写真名：')&&!sheet.includes('図面：PDF')&&!sheet.includes('図面No.：調査⑫'), 'redundant image and PDF metadata must not appear');
+  // Page count appears on the upper right of every printed page, never below the photos.
+  for(const [row,no] of [[1,1],[33,2],[65,3]]){
+    assert.ok(sheet.includes(`<c r="H${row}" s="50" t="inlineStr"><is><t xml:space="preserve">${no} / 3</t></is></c>`),`Missing top-right page ${no} / 3`);
+    assert.ok(sheet.includes(`<mergeCell ref="A${row}:G${row}"/>`),'Title leaves H column available');
+  }
+  assert.ok(!sheet.includes(' ページ'),'old bottom-left page text must be removed');
+  assert.doesNotMatch(sheet, /<c r="A(?:32|64|96)"/,'no bottom-left page cells');
+  assert.match(files.get('xl/worksheets/sheet1.xml').toString(), /<c r="H1" s="50" t="inlineStr"><is><t xml:space="preserve">1 \/ 1<\/t>/,'single-page category also has upper-right numbering');
   const styles=files.get('xl/styles.xml').toString();
 
   // Clean monochrome report header: no color band or bureaucratic "案件：" label.
@@ -68,7 +76,8 @@ function unzip(buffer){const files=new Map();let i=0;while(i+30<buffer.length&&b
   assert.doesNotMatch(styles, /FFEFF3F8|fillId="2"|applyFill="1"/,'no colored header');
   assert.match(styles, /<xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"\/>/,'title stays bold on white');
   assert.match(styles, /<borders count="16">/,'perimeter and divider border styles');
-  assert.match(styles, /<cellXfs count="50">/,'merged-note and label border styles');
+  assert.match(styles, /<cellXfs count="51">/,'51st cell style aligns page number right');
+  assert.match(styles, /<alignment horizontal="right" vertical="center"\/>/,'header page indicator right aligned');
   assert.match(files.get('xl/drawings/drawing2.xml').toString(), /<a:ln w="6350">/,'images have visible outlines');
   assert.match(styles, /<color rgb="FF000000"\/>/,'all cell frames must print in black');
   assert.doesNotMatch(styles, /FF94A3B8/,'old gray line styles must not remain');
@@ -110,6 +119,7 @@ function unzip(buffer){const files=new Map();let i=0;while(i+30<buffer.length&&b
   assert.match(bigSheet,/<rowBreaks count="39" manualBreakCount="39">/);
   assert.match(bigSheet,/<brk id="1248"/);
   assert.match(bigSheet,/写真番号：120/);
+  assert.match(bigSheet, /<c r="H1249" s="50" t="inlineStr"><is><t xml:space="preserve">40 \/ 40<\/t>/,'last of 40 pages numbered at upper right');
   assert.match(bigSheet,/ひび割れ-120/);
   const over=Array.from({length:L.MAX_PHOTOS+1},(_,i)=>({...large[0],key:'over:'+i}));
   await assert.rejects(()=>L.buildXlsx('過大','図面',[{name:'ひび割れ',photos:over}]),/600枚を超え/);

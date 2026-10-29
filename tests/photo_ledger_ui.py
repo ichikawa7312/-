@@ -226,8 +226,23 @@ try:
             assert '<row r="13" ht="25"' in rendered_sheet
             assert '<row r="23" ht="25"' in rendered_sheet
             assert 'E13:H13' in rendered_sheet
-            assert '<row r="32" ht="18"' in rendered_sheet
+            assert '<row r="32" ht="18" customHeight="1"/>' in rendered_sheet
             assert '$H$96' in z.read('xl/workbook.xml').decode()
+            # Every printed page shows a sheet-local count at the upper right.
+            assert ' ページ' not in rendered_sheet,'Old footer page text must be absent'
+            for top_row,page_number in [(1,1),(33,2),(65,3)]:
+                indicator=xml.find(f".//s:c[@r='H{top_row}']",ns)
+                assert indicator is not None and indicator.attrib.get('s')=='50'
+                assert ''.join(indicator.itertext())==f'{page_number} / 3'
+                assert xml.find(f".//s:mergeCell[@ref='A{top_row}:G{top_row}']",ns) is not None
+            for bottom_row in [32,64,96]:
+                assert xml.find(f".//s:c[@r='A{bottom_row}']",ns) is None
+            style_block=styles_root.find('s:cellXfs',ns)
+            assert style_block is not None and style_block.attrib['count']=='51'
+            number_style=style_block.findall('s:xf',ns)[50]
+            alignment=number_style.find('s:alignment',ns)
+            assert alignment is not None and alignment.attrib.get('horizontal')=='right'
+
 
             assert 'width="14.9"' in rendered_sheet and 'width="10.4"' in rendered_sheet
             assert 'left="0.35" right="0.35" top="0.35" bottom="0.35"' in rendered_sheet
