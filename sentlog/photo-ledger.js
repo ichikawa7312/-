@@ -110,9 +110,9 @@
     '<fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills>'+
     '<borders count="16">'+Array.from({length:16},(_,mask)=>borderXml(mask)).join('')+'</borders>'+
     '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>'+
-    '<cellXfs count="50"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>'+
+    '<cellXfs count="51"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>'+
     '<xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/>'+
-    borderXfs(0,'center')+borderXfs(2,'center')+borderXfs(0,'top')+'</cellXfs>'+
+    borderXfs(0,'center')+borderXfs(2,'center')+borderXfs(0,'top')+'<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"><alignment horizontal="right" vertical="center"/></xf></cellXfs>'+
     '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>';
   const cell=(ref,text,style=0)=>`<c r="${ref}" s="${style}" t="inlineStr"><is><t xml:space="preserve">${xml(text)}</t></is></c>`;
   // The image must stay *inside* the A:D frame; col=4 with offset=0 touches
