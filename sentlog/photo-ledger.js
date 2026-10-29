@@ -169,7 +169,7 @@
         // their row-based image anchors or photo data.
         if(slot<2)rows.push(`<row r="${first+9}" ht="${PHOTO_GAP_HEIGHT}" customHeight="1"/>`);
       }
-      const foot=base+PAGE_ROWS;rows.push(`<row r="${foot}" ht="18" customHeight="1">${cell('A'+foot,`${page+1} / ${pages} ページ`,2)}</row>`);merges.push(`A${foot}:H${foot}`);
+      const foot=base+PAGE_ROWS;rows.push(`<row r="${foot}" ht="18" customHeight="1"/>`);
     }
     const breaks=pages>1?`<rowBreaks count="${pages-1}" manualBreakCount="${pages-1}">${Array.from({length:pages-1},(_,i)=>`<brk id="${(i+1)*PAGE_ROWS}" min="0" max="16383" man="1"/>`).join('')}</rowBreaks>`:'';
     const sheet=`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheetPr><pageSetUpPr fitToPage="1"/></sheetPr><dimension ref="A1:H${pages*PAGE_ROWS}"/><sheetViews><sheetView workbookViewId="0" showGridLines="0"/></sheetViews><sheetFormatPr defaultRowHeight="20"/><cols><col min="1" max="4" width="${PHOTO_COL_WIDTH}" customWidth="1"/><col min="5" max="8" width="10.4" customWidth="1"/></cols><sheetData>${rows.join('')}</sheetData><mergeCells count="${merges.length}">${merges.map(x=>`<mergeCell ref="${x}"/>`).join('')}</mergeCells><printOptions horizontalCentered="1"/><pageMargins left="0.35" right="0.35" top="0.35" bottom="0.35" header="0.15" footer="0.15"/><pageSetup paperSize="9" orientation="portrait" fitToWidth="1" fitToHeight="0"/>${breaks}<drawing r:id="rId1"/></worksheet>`;
