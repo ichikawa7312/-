@@ -92,7 +92,7 @@
   }
   function workbookXml(names){
     const sheets=names.map((name,i)=>`<sheet name="${xml(name)}" sheetId="${i+1}" r:id="rId${i+1}"/>`).join('');
-    const areas=names.map((name,i)=>{const ref="'"+name.replace(/'/g,"''")+"'";return `<definedName name="_xlnm.Print_Area" localSheetId="${i}">${xml(ref)}!$A$1:$H$${this.pages[i]*30}</definedName>`;}).join('');
+    const areas=names.map((name,i)=>{const ref="'"+name.replace(/'/g,"''")+"'";return `<definedName name="_xlnm.Print_Area" localSheetId="${i}">${xml(ref)}!$A$1:$H$${this.pages[i]*32}</definedName>`;}).join('');
     return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><bookViews><workbookView/></bookViews><sheets>${sheets}</sheets><definedNames>${areas}</definedNames></workbook>`;
   }
   // Border masks: 1=left, 2=right, 4=top, 8=bottom.
@@ -118,12 +118,17 @@
   // The image must stay *inside* the A:D frame; col=4 with offset=0 touches
   // the E-column divider and causes Excel to draw a rule over the photo edge.
   // Excel drawing coordinates use EMUs (9525 per 96dpi pixel).
+  // A4 portrait: 2 header rows + 3 photo cards (9 rows each) + 2 open
+  // spacer rows + footer = 32 rows per printed page.
+  const PAGE_ROWS=32;
+  const PHOTO_ROW_HEIGHT=25;
+  const PHOTO_GAP_HEIGHT=18; // 6.35mm unscaled between complete card frames
   const PHOTO_COL_WIDTH=14.9;
   const PHOTO_PX_PER_COL=Math.floor(PHOTO_COL_WIDTH*7+5);
   const PHOTO_INSET_X=12*9525; // about 3mm before print scaling
   const PHOTO_INSET_Y=8*9525;
   const PHOTO_LAST_COL_OFF=PHOTO_PX_PER_COL*9525-PHOTO_INSET_X;
-  const PHOTO_LAST_ROW_OFF=26*12700-PHOTO_INSET_Y; // a 26pt row
+  const PHOTO_LAST_ROW_OFF=PHOTO_ROW_HEIGHT*12700-PHOTO_INSET_Y; // last card row inset
   function pictureAnchor(imageId,row,rel){
     const from=`<xdr:from><xdr:col>0</xdr:col><xdr:colOff>${PHOTO_INSET_X}</xdr:colOff><xdr:row>${row-1}</xdr:row><xdr:rowOff>${PHOTO_INSET_Y}</xdr:rowOff></xdr:from>`;
     const to=`<xdr:to><xdr:col>3</xdr:col><xdr:colOff>${PHOTO_LAST_COL_OFF}</xdr:colOff><xdr:row>${row+7}</xdr:row><xdr:rowOff>${PHOTO_LAST_ROW_OFF}</xdr:rowOff></xdr:to>`;
@@ -133,12 +138,12 @@
   function makeSheet(projectName,groupName,items,startNumber,imageStart){
     const pages=Math.ceil(items.length/3),rows=[],merges=[],anchors=[],images=[];
     for(let page=0;page<pages;page++){
-      const base=page*30,head=base+1,meta=base+2;
+      const base=page*PAGE_ROWS,head=base+1,meta=base+2;
       rows.push(`<row r="${head}" ht="26" customHeight="1">${cell('A'+head,groupName+'　写真台帳',1)}</row>`);
       rows.push(`<row r="${meta}" ht="20" customHeight="1">${cell('A'+meta,'案件：'+projectName,0)}</row>`);
       merges.push(`A${head}:H${head}`,`A${meta}:H${meta}`);
       for(let slot=0;slot<3;slot++){
-        const idx=page*3+slot,entry=items[idx],first=base+3+slot*9;
+        const idx=page*3+slot,entry=items[idx],first=base+3+slot*10;
         for(let offset=0;offset<9;offset++){
           const r=first+offset,cells=[];
           for(const col of ['A','B','C','D','E','F','G','H']){
@@ -153,18 +158,21 @@
             const style=entry?boxStyle(mask,variant):0;
             cells.push(value===null?'<c r="'+col+r+'" s="'+style+'"/>':cell(col+r,value,style));
           }
-          rows.push('<row r="'+r+'" ht="26" customHeight="1">'+cells.join('')+'</row>');
+          rows.push('<row r="'+r+'" ht="'+PHOTO_ROW_HEIGHT+'" customHeight="1">'+cells.join('')+'</row>');
         }
         if(entry){
           for(let off=0;off<3;off++)merges.push(`E${first+off}:H${first+off}`);
           merges.push(`E${first+3}:H${first+8}`);
           const mediaId=imageStart+idx;images.push({id:mediaId,data:entry.jpeg});anchors.push(pictureAnchor(mediaId,first,idx+1));
         }
+        // Blank, borderless spacer separates card frames without changing
+        // their row-based image anchors or photo data.
+        if(slot<2)rows.push(`<row r="${first+9}" ht="${PHOTO_GAP_HEIGHT}" customHeight="1"/>`);
       }
-      const foot=base+30;rows.push(`<row r="${foot}" ht="18" customHeight="1">${cell('A'+foot,`${page+1} / ${pages} ページ`,2)}</row>`);merges.push(`A${foot}:H${foot}`);
+      const foot=base+PAGE_ROWS;rows.push(`<row r="${foot}" ht="18" customHeight="1">${cell('A'+foot,`${page+1} / ${pages} ページ`,2)}</row>`);merges.push(`A${foot}:H${foot}`);
     }
-    const breaks=pages>1?`<rowBreaks count="${pages-1}" manualBreakCount="${pages-1}">${Array.from({length:pages-1},(_,i)=>`<brk id="${(i+1)*30}" min="0" max="16383" man="1"/>`).join('')}</rowBreaks>`:'';
-    const sheet=`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheetPr><pageSetUpPr fitToPage="1"/></sheetPr><dimension ref="A1:H${pages*30}"/><sheetViews><sheetView workbookViewId="0" showGridLines="0"/></sheetViews><sheetFormatPr defaultRowHeight="20"/><cols><col min="1" max="4" width="${PHOTO_COL_WIDTH}" customWidth="1"/><col min="5" max="8" width="10.4" customWidth="1"/></cols><sheetData>${rows.join('')}</sheetData><mergeCells count="${merges.length}">${merges.map(x=>`<mergeCell ref="${x}"/>`).join('')}</mergeCells><printOptions horizontalCentered="1"/><pageMargins left="0.35" right="0.35" top="0.35" bottom="0.35" header="0.15" footer="0.15"/><pageSetup paperSize="9" orientation="portrait" fitToWidth="1" fitToHeight="0"/>${breaks}<drawing r:id="rId1"/></worksheet>`;
+    const breaks=pages>1?`<rowBreaks count="${pages-1}" manualBreakCount="${pages-1}">${Array.from({length:pages-1},(_,i)=>`<brk id="${(i+1)*PAGE_ROWS}" min="0" max="16383" man="1"/>`).join('')}</rowBreaks>`:'';
+    const sheet=`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheetPr><pageSetUpPr fitToPage="1"/></sheetPr><dimension ref="A1:H${pages*PAGE_ROWS}"/><sheetViews><sheetView workbookViewId="0" showGridLines="0"/></sheetViews><sheetFormatPr defaultRowHeight="20"/><cols><col min="1" max="4" width="${PHOTO_COL_WIDTH}" customWidth="1"/><col min="5" max="8" width="10.4" customWidth="1"/></cols><sheetData>${rows.join('')}</sheetData><mergeCells count="${merges.length}">${merges.map(x=>`<mergeCell ref="${x}"/>`).join('')}</mergeCells><printOptions horizontalCentered="1"/><pageMargins left="0.35" right="0.35" top="0.35" bottom="0.35" header="0.15" footer="0.15"/><pageSetup paperSize="9" orientation="portrait" fitToWidth="1" fitToHeight="0"/>${breaks}<drawing r:id="rId1"/></worksheet>`;
     const drawing=`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">${anchors.join('')}</xdr:wsDr>`;
     return {sheet,drawing,images,pages};
   }
