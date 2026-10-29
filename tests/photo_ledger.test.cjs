@@ -77,6 +77,7 @@ function unzip(buffer){const files=new Map();let i=0;while(i+30<buffer.length&&b
   assert.match(styles, /<xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"\/>/,'title stays bold on white');
   assert.match(styles, /<borders count="16">/,'perimeter and divider border styles');
   assert.match(styles, /<cellXfs count="51">/,'51st cell style aligns page number right');
+  assert.match(styles, /<alignment horizontal="right" vertical="center"\/>/,'header page indicator right aligned');
   assert.match(files.get('xl/drawings/drawing2.xml').toString(), /<a:ln w="6350">/,'images have visible outlines');
   assert.match(styles, /<color rgb="FF000000"\/>/,'all cell frames must print in black');
   assert.doesNotMatch(styles, /FF94A3B8/,'old gray line styles must not remain');
@@ -118,6 +119,7 @@ function unzip(buffer){const files=new Map();let i=0;while(i+30<buffer.length&&b
   assert.match(bigSheet,/<rowBreaks count="39" manualBreakCount="39">/);
   assert.match(bigSheet,/<brk id="1248"/);
   assert.match(bigSheet,/写真番号：120/);
+  assert.match(bigSheet, /<c r="H1249" s="50" t="inlineStr"><is><t xml:space="preserve">40 \/ 40<\/t>/,'last of 40 pages numbered at upper right');
   assert.match(bigSheet,/ひび割れ-120/);
   const over=Array.from({length:L.MAX_PHOTOS+1},(_,i)=>({...large[0],key:'over:'+i}));
   await assert.rejects(()=>L.buildXlsx('過大','図面',[{name:'ひび割れ',photos:over}]),/600枚を超え/);
