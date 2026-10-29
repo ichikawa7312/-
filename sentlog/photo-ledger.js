@@ -139,7 +139,7 @@
     const pages=Math.ceil(items.length/3),rows=[],merges=[],anchors=[],images=[];
     for(let page=0;page<pages;page++){
       const base=page*PAGE_ROWS,head=base+1,meta=base+2;
-      rows.push(`<row r="${head}" ht="26" customHeight="1">${cell('A'+head,groupName+'　写真台帳',1)}</row>`);
+      rows.push(`<row r="${head}" ht="26" customHeight="1">${cell('A'+head,groupName+'　写真台帳',1)}${cell('H'+head,(page+1)+' / '+pages,50)}</row>`);
       rows.push(`<row r="${meta}" ht="20" customHeight="1">${cell('A'+meta,projectName,0)}</row>`);
       merges.push(`A${head}:G${head}`,`A${meta}:H${meta}`);
       for(let slot=0;slot<3;slot++){
