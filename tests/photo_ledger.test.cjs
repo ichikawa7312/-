@@ -61,13 +61,13 @@ function unzip(buffer){const files=new Map();let i=0;while(i+30<buffer.length&&b
   assert.match(sheet, /<c r="F5" s="10"\/>/,'member rule continues across merged cells');
   assert.match(sheet, /<c r="E6" s="35" t="inlineStr">/,'notes keep a tall undivided writing area');
   const drawing=files.get('xl/drawings/drawing2.xml').toString();
-  const anchors=drawing.match(/<xdr:twoCellAnchor[\\s\\S]*?<\\/xdr:twoCellAnchor>/g)||[];
+  const anchors=drawing.match(/<xdr:twoCellAnchor[\s\S]*?<\/xdr:twoCellAnchor>/g)||[];
   assert.equal(anchors.length,7,'photo anchors and media count stay aligned');
   for(const anchor of anchors){
-    assert.match(anchor, /<xdr:from><xdr:col>0<\\/xdr:col><xdr:colOff>114300<\\/xdr:colOff>/);
-    assert.match(anchor, /<xdr:to><xdr:col>3<\\/xdr:col><xdr:colOff>923925<\\/xdr:colOff>/,'right edge stops inside the D-column frame');
-    assert.match(anchor, /<xdr:rowOff>254000<\\/xdr:rowOff><\\/xdr:to>/,'bottom edge stays above the row border');
-    assert.match(anchor, /<a:srgbClr val="000000"\\/>/,'photo outlines are black');
+    assert.match(anchor, /<xdr:from><xdr:col>0<\/xdr:col><xdr:colOff>114300<\/xdr:colOff>/);
+    assert.match(anchor, /<xdr:to><xdr:col>3<\/xdr:col><xdr:colOff>923925<\/xdr:colOff>/,'right edge stops inside the D-column frame');
+    assert.match(anchor, /<xdr:rowOff>254000<\/xdr:rowOff><\/xdr:to>/,'bottom edge stays above the row border');
+    assert.match(anchor, /<a:srgbClr val="000000"\/>/,'photo outlines are black');
   }
 
 
