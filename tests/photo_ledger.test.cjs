@@ -59,6 +59,14 @@ function unzip(buffer){const files=new Map();let i=0;while(i+30<buffer.length&&b
 
   assert.ok(!sheet.includes('写真名：')&&!sheet.includes('図面：PDF')&&!sheet.includes('図面No.：調査⑫'), 'redundant image and PDF metadata must not appear');
   const styles=files.get('xl/styles.xml').toString();
+
+  // Clean monochrome report header: no color band or bureaucratic "案件：" label.
+  assert.match(sheet, /<c r="A1" s="1" t="inlineStr">[^]*?調査⑫　写真台帳/,'drawing title retained');
+  assert.match(sheet, /<c r="A2" s="0" t="inlineStr"><is><t xml:space="preserve">試験案件<\/t><\/is><\/c>/,'project name shown on its own');
+  assert.doesNotMatch(sheet, /案件：/,'administrative label removed');
+  assert.match(styles, /<fills count="2">/,'no decorative title background');
+  assert.doesNotMatch(styles, /FFEFF3F8|fillId="2"|applyFill="1"/,'no colored header');
+  assert.match(styles, /<xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"\/>/,'title stays bold on white');
   assert.match(styles, /<borders count="16">/,'perimeter and divider border styles');
   assert.match(styles, /<cellXfs count="50">/,'merged-note and label border styles');
   assert.match(files.get('xl/drawings/drawing2.xml').toString(), /<a:ln w="6350">/,'images have visible outlines');
