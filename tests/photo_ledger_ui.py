@@ -203,6 +203,20 @@ try:
             assert 'ひび割れ-51' in z.read('xl/worksheets/sheet2.xml').decode()
             assert '写真台帳だけの説明' in z.read('xl/worksheets/sheet2.xml').decode()
             rendered_sheet=z.read('xl/worksheets/sheet2.xml').decode()
+
+            # Printed header is neutral and uses the project name without a prefix.
+            assert '合成試験 案件' in rendered_sheet
+            assert '案件：' not in rendered_sheet
+            first=xml.find(".//s:c[@r='A1']",ns)
+            second=xml.find(".//s:c[@r='A2']",ns)
+            assert first is not None and first.attrib.get('s')=='1'
+            assert second is not None and second.attrib.get('s')=='0'
+            assert ''.join(second.itertext())=='合成試験 案件'
+            styles_root=ET.fromstring(z.read('xl/styles.xml'))
+            fills=styles_root.find('s:fills',ns)
+            assert fills is not None and fills.attrib['count']=='2'
+            assert 'FFEFF3F8' not in z.read('xl/styles.xml').decode()
+
             assert '写真番号：002' in rendered_sheet,'Numbering must carry across category sheets'
             assert '写真名：' not in rendered_sheet and '図面：' not in rendered_sheet
             assert '<row r="3" ht="25"' in rendered_sheet
