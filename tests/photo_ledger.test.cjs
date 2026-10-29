@@ -37,13 +37,26 @@ function unzip(buffer){const files=new Map();let i=0;while(i+30<buffer.length&&b
   const sheet=files.get('xl/worksheets/sheet2.xml').toString();
   assert.match(sheet,/<pageSetup paperSize="9" orientation="portrait" fitToWidth="1"/);
   assert.match(sheet,/<rowBreaks count="2" manualBreakCount="2">/);
-  assert.match(sheet, /<row r="3" ht="26" customHeight="1">/,'photo blocks should use the A4 page height');
+  assert.match(sheet, /<row r="3" ht="25" customHeight="1">/,'photo blocks should use the A4 page height');
   assert.match(sheet, /width="14\.9"/,'photo region enlarged');
   assert.match(sheet, /width="10\.4"/,'details fit within A4 page width');
   assert.match(sheet, /<pageMargins left="0\.35" right="0\.35" top="0\.35" bottom="0\.35"/);
   assert.match(sheet, /写真番号：002/,'serials continue across category worksheets');
   assert.match(sheet, /写真番号：008/,'serials remain uninterrupted within categories');
   assert.match(sheet, /E6:H11/,'notes have a six-row merged multiline area');
+
+  // Each printed page contains three complete card frames separated by 18pt gaps.
+  assert.match(sheet, /<row r="12" ht="18" customHeight="1"\/>/,'first spacer is open and borderless');
+  assert.match(sheet, /<row r="22" ht="18" customHeight="1"\/>/,'second spacer is open and borderless');
+  assert.match(sheet, /<row r="13" ht="25" customHeight="1">/,'second photo frame begins after spacer');
+  assert.match(sheet, /<row r="23" ht="25" customHeight="1">/,'third photo frame begins after spacer');
+  assert.match(sheet, /E13:H13/,'second photo detail fields still merge');
+  assert.match(sheet, /<row r="32" ht="18" customHeight="1">/,'footer stays on same printed page');
+  assert.match(files.get('xl/workbook.xml').toString(), /\$H\$96/,'print area uses 32-row pages');
+  const totalHeight=26+20+3*9*25+2*18+18;
+  const availableHeight=297/25.4*72-2*0.35*72;
+  assert.ok(totalHeight<=availableHeight,'three photo cards and gaps fit A4 print height');
+
   assert.ok(!sheet.includes('写真名：')&&!sheet.includes('図面：PDF')&&!sheet.includes('図面No.：調査⑫'), 'redundant image and PDF metadata must not appear');
   const styles=files.get('xl/styles.xml').toString();
   assert.match(styles, /<borders count="16">/,'perimeter and divider border styles');
@@ -66,12 +79,12 @@ function unzip(buffer){const files=new Map();let i=0;while(i+30<buffer.length&&b
   for(const anchor of anchors){
     assert.match(anchor, /<xdr:from><xdr:col>0<\/xdr:col><xdr:colOff>114300<\/xdr:colOff>/);
     assert.match(anchor, /<xdr:to><xdr:col>3<\/xdr:col><xdr:colOff>923925<\/xdr:colOff>/,'right edge stops inside the D-column frame');
-    assert.match(anchor, /<xdr:rowOff>254000<\/xdr:rowOff><\/xdr:to>/,'bottom edge stays above the row border');
+    assert.match(anchor, /<xdr:rowOff>241300<\/xdr:rowOff><\/xdr:to>/,'bottom edge stays above the row border');
     assert.match(anchor, /<a:srgbClr val="000000"\/>/,'photo outlines are black');
   }
 
 
-  assert.match(sheet,/<brk id="30"/);assert.match(sheet,/<brk id="60"/);
+  assert.match(sheet,/<brk id="32"/);assert.match(sheet,/<brk id="64"/);
   assert.match(sheet,/ひび割れ-51/);
   const names=files.get('xl/workbook.xml').toString();assert.match(names,/全景・その他/);assert.match(names,/ひび割れ/);
   assert.equal([...files.keys()].filter(x=>x.startsWith('xl/media/image')).length,9);
@@ -87,7 +100,7 @@ function unzip(buffer){const files=new Map();let i=0;while(i+30<buffer.length&&b
   assert.equal([...big.keys()].filter(x=>x.startsWith('xl/media/image')&&x.endsWith('.jpeg')).length,120);
   const bigSheet=big.get('xl/worksheets/sheet1.xml').toString();
   assert.match(bigSheet,/<rowBreaks count="39" manualBreakCount="39">/);
-  assert.match(bigSheet,/<brk id="1170"/);
+  assert.match(bigSheet,/<brk id="1248"/);
   assert.match(bigSheet,/写真番号：120/);
   assert.match(bigSheet,/ひび割れ-120/);
   const over=Array.from({length:L.MAX_PHOTOS+1},(_,i)=>({...large[0],key:'over:'+i}));
