@@ -95,47 +95,65 @@
     const areas=names.map((name,i)=>{const ref="'"+name.replace(/'/g,"''")+"'";return `<definedName name="_xlnm.Print_Area" localSheetId="${i}">${xml(ref)}!$A$1:$H$${this.pages[i]*30}</definedName>`;}).join('');
     return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><bookViews><workbookView/></bookViews><sheets>${sheets}</sheets><definedNames>${areas}</definedNames></workbook>`;
   }
-  const STYLES=`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="3"><font><sz val="10"/><name val="ＭＳ ゴシック"/></font><font><b/><sz val="14"/><name val="ＭＳ ゴシック"/></font><font><b/><sz val="10"/><name val="ＭＳ ゴシック"/></font></fonts><fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FFEFF3F8"/><bgColor indexed="64"/></patternFill></fill></fills><borders count="2"><border><left/><right/><top/><bottom/><diagonal/></border><border><left style="thin"><color rgb="FFD1D5DB"/></left><right style="thin"><color rgb="FFD1D5DB"/></right><top style="thin"><color rgb="FFD1D5DB"/></top><bottom style="thin"><color rgb="FFD1D5DB"/></bottom><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="5"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1"/><xf numFmtId="0" fontId="2" fillId="0" borderId="0" xfId="0" applyFont="1"><alignment wrapText="1" vertical="center"/></xf></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`;
+  // Border masks: 1=left, 2=right, 4=top, 8=bottom. Only the
+  // outside edges of each photo block and the photo/detail divider are drawn.
+  const BORDER_COLOR='FF94A3B8';
+  const borderSide=(side,on)=>on?'<'+side+' style="thin"><color rgb="'+BORDER_COLOR+'"/></'+side+'>':'<'+side+'/>';
+  const borderXml=mask=>'<border>'+['left','right','top','bottom'].map((side,i)=>borderSide(side,!!(mask&(1<<i)))).join('')+'<diagonal/></border>';
+  const frameMask=(col,offset)=>(col==='A'||col==='E'?1:0)|(col==='H'?2:0)|(offset===0?4:0)|(offset===8?8:0);
+  const borderXfs=(fontId,vertical)=>Array.from({length:16},(_,mask)=>'<xf numFmtId="0" fontId="'+fontId+'" fillId="0" borderId="'+mask+'" xfId="0" applyFont="1" applyBorder="1"><alignment wrapText="1" vertical="'+vertical+'"/></xf>').join('');
+  const boxStyle=(mask,variant='normal')=>(variant==='bold'?18:variant==='top'?34:2)+mask;
+  const STYLES='<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'+
+    '<fonts count="3"><font><sz val="10"/><name val="ＭＳ ゴシック"/></font><font><b/><sz val="14"/><name val="ＭＳ ゴシック"/></font><font><b/><sz val="10"/><name val="ＭＳ ゴシック"/></font></fonts>'+
+    '<fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FFEFF3F8"/><bgColor indexed="64"/></patternFill></fill></fills>'+
+    '<borders count="16">'+Array.from({length:16},(_,mask)=>borderXml(mask)).join('')+'</borders>'+
+    '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>'+
+    '<cellXfs count="50"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>'+
+    '<xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/>'+
+    borderXfs(0,'center')+borderXfs(2,'center')+borderXfs(0,'top')+'</cellXfs>'+
+    '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>';
   const cell=(ref,text,style=0)=>`<c r="${ref}" s="${style}" t="inlineStr"><is><t xml:space="preserve">${xml(text)}</t></is></c>`;
   function pictureAnchor(imageId,row,rel){
     const from=`<xdr:from><xdr:col>0</xdr:col><xdr:colOff>28575</xdr:colOff><xdr:row>${row-1}</xdr:row><xdr:rowOff>28575</xdr:rowOff></xdr:from>`;
     const to=`<xdr:to><xdr:col>4</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>${row+8}</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:to>`;
-    const pic=`<xdr:pic><xdr:nvPicPr><xdr:cNvPr id="${imageId}" name="Photo ${imageId}"/><xdr:cNvPicPr><a:picLocks noChangeAspect="1"/></xdr:cNvPicPr></xdr:nvPicPr><xdr:blipFill><a:blip r:embed="rId${rel}"/><a:stretch><a:fillRect/></a:stretch></xdr:blipFill><xdr:spPr><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></xdr:spPr></xdr:pic>`;
+    const pic=`<xdr:pic><xdr:nvPicPr><xdr:cNvPr id="${imageId}" name="Photo ${imageId}"/><xdr:cNvPicPr><a:picLocks noChangeAspect="1"/></xdr:cNvPicPr></xdr:nvPicPr><xdr:blipFill><a:blip r:embed="rId${rel}"/><a:stretch><a:fillRect/></a:stretch></xdr:blipFill><xdr:spPr><a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:ln w="6350"><a:solidFill><a:srgbClr val="94A3B8"/></a:solidFill></a:ln></xdr:spPr></xdr:pic>`;
     return `<xdr:twoCellAnchor editAs="oneCell">${from}${to}${pic}<xdr:clientData/></xdr:twoCellAnchor>`;
   }
   function makeSheet(projectName,groupName,items,startNumber,imageStart){
     const pages=Math.ceil(items.length/3),rows=[],merges=[],anchors=[],images=[];
     for(let page=0;page<pages;page++){
       const base=page*30,head=base+1,meta=base+2;
-      rows.push(`<row r="${head}" ht="24" customHeight="1">${cell('A'+head,groupName+'　写真台帳',1)}</row>`);
-      rows.push(`<row r="${meta}" ht="20" customHeight="1">${cell('A'+meta,'案件：'+projectName+'　図面No.：'+groupName,2)}</row>`);
+      rows.push(`<row r="${head}" ht="26" customHeight="1">${cell('A'+head,groupName+'　写真台帳',1)}</row>`);
+      rows.push(`<row r="${meta}" ht="20" customHeight="1">${cell('A'+meta,'案件：'+projectName,0)}</row>`);
       merges.push(`A${head}:H${head}`,`A${meta}:H${meta}`);
       for(let slot=0;slot<3;slot++){
         const idx=page*3+slot,entry=items[idx],first=base+3+slot*9;
         for(let offset=0;offset<9;offset++){
           const r=first+offset,cells=[];
-          for(const c of ['A','B','C','D'])cells.push(`<c r="${c}${r}" s="3"/>`);
-          if(entry){
-            const value=offset===0?'写真番号：'+String(entry.serial).padStart(3,'0'):
+          for(const col of ['A','B','C','D','E','F','G','H']){
+            // Each 9-row block has a complete outer frame and a vertical
+            // divider; interior grid lines are intentionally suppressed.
+            const mask=entry?frameMask(col,offset):0;
+            const value=entry&&col==='E'?(offset===0?'写真番号：'+String(entry.serial).padStart(3,'0'):
               offset===1?'変状：'+entry.damage:
               offset===2?'部位：'+(entry.member||'—'):
-              offset===3?'図面：'+entry.sheetName+' / '+entry.page+'頁':
-              offset===4?'写真名：'+entry.photoName:
-              offset===5?'備考：'+entry.description:null;
-            if(value!==null)cells.push(cell('E'+r,value,offset===0?4:offset===5?4:2));
+              offset===3?'備考：'+entry.description:null):null;
+            const variant=col==='E'?(offset===0?'bold':offset>=3?'top':'normal'):'normal';
+            const style=entry?boxStyle(mask,variant):0;
+            cells.push(value===null?'<c r="'+col+r+'" s="'+style+'"/>':cell(col+r,value,style));
           }
-          rows.push(`<row r="${r}" ht="20" customHeight="1">${cells.join('')}</row>`);
+          rows.push('<row r="'+r+'" ht="26" customHeight="1">'+cells.join('')+'</row>');
         }
         if(entry){
-          for(let off=0;off<5;off++)merges.push(`E${first+off}:H${first+off}`);
-          merges.push(`E${first+5}:H${first+8}`);
+          for(let off=0;off<3;off++)merges.push(`E${first+off}:H${first+off}`);
+          merges.push(`E${first+3}:H${first+8}`);
           const mediaId=imageStart+idx;images.push({id:mediaId,data:entry.jpeg});anchors.push(pictureAnchor(mediaId,first,idx+1));
         }
       }
       const foot=base+30;rows.push(`<row r="${foot}" ht="18" customHeight="1">${cell('A'+foot,`${page+1} / ${pages} ページ`,2)}</row>`);merges.push(`A${foot}:H${foot}`);
     }
     const breaks=pages>1?`<rowBreaks count="${pages-1}" manualBreakCount="${pages-1}">${Array.from({length:pages-1},(_,i)=>`<brk id="${(i+1)*30}" min="0" max="16383" man="1"/>`).join('')}</rowBreaks>`:'';
-    const sheet=`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheetPr><pageSetUpPr fitToPage="1"/></sheetPr><dimension ref="A1:H${pages*30}"/><sheetViews><sheetView workbookViewId="0" showGridLines="0"/></sheetViews><sheetFormatPr defaultRowHeight="20"/><cols><col min="1" max="4" width="10.5" customWidth="1"/><col min="5" max="8" width="11.5" customWidth="1"/></cols><sheetData>${rows.join('')}</sheetData><mergeCells count="${merges.length}">${merges.map(x=>`<mergeCell ref="${x}"/>`).join('')}</mergeCells><printOptions horizontalCentered="1"/><pageMargins left="0.30" right="0.30" top="0.40" bottom="0.40" header="0.15" footer="0.15"/><pageSetup paperSize="9" orientation="portrait" fitToWidth="1" fitToHeight="0"/>${breaks}<drawing r:id="rId1"/></worksheet>`;
+    const sheet=`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheetPr><pageSetUpPr fitToPage="1"/></sheetPr><dimension ref="A1:H${pages*30}"/><sheetViews><sheetView workbookViewId="0" showGridLines="0"/></sheetViews><sheetFormatPr defaultRowHeight="20"/><cols><col min="1" max="4" width="14.9" customWidth="1"/><col min="5" max="8" width="10.4" customWidth="1"/></cols><sheetData>${rows.join('')}</sheetData><mergeCells count="${merges.length}">${merges.map(x=>`<mergeCell ref="${x}"/>`).join('')}</mergeCells><printOptions horizontalCentered="1"/><pageMargins left="0.35" right="0.35" top="0.35" bottom="0.35" header="0.15" footer="0.15"/><pageSetup paperSize="9" orientation="portrait" fitToWidth="1" fitToHeight="0"/>${breaks}<drawing r:id="rId1"/></worksheet>`;
     const drawing=`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">${anchors.join('')}</xdr:wsDr>`;
     return {sheet,drawing,images,pages};
   }
