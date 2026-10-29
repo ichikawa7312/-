@@ -211,6 +211,29 @@ try:
             assert 'left="0.35" right="0.35" top="0.35" bottom="0.35"' in rendered_sheet
             assert '<borders count="16">' in z.read('xl/styles.xml').decode()
             assert '<a:ln w="6350">' in z.read('xl/drawings/drawing2.xml').decode()
+            styles_xml=z.read('xl/styles.xml').decode()
+            assert 'FF000000' in styles_xml and 'FF94A3B8' not in styles_xml
+            # E:H merged field rows: bottom rule after number, damage and member.
+            for cell_name,expected_style in [('E3','31'),('F3','14'),('E4','11'),
+                                             ('F4','10'),('E5','11'),('F5','10'),
+                                             ('E6','35')]:
+                c=xml.find(f".//s:c[@r='{cell_name}']",ns)
+                assert c is not None and c.attrib.get('s')==expected_style,(cell_name,c.attrib if c is not None else None)
+            ns_drawing={'xdr':'http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing'}
+            drawings=ET.fromstring(z.read('xl/drawings/drawing2.xml'))
+            anchors=drawings.findall('xdr:twoCellAnchor',ns_drawing)
+            assert len(anchors)==7,'Picture count must remain unchanged'
+            for anchor in anchors:
+                start=anchor.find('xdr:from',ns_drawing)
+                end=anchor.find('xdr:to',ns_drawing)
+                assert start.findtext('xdr:col',namespaces=ns_drawing)=='0'
+                assert start.findtext('xdr:colOff',namespaces=ns_drawing)=='114300'
+                assert start.findtext('xdr:rowOff',namespaces=ns_drawing)=='76200'
+                assert end.findtext('xdr:col',namespaces=ns_drawing)=='3'
+                assert end.findtext('xdr:colOff',namespaces=ns_drawing)=='923925'
+                assert end.findtext('xdr:rowOff',namespaces=ns_drawing)=='254000'
+            assert '<a:srgbClr val="000000"/>' in z.read('xl/drawings/drawing2.xml').decode()
+
 
         assert not errors,errors
         assert not external,external
