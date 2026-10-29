@@ -199,14 +199,22 @@ try:
             setup=xml.find('s:pageSetup',ns)
             assert setup is not None and setup.attrib['paperSize']=='9' and setup.attrib['orientation']=='portrait'
             breaks=xml.find('s:rowBreaks',ns)
-            assert breaks is not None and [int(x.attrib['id']) for x in breaks.findall('s:brk',ns)]==[30,60]
+            assert breaks is not None and [int(x.attrib['id']) for x in breaks.findall('s:brk',ns)]==[32,64]
             assert 'ひび割れ-51' in z.read('xl/worksheets/sheet2.xml').decode()
             assert '写真台帳だけの説明' in z.read('xl/worksheets/sheet2.xml').decode()
             rendered_sheet=z.read('xl/worksheets/sheet2.xml').decode()
             assert '写真番号：002' in rendered_sheet,'Numbering must carry across category sheets'
             assert '写真名：' not in rendered_sheet and '図面：' not in rendered_sheet
-            assert '<row r="3" ht="26"' in rendered_sheet
+            assert '<row r="3" ht="25"' in rendered_sheet
             assert 'E6:H11' in rendered_sheet,'Notes area should span six rows'
+            assert '<row r="12" ht="18" customHeight="1"/>' in rendered_sheet
+            assert '<row r="22" ht="18" customHeight="1"/>' in rendered_sheet
+            assert '<row r="13" ht="25"' in rendered_sheet
+            assert '<row r="23" ht="25"' in rendered_sheet
+            assert 'E13:H13' in rendered_sheet
+            assert '<row r="32" ht="18"' in rendered_sheet
+            assert '$H$96' in z.read('xl/workbook.xml').decode()
+
             assert 'width="14.9"' in rendered_sheet and 'width="10.4"' in rendered_sheet
             assert 'left="0.35" right="0.35" top="0.35" bottom="0.35"' in rendered_sheet
             assert '<borders count="16">' in z.read('xl/styles.xml').decode()
@@ -231,7 +239,7 @@ try:
                 assert start.findtext('xdr:rowOff',namespaces=ns_drawing)=='76200'
                 assert end.findtext('xdr:col',namespaces=ns_drawing)=='3'
                 assert end.findtext('xdr:colOff',namespaces=ns_drawing)=='923925'
-                assert end.findtext('xdr:rowOff',namespaces=ns_drawing)=='254000'
+                assert end.findtext('xdr:rowOff',namespaces=ns_drawing)=='241300'
             assert '<a:srgbClr val="000000"/>' in z.read('xl/drawings/drawing2.xml').decode()
 
 
