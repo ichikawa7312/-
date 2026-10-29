@@ -51,7 +51,7 @@ function unzip(buffer){const files=new Map();let i=0;while(i+30<buffer.length&&b
   assert.match(sheet, /<row r="13" ht="25" customHeight="1">/,'second photo frame begins after spacer');
   assert.match(sheet, /<row r="23" ht="25" customHeight="1">/,'third photo frame begins after spacer');
   assert.match(sheet, /E13:H13/,'second photo detail fields still merge');
-  assert.match(sheet, /<row r="32" ht="18" customHeight="1">/,'footer stays on same printed page');
+  assert.match(sheet, /<row r="32" ht="18" customHeight="1"\/>/,'footer row stays in print range, without a number');
   assert.match(files.get('xl/workbook.xml').toString(), /\$H\$96/,'print area uses 32-row pages');
   const totalHeight=26+20+3*9*25+2*18+18;
   const availableHeight=297/25.4*72-2*0.35*72;
@@ -68,7 +68,7 @@ function unzip(buffer){const files=new Map();let i=0;while(i+30<buffer.length&&b
   assert.doesNotMatch(styles, /FFEFF3F8|fillId="2"|applyFill="1"/,'no colored header');
   assert.match(styles, /<xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"\/>/,'title stays bold on white');
   assert.match(styles, /<borders count="16">/,'perimeter and divider border styles');
-  assert.match(styles, /<cellXfs count="50">/,'merged-note and label border styles');
+  assert.match(styles, /<cellXfs count="51">/,'51st cell style aligns page number right');
   assert.match(files.get('xl/drawings/drawing2.xml').toString(), /<a:ln w="6350">/,'images have visible outlines');
   assert.match(styles, /<color rgb="FF000000"\/>/,'all cell frames must print in black');
   assert.doesNotMatch(styles, /FF94A3B8/,'old gray line styles must not remain');
