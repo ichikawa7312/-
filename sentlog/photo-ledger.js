@@ -107,11 +107,11 @@
   const boxStyle=(mask,variant='normal')=>(variant==='bold'?18:variant==='top'?34:2)+mask;
   const STYLES='<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'+
     '<fonts count="3"><font><sz val="10"/><name val="ＭＳ ゴシック"/></font><font><b/><sz val="14"/><name val="ＭＳ ゴシック"/></font><font><b/><sz val="10"/><name val="ＭＳ ゴシック"/></font></fonts>'+
-    '<fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FFEFF3F8"/><bgColor indexed="64"/></patternFill></fill></fills>'+
+    '<fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills>'+
     '<borders count="16">'+Array.from({length:16},(_,mask)=>borderXml(mask)).join('')+'</borders>'+
     '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>'+
     '<cellXfs count="50"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>'+
-    '<xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/>'+
+    '<xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/>'+
     borderXfs(0,'center')+borderXfs(2,'center')+borderXfs(0,'top')+'</cellXfs>'+
     '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>';
   const cell=(ref,text,style=0)=>`<c r="${ref}" s="${style}" t="inlineStr"><is><t xml:space="preserve">${xml(text)}</t></is></c>`;
@@ -140,7 +140,7 @@
     for(let page=0;page<pages;page++){
       const base=page*PAGE_ROWS,head=base+1,meta=base+2;
       rows.push(`<row r="${head}" ht="26" customHeight="1">${cell('A'+head,groupName+'　写真台帳',1)}</row>`);
-      rows.push(`<row r="${meta}" ht="20" customHeight="1">${cell('A'+meta,'案件：'+projectName,0)}</row>`);
+      rows.push(`<row r="${meta}" ht="20" customHeight="1">${cell('A'+meta,projectName,0)}</row>`);
       merges.push(`A${head}:H${head}`,`A${meta}:H${meta}`);
       for(let slot=0;slot<3;slot++){
         const idx=page*3+slot,entry=items[idx],first=base+3+slot*10;
