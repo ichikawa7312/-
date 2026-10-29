@@ -141,13 +141,23 @@ def pdf_payload(names,count):
     return p
 
 def install_real_pdf_engine(page):
-    for name in ['pdf.min.js','pdf.worker.min.js']:
+    # The production-equivalent build already downloads pinned/hashed PDF.js.
+    # Reuse those exact, verified files to avoid flaky external HTTP inside tests.
+    pinned={
+        'pdf.min.js':('export-pdf.min.js','5b5799e6f8c680663207ac5b42ee14eed2a406fa7af48f50c154f0c0b1566946'),
+        'pdf.worker.min.js':('export-pdf.worker.min.js','feabdf309770ed24bba31a5467836cdc8cf639c705af27d52b585b041bb8527b')
+    }
+    for name,(vendor_name,sha256) in pinned.items():
         target=Path(pdf_runtime.name)/name
         if not target.exists():
             cached=Path(os.getenv('SENTLOG_PDFJS_TEST_RUNTIME','/nonexistent'))/name
-            if cached.exists():target.write_bytes(cached.read_bytes())
-            else:
-                with urllib.request.urlopen('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/'+name,timeout=30) as r:target.write_bytes(r.read())
+            source=cached if cached.exists() else ROOT/'sentlog/vendor'/vendor_name
+            if not source.exists():
+                raise RuntimeError('Verified PDF.js test asset missing; run the pinned drawing-export build first: '+vendor_name)
+            data=source.read_bytes()
+            if hashlib.sha256(data).hexdigest()!=sha256:
+                raise RuntimeError('PDF.js test asset digest mismatch: '+vendor_name)
+            target.write_bytes(data)
     prefix=origin+'/'+Path(pdf_runtime.name).name+'/'
     page.add_script_tag(url=prefix+'pdf.min.js')
     page.evaluate('url=>{window.pdfjsLib.GlobalWorkerOptions.workerSrc=url}',prefix+'pdf.worker.min.js')

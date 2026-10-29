@@ -88,6 +88,9 @@ jobs:
           python3 scripts/build_compact_controls.py
           python3 scripts/build_rescue_header.py
           python3 scripts/build_pdf_revision_guard.py
+          python3 scripts/build_photo_ledger.py
+          node tests/photo_ledger.test.cjs
+          node --check sentlog/photo-ledger.js
           node tests/drawing_export.test.cjs
           node tests/peer_photos.test.cjs
           node tests/sync_review.test.cjs
