@@ -226,7 +226,7 @@ try:
             assert '<row r="13" ht="25"' in rendered_sheet
             assert '<row r="23" ht="25"' in rendered_sheet
             assert 'E13:H13' in rendered_sheet
-            assert '<row r="32" ht="18"' in rendered_sheet
+            assert '<row r="32" ht="18" customHeight="1"/>' in rendered_sheet
             assert '$H$96' in z.read('xl/workbook.xml').decode()
 
             assert 'width="14.9"' in rendered_sheet and 'width="10.4"' in rendered_sheet
