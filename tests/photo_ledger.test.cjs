@@ -49,6 +49,27 @@ function unzip(buffer){const files=new Map();let i=0;while(i+30<buffer.length&&b
   assert.match(styles, /<borders count="16">/,'perimeter and divider border styles');
   assert.match(styles, /<cellXfs count="50">/,'merged-note and label border styles');
   assert.match(files.get('xl/drawings/drawing2.xml').toString(), /<a:ln w="6350">/,'images have visible outlines');
+  assert.match(styles, /<color rgb="FF000000"\/>/,'all cell frames must print in black');
+  assert.doesNotMatch(styles, /FF94A3B8/,'old gray line styles must not remain');
+  // The merged E:H detail rows must have a black bottom rule after each field.
+  // Styles use variant base 2 (normal), 18 (bold), 34 (notes), plus a border mask.
+  assert.match(sheet, /<c r="E3" s="31" t="inlineStr">/,'number row has upper/bottom/left rules');
+  assert.match(sheet, /<c r="F3" s="14"\/>/,'number rule continues across merged cells');
+  assert.match(sheet, /<c r="E4" s="11" t="inlineStr">/,'damage row is separated');
+  assert.match(sheet, /<c r="F4" s="10"\/>/,'damage rule continues across merged cells');
+  assert.match(sheet, /<c r="E5" s="11" t="inlineStr">/,'member row is separated');
+  assert.match(sheet, /<c r="F5" s="10"\/>/,'member rule continues across merged cells');
+  assert.match(sheet, /<c r="E6" s="35" t="inlineStr">/,'notes keep a tall undivided writing area');
+  const drawing=files.get('xl/drawings/drawing2.xml').toString();
+  const anchors=drawing.match(/<xdr:twoCellAnchor[\\s\\S]*?<\\/xdr:twoCellAnchor>/g)||[];
+  assert.equal(anchors.length,7,'photo anchors and media count stay aligned');
+  for(const anchor of anchors){
+    assert.match(anchor, /<xdr:from><xdr:col>0<\\/xdr:col><xdr:colOff>114300<\\/xdr:colOff>/);
+    assert.match(anchor, /<xdr:to><xdr:col>3<\\/xdr:col><xdr:colOff>923925<\\/xdr:colOff>/,'right edge stops inside the D-column frame');
+    assert.match(anchor, /<xdr:rowOff>254000<\\/xdr:rowOff><\\/xdr:to>/,'bottom edge stays above the row border');
+    assert.match(anchor, /<a:srgbClr val="000000"\\/>/,'photo outlines are black');
+  }
+
 
   assert.match(sheet,/<brk id="30"/);assert.match(sheet,/<brk id="60"/);
   assert.match(sheet,/ひび割れ-51/);
