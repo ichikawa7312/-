@@ -202,6 +202,16 @@ try:
             assert breaks is not None and [int(x.attrib['id']) for x in breaks.findall('s:brk',ns)]==[30,60]
             assert 'ひび割れ-51' in z.read('xl/worksheets/sheet2.xml').decode()
             assert '写真台帳だけの説明' in z.read('xl/worksheets/sheet2.xml').decode()
+            rendered_sheet=z.read('xl/worksheets/sheet2.xml').decode()
+            assert '写真番号：002' in rendered_sheet,'Numbering must carry across category sheets'
+            assert '写真名：' not in rendered_sheet and '図面：' not in rendered_sheet
+            assert '<row r="3" ht="26"' in rendered_sheet
+            assert 'E6:H11' in rendered_sheet,'Notes area should span six rows'
+            assert 'width="14.9"' in rendered_sheet and 'width="10.4"' in rendered_sheet
+            assert 'left="0.35" right="0.35" top="0.35" bottom="0.35"' in rendered_sheet
+            assert '<borders count="16">' in z.read('xl/styles.xml').decode()
+            assert '<a:ln w="6350">' in z.read('xl/drawings/drawing2.xml').decode()
+
         assert not errors,errors
         assert not external,external
         print(f'PASS photo-ledger {engine} {width}px: two-PDF grouping, exact -51 labels, draft, missing-photo block, '+('real offline' if engine=='chromium' else 'network-denied WebKit')+' XLSX, 3-up page breaks, unchanged records',flush=True)

@@ -37,6 +37,19 @@ function unzip(buffer){const files=new Map();let i=0;while(i+30<buffer.length&&b
   const sheet=files.get('xl/worksheets/sheet2.xml').toString();
   assert.match(sheet,/<pageSetup paperSize="9" orientation="portrait" fitToWidth="1"/);
   assert.match(sheet,/<rowBreaks count="2" manualBreakCount="2">/);
+  assert.match(sheet, /<row r="3" ht="26" customHeight="1">/,'photo blocks should use the A4 page height');
+  assert.match(sheet, /width="14\.9"/,'photo region enlarged');
+  assert.match(sheet, /width="10\.4"/,'details fit within A4 page width');
+  assert.match(sheet, /<pageMargins left="0\.35" right="0\.35" top="0\.35" bottom="0\.35"/);
+  assert.match(sheet, /写真番号：002/,'serials continue across category worksheets');
+  assert.match(sheet, /写真番号：008/,'serials remain uninterrupted within categories');
+  assert.match(sheet, /E6:H11/,'notes have a six-row merged multiline area');
+  assert.ok(!sheet.includes('写真名：')&&!sheet.includes('図面：PDF')&&!sheet.includes('図面No.：調査⑫'), 'redundant image and PDF metadata must not appear');
+  const styles=files.get('xl/styles.xml').toString();
+  assert.match(styles, /<borders count="16">/,'perimeter and divider border styles');
+  assert.match(styles, /<cellXfs count="50">/,'merged-note and label border styles');
+  assert.match(files.get('xl/drawings/drawing2.xml').toString(), /<a:ln w="6350">/,'images have visible outlines');
+
   assert.match(sheet,/<brk id="30"/);assert.match(sheet,/<brk id="60"/);
   assert.match(sheet,/ひび割れ-51/);
   const names=files.get('xl/workbook.xml').toString();assert.match(names,/全景・その他/);assert.match(names,/ひび割れ/);
