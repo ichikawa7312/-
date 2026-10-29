@@ -141,7 +141,7 @@
       const base=page*PAGE_ROWS,head=base+1,meta=base+2;
       rows.push(`<row r="${head}" ht="26" customHeight="1">${cell('A'+head,groupName+'　写真台帳',1)}</row>`);
       rows.push(`<row r="${meta}" ht="20" customHeight="1">${cell('A'+meta,projectName,0)}</row>`);
-      merges.push(`A${head}:H${head}`,`A${meta}:H${meta}`);
+      merges.push(`A${head}:G${head}`,`A${meta}:H${meta}`);
       for(let slot=0;slot<3;slot++){
         const idx=page*3+slot,entry=items[idx],first=base+3+slot*10;
         for(let offset=0;offset<9;offset++){
