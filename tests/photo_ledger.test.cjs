@@ -58,6 +58,14 @@ function unzip(buffer){const files=new Map();let i=0;while(i+30<buffer.length&&b
   assert.ok(totalHeight<=availableHeight,'three photo cards and gaps fit A4 print height');
 
   assert.ok(!sheet.includes('写真名：')&&!sheet.includes('図面：PDF')&&!sheet.includes('図面No.：調査⑫'), 'redundant image and PDF metadata must not appear');
+  // Page count appears on the upper right of every printed page, never below the photos.
+  for(const [row,no] of [[1,1],[33,2],[65,3]]){
+    assert.ok(sheet.includes(`<c r="H${row}" s="50" t="inlineStr"><is><t xml:space="preserve">${no} / 3</t></is></c>`),`Missing top-right page ${no} / 3`);
+    assert.ok(sheet.includes(`<mergeCell ref="A${row}:G${row}"/>`),'Title leaves H column available');
+  }
+  assert.ok(!sheet.includes(' ページ'),'old bottom-left page text must be removed');
+  assert.doesNotMatch(sheet, /<c r="A(?:32|64|96)"/,'no bottom-left page cells');
+  assert.match(files.get('xl/worksheets/sheet1.xml').toString(), /<c r="H1" s="50" t="inlineStr"><is><t xml:space="preserve">1 \/ 1<\/t>/,'single-page category also has upper-right numbering');
   const styles=files.get('xl/styles.xml').toString();
 
   // Clean monochrome report header: no color band or bureaucratic "案件：" label.
