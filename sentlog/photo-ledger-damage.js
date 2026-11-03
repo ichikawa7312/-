@@ -72,6 +72,9 @@
       for(const r of rowSource)rows.push(shiftRow(local.get(+r[1]),delta));
       for(const m of merges)allMerges.push(shiftCells(m,delta));
     }
+    // Preserve the template's unprinted, formatted trailing row after the final page.
+    const tail=[...dataMatch[1].matchAll(/<row\s+r="(\d+)"[^]*?<\/row>/g)].find(x=>+x[1]===PERIOD+1);
+    if(tail)rows.push(shiftRow(tail[0],(pages-1)*PERIOD));
     const brks=Array.from({length:pages},(_,i)=>`<brk id="${(i+1)*PERIOD}" max="11" man="1"/>`).join('');
     return template.replace(/<sheetData>[^]*?<\/sheetData>/,'<sheetData>'+rows.join('')+'</sheetData>')
       .replace(/<mergeCells count="\d+">[^]*?<\/mergeCells>/,`<mergeCells count="${allMerges.length}">${allMerges.map(m=>`<mergeCell ref="${m}"/>`).join('')}</mergeCells>`)
