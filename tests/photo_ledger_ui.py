@@ -178,6 +178,37 @@ try:
             assert '写真台帳だけの説明' in z.read('xl/worksheets/sheet2.xml').decode()
             assert len([n for n in z.namelist() if n.startswith('xl/media/damage-')])==9
         assert source_snapshot(page)==baseline,'Damage ledger modified source records'
+        # Tensile format: actual workbook with original ovals, four photo
+        # slots and user-entered kN/judgement. Blank results must not claim pass.
+        page.wait_for_function("!!window.SentlogTensileLedger && typeof window.SentlogTensileLedger.buildXlsx === 'function'",timeout=30000)
+        page.locator('[data-ledger=format]').select_option('tensile')
+        expect(page.locator('.ledger-summary')).to_contain_text('4枚/アンカー')
+        assert page.locator('.ledger-tensile-record').count()>=2
+        page.locator('[data-tensile-field="place"]').first.fill('上流側ポンプ室')
+        page.locator('[data-tensile-field="anchorNo"]').first.fill('A-101')
+        page.locator('[data-tensile-field="detail"]').first.fill('1列目、右端')
+        page.locator('[data-tensile-field="loadKn"]').first.fill('25.5')
+        page.locator('[data-tensile-field="judgement"]').first.select_option('合格')
+        page.locator('[data-tensile-field="after"]').first.select_option('異常なし')
+        page.locator('.ledger-export').click()
+        page.wait_for_function("""()=>{
+          const s=document.querySelector('.ledger-status')?.textContent||'';
+          return s.includes('Excelを出力しました')||s.includes('出力できませんでした');
+        }""",timeout=45000)
+        tensile_status=page.locator('.ledger-status').inner_text()
+        assert 'Excelを出力しました' in tensile_status,('Tensile ledger browser export failed',tensile_status)
+        with page.expect_download(timeout=20000) as tensile_event:
+            page.locator('.ledger-download-ready').click()
+        tensile_dest=OUT/f'photo-ledger-tensile-{engine}-{width}.xlsx'
+        tensile_event.value.save_as(tensile_dest)
+        with zipfile.ZipFile(tensile_dest,'r') as z:
+            assert z.testzip() is None,'Tensile-format XLSX corrupt'
+            assert '引張試験結果 25.5kN 合格' in z.read('xl/worksheets/sheet1.xml').decode()
+            assert 'A-101' in z.read('xl/worksheets/sheet1.xml').decode()
+            assert z.read('xl/drawings/drawing1.xml').decode().count('<xdr:sp ')==4,'Original numbered ovals lost'
+            assert len([n for n in z.namelist() if n.startswith('xl/media/tensile-')])==9
+            assert '<pageSetup paperSize="9" scale="76" orientation="portrait"' in z.read('xl/worksheets/sheet1.xml').decode()
+        assert source_snapshot(page)==baseline,'Tensile ledger must not modify original shape/photo/sync records'
         page.locator('[data-ledger=format]').select_option('standard')
         expect(page.locator('.ledger-summary')).to_contain_text('3枚/ページ')
 
