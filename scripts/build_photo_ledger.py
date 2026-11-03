@@ -38,10 +38,10 @@ anchor = 'document.open();document.write(html);document.close()'
 assert s.count(anchor) == 1, 'photo ledger: document anchor missing'
 
 if "photo-ledger.js?v=208" not in s:
-    inject = "html=html.replace('</body>','<script src=\\\"./photo-ledger.js?v=208\\\"><\\\\/script></body>');"
+    inject = "html=html.replace('</body>','<script src=\\\"./photo-ledger.js?v=208\\\"><\\/script></body>');"
     s = s.replace(anchor, inject + anchor, 1)
 if "photo-ledger-damage.js?v=209" not in s:
-    inject = "html=html.replace('</body>','<script src=\\\"./photo-ledger-damage.js?v=209\\\"><\\\\/script></body>');"
+    inject = "html=html.replace('</body>','<script src=\\\"./photo-ledger-damage.js?v=209\\\"><\\/script></body>');"
     s = s.replace(anchor, inject + anchor, 1)
 index.write_text(s, encoding='utf-8')
 
@@ -55,7 +55,7 @@ if missing:
     flag = 'const FILES=['
     assert w.count(flag) == 1, 'photo ledger: SW asset anchor missing'
     w = w.replace(flag, "const FILES=[" + ''.join(f"'{name}'," for name in missing), 1)
-    match = re.search(r'sentlog-pwa-v\\d+', w)
+    match = re.search(r'sentlog-pwa-v\d+', w)
     assert match, 'photo ledger: SW version missing'
     old = match.group(0)
     new = 'sentlog-pwa-v' + str(int(old.rsplit('v', 1)[-1]) + 1)
