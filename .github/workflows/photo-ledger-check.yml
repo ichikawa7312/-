@@ -3,6 +3,7 @@ on:
   pull_request:
     paths:
       - 'sentlog/photo-ledger.js'
+      - 'sentlog/photo-ledger-damage.js'
       - 'scripts/assets/**'
       - 'tests/photo_ledger_damage.test.cjs'
       - 'scripts/build_photo_ledger.py'
