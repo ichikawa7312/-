@@ -242,11 +242,12 @@
     for(const e of c.entries){const x=byKey.get(e.key);if(!x)continue;e.included=x.included!==false;e.description=String(x.description??e.description);}
     c.entries.sort((a,b)=>{const x=byKey.get(a.key),y=byKey.get(b.key);return x&&y?x.sort-y.sort:x?-1:y?1:0;});
     if(Array.isArray(saved.groupOrder)){c.groupOrder=saved.groupOrder.filter(x=>typeof x==='string');}
+    if(saved.tensileDetails&&typeof saved.tensileDetails==='object'&&!Array.isArray(saved.tensileDetails))c.tensileDetails={...saved.tensileDetails};
   }
   function saveDraft(){
     if(!current)return;
     try{
-      localStorage.setItem(draftKey(current),JSON.stringify({version:1,at:Date.now(),groupOrder:current.groupOrder,photos:current.entries.map(e=>({key:e.key,included:e.included,description:e.description}))}));
+      localStorage.setItem(draftKey(current),JSON.stringify({version:1,at:Date.now(),groupOrder:current.groupOrder,tensileDetails:current.tensileDetails,photos:current.entries.map(e=>({key:e.key,included:e.included,description:e.description}))}));
       current.changed=false;status('この端末に下書きを保存しました。写真・図面・同期データには変更していません。');
     }catch(e){status('下書きを保存できませんでした：'+(e?.message||e),true);}
   }
@@ -276,12 +277,14 @@
         }else thumb(img,e);
       }host.append(section);
     }
-    const chosen=current.entries.filter(x=>x.included).length;
+    const included=current.entries.filter(x=>x.included),chosen=included.length;
     const byType=groupsFor(current.entries,current.groupOrder);
-    const damaged=current.format==='damage';
+    const damaged=current.format==='damage',tensile=current.format==='tensile';
     const builder=root.SentlogDamageLedger;
-    const pages=byType.reduce((n,g)=>n+Math.ceil((damaged&&builder?.recordsFor?builder.recordsFor(g.photos).length:g.photos.length)/3),0);
-    modal.querySelector('[data-ledger=count]').textContent=`${chosen}枚 / ${pages}ページ / ${byType.length}シート（A4縦・${damaged?'3変状/ページ・全景／近接':'3枚/ページ'}）`;
+    const pages=tensile?(root.SentlogTensileLedger?.recordsFor?.(included,current.tensileDetails)?.length||new Set(included.map(x=>x.drawingId+':'+x.shapeId)).size):
+      byType.reduce((n,g)=>n+Math.ceil((damaged&&builder?.recordsFor?builder.recordsFor(g.photos).length:g.photos.length)/3),0);
+    const sheets=tensile?pages:byType.length;
+    modal.querySelector('[data-ledger=count]').textContent=`${chosen}枚 / ${pages}ページ / ${sheets}シート（A4縦・${tensile?'4枚/アンカー':damaged?'3変状/ページ・全景／近接':'3枚/ページ'}）`;
   }
   async function preparePhotos(entries){
     // Keep no collection of full-size Blobs: on iPhone/iPad that could exhaust
@@ -379,13 +382,19 @@
       await S.settled();S.assertSafe();
       const {missing}=await preparePhotos(entries);
       if(missing.length){status('写真を'+missing.length+'枚取得・変換できません。Excel出力を停止しました：'+missing.slice(0,5).map(x=>x.damage+' / '+x.sheetName).join('、')+(missing.length>5?' ほか':''),true);return;}
-      const categories=groupsFor(current.entries,current.groupOrder);
-      // Standard mode calls the original builder unchanged; damage mode uses the supplied Excel template.
-      const useDamage=current.format==='damage';
-      const builder=useDamage?root.SentlogDamageLedger?.buildXlsx:buildXlsx;
-      if(typeof builder!=='function')throw Error('損傷用の書式が読み込まれていません。アプリを更新してください。');
-      const file=await builder(current.project.name,current.group.name,categories);
-      download(file,safeName(current.project.name)+'_'+safeName(current.group.name)+'_写真台帳'+(useDamage?'_損傷用':'')+'.xlsx');
+      const useDamage=current.format==='damage',useTensile=current.format==='tensile';
+      let file;
+      if(useTensile){
+        const builder=root.SentlogTensileLedger?.buildXlsx;
+        if(typeof builder!=='function')throw Error('引張試験用の書式が読み込まれていません。アプリを更新してください。');
+        file=await builder(current.project.name,current.group.name,entries,current.tensileDetails);
+      }else{
+        const categories=groupsFor(current.entries,current.groupOrder);
+        const builder=useDamage?root.SentlogDamageLedger?.buildXlsx:buildXlsx;
+        if(typeof builder!=='function')throw Error('写真台帳の書式が読み込まれていません。アプリを更新してください。');
+        file=await builder(current.project.name,current.group.name,categories);
+      }
+      download(file,safeName(current.project.name)+'_'+safeName(current.group.name)+'_写真台帳'+(useTensile?'_引張試験用':useDamage?'_損傷用':'')+'.xlsx');
       status('Excelを出力しました（'+entries.length+'枚）。元の記録は変更していません。');
     }catch(e){console.error('Photo ledger export',e);status('出力できませんでした：'+(e?.message||e),true);}
     finally{for(const e of entries)delete e.jpeg;current.exporting=false;btn.disabled=false;}
@@ -397,7 +406,7 @@
     const note=element('p','ledger-note','変状名称ごとにExcelシートを分けます。元の写真・変状・同期情報は変更しません。');
     const formats=element('label','ledger-format'),formatTitle=element('strong','','出力書式');
     const formatSelect=element('select');formatSelect.dataset.ledger='format';formatSelect.setAttribute('aria-label','写真台帳の出力書式');
-    for(const [value,label] of [['standard','標準'],['damage','損傷用']]){const option=element('option','',label);option.value=value;formatSelect.append(option);}
+    for(const [value,label] of [['standard','標準'],['damage','損傷用'],['tensile','引張試験用']]){const option=element('option','',label);option.value=value;formatSelect.append(option);}
     formatSelect.value=c.format;formatSelect.onchange=()=>{c.format=formatSelect.value;try{localStorage.setItem(FORMAT_KEY,c.format);}catch(_){}renderEntries();};
     formats.append(formatTitle,formatSelect);
     const scroll=element('div','ledger-scroll'),list=element('div');list.dataset.ledger='list';scroll.append(list);
@@ -418,8 +427,8 @@
       const {entries,errors}=collect(group,states);
       if(errors.length)throw Error('写真台帳を作れません：'+errors.join(' / '));
       if(!entries.length)throw Error('この図面No.には登録写真がありません。');
-      let selectedFormat='standard';try{selectedFormat=localStorage.getItem(FORMAT_KEY)==='damage'?'damage':'standard';}catch(_){}
-      const c={project,group,entries,format:selectedFormat,groupOrder:[...new Set(entries.map(x=>x.type))],changed:false,exporting:false};
+      let selectedFormat='standard';try{const saved=localStorage.getItem(FORMAT_KEY);selectedFormat=['damage','tensile'].includes(saved)?saved:'standard';}catch(_){}
+      const c={project,group,entries,format:selectedFormat,tensileDetails:{},groupOrder:[...new Set(entries.map(x=>x.type))],changed:false,exporting:false};
       for(const e of entries)e.groupName=group.name;
       loadDraft(c);showModal(c);
     }catch(e){alert(e?.message||String(e));}
