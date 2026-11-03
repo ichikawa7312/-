@@ -3,6 +3,9 @@ on:
   pull_request:
     paths:
       - 'sentlog/photo-ledger.js'
+      - 'sentlog/photo-ledger-damage.js'
+      - 'scripts/assets/**'
+      - 'tests/photo_ledger_damage.test.cjs'
       - 'scripts/build_photo_ledger.py'
       - 'tests/photo_ledger.test.cjs'
       - 'tests/photo_ledger_ui.py'
@@ -87,7 +90,9 @@ jobs:
           python3 scripts/build_pdf_revision_guard.py
           python3 scripts/build_photo_ledger.py
           node tests/photo_ledger.test.cjs
+          node tests/photo_ledger_damage.test.cjs
           node --check sentlog/photo-ledger.js
+          node --check sentlog/photo-ledger-damage.js
           node tests/drawing_export.test.cjs
           node tests/peer_photos.test.cjs
           node tests/sync_review.test.cjs
