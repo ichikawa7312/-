@@ -17,6 +17,17 @@
     const t=String(s?.type||'変状'),n=number(s?.typeNo)||number(s?.recordNo);
     return n?t+'-'+n:String(s?.autoLabel||s?.no||t);
   }
+  // Display only recorded, manually entered lengths; never guess from PDF pixels.
+  function damageSize(s){
+    const explicit=[s?.damageRange,s?.rangeText,s?.dimensionText,s?.damageSize].find(v=>v!=null&&String(v).trim());
+    if(explicit!=null)return String(explicit).trim();
+    const v=s?.edgeDimensionsM||{};
+    const values=Object.keys(v).filter(k=>/^\d+$/.test(k)).sort((a,b)=>Number(a)-Number(b))
+      .map(k=>Number(v[k])).filter(n=>Number.isFinite(n)&&n>0);
+    if(values.length>=2)return values.slice(0,2).map(n=>n.toFixed(3)).join('×')+'m';
+    if(values.length===1)return 'L='+values[0].toFixed(3)+'m';
+    return '';
+  }
   function collect(group,states){
     const entries=[],errors=[],seen=new Set();
     if(!group||!Array.isArray(group.sheets))throw Error('図面No.の情報を取得できません。');
@@ -41,7 +52,7 @@
             sheetName:String(sheet.sheetName||sheet.name||sheet.fileName||'図面'),sheetOrder,
             page:Math.max(1,Number(s.page)||1),shapeOrder,photoOrder,
             member:String(s.member||''),photoName:String(photo.name||''),
-            description:String(s.memo||''),included:true});
+            description:String(s.memo||''),rangeText:damageSize(s),included:true});
         }
       }
       // A higher indexed photo count may indicate a partially synced snapshot.
@@ -203,7 +214,7 @@
     filesPush('[Content_Types].xml',`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Default Extension="jpeg" ContentType="image/jpeg"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>${names.map((_,i)=>`<Override PartName="/xl/worksheets/sheet${i+1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/drawings/drawing${i+1}.xml" ContentType="application/vnd.openxmlformats-officedocument.drawing+xml"/>`).join('')}</Types>`);
     return zipStored(files);
   }
-  const pure={OTHER,MAX_PHOTOS,safeName,category,damageLabel,collect,groupsFor,excelSheetNames,zipStored,buildXlsx};
+  const pure={OTHER,MAX_PHOTOS,safeName,category,damageLabel,damageSize,collect,groupsFor,excelSheetNames,zipStored,buildXlsx};
   if(typeof module!=='undefined'&&module.exports){module.exports=pure;return;}
   if(!root.document||root.SentlogPhotoLedger)return;
 
@@ -263,8 +274,13 @@
       }host.append(section);
     }
     const chosen=current.entries.filter(x=>x.included).length;
-    const pages=groupOrder(current).reduce((n,t)=>n+Math.ceil(current.entries.filter(e=>e.included&&e.type===t).length/3),0);
-    modal.querySelector('[data-ledger=count]').textContent=`${chosen}枚 / ${pages}ページ / ${types.filter(t=>current.entries.some(e=>e.included&&e.type===t)).length}シート（A4縦・3枚/ページ）`;
+    const damage=current.format==='damage';
+    const pages=groupOrder(current).reduce((n,t)=>{
+      const entries=current.entries.filter(e=>e.included&&e.type===t);
+      return n+Math.ceil((damage?root.SentlogDamageLedger?.recordsFor(entries).length||0:entries.length)/3);
+    },0);
+    const distinct=types.filter(t=>current.entries.some(e=>e.included&&e.type===t)).length;
+    modal.querySelector('[data-ledger=count]').textContent=`${chosen}枚 / ${pages}ページ / ${distinct}シート（${damage?'A4縦・3変状/ページ':'A4縦・3枚/ページ'}）`;
   }
   async function preparePhotos(entries){
     // Keep no collection of full-size Blobs: on iPhone/iPad that could exhaust
@@ -276,7 +292,7 @@
       try{
         const blob=await loadShared(entry.drawingId,entry.photoId);
         if(!blob){missing.push(entry);continue;}
-        entry.jpeg=await jpegOf(blob);
+        entry.jpeg=await jpegOf(blob,current?.format==='damage');
         total+=entry.jpeg.byteLength;
         if(total>MAX_XLSX_BYTES/2)throw Error('画像が多いため端末のメモリ上限を超えるおそれがあります。出力対象を分けてください。');
       }catch(e){
@@ -313,7 +329,7 @@
       reader.readAsDataURL(blob);
     });
   }
-  async function jpegOf(blob){
+  async function jpegOf(blob,damage=false){
     const url=URL.createObjectURL(blob);
     try{
       let img;
@@ -324,7 +340,7 @@
         try{img=await imageFromSrc(await imageDataUrl(blob));}
         catch(_){throw primary;}
       }
-      const cv=document.createElement('canvas'),w=960,h=720;cv.width=w;cv.height=h;
+      const cv=document.createElement('canvas'),w=960,h=damage?870:720;cv.width=w;cv.height=h;
       const ctx=cv.getContext('2d');if(!ctx)throw Error('画像の変換機能を利用できません');
       ctx.fillStyle='#ffffff';ctx.fillRect(0,0,w,h);
       const k=Math.min(w/img.naturalWidth,h/img.naturalHeight);
@@ -364,8 +380,11 @@
       if(missing.length){status('写真を'+missing.length+'枚取得・変換できません。Excel出力を停止しました：'+missing.slice(0,5).map(x=>x.damage+' / '+x.sheetName).join('、')+(missing.length>5?' ほか':''),true);return;}
       const categories=groupsFor(current.entries,current.groupOrder);
       // No source records, images or sync metadata are modified; jpeg exists only in memory.
-      const file=await buildXlsx(current.project.name,current.group.name,categories);
-      download(file,safeName(current.project.name)+'_'+safeName(current.group.name)+'_写真台帳.xlsx');
+      const damage=current.format==='damage';
+      if(damage&&!root.SentlogDamageLedger?.buildXlsx)throw Error('損傷用の書式生成処理が読み込まれていません。アプリを更新してください。');
+      const file=damage?await root.SentlogDamageLedger.buildXlsx(current.project.name,current.group.name,categories)
+        :await buildXlsx(current.project.name,current.group.name,categories);
+      download(file,safeName(current.project.name)+'_'+safeName(current.group.name)+(damage?'_写真台帳_損傷用.xlsx':'_写真台帳.xlsx'));
       status('Excelを出力しました（'+entries.length+'枚）。元の記録は変更していません。');
     }catch(e){console.error('Photo ledger export',e);status('出力できませんでした：'+(e?.message||e),true);}
     finally{for(const e of entries)delete e.jpeg;current.exporting=false;btn.disabled=false;}
@@ -378,7 +397,20 @@
     const scroll=element('div','ledger-scroll'),list=element('div');list.dataset.ledger='list';scroll.append(list);
     const footer=element('div','ledger-footer'),stat=element('div','ledger-status');stat.dataset.ledger='status';
     const controls=element('div','ledger-controls');controls.append(button('下書き保存',saveDraft,'ledger-save'),button('Excel出力',exportLedger,'ledger-export'));controls.lastChild.dataset.ledger='export';
-    footer.append(stat,controls);panel.append(bar,count,note,scroll,footer);modal.append(panel);document.body.append(modal);
+    const format=element('div','ledger-format');format.append(element('strong','','出力書式'));
+    for(const [value,title,description] of [
+      ['standard','標準','従来のセントログ写真台帳'],
+      ['damage','損傷用','指定Excel書式・変状1件に写真2枚']
+    ]){
+      const label=element('label','ledger-format-choice'),radio=element('input');radio.type='radio';
+      radio.name='sentlog-ledger-format';radio.value=value;radio.checked=c.format===value;
+      radio.onchange=()=>{if(!radio.checked||current.exporting)return;c.format=value;
+        try{localStorage.setItem('sentlogPhotoLedgerFormat',value);}catch(_){}
+        renderEntries();status('出力書式を「'+title+'」に設定しました。元の記録は変更しません。');
+      };
+      label.append(radio,element('span','',title),element('small','',description));format.append(label);
+    }
+    footer.append(stat,controls);panel.append(bar,count,format,note,scroll,footer);modal.append(panel);document.body.append(modal);
     current=c;renderEntries();status('写真は全件選択されています。不要な写真を外してから出力できます。');
   }
   async function open(projectId,groupId){
@@ -393,7 +425,8 @@
       const {entries,errors}=collect(group,states);
       if(errors.length)throw Error('写真台帳を作れません：'+errors.join(' / '));
       if(!entries.length)throw Error('この図面No.には登録写真がありません。');
-      const c={project,group,entries,groupOrder:[...new Set(entries.map(x=>x.type))],changed:false,exporting:false};
+      let format='standard';try{if(localStorage.getItem('sentlogPhotoLedgerFormat')==='damage')format='damage';}catch(_){}
+      const c={project,group,entries,groupOrder:[...new Set(entries.map(x=>x.type))],changed:false,exporting:false,format};
       for(const e of entries)e.groupName=group.name;
       loadDraft(c);showModal(c);
     }catch(e){alert(e?.message||String(e));}
@@ -403,6 +436,7 @@
     .ledger-panel{width:min(900px,100%);height:min(94vh,970px);display:flex;flex-direction:column;background:white;border-radius:14px;box-shadow:0 10px 45px #0004;color:#111827;overflow:hidden}
     .ledger-head{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:13px 16px;border-bottom:1px solid #d1d5db}.ledger-head h2{margin:0 0 4px;font-size:18px}.ledger-head small{font-size:12px;color:#6b7280}
     .ledger-summary{padding:11px 16px;background:#eff6ff;font-weight:700;font-size:13px}.ledger-note{padding:0 16px;margin:10px 0;color:#4b5563;font-size:12px}
+    .ledger-format{padding:7px 16px;border-bottom:1px solid #e5e7eb;display:flex;align-items:center;gap:10px;flex-wrap:wrap}.ledger-format>strong{font-size:12px;margin-right:5px}.ledger-format-choice{display:flex;align-items:center;gap:6px;border:1px solid #d1d5db;border-radius:7px;padding:7px 10px;cursor:pointer}.ledger-format-choice:has(input:checked){border-color:#14532d;background:#f0fdf4}.ledger-format-choice input{margin:0}.ledger-format-choice span{font-weight:700;font-size:13px}.ledger-format-choice small{font-size:11px;color:#64748b}
     .ledger-scroll{flex:1;overflow:auto;padding:0 16px 14px}.ledger-section{margin-bottom:16px;border:1px solid #d1d5db;border-radius:10px;overflow:hidden}
     .ledger-section-head{display:flex;align-items:center;gap:6px;background:#f3f4f6;padding:8px}.ledger-section-head strong{flex:1;font-size:14px}
     .ledger-item{display:flex;align-items:center;gap:10px;padding:9px;border-top:1px solid #e5e7eb}.ledger-item input[type=checkbox]{width:20px;height:20px;flex:none}.ledger-thumb,.ledger-missing{width:100px;height:75px;flex:none;object-fit:contain;background:#f1f5f9;border-radius:5px}.ledger-missing{display:grid;place-items:center;font-size:11px;color:#b91c1c}

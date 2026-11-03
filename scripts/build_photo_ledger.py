@@ -27,4 +27,28 @@ if "'photo-ledger.js'" not in w:
         if t.suffix not in ('.cjs','.py'):continue
         x=t.read_text(encoding='utf-8')
         if old in x:t.write_text(x.replace(old,new),encoding='utf-8')
+# Add a separate generator: the existing Standard photo-ledger remains unchanged.
+index=ROOT/'sentlog/index.html'
+s=index.read_text(encoding='utf-8')
+if 'photo-ledger-damage.js?v=209' not in s:
+    anchor='document.open();document.write(html);document.close()'
+    assert s.count(anchor)==1, 'damage ledger: document anchor missing'
+    s=s.replace(anchor,"html=html.replace('</body>','<script src=\"./photo-ledger-damage.js?v=209\"><\/script></body>');"+anchor,1)
+    index.write_text(s,encoding='utf-8')
+sw=ROOT/'sentlog/sw.js'
+w=sw.read_text(encoding='utf-8')
+if "'photo-ledger-damage.js'" not in w:
+    assert w.count('const FILES=[')==1, 'damage ledger: SW asset anchor missing'
+    w=w.replace('const FILES=[',"const FILES=['photo-ledger-damage.js','damage-ledger-template.xlsx',",1)
+    old=re.search(r'sentlog-pwa-v\d+',w)
+    assert old, 'damage ledger: SW version missing'
+    prior=old.group(0)
+    updated='sentlog-pwa-v'+str(int(prior.rsplit('v',1)[-1])+1)
+    w=w.replace(prior,updated)
+    sw.write_text(w,encoding='utf-8')
+    for t in (ROOT/'tests').iterdir():
+        if t.suffix not in ('.cjs','.py'):continue
+        x=t.read_text(encoding='utf-8')
+        if prior in x:t.write_text(x.replace(prior,updated),encoding='utf-8')
+
 print('Photo ledger feature integrated: Excel A4 portrait 3 photos/page, grouped across all PDFs')

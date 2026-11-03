@@ -127,6 +127,14 @@ try:
         expect(page.locator('.ledger-summary')).to_contain_text('9枚 / 5ページ / 3シート')
         assert page.locator('.ledger-section-head strong').all_text_contents()[0].startswith('全景・その他')
         assert page.locator('.ledger-item').count()==9
+        # Choosing a format does not change the set of selected photos or records.
+        standard=page.locator('.ledger-format-choice input[value="standard"]')
+        damage=page.locator('.ledger-format-choice input[value="damage"]')
+        expect(standard).to_be_checked()
+        damage.check()
+        expect(page.locator('.ledger-summary')).to_contain_text('9枚 / 4ページ / 3シート')
+        standard.check()
+        expect(page.locator('.ledger-summary')).to_contain_text('9枚 / 5ページ / 3シート')
         assert page.locator('.ledger-item',has_text='ひび割れ-51').count()==2
 
         changed=page.locator('.ledger-item',has_text='ひび割れ-51').first.locator('textarea')
@@ -272,6 +280,40 @@ try:
             assert '<a:srgbClr val="000000"/>' in z.read('xl/drawings/drawing2.xml').decode()
 
 
+        # Export the second, user-supplied Excel format as a separate optional path.
+        # Chromium's Standard regression above ran offline; reconnect this test-only
+        # context because service workers were intentionally disabled by Playwright.
+        if engine=='chromium':
+            context.set_offline(False)
+        damage=page.locator('.ledger-format-choice input[value="damage"]')
+        damage.check()
+        expect(page.locator('.ledger-summary')).to_contain_text('9枚 / 4ページ / 3シート')
+        if engine=='webkit':
+            page.locator('.ledger-export').click()
+            page.wait_for_function("""()=>{
+              const s=document.querySelector('.ledger-status')?.textContent||'';
+              return s.includes('Excelを出力しました')||s.includes('出力できませんでした');
+            }""",timeout=45000)
+            assert 'Excelを出力しました' in page.locator('.ledger-status').inner_text()
+            with page.expect_download(timeout=20000) as damage_download:
+                page.locator('.ledger-download-ready').click()
+        else:
+            with page.expect_download(timeout=45000) as damage_download:
+                page.locator('.ledger-export').click()
+        damage_path=OUT/f'photo-ledger-damage-{engine}-{width}.xlsx'
+        damage_download.value.save_as(damage_path)
+        assert '損傷用' in damage_download.value.suggested_filename
+        with zipfile.ZipFile(damage_path,'r') as z, zipfile.ZipFile(ROOT/'sentlog/damage-ledger-template.xlsx','r') as template:
+            assert z.testzip() is None,'Damage XLSX is corrupt'
+            assert z.read('xl/styles.xml')==template.read('xl/styles.xml'),'Template styling must remain unchanged'
+            assert len([n for n in z.namelist() if n.startswith('xl/media/damage-')])==9
+            assert [e.attrib['name'] for e in ET.fromstring(z.read('xl/workbook.xml')).findall('s:sheets/s:sheet',ns)]==['全景・その他','ひび割れ','漏水']
+            crack=ET.fromstring(z.read('xl/worksheets/sheet2.xml'))
+            assert crack.find('s:rowBreaks',ns) is not None
+            assert len(crack.findall('s:mergeCells/s:mergeCell',ns))==60,'Template: 30 merged ranges must repeat on page 2'
+            assert '写真番号：' not in z.read('xl/worksheets/sheet2.xml').decode()
+            assert '写真台帳だけの説明' in z.read('xl/worksheets/sheet2.xml').decode()
+        assert source_snapshot(page)==baseline,'Damage export changed source records'
         assert not errors,errors
         assert not external,external
         print(f'PASS photo-ledger {engine} {width}px: two-PDF grouping, exact -51 labels, draft, missing-photo block, '+('real offline' if engine=='chromium' else 'network-denied WebKit')+' XLSX, 3-up page breaks, unchanged records',flush=True)
