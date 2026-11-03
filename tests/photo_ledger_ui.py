@@ -156,7 +156,7 @@ try:
         }""")
         # Damage format: test the real browser path, unchanged template styles,
         # and the ability to switch back to the old standard exporter.
-        page.wait_for_function("window.SentlogDamageLedger?.buildXlsx",timeout=30000)
+        page.wait_for_function("!!window.SentlogDamageLedger && typeof window.SentlogDamageLedger.buildXlsx === 'function'",timeout=30000)
         page.locator('[data-ledger=format]').select_option('damage')
         expect(page.locator('.ledger-summary')).to_contain_text('3変状/ページ')
         page.locator('.ledger-export').click()
