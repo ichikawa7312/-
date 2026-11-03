@@ -25,6 +25,20 @@ function unpackStored(buffer){
  const good=D.recordsFor(groups[0].photos);
  assert.equal(good.length,4,'8 photos are 4 damage cards (2 pictures/card)');
  assert.equal(good[0].photos.length,2);assert.equal(good.at(-1).photos.length,2);
+ // The shooting-location cell must use only the shape's actual member/part.
+ // Do not silently substitute drawing/PDF names or camera filenames.
+ const unnamed={included:true,type:'ひび割れ',drawingId:'sheet-file',shapeId:'shape-empty',typeNo:4,
+   member:'  ',sheetName:'配管点検_図面名.pdf',photoName:'IMG_1234.jpg',photoId:'camera-1',
+   description:'',rangeText:'',jpeg:new Uint8Array([255,216,255,217])};
+ assert.equal(D.recordsFor([unnamed])[0].member,'','blank location must remain blank even when drawing/photo names exist');
+ assert.equal(D.recordsFor([{...unnamed,member:'主桁 G2'}])[0].member,'主桁 G2');
+ const blankBook=await D.buildXlsx('試験案件','調査⑫',[{name:'ひび割れ',photos:[unnamed]}],new Uint8Array(fixture));
+ const blankFiles=unpackStored(await blankBook.arrayBuffer());
+ const blankSheet=decoder.decode(blankFiles.get('xl/worksheets/sheet1.xml'));
+ assert.match(blankSheet, /<c r="C3"[^>]* t="inlineStr"><is><t xml:space="preserve"><\/t><\/is><\/c>/,
+   'shooting location C3 must be an empty cell when member is not recorded');
+ assert.doesNotMatch(blankSheet,/配管点検_図面名\.pdf|IMG_1234\.jpg/,'filenames must never become a shooting location');
+ assert.deepEqual(blankFiles.get('xl/styles.xml'),Buffer.from(raw.get('xl/styles.xml')),'blank location must not modify styles');
  const xlsx=await D.buildXlsx('試験案件','調査⑫',groups,new Uint8Array(fixture));
  const files=unpackStored(await xlsx.arrayBuffer());
  assert.deepEqual(files.get('xl/styles.xml'),Buffer.from(raw.get('xl/styles.xml')),'source Excel styles must be byte-identical');
