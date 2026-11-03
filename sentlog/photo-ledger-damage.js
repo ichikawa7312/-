@@ -34,7 +34,7 @@
     for(const e of entries){
       if(e.included===false)continue;
       const key=String(e.drawingId)+'\u0000'+String(e.shapeId);
-      if(!shapes.has(key))shapes.set(key,{number:e.typeNo??e.damage,member:e.member||e.sheetName||'',range:e.rangeText||'',description:e.description||'',photos:[]});
+      if(!shapes.has(key))shapes.set(key,{number:e.typeNo??e.damage,member:String(e.member??'').trim(),range:e.rangeText||'',description:e.description||'',photos:[]});
       shapes.get(key).photos.push(e);
     }
     return [...shapes.values()].flatMap(s=>Array.from({length:Math.ceil(s.photos.length/2)},(_,i)=>({...s,photos:s.photos.slice(i*2,i*2+2)})));
