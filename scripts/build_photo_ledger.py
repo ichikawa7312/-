@@ -1,8 +1,8 @@
 """Build both photo ledger formats as optional read-only export features.
 
-The damage-format JavaScript and Excel bytes are stored as lossless compressed
-build assets. The SHA-256 checks make truncated/copied assets fail the build
-rather than shipping an altered drawing template or a broken exporter.
+The damage-format Excel bytes are stored in lossless compressed build assets.
+The JavaScript module is checked in directly for code review and tests. The
+SHA-256 check rejects altered or truncated original workbook template bytes.
 """
 from pathlib import Path
 import base64
@@ -21,11 +21,7 @@ def unpack(parts, destination, expected_sha256):
         raise RuntimeError(f'Photo ledger build asset integrity check failed: {destination.name} {digest}')
     destination.write_bytes(raw)
 
-unpack(
-    ['photo-ledger-damage.js.gz.b64'],
-    ROOT / 'sentlog' / 'photo-ledger-damage.js',
-    '436011317c5aa746c0623105dee3f2999fcd01dc04aca27ea1627b40175ad033',
-)
+assert (ROOT / 'sentlog' / 'photo-ledger-damage.js').is_file(), 'photo-ledger-damage.js source missing'
 unpack(
     [f'damage-ledger-template-{i}.b64' for i in range(1, 6)],
     ROOT / 'sentlog' / 'damage-ledger-template.xlsx',
