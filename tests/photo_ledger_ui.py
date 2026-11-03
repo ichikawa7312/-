@@ -310,7 +310,7 @@ try:
             assert [e.attrib['name'] for e in ET.fromstring(z.read('xl/workbook.xml')).findall('s:sheets/s:sheet',ns)]==['全景・その他','ひび割れ','漏水']
             crack=ET.fromstring(z.read('xl/worksheets/sheet2.xml'))
             assert crack.find('s:rowBreaks',ns) is not None
-            assert len(crack.findall('s:mergeCells/s:mergeCell',ns))==60,'Template's 30 merged ranges must repeat on page 2'
+            assert len(crack.findall('s:mergeCells/s:mergeCell',ns))==60,'Template: 30 merged ranges must repeat on page 2'
             assert '写真番号：' not in z.read('xl/worksheets/sheet2.xml').decode()
             assert '写真台帳だけの説明' in z.read('xl/worksheets/sheet2.xml').decode()
         assert source_snapshot(page)==baseline,'Damage export changed source records'
