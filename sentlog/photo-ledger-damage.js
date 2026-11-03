@@ -4,7 +4,7 @@
  */
 (function(root){
   'use strict';
-  const TEMPLATE_PATH='./damage-ledger-template.b64';
+  const TEMPLATE_PATH='./damage-ledger-template.xlsx';
   const dec=new TextDecoder();
   const xml=s=>String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&apos;').replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g,'');
   const PERIOD=57, SLOTS=[{head:2,where:3,photo:6},{head:21,where:22,photo:25},{head:40,where:41,photo:44}];
@@ -119,10 +119,7 @@
       if(typeof fetch!=='function')throw Error('損傷用テンプレートを指定してください。');
       const result=await fetch(TEMPLATE_PATH,{cache:'force-cache'});
       if(!result.ok)throw Error('損傷用のExcel書式を読み込めません。オンラインで再読み込みしてください。');
-      const b64=(await result.text()).trim();
-      if(!/^[A-Za-z0-9+/]+={0,2}$/.test(b64)||b64.length<1000)throw Error('損傷用のExcel書式が破損しています。');
-      const data=atob(b64);templateBytes=new Uint8Array(data.length);
-      for(let i=0;i<data.length;i++)templateBytes[i]=data.charCodeAt(i);
+      templateBytes=new Uint8Array(await result.arrayBuffer());
     }
     const raw=await unzip(templateBytes),names=base.excelSheetNames(nonEmpty.map(g=>g.name));
     const files=[],add=(p,v)=>files.push([p,v]);
