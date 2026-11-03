@@ -91,7 +91,9 @@ jobs:
           python3 scripts/build_photo_ledger.py
           node tests/photo_ledger.test.cjs
           node tests/photo_ledger_damage.test.cjs
+          node tests/photo_ledger_tensile.test.cjs
           node --check sentlog/photo-ledger.js
+          node --check sentlog/photo-ledger-tensile.js
           node --check sentlog/photo-ledger-damage.js
           node tests/drawing_export.test.cjs
           node tests/peer_photos.test.cjs
