@@ -39,12 +39,15 @@ if "photo-ledger.js?v=208" not in s:
 if "photo-ledger-damage.js?v=209" not in s:
     inject = "html=html.replace('</body>','<script src=\\\"./photo-ledger-damage.js?v=209\\\"><\\/script></body>');"
     s = s.replace(anchor, inject + anchor, 1)
+if "photo-ledger-tensile.js?v=210" not in s:
+    inject = "html=html.replace('</body>','<script src=\\\"./photo-ledger-tensile.js?v=210\\\"><\\/script></body>');"
+    s = s.replace(anchor, inject + anchor, 1)
 index.write_text(s, encoding='utf-8')
 
 sw = ROOT / 'sentlog' / 'sw.js'
 w = sw.read_text(encoding='utf-8')
 missing = [
-    name for name in ['photo-ledger.js', 'photo-ledger-damage.js', 'damage-ledger-template.xlsx']
+    name for name in ['photo-ledger.js', 'photo-ledger-damage.js', 'damage-ledger-template.xlsx', 'photo-ledger-tensile.js', 'tensile-ledger-template.b64']
     if f"'{name}'" not in w
 ]
 if missing:
@@ -64,4 +67,9 @@ if missing:
         if old in data:
             path.write_text(data.replace(old, new), encoding='utf-8')
 
-print('Photo ledger integrated: 標準 (unchanged) / 損傷用 (exact Excel template), A4 portrait')
+import base64
+tensile_asset=(ROOT / 'sentlog' / 'tensile-ledger-template.b64').read_text(encoding='ascii')
+tensile_bytes=base64.b64decode(''.join(tensile_asset.split()),validate=True)
+assert hashlib.sha256(tensile_bytes).hexdigest() == '3b9b4334e0fa2e369aaf305cbd51447003823028a582affd24cb2fd515fdfac1', 'Tensile Excel template integrity mismatch'
+assert (ROOT / 'sentlog' / 'photo-ledger-tensile.js').is_file(), 'tensile photo ledger module missing'
+print('Photo ledger integrated: 標準 / 損傷用 / 引張試験用 (A4 portrait original Excel layout)')
