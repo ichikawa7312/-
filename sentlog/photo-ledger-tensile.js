@@ -144,7 +144,7 @@
       if(typeof fetch!=='function')throw Error('引張試験用テンプレートを指定してください。');
       const response=await fetch(TEMPLATE_PATH,{cache:'force-cache'});
       if(!response.ok)throw Error('引張試験用のExcel書式を読み込めません。オンラインで再読み込みしてください。');
-      const encoded=(await response.text()).trim();
+      const encoded=(await response.text()).replace(/\s+/g,'');
       if(!/^[A-Za-z0-9+/]+={0,2}$/.test(encoded)||encoded.length<2000)
         throw Error('引張試験用のExcel書式が破損しています。');
       const bytes=atob(encoded);templateBytes=new Uint8Array(bytes.length);
