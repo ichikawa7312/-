@@ -154,6 +154,33 @@ try:
             await SentlogRecords.settled();
           }
         }""")
+        # Damage format: test the real browser path, unchanged template styles,
+        # and the ability to switch back to the old standard exporter.
+        page.wait_for_function("window.SentlogDamageLedger?.buildXlsx",timeout=30000)
+        page.locator('[data-ledger=format]').select_option('damage')
+        expect(page.locator('.ledger-summary')).to_contain_text('3変状/ページ')
+        page.locator('.ledger-export').click()
+        page.wait_for_function("""()=>{
+          const s=document.querySelector('.ledger-status')?.textContent||'';
+          return s.includes('Excelを出力しました')||s.includes('出力できませんでした');
+        }""",timeout=45000)
+        damage_status=page.locator('.ledger-status').inner_text()
+        assert 'Excelを出力しました' in damage_status,('Damage ledger browser export failed',damage_status)
+        with page.expect_download(timeout=20000) as damage_event:
+            page.locator('.ledger-download-ready').click()
+        damage_dest=OUT/f'photo-ledger-damage-{engine}-{width}.xlsx'
+        damage_event.value.save_as(damage_dest)
+        assert damage_dest.stat().st_size>10000
+        with zipfile.ZipFile(damage_dest,'r') as z:
+            assert z.testzip() is None,'Damage-format XLSX payload was corrupt'
+            assert z.read('xl/styles.xml'), 'Template Excel styles missing'
+            assert '写真番号：' not in z.read('xl/worksheets/sheet2.xml').decode()
+            assert '写真台帳だけの説明' in z.read('xl/worksheets/sheet2.xml').decode()
+            assert len([n for n in z.namelist() if n.startswith('xl/media/damage-')])==9
+        assert source_snapshot(page)==baseline,'Damage ledger modified source records'
+        page.locator('[data-ledger=format]').select_option('standard')
+        expect(page.locator('.ledger-summary')).to_contain_text('3枚/ページ')
+
         # Chromium verifies the real browser offline flag. Headless Linux
         # WebKit rejects locally generated Blob/data URLs when Playwright's
         # offline flag is enabled; this runner can only verify network-denied
