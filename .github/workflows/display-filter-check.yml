@@ -171,3 +171,8 @@ jobs:
           assert 'F.isVisible(s,input.filter)' in renderer
           print('PASS built viewer and PDF frame integration')
           PY
+      - name: Browser regression for visible records and PDF
+        run: |
+          python3 -m pip install playwright==1.57.0 reportlab==4.4.9 pypdf==6.10.0
+          python3 -m playwright install --with-deps chromium
+          SENTLOG_TEST_BROWSERS=chromium python3 tests/display_filter_ui.py
