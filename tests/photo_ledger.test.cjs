@@ -21,10 +21,18 @@ assert.equal(L.isOverviewShape({type:'全景'}),true);
 assert.equal(L.isOverviewShape({recordKind:'field-record',recordType:'photo',type:'未設定'}),true);
 assert.equal(L.isOverviewShape({recordKind:'field-record',recordType:'survey',type:'その他'}),false);
 assert.equal(L.isOverviewShape({type:'その他'}),false);
+assert.equal(L.selectionType({type:'全景'}),'全景');
+assert.equal(L.selectionType({recordKind:'field-record',recordType:'photo',type:'撮影'}),'全景');
+assert.equal(L.selectionType({recordKind:'field-record',recordType:'survey',type:'撮影'}),'調査');
+assert.equal(L.selectionType({type:'調査'}),'調査');
+assert.equal(L.selectionType({type:'ひび割れ'}),'ひび割れ');
+assert.equal(L.selectionType({type:'その他'}),'その他');
 assert.deepEqual(L.excelSheetNames(['abcdef '.repeat(7),'abcdef '.repeat(7)]).map(x=>x.length).every(n=>n<=31),true);
 const got=L.collect(group,st);assert.deepEqual(got.errors,[]);assert.equal(got.entries.length,9);
 assert.equal(got.entries[0].type,L.OTHER);
 assert.equal(got.entries[0].isOverview,true,'only full-view records should be marked as overview');
+assert.equal(got.entries[0].selectionType,'全景');
+assert.ok(got.entries.filter(e=>e.type==='ひび割れ').every(e=>e.selectionType==='ひび割れ'));
 assert.ok(got.entries.filter(x=>x.type==='ひび割れ').every(x=>x.isOverview===false));
 const filtered=got.entries.map(e=>({...e,included:e.isOverview===true?false:e.included}));
 assert.equal(filtered.filter(e=>e.included).length,8,'bulk removal should exclude only the one overview photo');
@@ -36,6 +44,16 @@ const mixed=L.collect({sheets:[{id:'mixed'}]},{mixed:{shapes:[
 ]}}).entries;
 assert.equal(mixed.find(e=>e.photoId==='m').isOverview,false,'other photographs must not be unselected');
 assert.equal(mixed.find(e=>e.photoId==='cam').isOverview,true,'photo-location records are overview');
+assert.equal(mixed.find(e=>e.photoId==='cam').selectionType,'全景');
+assert.equal(mixed.find(e=>e.photoId==='m').selectionType,'その他');
+const survey=L.collect({sheets:[{id:'research'}]},{research:{shapes:[
+  {id:'survey',recordKind:'field-record',recordType:'survey',type:'調査',photos:[{id:'survey-photo'}]},
+  {id:'damage',type:'ひび割れ',photos:[{id:'crack-photo'}]}
+]}}).entries;
+assert.equal(survey.find(e=>e.photoId==='survey-photo').selectionType,'調査');
+const selected=survey.map(e=>({...e,included:e.selectionType!=='調査'}));
+assert.deepEqual(selected.filter(e=>e.included).map(e=>e.selectionType),['ひび割れ']);
+assert.equal(survey.every(e=>e.included===true),true,'category UI must not alter source records');
 const c=got.entries.filter(e=>e.type==='ひび割れ');assert.equal(c.length,7);
 assert.equal(c[0].typeNo,2);assert.equal(c[0].drawingId,'sheet2');
 assert.equal(c[5].typeNo,51);
