@@ -23,8 +23,19 @@ function unpackStored(buffer){
  const raw=await D.unzip(fixture);
  assert.equal(raw.get('xl/styles.xml').length>10000,true);
  const good=D.recordsFor(groups[0].photos);
- assert.equal(good.length,4,'8 photos are 4 damage cards (2 pictures/card)');
- assert.equal(good[0].photos.length,2);assert.equal(good.at(-1).photos.length,2);
+ assert.equal(good.length,1,'one damaged location must occupy exactly one printed card');
+ assert.equal(good[0].photos.filter(Boolean).length,2,'exactly 2 submission photos');
+ assert.equal(good[0].extraPhotos.length,6,'all six extras stay in the same Excel sheet');
+ const chosen=[
+   {...groups[0].photos[0],damageRole:'reserve'},
+   {...groups[0].photos[1],damageRole:'close'},
+   {...groups[0].photos[2],damageRole:'overview'},
+   ...groups[0].photos.slice(3).map(e=>({...e,damageRole:'reserve'}))
+ ];
+ const custom=D.recordsFor(chosen)[0];
+ assert.deepEqual(custom.photos.map(e=>e?.photoId),['p2','p1'],'main photo order follows explicit user selection');
+ assert.equal(custom.extraPhotos.length,6);
+ assert.equal(groups[0].photos.every(e=>!e.damageRole),true,'selection does not change source photos');
  // The shooting-location cell must use only the shape's actual member/part.
  // Do not silently substitute drawing/PDF names or camera filenames.
  const unnamed={included:true,type:'ひび割れ',drawingId:'sheet-file',shapeId:'shape-empty',typeNo:4,
@@ -46,20 +57,31 @@ function unpackStored(buffer){
  assert.match(names, /<sheet name="ひび割れ"/);assert.match(names, /<sheet name="剥離"/);
  const sheet=decoder.decode(files.get('xl/worksheets/sheet1.xml'));
  assert.match(sheet, /主桁G1/);assert.match(sheet,/0\.800×0\.500m/);assert.match(sheet,/浮き・段差あり/);
- assert.match(sheet, /<mergeCells count="60">/,'original 30 merged ranges times 2 pages');
- assert.match(sheet, /<brk id="57"/);assert.match(sheet, /<brk id="114"/);
- assert.match(sheet, /<row r="114"/,'two complete pages');
+ assert.match(sheet, /<mergeCells count="30">/,'one original-format printed page for one damaged location');
+ assert.doesNotMatch(sheet, /<brk id="57"/,'reserve photos must not create additional print pages');
+ assert.match(sheet, /<row r="57"/,'original page rows remain present');
+ assert.match(sheet, /<c r="N3"[^>]*t="inlineStr">/,'reserve title is positioned outside print columns');
+ assert.match(sheet, /予備写真 6枚（印刷対象外）/);
+ assert.match(sheet, /予備1/,'reserve photo captions are in the same worksheet');
  assert.match(sheet,/調査⑫　ひび割れ　写真台帳/,'stale original header replaced, same format');
  assert.doesNotMatch(sheet, /西面　外壁　写真台帳|写真番号：/,'no old fixed heading or photo numbering');
  assert.equal([...files].filter(([k])=>k.startsWith('xl/media/')&&k.endsWith('.jpeg')).length,11);
- assert.equal((decoder.decode(files.get('xl/drawings/drawing1.xml')).match(/<xdr:twoCellAnchor/g)||[]).length,8);
- assert.equal((decoder.decode(files.get('xl/drawings/drawing2.xml')).match(/<xdr:twoCellAnchor/g)||[]).length,3);
+ const mainDrawing=decoder.decode(files.get('xl/drawings/drawing1.xml'));
+ const otherDrawing=decoder.decode(files.get('xl/drawings/drawing2.xml'));
+ assert.equal((mainDrawing.match(/<xdr:twoCellAnchor/g)||[]).length,2,'only two photos printed');
+ assert.equal((mainDrawing.match(/<xdr:oneCellAnchor/g)||[]).length,6,'six reserve images must be editable outside the print range');
+ assert.equal((otherDrawing.match(/<xdr:twoCellAnchor/g)||[]).length,2);
+ assert.equal((otherDrawing.match(/<xdr:oneCellAnchor/g)||[]).length,1);
+ assert.match(mainDrawing,/<xdr:col>13<\/xdr:col>/,'reserves begin at N, right of A:L');
+ assert.match(mainDrawing,/xmlns:r="http:\/\/schemas\.openxmlformats\.org\/officeDocument\/2006\/relationships"/);
+ const workbook=decoder.decode(files.get('xl/workbook.xml'));
+ assert.match(workbook,/\$A\$1:\$L\$57/,'printed area remains strictly within columns A:L');
  const rawXml=decoder.decode(raw.get('xl/worksheets/sheet1.xml'));
  const widths=t=>(t.match(/<cols>[^]*?<\/cols>/)||[])[0];
  assert.equal(widths(sheet),widths(rawXml),'original column dimensions untouched');
  assert.ok(sheet.includes('<row r="57" spans="1:12" ht="14.25"'),'original row heights untouched');
- assert.equal((sheet.match(/<mergeCell ref=/g)||[]).length,60);
+ assert.equal((sheet.match(/<mergeCell ref=/g)||[]).length,30);
  await assert.rejects(()=>D.buildXlsx('a','b',[{name:'空',photos:[]}],new Uint8Array(fixture)),/出力対象/);
  await assert.rejects(()=>D.buildXlsx('a','b',[{name:'a',photos:[{drawingId:'x',shapeId:'y'}]}],new Uint8Array(fixture)),/未取得/);
- console.log('PASS: damage ledger original-cell formatting, paired photos, multi-page, category sheets, no photo serials');
+ console.log('PASS: damage ledger two chosen photos, all off-print backups, original format, original JPEG data and layout');
 })().catch(e=>{console.error(e);process.exitCode=1});
