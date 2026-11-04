@@ -33,8 +33,8 @@ s = index.read_text(encoding='utf-8')
 anchor = 'document.open();document.write(html);document.close()'
 assert s.count(anchor) == 1, 'photo ledger: document anchor missing'
 
-if "photo-ledger.js?v=208" not in s:
-    inject = "html=html.replace('</body>','<script src=\\\"./photo-ledger.js?v=208\\\"><\\/script></body>');"
+if "photo-ledger.js?v=212" not in s:
+    inject = "html=html.replace('</body>','<script src=\\\"./photo-ledger.js?v=212\\\"><\\/script></body>');"
     s = s.replace(anchor, inject + anchor, 1)
 if "photo-ledger-damage.js?v=209" not in s:
     inject = "html=html.replace('</body>','<script src=\\\"./photo-ledger-damage.js?v=209\\\"><\\/script></body>');"

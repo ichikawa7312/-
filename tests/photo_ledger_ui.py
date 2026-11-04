@@ -128,21 +128,34 @@ try:
         assert page.locator('.ledger-section-head strong').all_text_contents()[0].startswith('全景・その他')
         assert page.locator('.ledger-item').count()==9
         assert page.locator('.ledger-item',has_text='ひび割れ-51').count()==2
-        # Bulk overview exclusion changes only draft checkboxes, not other photos
-        # or persisted drawing records.
-        overview=page.locator('[data-ledger=exclude-overviews]')
-        expect(overview).to_contain_text('1枚')
-        overview.click()
+        # Select by the recorded type, then opt individual photos back in.
+        assert page.locator('[data-ledger=exclude-overviews]').count()==0
+        assert page.locator('[data-ledger=types] input[type=checkbox]').count()==3
+        overview=page.locator('[data-ledger-type="全景"] input[type=checkbox]')
+        crack=page.locator('[data-ledger-type="ひび割れ"] input[type=checkbox]')
+        overview.uncheck()
         expect(page.locator('.ledger-summary')).to_contain_text('8枚 / 4ページ / 2シート')
         overview_row=page.locator('.ledger-section',has=page.locator('.ledger-section-head strong',has_text='全景・その他')).locator('input[type=checkbox]').first
         assert not overview_row.is_checked()
         assert page.locator('.ledger-item',has_text='ひび割れ-51').first.locator('input[type=checkbox]').is_checked()
-        expect(overview).to_be_disabled()
-        assert source_snapshot(page)==baseline,'Overview exclusion changed source drawing records'
+        crack.uncheck()
+        expect(page.locator('.ledger-summary')).to_contain_text('1枚 / 1ページ / 1シート')
+        assert source_snapshot(page)==baseline,'Bulk category exclusion changed stored drawing records'
+        # Re-select one crack photo without enabling the entire category.
+        one_crack=page.locator('.ledger-item',has_text='ひび割れ-51').first.locator('input[type=checkbox]')
+        one_crack.check()
+        expect(page.locator('.ledger-summary')).to_contain_text('2枚 / 2ページ / 2シート')
+        assert page.evaluate("document.querySelector('[data-ledger-type=\"ひび割れ\"] input').indeterminate")
+        assert not overview_row.is_checked()
+        assert source_snapshot(page)==baseline,'Per-photo override changed drawing records'
         page.locator('[data-ledger=select-all]').click()
         expect(page.locator('.ledger-summary')).to_contain_text('9枚 / 5ページ / 3シート')
-        assert overview_row.is_checked()
-        assert source_snapshot(page)==baseline,'Restore selection changed source drawing records'
+        assert overview_row.is_checked() and crack.is_checked()
+        page.locator('[data-ledger=select-none]').click()
+        expect(page.locator('.ledger-summary')).to_contain_text('0枚 / 0ページ / 0シート')
+        page.locator('[data-ledger=select-all]').click()
+        expect(page.locator('.ledger-summary')).to_contain_text('9枚 / 5ページ / 3シート')
+        assert source_snapshot(page)==baseline,'Restoring selection changed stored drawing records'
 
         changed=page.locator('.ledger-item',has_text='ひび割れ-51').first.locator('textarea')
         changed.fill('写真台帳だけの説明')
