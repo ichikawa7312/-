@@ -17,9 +17,25 @@ const st={sheet1:{shapes:[
 assert.equal(L.damageLabel({type:'ひび割れ',typeNo:51,autoLabel:'ひび割れ㊿'}),'ひび割れ-51');
 assert.equal(L.damageLabel({type:'鉄筋露出',typeNo:102}),'鉄筋露出-102');
 assert.equal(L.category({type:'全景'}),L.OTHER);
+assert.equal(L.isOverviewShape({type:'全景'}),true);
+assert.equal(L.isOverviewShape({recordKind:'field-record',recordType:'photo',type:'未設定'}),true);
+assert.equal(L.isOverviewShape({recordKind:'field-record',recordType:'survey',type:'その他'}),false);
+assert.equal(L.isOverviewShape({type:'その他'}),false);
 assert.deepEqual(L.excelSheetNames(['abcdef '.repeat(7),'abcdef '.repeat(7)]).map(x=>x.length).every(n=>n<=31),true);
 const got=L.collect(group,st);assert.deepEqual(got.errors,[]);assert.equal(got.entries.length,9);
 assert.equal(got.entries[0].type,L.OTHER);
+assert.equal(got.entries[0].isOverview,true,'only full-view records should be marked as overview');
+assert.ok(got.entries.filter(x=>x.type==='ひび割れ').every(x=>x.isOverview===false));
+const filtered=got.entries.map(e=>({...e,included:e.isOverview===true?false:e.included}));
+assert.equal(filtered.filter(e=>e.included).length,8,'bulk removal should exclude only the one overview photo');
+assert.equal(L.groupsFor(filtered).some(g=>g.name===L.OTHER),false,'empty overview sheet is omitted');
+assert.equal(got.entries.filter(e=>e.included).length,9,'bulk selection must never mutate original collected entries');
+const mixed=L.collect({sheets:[{id:'mixed'}]},{mixed:{shapes:[
+  {id:'misc',type:'その他',photos:[{id:'m'}]},
+  {id:'camera',recordKind:'field-record',recordType:'photo',type:'写真位置',photos:[{id:'cam'}]}
+]}}).entries;
+assert.equal(mixed.find(e=>e.photoId==='m').isOverview,false,'other photographs must not be unselected');
+assert.equal(mixed.find(e=>e.photoId==='cam').isOverview,true,'photo-location records are overview');
 const c=got.entries.filter(e=>e.type==='ひび割れ');assert.equal(c.length,7);
 assert.equal(c[0].typeNo,2);assert.equal(c[0].drawingId,'sheet2');
 assert.equal(c[5].typeNo,51);

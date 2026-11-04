@@ -12,7 +12,8 @@
   const xml=s=>String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&apos;').replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g,'');
   const safeName=s=>String(s||'写真台帳').replace(/[\\/:*?"<>|\x00-\x1f]/g,'_').replace(/[. ]+$/g,'').slice(0,110)||'写真台帳';
   const number=s=>{const n=Number(s);return Number.isSafeInteger(n)&&n>0?n:null;};
-  const category=s=>s?.type==='全景'||(s?.recordKind==='field-record'&&s?.recordType==='photo')?OTHER:String(s?.type||'').trim()||OTHER;
+  const isOverviewShape=s=>s?.type==='全景'||(s?.recordKind==='field-record'&&s?.recordType==='photo');
+  const category=s=>isOverviewShape(s)?OTHER:String(s?.type||'').trim()||OTHER;
   function damageLabel(s){
     const t=String(s?.type||'変状'),n=number(s?.typeNo)||number(s?.recordNo);
     return n?t+'-'+n:String(s?.autoLabel||s?.no||t);
@@ -50,7 +51,7 @@
           seen.add(key);
           const type=category(s);
           entries.push({key,drawingId:sheet.id,shapeId:s.id,photoId:photo.id,
-            type,damage:damageLabel(s),typeNo:number(s.typeNo)||number(s.recordNo),
+            type,isOverview:isOverviewShape(s),damage:damageLabel(s),typeNo:number(s.typeNo)||number(s.recordNo),
             sheetName:String(sheet.sheetName||sheet.name||sheet.fileName||'図面'),sheetOrder,
             page:Math.max(1,Number(s.page)||1),shapeOrder,photoOrder,
             member:String(s.member||''),photoName:String(photo.name||''),
@@ -216,7 +217,7 @@
     filesPush('[Content_Types].xml',`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Default Extension="jpeg" ContentType="image/jpeg"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>${names.map((_,i)=>`<Override PartName="/xl/worksheets/sheet${i+1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/drawings/drawing${i+1}.xml" ContentType="application/vnd.openxmlformats-officedocument.drawing+xml"/>`).join('')}</Types>`);
     return zipStored(files);
   }
-  const pure={OTHER,MAX_PHOTOS,safeName,category,damageLabel,damageSize,collect,groupsFor,excelSheetNames,zipStored,buildXlsx};
+  const pure={OTHER,MAX_PHOTOS,safeName,category,isOverviewShape,damageLabel,damageSize,collect,groupsFor,excelSheetNames,zipStored,buildXlsx};
   if(typeof module!=='undefined'&&module.exports){module.exports=pure;return;}
   if(!root.document||root.SentlogPhotoLedger)return;
 
@@ -336,6 +337,7 @@
       byType.reduce((n,g)=>n+Math.ceil((damaged&&builder?.recordsFor?builder.recordsFor(g.photos).length:g.photos.length)/3),0);
     const sheets=tensile?pages:byType.length;
     modal.querySelector('[data-ledger=count]').textContent=`${chosen}枚 / ${pages}ページ / ${sheets}シート（A4縦・${tensile?'4枚/アンカー':damaged?'3変状/ページ・全景／近接':'3枚/ページ'}）`;
+    updateBulkControls();
   }
   async function preparePhotos(entries){
     // Keep no collection of full-size Blobs: on iPhone/iPad that could exhaust
@@ -428,7 +430,7 @@
     const entries=current.entries.filter(x=>x.included);
     if(!entries.length){status('出力対象の写真を1枚以上選んでください。',true);return;}
     if(entries.length>MAX_PHOTOS){status('上限は'+MAX_PHOTOS+'枚です。出力対象を分けてください。',true);return;}
-    current.exporting=true;const btn=modal.querySelector('[data-ledger=export]');btn.disabled=true;
+    current.exporting=true;const btn=modal.querySelector('[data-ledger=export]');btn.disabled=true;updateBulkControls();
     try{
       await S.settled();S.assertSafe();
       const {missing}=await preparePhotos(entries);
@@ -448,7 +450,32 @@
       download(file,safeName(current.project.name)+'_'+safeName(current.group.name)+'_写真台帳'+(useTensile?'_引張試験用':useDamage?'_損傷用':'')+'.xlsx');
       status('Excelを出力しました（'+entries.length+'枚）。元の記録は変更していません。');
     }catch(e){console.error('Photo ledger export',e);status('出力できませんでした：'+(e?.message||e),true);}
-    finally{for(const e of entries)delete e.jpeg;current.exporting=false;btn.disabled=false;}
+    finally{for(const e of entries)delete e.jpeg;current.exporting=false;btn.disabled=false;updateBulkControls();}
+  }
+  function updateBulkControls(){
+    if(!current||!modal)return;
+    const overviewSelected=current.entries.filter(e=>e.isOverview===true&&e.included).length;
+    const unselected=current.entries.filter(e=>!e.included).length;
+    const exclude=modal.querySelector('[data-ledger=exclude-overviews]');
+    const restore=modal.querySelector('[data-ledger=select-all]');
+    if(exclude){exclude.disabled=current.exporting||overviewSelected===0;exclude.textContent='全景をすべて外す（'+overviewSelected+'枚）';}
+    if(restore){restore.disabled=current.exporting||unselected===0;}
+  }
+  function excludeOverviews(){
+    if(!current||current.exporting)return;
+    const chosen=current.entries.filter(e=>e.isOverview===true&&e.included);
+    if(!chosen.length){status('選択中の全景写真はありません。');return;}
+    for(const e of chosen)e.included=false;
+    current.changed=true;renderEntries();
+    status('全景写真'+chosen.length+'枚を一括で選択解除しました。元の写真・記録は変更していません。');
+  }
+  function selectAllPhotos(){
+    if(!current||current.exporting)return;
+    const excluded=current.entries.filter(e=>!e.included);
+    if(!excluded.length){status('写真はすべて選択されています。');return;}
+    for(const e of excluded)e.included=true;
+    current.changed=true;renderEntries();
+    status('写真'+excluded.length+'枚を選択に戻しました。');
   }
   function showModal(c){
     cleanPreview();modal=element('div','ledger-overlay');const panel=element('div','ledger-panel');
@@ -460,11 +487,15 @@
     for(const [value,label] of [['standard','標準'],['damage','損傷用'],['tensile','引張試験用']]){const option=element('option','',label);option.value=value;formatSelect.append(option);}
     formatSelect.value=c.format;formatSelect.onchange=()=>{c.format=formatSelect.value;try{localStorage.setItem(FORMAT_KEY,c.format);}catch(_){}renderEntries();};
     formats.append(formatTitle,formatSelect);
+    const bulk=element('div','ledger-bulk-actions');
+    const exclude=button('全景をすべて外す',excludeOverviews,'ledger-overview-off');exclude.dataset.ledger='exclude-overviews';
+    const selectAll=button('すべて選択に戻す',selectAllPhotos,'ledger-select-all');selectAll.dataset.ledger='select-all';
+    bulk.append(exclude,selectAll);
     const scroll=element('div','ledger-scroll'),list=element('div');list.dataset.ledger='list';scroll.append(list);
     const footer=element('div','ledger-footer'),stat=element('div','ledger-status');stat.dataset.ledger='status';
     const controls=element('div','ledger-controls');controls.append(button('下書き保存',saveDraft,'ledger-save'),button('Excel出力',exportLedger,'ledger-export'));controls.lastChild.dataset.ledger='export';
-    footer.append(stat,controls);panel.append(bar,count,note,formats,scroll,footer);modal.append(panel);document.body.append(modal);
-    current=c;renderEntries();status('写真は全件選択されています。不要な写真を外してから出力できます。');
+    footer.append(stat,controls);panel.append(bar,count,note,formats,bulk,scroll,footer);modal.append(panel);document.body.append(modal);
+    current=c;renderEntries();status(c.entries.every(e=>e.included)?'写真は全件選択されています。不要な写真を外してから出力できます。':'保存済みの写真選択を読み込みました。');
   }
   async function open(projectId,groupId){
     if(modal)return;
@@ -489,6 +520,7 @@
     .ledger-panel{width:min(900px,100%);height:min(94vh,970px);display:flex;flex-direction:column;background:white;border-radius:14px;box-shadow:0 10px 45px #0004;color:#111827;overflow:hidden}
     .ledger-head{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:13px 16px;border-bottom:1px solid #d1d5db}.ledger-head h2{margin:0 0 4px;font-size:18px}.ledger-head small{font-size:12px;color:#6b7280}
     .ledger-summary{padding:11px 16px;background:#eff6ff;font-weight:700;font-size:13px}.ledger-note{padding:0 16px;margin:10px 0;color:#4b5563;font-size:12px}
+    .ledger-bulk-actions{display:flex;flex-wrap:wrap;gap:8px;padding:0 16px 12px}.ledger-bulk-actions button{min-height:40px;padding:8px 12px;border:1px solid #cbd5e1;border-radius:7px;background:#fff;color:#111827;font-size:12px;font-weight:600}.ledger-bulk-actions button:disabled{opacity:.5}.ledger-overview-off:not(:disabled){border-color:#b45309;color:#92400e;background:#fffbeb}
     .ledger-format{display:flex;align-items:center;gap:12px;padding:2px 16px 12px;font-size:13px}.ledger-format select{flex:1;max-width:240px;border:1px solid #9ca3af;border-radius:7px;padding:8px;color:#111827;background:white;font:inherit}.ledger-tensile-note{font-size:12px;color:#374151;line-height:1.55;background:#f8fafc;border:1px solid #e5e7eb;border-radius:7px;padding:8px;margin:10px 0}.ledger-tensile-record{border:1px solid #d1d5db;border-radius:8px;margin:9px 0;background:white}.ledger-tensile-record summary{font-size:13px;font-weight:700;cursor:pointer;padding:11px;line-height:1.45}.ledger-tensile-inner{border-top:1px solid #e5e7eb;padding:10px}.ledger-tensile-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.ledger-tensile-field{display:flex;flex-direction:column;gap:3px;font-size:12px;font-weight:600}.ledger-tensile-field input,.ledger-tensile-field select{box-sizing:border-box;width:100%;min-height:36px;border:1px solid #9ca3af;border-radius:5px;padding:5px 7px;font:inherit;font-weight:400;color:#111827;background:white}.ledger-tensile-photo-order{font-size:11px;color:#4b5563;margin-top:5px;word-break:break-all}.ledger-scroll{flex:1;overflow:auto;padding:0 16px 14px}.ledger-section{margin-bottom:16px;border:1px solid #d1d5db;border-radius:10px;overflow:hidden}
     .ledger-section-head{display:flex;align-items:center;gap:6px;background:#f3f4f6;padding:8px}.ledger-section-head strong{flex:1;font-size:14px}
     .ledger-item{display:flex;align-items:center;gap:10px;padding:9px;border-top:1px solid #e5e7eb}.ledger-item input[type=checkbox]{width:20px;height:20px;flex:none}.ledger-thumb,.ledger-missing{width:100px;height:75px;flex:none;object-fit:contain;background:#f1f5f9;border-radius:5px}.ledger-missing{display:grid;place-items:center;font-size:11px;color:#b91c1c}
