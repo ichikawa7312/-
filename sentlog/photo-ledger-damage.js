@@ -107,8 +107,9 @@
     const pic=`<xdr:pic><xdr:nvPicPr><xdr:cNvPr id="${id}" name="損傷写真 ${id}"/><xdr:cNvPicPr><a:picLocks noChangeAspect="1"/></xdr:cNvPicPr></xdr:nvPicPr><xdr:blipFill><a:blip r:embed="rId${rid}"/><a:stretch><a:fillRect/></a:stretch></xdr:blipFill><xdr:spPr><a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:ln><a:noFill/></a:ln></xdr:spPr></xdr:pic>`;
     return `<xdr:twoCellAnchor editAs="oneCell">${from}${to}${pic}<xdr:clientData/></xdr:twoCellAnchor>`;
   }
-  // Add labels in N/T, outside the unchanged A:L print area. Existing cells,
-  // borders, merged ranges and page breaks are not modified.
+  // Place reserve labels horizontally in columns N, T, Z... adjacent
+  // to the corresponding damage record, not in a separate vertical gallery.
+  // The existing printed A:L cell formatting and print area stay unchanged.
   function addReserveNotes(sheet,notes){
     if(!notes.length)return sheet;
     const byRow=new Map();
@@ -160,24 +161,34 @@
       const page=Math.floor(j/3),pos=SLOTS[j%3],name=`xl/media/damage-${index}-${j+1}-${side+1}.jpeg`;
       images.push({name,data:photo.jpeg});anchors.push(picture(++id,images.length,pos.photo+page*PERIOD,side?7:1));
     }
-    let reserveRow=3;
+
+    const excelColumn=zeroBased=>{
+      if(!Number.isInteger(zeroBased)||zeroBased<0||zeroBased>=16384)throw Error('Excelの列数上限を超えました。写真を分けて出力してください。');
+      let i=zeroBased+1,label='';
+      while(i>0){i--;label=String.fromCharCode(65+i%26)+label;i=Math.floor(i/26);}
+      return label;
+    };
     for(let j=0;j<records.length;j++){
       const record=records[j],extras=record.extraPhotos||[];
       if(!extras.length)continue;
-      notes.push({row:reserveRow,col:'N',text:record.damage+'｜予備写真 '+extras.length+'枚（印刷対象外）'});
+      const page=Math.floor(j/3),position=SLOTS[j%3];
+      const base=page*PERIOD;
+      // The header, captions and photo anchors occupy the SAME printed
+      // damage card's row band. All reserves extend to the RIGHT (N, T, Z...).
+      const titleRow=base+position.head;
+      const captionRow=base+position.where;
+      const pictureRow=base+position.photo;
+      notes.push({row:titleRow,col:'N',text:record.damage+'｜予備写真 '+extras.length+'枚（印刷対象外）'});
       for(let k=0;k<extras.length;k++){
         const photo=extras[k];
         if(!(photo.jpeg instanceof Uint8Array)||!photo.jpeg.length)throw Error('予備写真が取得できませんでした。');
-        const col=k%2===0?13:19,colLetter=k%2===0?'N':'T';
-        const row=reserveRow+2+Math.floor(k/2)*15;
+        const col=13+k*6,colLetter=excelColumn(col);
         const photoName=String(photo.photoName||photo.photoId||'');
-        notes.push({row,col:colLetter,text:'予備'+(k+1)+(photoName?'：'+photoName:'')});
+        notes.push({row:captionRow,col:colLetter,text:'予備'+(k+1)+(photoName?'：'+photoName:'')});
         const name=`xl/media/damage-${index}-reserve-${j+1}-${k+1}.jpeg`;
         images.push({name,data:photo.jpeg});
-        // Image starts on the next row after its caption.
-        anchors.push(reservePicture(++id,images.length,row,col));
+        anchors.push(reservePicture(++id,images.length,pictureRow,col));
       }
-      reserveRow+=4+Math.ceil(extras.length/2)*15;
     }
     const drawing='<?xml version="1.0" encoding="UTF-8" standalone="yes"?><xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'+anchors.join('')+'</xdr:wsDr>';
     const rels='<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'+images.map((img,i)=>`<Relationship Id="rId${i+1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/${img.name.split('/').pop()}"/>`).join('')+'</Relationships>';
