@@ -20,20 +20,14 @@ for module in ('display-filter-core.js', 'display-filter.js'):
         raise RuntimeError(f'Missing display-filter module: {module}')
 
 # Reuse the existing verified exporter and preserve original PDF vectors.
-# Export a selected page without changing the original drawing.
+# The existing page-management build already sets 'pages' after hiding pages.
+# Narrow only that list for a one-page export; do not bypass hidden-page rules.
 change(
     'sentlog/drawing-export.js',
-    '  for(let n=1;n<=info.count;n++){check();unchanged(item);onPage(n,info.count);check();const data=await bounded(worker.api.page(n));check();await C.addPage(doc,source,data,P);}',
-    '  const pages=item.onlyPage==null?Array.from({length:info.count},(_,i)=>i+1):[Number(item.onlyPage)];\n'
-    "  if(pages.some(n=>!Number.isInteger(n)||n<1||n>info.count))throw Error('出力ページの番号を確認できません。');\n"
-    '  for(const n of pages){check();unchanged(item);onPage(n,info.count);check();const data=await bounded(worker.api.page(n));check();await C.addPage(doc,source,data,P);}',
+    '  const pages=Array.from({length:info.count},(_,i)=>i+1).filter(n=>!item.state.pageStates?.[String(n)]?.hidden);',
+    """  if(item.onlyPage!=null&&(!Number.isInteger(Number(item.onlyPage))||Number(item.onlyPage)<1||Number(item.onlyPage)>info.count))throw Error('出力ページの番号を確認できません。');
+  const pages=Array.from({length:info.count},(_,i)=>i+1).filter(n=>!item.state.pageStates?.[String(n)]?.hidden&&(item.onlyPage==null||n===Number(item.onlyPage)));""",
 )
-change(
-    'sentlog/drawing-export.js',
-    'pages:info.count};',
-    'pages:pages.length};',
-)
-
 # Filter only during the iframe's render; keep the complete shape list
 # throughout initialization so that original damage numbers never change.
 change(
