@@ -89,9 +89,13 @@ jobs:
           python3 scripts/build_rescue_header.py
           python3 scripts/build_pdf_revision_guard.py
           python3 scripts/build_photo_ledger.py
+          python3 scripts/build_display_filter.py
           node tests/photo_ledger.test.cjs
           node tests/photo_ledger_damage.test.cjs
           node tests/photo_ledger_tensile.test.cjs
+          node tests/display_filter.test.cjs
+          node --check sentlog/display-filter-core.js
+          node --check sentlog/display-filter.js
           node --check sentlog/photo-ledger.js
           node --check sentlog/photo-ledger-tensile.js
           node --check sentlog/photo-ledger-damage.js
