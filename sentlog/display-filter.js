@@ -29,6 +29,23 @@ function updateStatus(shapes=allShapes()){
  const clear=document.getElementById('clearBtn');if(clear)clear.disabled=!!on;
  const file=document.getElementById('fileInput');if(file)file.disabled=!!on;
 }
+/* Switching into an edit gesture restores the complete drawing first.
+ * Otherwise a newly created record outside the filter could appear to vanish. */
+const stage=document.getElementById('stageWrap');
+stage?.addEventListener('pointerdown',()=>{
+ const filter=applied();
+ if(currentView!=='editor'||!filter||F.isAll(allShapes(),filter))return;
+ if(tool!=='pan'||root.SentlogDrawingMemos?.mode==='memo'){
+  active.delete(key());render();
+ }
+},{capture:true});
+document.getElementById('damageType')?.addEventListener('change',()=>{
+ const filter=applied();
+ if(currentView==='editor'&&filter&&!F.isAll(allShapes(),filter)){
+  active.delete(key());render();
+ }
+},{capture:true});
+
 function close(){if(working)return;if(saveURL){URL.revokeObjectURL(saveURL);saveURL=null;}modal?.remove();modal=null;}
 function open(){
  if(currentView!=='editor'||!key()||!state.sourceType){alert('図面を開いてから表示切替を使ってください。');return;}
