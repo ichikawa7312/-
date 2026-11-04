@@ -128,6 +128,21 @@ try:
         assert page.locator('.ledger-section-head strong').all_text_contents()[0].startswith('全景・その他')
         assert page.locator('.ledger-item').count()==9
         assert page.locator('.ledger-item',has_text='ひび割れ-51').count()==2
+        # Bulk overview exclusion changes only draft checkboxes, not other photos
+        # or persisted drawing records.
+        overview=page.locator('[data-ledger=exclude-overviews]')
+        expect(overview).to_contain_text('1枚')
+        overview.click()
+        expect(page.locator('.ledger-summary')).to_contain_text('8枚 / 4ページ / 2シート')
+        overview_row=page.locator('.ledger-section',has=page.locator('.ledger-section-head strong',has_text='全景・その他')).locator('input[type=checkbox]').first
+        assert not overview_row.is_checked()
+        assert page.locator('.ledger-item',has_text='ひび割れ-51').first.locator('input[type=checkbox]').is_checked()
+        expect(overview).to_be_disabled()
+        assert source_snapshot(page)==baseline,'Overview exclusion changed source drawing records'
+        page.locator('[data-ledger=select-all]').click()
+        expect(page.locator('.ledger-summary')).to_contain_text('9枚 / 5ページ / 3シート')
+        assert overview_row.is_checked()
+        assert source_snapshot(page)==baseline,'Restore selection changed source drawing records'
 
         changed=page.locator('.ledger-item',has_text='ひび割れ-51').first.locator('textarea')
         changed.fill('写真台帳だけの説明')
