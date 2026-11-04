@@ -34,10 +34,26 @@
     for(const e of entries){
       if(e.included===false)continue;
       const key=String(e.drawingId)+'\u0000'+String(e.shapeId);
-      if(!shapes.has(key))shapes.set(key,{number:e.typeNo??e.damage,member:String(e.member??'').trim(),range:e.rangeText||'',description:e.description||'',photos:[]});
-      shapes.get(key).photos.push(e);
+      if(!shapes.has(key))shapes.set(key,{
+        key,number:e.typeNo??e.damage,damage:String(e.damage||e.type||'変状'),
+        member:String(e.member??'').trim(),range:e.rangeText||'',description:e.description||'',candidates:[]
+      });
+      shapes.get(key).candidates.push(e);
     }
-    return [...shapes.values()].flatMap(s=>Array.from({length:Math.ceil(s.photos.length/2)},(_,i)=>({...s,photos:s.photos.slice(i*2,i*2+2)})));
+    // Exactly one printable card per recorded location. The 2 submitted photos
+    // occupy the original full-view/close-up slots; every other selected photo
+    // becomes a recoverable, editable backup to the RIGHT of the print area.
+    return [...shapes.values()].map(record=>{
+      const items=record.candidates;
+      const hasRoles=items.some(e=>['overview','close','reserve'].includes(e.damageRole));
+      const first=hasRoles?items.find(e=>e.damageRole==='overview'):items[0];
+      const second=hasRoles?items.find(e=>e.damageRole==='close'&&e!==first):items[1];
+      const submitted=[first||null,second||null];
+      return {
+        ...record,photos:submitted,
+        extraPhotos:items.filter(e=>e!==first&&e!==second)
+      };
+    });
   }
   function cellUpdate(rowXml,ref,text){
     const target=ref.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
@@ -91,17 +107,81 @@
     const pic=`<xdr:pic><xdr:nvPicPr><xdr:cNvPr id="${id}" name="損傷写真 ${id}"/><xdr:cNvPicPr><a:picLocks noChangeAspect="1"/></xdr:cNvPicPr></xdr:nvPicPr><xdr:blipFill><a:blip r:embed="rId${rid}"/><a:stretch><a:fillRect/></a:stretch></xdr:blipFill><xdr:spPr><a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:ln><a:noFill/></a:ln></xdr:spPr></xdr:pic>`;
     return `<xdr:twoCellAnchor editAs="oneCell">${from}${to}${pic}<xdr:clientData/></xdr:twoCellAnchor>`;
   }
+  // Add labels in N/T, outside the unchanged A:L print area. Existing cells,
+  // borders, merged ranges and page breaks are not modified.
+  function addReserveNotes(sheet,notes){
+    if(!notes.length)return sheet;
+    const byRow=new Map();
+    for(const {row,col,text} of notes){
+      if(!Number.isInteger(row)||row<1||row>1048576)throw Error('予備写真が多すぎます。分割出力してください。');
+      const cell='<c r="'+col+row+'" t="inlineStr"><is><t xml:space="preserve">'+xml(text)+'</t></is></c>';
+      if(!byRow.has(row))byRow.set(row,[]);
+      byRow.get(row).push({col,cell});
+    }
+    let updated=false;
+    const result=sheet.replace(/<sheetData>([^]*?)<\/sheetData>/,(whole,body)=>{
+      updated=true;const rows=[],seen=new Set();
+      const rowRe=/<row\b[^>]*\br="(\d+)"[^>]*(?:\/>|>[^]*?<\/row>)/g;
+      for(const match of body.matchAll(rowRe)){
+        const row=Number(match[1]),cells=byRow.get(row),raw=match[0];
+        let out=raw;
+        if(cells?.length){
+          const suffix=cells.sort((a,b)=>a.col.localeCompare(b.col)).map(x=>x.cell).join('');
+          out=raw.endsWith('/>')?raw.slice(0,-2)+'>'+suffix+'</row>':raw.replace('</row>',suffix+'</row>');
+        }
+        rows.push({row,xml:out});seen.add(row);
+      }
+      if(rows.length<57)throw Error('予備写真を追加する前の行構造が不正です。');
+      for(const [row,cells] of byRow){
+        if(seen.has(row))continue;
+        rows.push({row,xml:'<row r="'+row+'">'+cells.sort((a,b)=>a.col.localeCompare(b.col)).map(x=>x.cell).join('')+'</row>'});
+      }
+      rows.sort((a,b)=>a.row-b.row);
+      return '<sheetData>'+rows.map(x=>x.xml).join('')+'</sheetData>';
+    });
+    if(!updated)throw Error('予備写真の出力位置を確保できません。');
+    const maxRow=Math.max(...byRow.keys());
+    return result.replace(/<dimension ref="A1:Z(\d+)"\/>/,(_,last)=>'<dimension ref="A1:Z'+Math.max(Number(last),maxRow)+'"/>');
+  }
+  function reservePicture(id,rid,row,col){
+    // A 4:3 thumbnail, fixed entirely to the right of column L (print area).
+    const cx=282*9525,cy=212*9525;
+    const from='<xdr:from><xdr:col>'+col+'</xdr:col><xdr:colOff>38000</xdr:colOff><xdr:row>'+row+'</xdr:row><xdr:rowOff>19000</xdr:rowOff></xdr:from>';
+    const pic='<xdr:pic><xdr:nvPicPr><xdr:cNvPr id="'+id+'" name="予備写真 '+id+'"/><xdr:cNvPicPr><a:picLocks noChangeAspect="1"/></xdr:cNvPicPr></xdr:nvPicPr>'+
+      '<xdr:blipFill><a:blip r:embed="rId'+rid+'"/><a:stretch><a:fillRect/></a:stretch></xdr:blipFill>'+
+      '<xdr:spPr><a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:ln><a:noFill/></a:ln></xdr:spPr></xdr:pic>';
+    return '<xdr:oneCellAnchor>'+from+'<xdr:ext cx="'+cx+'" cy="'+cy+'"/>'+pic+'<xdr:clientData/></xdr:oneCellAnchor>';
+  }
   function drawingData(records,index){
-    const anchors=[],images=[];let id=0;
+    const anchors=[],images=[],notes=[];let id=0;
     for(let j=0;j<records.length;j++)for(let side=0;side<2;side++){
       const photo=records[j].photos[side];if(!photo)continue;
       if(!(photo.jpeg instanceof Uint8Array)||!photo.jpeg.length)throw Error('未取得の写真があります。');
       const page=Math.floor(j/3),pos=SLOTS[j%3],name=`xl/media/damage-${index}-${j+1}-${side+1}.jpeg`;
       images.push({name,data:photo.jpeg});anchors.push(picture(++id,images.length,pos.photo+page*PERIOD,side?7:1));
     }
+    let reserveRow=3;
+    for(let j=0;j<records.length;j++){
+      const record=records[j],extras=record.extraPhotos||[];
+      if(!extras.length)continue;
+      notes.push({row:reserveRow,col:'N',text:record.damage+'｜予備写真 '+extras.length+'枚（印刷対象外）'});
+      for(let k=0;k<extras.length;k++){
+        const photo=extras[k];
+        if(!(photo.jpeg instanceof Uint8Array)||!photo.jpeg.length)throw Error('予備写真が取得できませんでした。');
+        const col=k%2===0?13:19,colLetter=k%2===0?'N':'T';
+        const row=reserveRow+2+Math.floor(k/2)*15;
+        const photoName=String(photo.photoName||photo.photoId||'');
+        notes.push({row,col:colLetter,text:'予備'+(k+1)+(photoName?'：'+photoName:'')});
+        const name=`xl/media/damage-${index}-reserve-${j+1}-${k+1}.jpeg`;
+        images.push({name,data:photo.jpeg});
+        // Image starts on the next row after its caption.
+        anchors.push(reservePicture(++id,images.length,row,col));
+      }
+      reserveRow+=4+Math.ceil(extras.length/2)*15;
+    }
     const drawing='<?xml version="1.0" encoding="UTF-8" standalone="yes"?><xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'+anchors.join('')+'</xdr:wsDr>';
     const rels='<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'+images.map((img,i)=>`<Relationship Id="rId${i+1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/${img.name.split('/').pop()}"/>`).join('')+'</Relationships>';
-    return {drawing,rels,images};
+    return {drawing,rels,images,notes};
   }
   function appXml(original,names){
     return original.replace(/<HeadingPairs>[^]*?<\/HeadingPairs>/,`<HeadingPairs><vt:vector size="2" baseType="variant"><vt:variant><vt:lpstr>ワークシート</vt:lpstr></vt:variant><vt:variant><vt:i4>${names.length}</vt:i4></vt:variant></vt:vector></HeadingPairs>`)
@@ -110,7 +190,7 @@
   async function buildXlsx(projectName,groupName,groups,templateBytes){
     const nonEmpty=groups.map(g=>({name:g.name,records:recordsFor(g.photos)})).filter(g=>g.records.length);
     if(!nonEmpty.length)throw Error('出力対象の写真がありません。');
-    const photos=nonEmpty.flatMap(g=>g.records.flatMap(r=>r.photos));
+    const photos=nonEmpty.flatMap(g=>g.records.flatMap(r=>[...r.photos.filter(Boolean),...r.extraPhotos]));
     const base=root.SentlogPhotoLedger||(typeof require==='function'?require('./photo-ledger.js'):null);
     if(!base?.zipStored||!base?.excelSheetNames)throw Error('写真台帳の標準処理を読み込めません。');
     if(photos.length>base.MAX_PHOTOS)throw Error('写真が600枚を超えています。図面No.を分けて出力してください。');
@@ -136,7 +216,7 @@
       `<Relationship Id="rId${names.length+1}" Type="${br}styles" Target="styles.xml"/><Relationship Id="rId${names.length+2}" Type="${br}theme" Target="theme/theme1.xml"/><Relationship Id="rId${names.length+3}" Type="${br}sharedStrings" Target="sharedStrings.xml"/></Relationships>`);
     const sheetTemplate=valueOf(raw,'xl/worksheets/sheet1.xml'),printer=raw.get('xl/printerSettings/printerSettings1.bin');
     for(let i=0;i<nonEmpty.length;i++){
-      const id=i+1,g=nonEmpty[i],p=sheetXml(sheetTemplate,g.name,g.records,groupName+'　'+g.name),drawing=drawingData(g.records,id);
+      const id=i+1,g=nonEmpty[i],drawing=drawingData(g.records,id),p=addReserveNotes(sheetXml(sheetTemplate,g.name,g.records,groupName+'　'+g.name),drawing.notes);
       add(`xl/worksheets/sheet${id}.xml`,p);
       add(`xl/worksheets/_rels/sheet${id}.xml.rels`,relStart+`<Relationship Id="rId1" Type="${br}printerSettings" Target="../printerSettings/printerSettings${id}.bin"/><Relationship Id="rId2" Type="${br}drawing" Target="../drawings/drawing${id}.xml"/></Relationships>`);
       add(`xl/drawings/drawing${id}.xml`,drawing.drawing);
@@ -150,7 +230,7 @@
     add('[Content_Types].xml',types);
     return base.zipStored(files);
   }
-  const api={recordsFor,unzip,sheetXml,drawingData,buildXlsx,TEMPLATE_PATH};
+  const api={recordsFor,unzip,sheetXml,addReserveNotes,drawingData,buildXlsx,TEMPLATE_PATH};
   if(typeof module!=='undefined'&&module.exports){module.exports=api;return;}
   root.SentlogDamageLedger=api;
 })(typeof globalThis!=='undefined'?globalThis:this);

@@ -187,6 +187,16 @@ try:
         page.wait_for_function("!!window.SentlogDamageLedger && typeof window.SentlogDamageLedger.buildXlsx === 'function'",timeout=30000)
         page.locator('[data-ledger=format]').select_option('damage')
         expect(page.locator('.ledger-summary')).to_contain_text('3変状/ページ')
+        # One record has five photos; explicitly choose the third for the
+        # printed overview and keep the original second as the close-up.
+        crack2=page.locator('.ledger-item',has_text='ひび割れ-2')
+        assert crack2.count()==5
+        assert crack2.nth(0).locator('.ledger-damage-role').input_value()=='overview'
+        crack2.nth(2).locator('.ledger-damage-role').select_option('overview')
+        assert crack2.nth(0).locator('.ledger-damage-role').input_value()=='reserve'
+        assert crack2.nth(2).locator('.ledger-damage-role').input_value()=='overview'
+        assert crack2.nth(1).locator('.ledger-damage-role').input_value()=='close'
+        assert source_snapshot(page)==baseline,'Damage photo slot selection changed source records'
         page.locator('.ledger-export').click()
         page.wait_for_function("""()=>{
           const s=document.querySelector('.ledger-status')?.textContent||'';
@@ -205,6 +215,22 @@ try:
             assert '写真番号：' not in z.read('xl/worksheets/sheet2.xml').decode()
             assert '写真台帳だけの説明' in z.read('xl/worksheets/sheet2.xml').decode()
             assert len([n for n in z.namelist() if n.startswith('xl/media/damage-')])==9
+            drawing2=ET.fromstring(z.read('xl/drawings/drawing2.xml'))
+            nsd={'xdr':'http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing',
+                 'a':'http://schemas.openxmlformats.org/drawingml/2006/main'}
+            assert len(drawing2.findall('xdr:twoCellAnchor',nsd))==4,'two selected pictures per recorded location'
+            backups=drawing2.findall('xdr:oneCellAnchor',nsd)
+            assert len(backups)==3,'three extras must remain editable in same worksheet'
+            assert all(int(p.find('xdr:from/xdr:col',nsd).text)>=13 for p in backups),'backups must be right of print range'
+            assert '予備写真 3枚' in z.read('xl/worksheets/sheet2.xml').decode()
+            book=z.read('xl/workbook.xml').decode()
+            names=ET.fromstring(book).findall('.//{http://schemas.openxmlformats.org/spreadsheetml/2006/main}definedName')
+            assert any(n.text=="'ひび割れ'!$A$1:$L$57" for n in names),'original printing extent must not include extra photos'
+            imageRefs={x.attrib['Id'] for x in ET.fromstring(z.read('xl/drawings/_rels/drawing2.xml.rels'))}
+            relkey='{http://schemas.openxmlformats.org/officeDocument/2006/relationships}embed'
+            for picture in drawing2.findall('.//xdr:pic',nsd):
+                blip=picture.find('xdr:blipFill/a:blip',nsd)
+                assert blip is not None and blip.attrib.get(relkey) in imageRefs,'all photos need valid Excel image references'
         assert source_snapshot(page)==baseline,'Damage ledger modified source records'
         # Tensile format: actual workbook with original ovals, four photo
         # slots and user-entered kN/judgement. Blank results must not claim pass.
