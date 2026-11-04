@@ -61,9 +61,14 @@ function unpackStored(buffer){
  assert.match(sheet, /<brk id="57"/,'the original final page break is kept');
  assert.doesNotMatch(sheet, /<brk id="114"/,'reserves must not introduce a second printed page');
  assert.match(sheet, /<row r="57"/,'original page rows remain present');
- assert.match(sheet, /<c r="N3"[^>]*t="inlineStr">/,'reserve title is positioned outside print columns');
+ assert.match(sheet, /<c r="N2"[^>]*t="inlineStr">/,'reserve title shares the first damage card header row');
  assert.match(sheet, /予備写真 6枚（印刷対象外）/);
- assert.match(sheet, /予備1/,'reserve photo captions are in the same worksheet');
+ for(const col of ['N','T','Z','AF','AL','AR'])
+   assert.match(sheet,new RegExp('<c r="'+col+'3"[^>]*t="inlineStr">'),'all six reserve captions share the same row beside the damage card');
+ const rowThree=sheet.match(/<row r="3"[^>]*>[\s\S]*?<\/row>/)?.[0]||'';
+ assert.deepEqual([...rowThree.matchAll(/<c r="([A-Z]+)3"[^>]*>/g)].map(m=>m[1]).filter(c=>['N','T','Z','AF','AL','AR'].includes(c)),
+   ['N','T','Z','AF','AL','AR'],'Excel must store reserve captions left to right, even past column Z');
+ assert.match(sheet,/<dimension ref="A1:AR58"\/>/,'Excel used range includes the rightmost reserve caption');
  assert.match(sheet,/調査⑫　ひび割れ　写真台帳/,'stale original header replaced, same format');
  assert.doesNotMatch(sheet, /西面　外壁　写真台帳|写真番号：/,'no old fixed heading or photo numbering');
  assert.equal([...files].filter(([k])=>k.startsWith('xl/media/')&&k.endsWith('.jpeg')).length,11);
@@ -74,7 +79,27 @@ function unpackStored(buffer){
  assert.equal((otherDrawing.match(/<xdr:twoCellAnchor/g)||[]).length,2);
  assert.equal((otherDrawing.match(/<xdr:oneCellAnchor/g)||[]).length,1);
  assert.match(mainDrawing,/<xdr:col>13<\/xdr:col>/,'reserves begin at N, right of A:L');
+ const reserveAnchors=[...mainDrawing.matchAll(/<xdr:oneCellAnchor>([\s\S]*?)<\/xdr:oneCellAnchor>/g)];
+ assert.deepEqual(reserveAnchors.map(a=>Number(a[1].match(/<xdr:col>(\d+)<\/xdr:col>/)[1])),[13,19,25,31,37,43],
+   'every extra photo must appear left to right on its own damage row');
+ assert.deepEqual(reserveAnchors.map(a=>Number(a[1].match(/<xdr:row>(\d+)<\/xdr:row>/)[1])),Array(6).fill(6),
+   'all extras for one location share the printed card photo row');
  assert.match(mainDrawing,/xmlns:r="http:\/\/schemas\.openxmlformats\.org\/officeDocument\/2006\/relationships"/);
+ // Different damage records must each keep their own reserve photos on the
+ // corresponding printed row (1st, 2nd, 3rd card, then next printed page).
+ const others=Array.from({length:4},(_,j)=>Array.from({length:5},(_,i)=>({
+   included:true,drawingId:'area',shapeId:'shape-'+j,typeNo:j+1,damage:'調査-'+(j+1),
+   photoId:'r'+j+'-'+i,photoName:'sample-'+i+'.jpg',jpeg:entries[0].jpeg
+ }))).flat();
+ const multiRecords=D.recordsFor(others),multiData=D.drawingData(multiRecords,1);
+ assert.equal(multiRecords.length,4,'four damage records keep four printed cards');
+ const allReserve=[...multiData.drawing.matchAll(/<xdr:oneCellAnchor>([\s\S]*?)<\/xdr:oneCellAnchor>/g)]
+   .map(m=>({col:Number(m[1].match(/<xdr:col>(\d+)<\/xdr:col>/)[1]),row:Number(m[1].match(/<xdr:row>(\d+)<\/xdr:row>/)[1])}));
+ assert.deepEqual(allReserve.map(p=>p.col),[13,19,25,13,19,25,13,19,25,13,19,25]);
+ assert.deepEqual(allReserve.map(p=>p.row),[6,6,6,25,25,25,44,44,44,63,63,63],
+   'each set of 3 reserves is aligned with its corresponding printed damage location across pages');
+ assert.deepEqual(multiData.notes.filter(n=>n.text.startsWith('予備')).map(n=>n.row),
+   [3,3,3,22,22,22,41,41,41,60,60,60]);
  const workbook=decoder.decode(files.get('xl/workbook.xml'));
  assert.match(workbook,/\$A\$1:\$L\$57/,'printed area remains strictly within columns A:L');
  const rawXml=decoder.decode(raw.get('xl/worksheets/sheet1.xml'));

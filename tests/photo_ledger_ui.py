@@ -221,8 +221,14 @@ try:
             assert len(drawing2.findall('xdr:twoCellAnchor',nsd))==4,'two selected pictures per recorded location'
             backups=drawing2.findall('xdr:oneCellAnchor',nsd)
             assert len(backups)==3,'three extras must remain editable in same worksheet'
-            assert all(int(p.find('xdr:from/xdr:col',nsd).text)>=13 for p in backups),'backups must be right of print range'
-            assert '予備写真 3枚' in z.read('xl/worksheets/sheet2.xml').decode()
+            assert [int(p.find('xdr:from/xdr:col',nsd).text) for p in backups]==[13,19,25],(
+                '3 backup images must be in one horizontal line in N, T and Z')
+            assert [int(p.find('xdr:from/xdr:row',nsd).text) for p in backups]==[6,6,6],(
+                'backup images must align with the same damage card as their submitted photos')
+            damage_sheet=z.read('xl/worksheets/sheet2.xml').decode()
+            assert '予備写真 3枚' in damage_sheet
+            assert all(f'r="{col}3"' in damage_sheet for col in ('N','T','Z')),(
+                'three backup captions must align with the same damage row')
             book=z.read('xl/workbook.xml').decode()
             names=ET.fromstring(book).findall('.//{http://schemas.openxmlformats.org/spreadsheetml/2006/main}definedName')
             assert any(n.text=="'ひび割れ'!$A$1:$L$57" for n in names),'original printing extent must not include extra photos'
