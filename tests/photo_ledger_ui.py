@@ -224,7 +224,8 @@ try:
             assert all(int(p.find('xdr:from/xdr:col',nsd).text)>=13 for p in backups),'backups must be right of print range'
             assert '予備写真 3枚' in z.read('xl/worksheets/sheet2.xml').decode()
             book=z.read('xl/workbook.xml').decode()
-            assert "'ひび割れ'!$A$1:$L$57" in book,'original printing extent must not include extra photos'
+            names=ET.fromstring(book).findall('.//{http://schemas.openxmlformats.org/spreadsheetml/2006/main}definedName')
+            assert any(n.text=="'ひび割れ'!$A$1:$L$57" for n in names),'original printing extent must not include extra photos'
             imageRefs={x.attrib['Id'] for x in ET.fromstring(z.read('xl/drawings/_rels/drawing2.xml.rels'))}
             relkey='{http://schemas.openxmlformats.org/officeDocument/2006/relationships}embed'
             for picture in drawing2.findall('.//xdr:pic',nsd):
