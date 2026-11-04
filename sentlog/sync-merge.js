@@ -11,6 +11,21 @@
   const equal=(a,b)=>JSON.stringify(canonical(a))===JSON.stringify(canonical(b));
   const omit=(value,keys)=>Object.fromEntries(Object.entries(value||{}).filter(([k])=>!keys.includes(k)));
   const numbered=['globalNo','typeNo','autoLabel','recordNo'];
+  const labelSizes=new Set(['small','normal','large']);
+  // A label size only changes presentation; it cannot invalidate annotations.
+  // Missing legacy values use the same "normal" default as the editor.
+  function resolveLabelSize(local,remote,ancestor,hasAncestor){
+    const normalize=value=>value==null?'normal':value;
+    const l=normalize(local),r=normalize(remote),b=normalize(ancestor);
+    if(!labelSizes.has(l)||!labelSizes.has(r)||(hasAncestor&&!labelSizes.has(b)))return {valid:false};
+    if(l===r)return {valid:true,value:r};
+    if(hasAncestor){
+      if(l===b)return {valid:true,value:r};
+      if(r===b)return {valid:true,value:l};
+    }
+    // Concurrent display-only changes: choose the already published value.
+    return {valid:true,value:r};
+  }
   const shapeValue=s=>s===undefined?undefined:omit(s,numbered);
   const viewKeys=['currentPage','width','height','pdfPageInfo','nextGlobalNo','typeCounters'];
   const stateValue=s=>s===undefined?undefined:{...omit(s,viewKeys),shapes:(s.shapes||[]).map(shapeValue)};
@@ -103,7 +118,10 @@
       for(const [key,label] of Object.entries(frameFields)){
         if(!equal(l.state[key],r.state[key])){clash(path,label+'が異なります');return;}
       }
-      const st=properties(l.state,r.state,b?.state,path+' / 用紙・縮尺',['shapes',...viewKeys]);
+      const st=properties(l.state,r.state,b?.state,path+' / 用紙・縮尺',['shapes','labelSize',...viewKeys]);
+      const size=resolveLabelSize(l.state.labelSize,r.state.labelSize,b?.state?.labelSize,!!base);
+      if(!size.valid)clash(path+' / 文字サイズ','設定値を確認できません');
+      else if(l.state.labelSize!=null||r.state.labelSize!=null)st.labelSize=size.value;
       st.shapes=entities(l.state.shapes||[],r.state.shapes||[],b?.state?.shapes||[],path,shapeValue,(a,z,ancestor,label)=>shape(a,z,ancestor,label,l.meta.id));
       for(const k of viewKeys)if(l.state[k]!==undefined)st[k]=copy(l.state[k]);
       meta.updatedAt=Math.max(Number(l.meta.updatedAt)||0,Number(r.meta.updatedAt)||0);
