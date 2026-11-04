@@ -73,7 +73,7 @@ try:
     page.locator('#slDisplayFilterBtn').click()
     # Leave only crack1, and export page one.
     page.locator('.sl-filter-group',has=page.locator('summary',has_text='ひび割れ')).locator('summary').click()
-    page.locator('.sl-filter-group label',has_text='ひび割れ2').locator('input').uncheck()
+    page.locator('.sl-filter-group',has=page.locator('summary',has_text='ひび割れ')).locator('label').nth(1).locator('input').uncheck()
     page.get_by_role('button',name='選択内容でPDF作成').click()
     page.wait_for_function("!!document.querySelector('.sl-filter-save')",timeout=120000)
     with page.expect_download() as out:page.locator('.sl-filter-save').click()
