@@ -240,7 +240,8 @@ try:
             # off by a trailing slash even though JPEG bytes are intact.
             rel_ns='{http://schemas.openxmlformats.org/officeDocument/2006/relationships}embed'
             all_refs=0
-            for sheet_no in range(1,4):
+            drawing_count=len([name for name in z.namelist() if name.startswith('xl/drawings/drawing') and name.endswith('.xml')])
+            for sheet_no in range(1,drawing_count+1):
                 drawing=ET.fromstring(z.read(f'xl/drawings/drawing{sheet_no}.xml'))
                 rels=ET.fromstring(z.read(f'xl/drawings/_rels/drawing{sheet_no}.xml.rels'))
                 mapping={rel.attrib['Id']:rel.attrib['Target'] for rel in rels}
