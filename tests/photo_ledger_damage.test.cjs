@@ -65,6 +65,10 @@ function unpackStored(buffer){
  assert.match(sheet, /予備写真 6枚（印刷対象外）/);
  for(const col of ['N','T','Z','AF','AL','AR'])
    assert.match(sheet,new RegExp('<c r="'+col+'3"[^>]*t="inlineStr">'),'all six reserve captions share the same row beside the damage card');
+ const rowThree=sheet.match(/<row r="3"[^>]*>[\s\S]*?<\/row>/)?.[0]||'';
+ assert.deepEqual([...rowThree.matchAll(/<c r="([A-Z]+)3"[^>]*>/g)].map(m=>m[1]).filter(c=>['N','T','Z','AF','AL','AR'].includes(c)),
+   ['N','T','Z','AF','AL','AR'],'Excel must store reserve captions left to right, even past column Z');
+ assert.match(sheet,/<dimension ref="A1:AR58"\/>/,'Excel used range includes the rightmost reserve caption');
  assert.match(sheet,/調査⑫　ひび割れ　写真台帳/,'stale original header replaced, same format');
  assert.doesNotMatch(sheet, /西面　外壁　写真台帳|写真番号：/,'no old fixed heading or photo numbering');
  assert.equal([...files].filter(([k])=>k.startsWith('xl/media/')&&k.endsWith('.jpeg')).length,11);
