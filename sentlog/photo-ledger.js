@@ -510,14 +510,14 @@
     formatSelect.value=c.format;formatSelect.onchange=()=>{c.format=formatSelect.value;try{localStorage.setItem(FORMAT_KEY,c.format);}catch(_){}renderEntries();};
     formats.append(formatTitle,formatSelect);
     const picker=element('section','ledger-selection-picker');
-    const heading=element('div','ledger-selection-header'),headingTitle=element('strong','','種類別に選択');
+    const pickerHeading=element('div','ledger-selection-header'),headingTitle=element('strong','','種類別に選択');
     const pickerHint=element('small','','チェックを外すとその種類の写真を一括解除。下の一覧では1枚ずつ選び直せます。');
     const bulk=element('div','ledger-bulk-actions');
     const selectAll=button('すべて選択',selectAllPhotos,'ledger-select-all');selectAll.dataset.ledger='select-all';
     const selectNone=button('すべて解除',selectNoPhotos,'ledger-select-none');selectNone.dataset.ledger='select-none';
-    bulk.append(selectAll,selectNone);heading.append(headingTitle,bulk);
+    bulk.append(selectAll,selectNone);pickerHeading.append(headingTitle,bulk);
     const types=element('div','ledger-selection-types');types.dataset.ledger='types';
-    picker.append(heading,pickerHint,types);
+    picker.append(pickerHeading,pickerHint,types);
     const scroll=element('div','ledger-scroll'),list=element('div');list.dataset.ledger='list';scroll.append(list);
     const footer=element('div','ledger-footer'),stat=element('div','ledger-status');stat.dataset.ledger='status';
     const controls=element('div','ledger-controls');controls.append(button('下書き保存',saveDraft,'ledger-save'),button('Excel出力',exportLedger,'ledger-export'));controls.lastChild.dataset.ledger='export';
