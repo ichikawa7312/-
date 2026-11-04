@@ -39,8 +39,8 @@ if "photo-ledger.js?v=212" not in s:
 if "photo-ledger-damage.js?v=209" not in s:
     inject = "html=html.replace('</body>','<script src=\\\"./photo-ledger-damage.js?v=209\\\"><\\/script></body>');"
     s = s.replace(anchor, inject + anchor, 1)
-if "photo-ledger-tensile.js?v=210" not in s:
-    inject = "html=html.replace('</body>','<script src=\\\"./photo-ledger-tensile.js?v=210\\\"><\\/script></body>');"
+if "photo-ledger-tensile.js?v=213" not in s:
+    inject = "html=html.replace('</body>','<script src=\\\"./photo-ledger-tensile.js?v=213\\\"><\\/script></body>');"
     s = s.replace(anchor, inject + anchor, 1)
 index.write_text(s, encoding='utf-8')
 
