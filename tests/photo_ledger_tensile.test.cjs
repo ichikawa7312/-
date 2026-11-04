@@ -50,6 +50,15 @@ function unzipStored(buffer){
     assert.equal((sheet.match(/<mergeCell ref=/g)||[]).length,36,'merged ranges retained');
     assert.equal((drawing.match(/<xdr:sp /g)||[]).length,4,'original 4 numbered circles retained');
     assert.equal((drawing.match(/<xdr:oneCellAnchor>/g)||[]).length,[4,4,2][i-1]);
+    // This namespace must have no trailing slash. The previous export kept
+    // 10 valid JPEGs but Excel could not resolve any r:embed image reference.
+    assert.match(drawing,/xmlns:r="http:\/\/schemas\.openxmlformats\.org\/officeDocument\/2006\/relationships"/,'Excel image embedding namespace');
+    assert.doesNotMatch(drawing,/xmlns:r="http:\/\/schemas\.openxmlformats\.org\/officeDocument\/2006\/relationships\/"/,'invalid namespace must never be emitted');
+    const imageRels=files.get('xl/drawings/_rels/drawing'+i+'.xml.rels').toString();
+    const references=[...drawing.matchAll(/<a:blip r:embed="(rId\d+)"\/>/g)].map(m=>m[1]);
+    assert.equal(references.length,[4,4,2][i-1],'each photo must have an r:embed');
+    for(const ref of references)assert.match(imageRels,new RegExp('Id="'+ref+'"[^>]*Type="[^"]+/image"'),'each image reference must resolve');
+
     assert.doesNotMatch(sheet,/設計図面_|camera-/,'source file names are not mapped to location');
   }
   const first=files.get('xl/worksheets/sheet1.xml').toString();

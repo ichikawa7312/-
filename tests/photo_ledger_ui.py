@@ -235,6 +235,23 @@ try:
             assert 'A-101' in z.read('xl/worksheets/sheet1.xml').decode()
             assert z.read('xl/drawings/drawing1.xml').decode().count('<xdr:sp ')==4,'Original numbered ovals lost'
             assert len([n for n in z.namelist() if n.startswith('xl/media/tensile-')])==9
+            # Resolve real Office DrawingML image references, not just file counts.
+            # Excel displays "This picture can't be displayed" when xmlns:r is
+            # off by a trailing slash even though JPEG bytes are intact.
+            rel_ns='{http://schemas.openxmlformats.org/officeDocument/2006/relationships}embed'
+            all_refs=0
+            drawing_count=len([name for name in z.namelist() if name.startswith('xl/drawings/drawing') and name.endswith('.xml')])
+            for sheet_no in range(1,drawing_count+1):
+                drawing=ET.fromstring(z.read(f'xl/drawings/drawing{sheet_no}.xml'))
+                rels=ET.fromstring(z.read(f'xl/drawings/_rels/drawing{sheet_no}.xml.rels'))
+                mapping={rel.attrib['Id']:rel.attrib['Target'] for rel in rels}
+                refs=[node.attrib.get(rel_ns) for node in drawing.iter() if node.tag.endswith('}blip')]
+                assert refs and all(ref in mapping for ref in refs),('Unresolved picture in sheet',sheet_no,refs)
+                for ref in refs:
+                    filename='xl/media/'+mapping[ref].rsplit('/',1)[-1]
+                    assert filename in z.namelist(),('Picture data missing',filename)
+                all_refs+=len(refs)
+            assert all_refs==9,'All 9 pictures must be linked using valid Office relationships'
             assert '<pageSetup paperSize="9" scale="76" orientation="portrait"' in z.read('xl/worksheets/sheet1.xml').decode()
         assert source_snapshot(page)==baseline,'Tensile ledger must not modify original shape/photo/sync records'
         page.locator('[data-ledger=format]').select_option('standard')

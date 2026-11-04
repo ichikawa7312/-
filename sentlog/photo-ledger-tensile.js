@@ -6,7 +6,9 @@
 (function(root){
   'use strict';
   const TEMPLATE_PATH='./tensile-ledger-template.b64';
-  const ns='http://schemas.openxmlformats.org/officeDocument/2006/relationships/';
+  // Relationship Type URIs end with '/', but the r:embed XML namespace must NOT.
+  const imageRelationshipTypeBase='http://schemas.openxmlformats.org/officeDocument/2006/relationships';
+  const ns=imageRelationshipTypeBase+'/';
   const pictureRows=[1,12,23,34];
   const stages=['試験前状況','0点確認','引張試験結果','試験後 母材状況'];
   const enc=new TextEncoder(),dec=new TextDecoder();
@@ -97,7 +99,7 @@
       images.push({name,data:p.jpeg});
       drawing=drawing.replace('</xdr:wsDr>',imageAnchor(10+i,i+1,i)+'</xdr:wsDr>');
     }
-    if(images.length){drawing=drawing.replace('<xdr:wsDr ','<xdr:wsDr xmlns:r="'+ns+'" ');}
+    if(images.length){drawing=drawing.replace('<xdr:wsDr ','<xdr:wsDr xmlns:r="'+imageRelationshipTypeBase+'" ');}
     const rels='<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'+
       images.map((item,i)=>'<Relationship Id="rId'+(i+1)+'" Type="'+ns+'image" Target="../media/'+item.name.split('/').at(-1)+'"/>').join('')+'</Relationships>';
     return {drawing,rels,images};
