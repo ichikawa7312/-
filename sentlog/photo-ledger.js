@@ -14,6 +14,9 @@
   const number=s=>{const n=Number(s);return Number.isSafeInteger(n)&&n>0?n:null;};
   const isOverviewShape=s=>s?.type==='全景'||(s?.recordKind==='field-record'&&s?.recordType==='photo');
   const category=s=>isOverviewShape(s)?OTHER:String(s?.type||'').trim()||OTHER;
+  // UI selection groups must distinguish actual overview photos from "other".
+  // Keep category() unchanged so existing XLSX workbook grouping is preserved.
+  const selectionType=s=>isOverviewShape(s)?'全景':s?.recordKind==='field-record'&&s?.recordType==='survey'?'調査':String(s?.type||'その他').trim()||'その他';
   function damageLabel(s){
     const t=String(s?.type||'変状'),n=number(s?.typeNo)||number(s?.recordNo);
     return n?t+'-'+n:String(s?.autoLabel||s?.no||t);
@@ -51,7 +54,7 @@
           seen.add(key);
           const type=category(s);
           entries.push({key,drawingId:sheet.id,shapeId:s.id,photoId:photo.id,
-            type,isOverview:isOverviewShape(s),damage:damageLabel(s),typeNo:number(s.typeNo)||number(s.recordNo),
+            type,selectionType:selectionType(s),isOverview:isOverviewShape(s),damage:damageLabel(s),typeNo:number(s.typeNo)||number(s.recordNo),
             sheetName:String(sheet.sheetName||sheet.name||sheet.fileName||'図面'),sheetOrder,
             page:Math.max(1,Number(s.page)||1),shapeOrder,photoOrder,
             member:String(s.member||''),photoName:String(photo.name||''),
@@ -217,7 +220,7 @@
     filesPush('[Content_Types].xml',`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Default Extension="jpeg" ContentType="image/jpeg"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>${names.map((_,i)=>`<Override PartName="/xl/worksheets/sheet${i+1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/drawings/drawing${i+1}.xml" ContentType="application/vnd.openxmlformats-officedocument.drawing+xml"/>`).join('')}</Types>`);
     return zipStored(files);
   }
-  const pure={OTHER,MAX_PHOTOS,safeName,category,isOverviewShape,damageLabel,damageSize,collect,groupsFor,excelSheetNames,zipStored,buildXlsx};
+  const pure={OTHER,MAX_PHOTOS,safeName,category,isOverviewShape,selectionType,damageLabel,damageSize,collect,groupsFor,excelSheetNames,zipStored,buildXlsx};
   if(typeof module!=='undefined'&&module.exports){module.exports=pure;return;}
   if(!root.document||root.SentlogPhotoLedger)return;
 
@@ -318,7 +321,7 @@
     const types=groupOrder(current);for(const type of types){const items=current.entries.filter(e=>e.type===type),active=items.filter(e=>e.included);
       const section=element('section','ledger-section'),header=element('div','ledger-section-head'),title=element('strong','',type+'　'+active.length+'/'+items.length+'枚');
       header.append(title,button('↑',()=>moveGroup(type,-1),'ledger-small'),button('↓',()=>moveGroup(type,1),'ledger-small'));section.append(header);
-      for(const e of items){const row=element('div','ledger-item');const cb=element('input');cb.type='checkbox';cb.checked=e.included;cb.setAttribute('aria-label','台帳に含める');cb.onchange=()=>{e.included=cb.checked;current.changed=true;renderEntries();};
+      for(const e of items){const row=element('div','ledger-item');const cb=element('input');cb.type='checkbox';cb.checked=e.included;cb.disabled=!!current.exporting;cb.setAttribute('aria-label','台帳に含める');cb.onchange=()=>{if(current.exporting)return;e.included=cb.checked;current.changed=true;renderEntries();};
         const img=element('img','ledger-thumb');img.alt=e.photoName||e.damage;img.loading='lazy';const detail=element('div','ledger-detail');
         detail.append(element('b','',e.damage),element('small','',e.sheetName+' / '+e.page+'頁　'+(e.member||'部位未入力')));
         const desc=element('textarea');desc.rows=2;desc.value=e.description;desc.placeholder='備考・説明（台帳専用）';desc.setAttribute('aria-label',e.damage+'の台帳備考');desc.oninput=()=>{e.description=desc.value;current.changed=true;};detail.append(desc);
@@ -337,7 +340,7 @@
       byType.reduce((n,g)=>n+Math.ceil((damaged&&builder?.recordsFor?builder.recordsFor(g.photos).length:g.photos.length)/3),0);
     const sheets=tensile?pages:byType.length;
     modal.querySelector('[data-ledger=count]').textContent=`${chosen}枚 / ${pages}ページ / ${sheets}シート（A4縦・${tensile?'4枚/アンカー':damaged?'3変状/ページ・全景／近接':'3枚/ページ'}）`;
-    updateBulkControls();
+    renderSelectionTypes();
   }
   async function preparePhotos(entries){
     // Keep no collection of full-size Blobs: on iPhone/iPad that could exhaust
@@ -430,7 +433,7 @@
     const entries=current.entries.filter(x=>x.included);
     if(!entries.length){status('出力対象の写真を1枚以上選んでください。',true);return;}
     if(entries.length>MAX_PHOTOS){status('上限は'+MAX_PHOTOS+'枚です。出力対象を分けてください。',true);return;}
-    current.exporting=true;const btn=modal.querySelector('[data-ledger=export]');btn.disabled=true;updateBulkControls();
+    current.exporting=true;const btn=modal.querySelector('[data-ledger=export]');btn.disabled=true;updateSelectionControls();
     try{
       await S.settled();S.assertSafe();
       const {missing}=await preparePhotos(entries);
@@ -450,32 +453,51 @@
       download(file,safeName(current.project.name)+'_'+safeName(current.group.name)+'_写真台帳'+(useTensile?'_引張試験用':useDamage?'_損傷用':'')+'.xlsx');
       status('Excelを出力しました（'+entries.length+'枚）。元の記録は変更していません。');
     }catch(e){console.error('Photo ledger export',e);status('出力できませんでした：'+(e?.message||e),true);}
-    finally{for(const e of entries)delete e.jpeg;current.exporting=false;btn.disabled=false;updateBulkControls();}
+    finally{for(const e of entries)delete e.jpeg;current.exporting=false;btn.disabled=false;updateSelectionControls();}
   }
-  function updateBulkControls(){
+  function categoryNames(){
+    return [...new Set(current.entries.map(e=>e.selectionType))].sort((a,b)=>{
+      const priority=name=>name==='全景'?0:name==='調査'?1:2;
+      return priority(a)-priority(b)||a.localeCompare(b,'ja');
+    });
+  }
+  function setPhotoSelection(predicate,included,description){
+    if(!current||current.exporting)return;
+    const matches=current.entries.filter(predicate);
+    const modified=matches.filter(e=>e.included!==included);
+    for(const e of modified)e.included=included;
+    if(modified.length)current.changed=true;
+    renderEntries();
+    status(description+'（'+modified.length+'枚変更）。元の写真・図面は変更していません。');
+  }
+  function selectAllPhotos(){setPhotoSelection(()=>true,true,'すべて選択しました');}
+  function selectNoPhotos(){setPhotoSelection(()=>true,false,'すべて選択解除しました');}
+  function updateSelectionControls(){
     if(!current||!modal)return;
-    const overviewSelected=current.entries.filter(e=>e.isOverview===true&&e.included).length;
-    const unselected=current.entries.filter(e=>!e.included).length;
-    const exclude=modal.querySelector('[data-ledger=exclude-overviews]');
     const restore=modal.querySelector('[data-ledger=select-all]');
-    if(exclude){exclude.disabled=current.exporting||overviewSelected===0;exclude.textContent='全景をすべて外す（'+overviewSelected+'枚）';}
-    if(restore){restore.disabled=current.exporting||unselected===0;}
+    const exclude=modal.querySelector('[data-ledger=select-none]');
+    if(restore)restore.disabled=current.exporting||current.entries.every(e=>e.included);
+    if(exclude)exclude.disabled=current.exporting||current.entries.every(e=>!e.included);
+    modal.querySelectorAll('[data-ledger=types] input[type=checkbox]').forEach(box=>box.disabled=current.exporting);
+    modal.querySelectorAll('.ledger-item input[type=checkbox]').forEach(box=>box.disabled=current.exporting);
   }
-  function excludeOverviews(){
-    if(!current||current.exporting)return;
-    const chosen=current.entries.filter(e=>e.isOverview===true&&e.included);
-    if(!chosen.length){status('選択中の全景写真はありません。');return;}
-    for(const e of chosen)e.included=false;
-    current.changed=true;renderEntries();
-    status('全景写真'+chosen.length+'枚を一括で選択解除しました。元の写真・記録は変更していません。');
-  }
-  function selectAllPhotos(){
-    if(!current||current.exporting)return;
-    const excluded=current.entries.filter(e=>!e.included);
-    if(!excluded.length){status('写真はすべて選択されています。');return;}
-    for(const e of excluded)e.included=true;
-    current.changed=true;renderEntries();
-    status('写真'+excluded.length+'枚を選択に戻しました。');
+  function renderSelectionTypes(){
+    if(!modal||!current)return;
+    const host=modal.querySelector('[data-ledger=types]');if(!host)return;
+    host.replaceChildren();
+    for(const name of categoryNames()){
+      const entries=current.entries.filter(e=>e.selectionType===name);
+      const count=entries.filter(e=>e.included).length;
+      const label=element('label','ledger-type-option'),checkbox=element('input');
+      label.dataset.ledgerType=name;checkbox.type='checkbox';
+      checkbox.checked=count>0;checkbox.indeterminate=count>0&&count<entries.length;
+      checkbox.disabled=!!current.exporting;
+      checkbox.setAttribute('aria-label',name+'を台帳に含める');
+      checkbox.onchange=()=>setPhotoSelection(e=>e.selectionType===name,checkbox.checked,name+(checkbox.checked?'を選択':'を解除'));
+      label.append(checkbox,element('span','',name+'　'+count+'/'+entries.length+'枚'));
+      host.append(label);
+    }
+    updateSelectionControls();
   }
   function showModal(c){
     cleanPreview();modal=element('div','ledger-overlay');const panel=element('div','ledger-panel');
@@ -487,14 +509,19 @@
     for(const [value,label] of [['standard','標準'],['damage','損傷用'],['tensile','引張試験用']]){const option=element('option','',label);option.value=value;formatSelect.append(option);}
     formatSelect.value=c.format;formatSelect.onchange=()=>{c.format=formatSelect.value;try{localStorage.setItem(FORMAT_KEY,c.format);}catch(_){}renderEntries();};
     formats.append(formatTitle,formatSelect);
+    const picker=element('section','ledger-selection-picker');
+    const heading=element('div','ledger-selection-header'),headingTitle=element('strong','','種類別に選択');
+    const pickerHint=element('small','','チェックを外すとその種類の写真を一括解除。下の一覧では1枚ずつ選び直せます。');
     const bulk=element('div','ledger-bulk-actions');
-    const exclude=button('全景をすべて外す',excludeOverviews,'ledger-overview-off');exclude.dataset.ledger='exclude-overviews';
-    const selectAll=button('すべて選択に戻す',selectAllPhotos,'ledger-select-all');selectAll.dataset.ledger='select-all';
-    bulk.append(exclude,selectAll);
+    const selectAll=button('すべて選択',selectAllPhotos,'ledger-select-all');selectAll.dataset.ledger='select-all';
+    const selectNone=button('すべて解除',selectNoPhotos,'ledger-select-none');selectNone.dataset.ledger='select-none';
+    bulk.append(selectAll,selectNone);heading.append(headingTitle,bulk);
+    const types=element('div','ledger-selection-types');types.dataset.ledger='types';
+    picker.append(heading,pickerHint,types);
     const scroll=element('div','ledger-scroll'),list=element('div');list.dataset.ledger='list';scroll.append(list);
     const footer=element('div','ledger-footer'),stat=element('div','ledger-status');stat.dataset.ledger='status';
     const controls=element('div','ledger-controls');controls.append(button('下書き保存',saveDraft,'ledger-save'),button('Excel出力',exportLedger,'ledger-export'));controls.lastChild.dataset.ledger='export';
-    footer.append(stat,controls);panel.append(bar,count,note,formats,bulk,scroll,footer);modal.append(panel);document.body.append(modal);
+    footer.append(stat,controls);panel.append(bar,count,note,formats,picker,scroll,footer);modal.append(panel);document.body.append(modal);
     current=c;renderEntries();status(c.entries.every(e=>e.included)?'写真は全件選択されています。不要な写真を外してから出力できます。':'保存済みの写真選択を読み込みました。');
   }
   async function open(projectId,groupId){
@@ -520,7 +547,8 @@
     .ledger-panel{width:min(900px,100%);height:min(94vh,970px);display:flex;flex-direction:column;background:white;border-radius:14px;box-shadow:0 10px 45px #0004;color:#111827;overflow:hidden}
     .ledger-head{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:13px 16px;border-bottom:1px solid #d1d5db}.ledger-head h2{margin:0 0 4px;font-size:18px}.ledger-head small{font-size:12px;color:#6b7280}
     .ledger-summary{padding:11px 16px;background:#eff6ff;font-weight:700;font-size:13px}.ledger-note{padding:0 16px;margin:10px 0;color:#4b5563;font-size:12px}
-    .ledger-bulk-actions{display:flex;flex-wrap:wrap;gap:8px;padding:0 16px 12px}.ledger-bulk-actions button{min-height:40px;padding:8px 12px;border:1px solid #cbd5e1;border-radius:7px;background:#fff;color:#111827;font-size:12px;font-weight:600}.ledger-bulk-actions button:disabled{opacity:.5}.ledger-overview-off:not(:disabled){border-color:#b45309;color:#92400e;background:#fffbeb}
+    .ledger-selection-picker{padding:6px 16px 12px;border-top:1px solid #e5e7eb;border-bottom:1px solid #e5e7eb}.ledger-selection-header{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}.ledger-selection-header strong{font-size:13px}.ledger-selection-picker>small{display:block;color:#475569;font-size:11px;margin:3px 0 8px}
+    .ledger-selection-types{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:6px;max-height:145px;overflow:auto}.ledger-type-option{display:flex;align-items:center;gap:8px;min-height:40px;padding:7px 9px;border:1px solid #cbd5e1;border-radius:8px;cursor:pointer;font-size:12px;background:white}.ledger-type-option:has(input:checked){background:#f0f9ff}.ledger-type-option input{width:19px;height:19px;flex:none;accent-color:#176a43}.ledger-bulk-actions{display:flex;gap:6px;flex-wrap:wrap}.ledger-bulk-actions button{min-height:40px;padding:8px 12px;border:1px solid #cbd5e1;border-radius:7px;background:#fff;color:#111827;font-size:12px;font-weight:600}.ledger-bulk-actions button:disabled{opacity:.5}
     .ledger-format{display:flex;align-items:center;gap:12px;padding:2px 16px 12px;font-size:13px}.ledger-format select{flex:1;max-width:240px;border:1px solid #9ca3af;border-radius:7px;padding:8px;color:#111827;background:white;font:inherit}.ledger-tensile-note{font-size:12px;color:#374151;line-height:1.55;background:#f8fafc;border:1px solid #e5e7eb;border-radius:7px;padding:8px;margin:10px 0}.ledger-tensile-record{border:1px solid #d1d5db;border-radius:8px;margin:9px 0;background:white}.ledger-tensile-record summary{font-size:13px;font-weight:700;cursor:pointer;padding:11px;line-height:1.45}.ledger-tensile-inner{border-top:1px solid #e5e7eb;padding:10px}.ledger-tensile-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.ledger-tensile-field{display:flex;flex-direction:column;gap:3px;font-size:12px;font-weight:600}.ledger-tensile-field input,.ledger-tensile-field select{box-sizing:border-box;width:100%;min-height:36px;border:1px solid #9ca3af;border-radius:5px;padding:5px 7px;font:inherit;font-weight:400;color:#111827;background:white}.ledger-tensile-photo-order{font-size:11px;color:#4b5563;margin-top:5px;word-break:break-all}.ledger-scroll{flex:1;overflow:auto;padding:0 16px 14px}.ledger-section{margin-bottom:16px;border:1px solid #d1d5db;border-radius:10px;overflow:hidden}
     .ledger-section-head{display:flex;align-items:center;gap:6px;background:#f3f4f6;padding:8px}.ledger-section-head strong{flex:1;font-size:14px}
     .ledger-item{display:flex;align-items:center;gap:10px;padding:9px;border-top:1px solid #e5e7eb}.ledger-item input[type=checkbox]{width:20px;height:20px;flex:none}.ledger-thumb,.ledger-missing{width:100px;height:75px;flex:none;object-fit:contain;background:#f1f5f9;border-radius:5px}.ledger-missing{display:grid;place-items:center;font-size:11px;color:#b91c1c}
