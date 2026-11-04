@@ -58,7 +58,8 @@ function unpackStored(buffer){
  const sheet=decoder.decode(files.get('xl/worksheets/sheet1.xml'));
  assert.match(sheet, /主桁G1/);assert.match(sheet,/0\.800×0\.500m/);assert.match(sheet,/浮き・段差あり/);
  assert.match(sheet, /<mergeCells count="30">/,'one original-format printed page for one damaged location');
- assert.doesNotMatch(sheet, /<brk id="57"/,'reserve photos must not create additional print pages');
+ assert.match(sheet, /<brk id="57"/,'the original final page break is kept');
+ assert.doesNotMatch(sheet, /<brk id="114"/,'reserves must not introduce a second printed page');
  assert.match(sheet, /<row r="57"/,'original page rows remain present');
  assert.match(sheet, /<c r="N3"[^>]*t="inlineStr">/,'reserve title is positioned outside print columns');
  assert.match(sheet, /予備写真 6枚（印刷対象外）/);
