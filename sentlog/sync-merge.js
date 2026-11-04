@@ -57,6 +57,12 @@
       const out={},keys=new Set([...Object.keys(l||{}),...Object.keys(r||{}),...Object.keys(b||{})]);
       for(const k of keys){
         if(excluded.includes(k))continue;
+        if(k==='labelSize'&&path.endsWith(' / 用紙・縮尺')){
+          const size=resolveLabelSize(l?.[k],r?.[k],b?.[k],!!base);
+          if(!size.valid)clash(path+' / 文字サイズ','設定値を確認できません');
+          else if(l?.[k]!=null||r?.[k]!=null)Object.defineProperty(out,k,{value:size.value,enumerable:true,writable:true,configurable:true});
+          continue;
+        }
         const picked=choose(l?.[k],r?.[k],b?.[k],path+' / '+k);
         let v;
         if(picked.done)v=picked.value;
@@ -118,10 +124,7 @@
       for(const [key,label] of Object.entries(frameFields)){
         if(!equal(l.state[key],r.state[key])){clash(path,label+'が異なります');return;}
       }
-      const st=properties(l.state,r.state,b?.state,path+' / 用紙・縮尺',['shapes','labelSize',...viewKeys]);
-      const size=resolveLabelSize(l.state.labelSize,r.state.labelSize,b?.state?.labelSize,!!base);
-      if(!size.valid)clash(path+' / 文字サイズ','設定値を確認できません');
-      else if(l.state.labelSize!=null||r.state.labelSize!=null)st.labelSize=size.value;
+      const st=properties(l.state,r.state,b?.state,path+' / 用紙・縮尺',['shapes',...viewKeys]);
       st.shapes=entities(l.state.shapes||[],r.state.shapes||[],b?.state?.shapes||[],path,shapeValue,(a,z,ancestor,label)=>shape(a,z,ancestor,label,l.meta.id));
       for(const k of viewKeys)if(l.state[k]!==undefined)st[k]=copy(l.state[k]);
       meta.updatedAt=Math.max(Number(l.meta.updatedAt)||0,Number(r.meta.updatedAt)||0);
