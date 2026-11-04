@@ -34,6 +34,23 @@ pb.drawings[0].state.shapes[0].photos=[{id:'a',name:'different.jpg'}];assert(!M.
 const photoBase=clone(pa),photoDeleted=clone(base),photoAdded=clone(pa);photoAdded.drawings[0].state.shapes[0].photos.push({id:'b',name:'b.jpg'});
 r=M.merge(photoDeleted,photoAdded,{base:photoBase});assert(r.ok);assert.deepEqual(r.payload.drawings[0].state.shapes[0].photos.map(p=>p.id),['b']);
 
+// Presentation-only label sizes must not block safe annotation merges.
+const labelPack=(pack,size)=>{const out=clone(pack);if(size===null)delete out.drawings[0].state.labelSize;else out.drawings[0].state.labelSize=size;return out;};
+const labelBase=labelPack(base,null);
+const localLabel=labelPack(local,'small'),remoteDefault=labelPack(remote,null);
+r=M.merge(localLabel,remoteDefault,{base:labelBase});
+assert(r.ok,'only local label size changed');assert.equal(r.payload.drawings[0].state.labelSize,'small');
+assert.deepEqual(r.payload.drawings[0].state.shapes.map(s=>s.id),['common','phone','ipad']);
+r=M.merge(labelPack(local,null),labelPack(remote,'large'),{base:labelBase});
+assert(r.ok,'only remote label size changed');assert.equal(r.payload.drawings[0].state.labelSize,'large');
+r=M.merge(labelPack(local,'small'),labelPack(remote,'large'),{base:labelBase});
+assert(r.ok,'both label sizes changed with a shared ancestor');assert.equal(r.payload.drawings[0].state.labelSize,'large','shared value wins display-only tie');
+r=M.merge(labelPack(local,'normal'),labelPack(remote,'small'),{preserve:true});
+assert(r.ok,'manual preserve both must not stop on labelSize');assert.equal(r.payload.drawings[0].state.labelSize,'small');
+assert(M.merge(labelPack(local,'normal'),labelPack(remote,null),{preserve:true}).ok,'missing and normal settings are equivalent');
+assert(!M.merge(labelPack(local,'extra-large'),labelPack(remote,'small'),{preserve:true}).ok,'invalid label setting must still stop');
+console.log('PASS labelSize: local-only, remote-only, concurrent, legacy default, manual merge and invalid value');
+
 const scaled=clone(local);scaled.drawings[0].state.pageSettings={'1':{scaleDenom:100}};
 assert(!M.merge(scaled,remote,{preserve:true}).ok,'unknown coordinate-frame changes require review');
 assert(!M.merge(scaled,remote,{base}).ok,'a coordinate-frame change cannot reinterpret peer annotations');
