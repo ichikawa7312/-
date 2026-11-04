@@ -113,6 +113,8 @@
   function addReserveNotes(sheet,notes){
     if(!notes.length)return sheet;
     const byRow=new Map();
+    const colNumber=col=>String(col).split('').reduce((n,c)=>n*26+c.charCodeAt(0)-64,0);
+    const byColumn=(a,b)=>colNumber(a.col)-colNumber(b.col);
     for(const {row,col,text} of notes){
       if(!Number.isInteger(row)||row<1||row>1048576)throw Error('予備写真が多すぎます。分割出力してください。');
       const cell='<c r="'+col+row+'" t="inlineStr"><is><t xml:space="preserve">'+xml(text)+'</t></is></c>';
@@ -127,7 +129,7 @@
         const row=Number(match[1]),cells=byRow.get(row),raw=match[0];
         let out=raw;
         if(cells?.length){
-          const suffix=cells.sort((a,b)=>a.col.localeCompare(b.col)).map(x=>x.cell).join('');
+          const suffix=cells.sort(byColumn).map(x=>x.cell).join('');
           out=raw.endsWith('/>')?raw.slice(0,-2)+'>'+suffix+'</row>':raw.replace('</row>',suffix+'</row>');
         }
         rows.push({row,xml:out});seen.add(row);
@@ -135,14 +137,17 @@
       if(rows.length<57)throw Error('予備写真を追加する前の行構造が不正です。');
       for(const [row,cells] of byRow){
         if(seen.has(row))continue;
-        rows.push({row,xml:'<row r="'+row+'">'+cells.sort((a,b)=>a.col.localeCompare(b.col)).map(x=>x.cell).join('')+'</row>'});
+        rows.push({row,xml:'<row r="'+row+'">'+cells.sort(byColumn).map(x=>x.cell).join('')+'</row>'});
       }
       rows.sort((a,b)=>a.row-b.row);
       return '<sheetData>'+rows.map(x=>x.xml).join('')+'</sheetData>';
     });
     if(!updated)throw Error('予備写真の出力位置を確保できません。');
     const maxRow=Math.max(...byRow.keys());
-    return result.replace(/<dimension ref="A1:Z(\d+)"\/>/,(_,last)=>'<dimension ref="A1:Z'+Math.max(Number(last),maxRow)+'"/>');
+    const farthest=Math.max(26,...notes.map(n=>colNumber(n.col)));
+    let i=farthest,name='';
+    while(i>0){i--;name=String.fromCharCode(65+i%26)+name;i=Math.floor(i/26);}
+    return result.replace(/<dimension ref="A1:Z(\d+)"\/>/,(_,last)=>'<dimension ref="A1:'+name+Math.max(Number(last),maxRow)+'"/>');
   }
   function reservePicture(id,rid,row,col){
     // A 4:3 thumbnail, fixed entirely to the right of column L (print area).
