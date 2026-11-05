@@ -42,7 +42,7 @@ change('tests/dxf.test.cjs',
 import re
 index=ROOT/'sentlog/index.html'
 html=index.read_text(encoding='utf-8')
-for script,old_version in [('dxf-core',178),('dxf',178),('dxf-raster',204)]:
+for script,old_version in [('dxf-core',179),('dxf',179),('dxf-raster',204)]:
     old=f'{script}.js?v={old_version}'
     new=f'{script}.js?v=205'
     if html.count(old)!=2:
@@ -59,7 +59,7 @@ sw.write_text(service_worker.replace(old_cache,new_cache),encoding='utf-8')
 for test in (ROOT/'tests').iterdir():
     if test.suffix not in ('.cjs','.py'):continue
     data=test.read_text(encoding='utf-8')
-    for script,ver in [('dxf-core',178),('dxf',178),('dxf-raster',204)]:
+    for script,ver in [('dxf-core',179),('dxf',179),('dxf-raster',204)]:
         data=data.replace(f'{script}.js?v={ver}',f'{script}.js?v=205')
         data=data.replace(fr'{script}\.js\?v={ver}',fr'{script}\.js\?v=205')
     data=data.replace(old_cache,new_cache)
