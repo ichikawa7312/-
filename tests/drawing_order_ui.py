@@ -29,7 +29,7 @@ with sync_playwright() as p:
     page.get_by_role('button',name='⇅ 並び替え').click()
     assert page.locator('#drawingsGrid.sl-order-edit').count()==1
     assert page.locator('.sl-order-card-actions').count()==2
-    page.locator('[data-drawing-group-id="g2"] .sl-order-card-actions button[aria-label*="上へ"]').click()
+    page.locator('[data-drawing-group-id="g2"] .sl-order-card-actions button[aria-label*="一つ前へ"]').click()
     page.wait_for_function("workspace.projects[0].drawings[2].groupOrder===1")
     assert order()==['g2','g1'],order()
     assert page.evaluate("workspace.projects[0].drawings.every(d=>d.id!=='s1'&&d.id!=='s2'||d.groupOrder===2)")
