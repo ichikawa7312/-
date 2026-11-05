@@ -38,6 +38,16 @@ if text.count(old)!=1:
     raise RuntimeError('DXF scanning integration point moved (match='+str(text.count(old))+')')
 core.write_text(text.replace(old,new,1),encoding='utf-8')
 
+# Dense models can contain many entities even when the DXF byte size is small.
+# Give the existing renderer its large-file timeout in that case too.
+viewer=ROOT/'sentlog/dxf.js'
+viewer_source=viewer.read_text(encoding='utf-8')
+old_timeout='file.size>8*1024*1024?90000:45000'
+new_timeout='(file.size>8*1024*1024||info.entities>50000)?90000:45000'
+if viewer_source.count(old_timeout)!=1:
+    raise RuntimeError('DXF dense renderer timeout anchor mismatch')
+viewer.write_text(viewer_source.replace(old_timeout,new_timeout,1),encoding='utf-8')
+
 # Force the latest scanner into existing browsers, even if older v205 is cached.
 loader=ROOT/'sentlog/index.html'
 html=loader.read_text(encoding='utf-8')
