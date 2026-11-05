@@ -28,6 +28,11 @@ change('sentlog/cloud-sync.js',
 change('sentlog/sync-merge.js',
        "const viewKeys=['currentPage','width','height','pdfPageInfo','nextGlobalNo','typeCounters'];",
        "const viewKeys=['currentPage','width','height','pdfPageInfo','nextGlobalNo','typeCounters','labelSize'];")
+# A same-content fast path may return the legacy remote state wholesale.
+# Scrub presentation data from the final shared merge payload in all paths.
+change('sentlog/sync-merge.js',
+       '    for(const d of ds){\n      // Match the editor',
+       '    for(const d of ds){\n      delete d.state.labelSize;\n      // Match the editor')
 
 # Preserve old snapshotText() hashing so existing checkpoint fingerprint
 # verification still recognizes its baseline, even if it contains a historical
