@@ -1,0 +1,18 @@
+'use strict';
+const assert=require('node:assert/strict');
+const C=require('../sentlog/dxf-core.js');
+const R=require('../sentlog/dxf-image-refs.js');
+const bytes=s=>new TextEncoder().encode(s);
+const mock=`  0\nSECTION\n  2\nHEADER\n  9\n$ACADVER\n  1\nAC1027\n  0\nENDSEC\n  0\nSECTION\n  2\nOBJECTS\n  0\nIMAGEDEF\n  5\nBB\n  1\nC:\\CAD\\DRAWINGS\\03_取水口.TIF\n  0\nENDSEC\n  0\nSECTION\n  2\nENTITIES\n  0\nIMAGE\n  5\nAA\n340\nbb\n 10\n100\n 20\n200\n 11\n0.5\n 21\n0\n 12\n0\n 22\n1\n 13\n300\n 23\n500\n  0\nENDSEC\n  0\nEOF\n`;
+const r=R.references(bytes(mock));
+assert.equal(r.length,1);
+assert.equal(r[0].name,'03_取水口.TIF');
+assert.equal(r[0].path,'C:\\CAD\\DRAWINGS\\03_取水口.TIF');
+assert.deepEqual(r[0].insert,{x:100,y:200});
+assert.deepEqual(r[0].u,{x:.5,y:0});
+assert.deepEqual(r[0].v,{x:0,y:1});
+assert.equal(r[0].width,300);
+assert.equal(r[0].height,500);
+assert.equal(R.references(bytes(mock.replace('  0\nIMAGE\n','  0\nLINE\n')).length,0);
+assert.equal(C.inspect(bytes(mock)).unsupported.includes('IMAGE'),true);
+console.log('PASS DXF referenced TIFF path/placement: original data unchanged');
