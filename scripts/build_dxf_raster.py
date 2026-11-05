@@ -78,6 +78,16 @@ pc='sentlog-pc/index.html'
 p=ROOT/pc;s=p.read_text()
 if s.count('kind=in.(photo,drawing)')!=1:raise RuntimeError('PC asset query layout changed')
 s=s.replace('kind=in.(photo,drawing)','kind=in.(photo,drawing,other)',1)
+start=s.find('async function pendingAssets(){')
+end=s.find('async function downloadAsset(',start)
+if start<0 or end<start:raise RuntimeError('PC pending asset function missing')
+block=s[start:end]
+returns=list(re.finditer(r'\\breturn\\s+([^;\\n]+);',block))
+if len(returns)!=1:raise RuntimeError('PC pending return changed: '+repr(block[-400:]))
+m=returns[0]
+filter_expr="a.kind!=='other'||(a.metadata?.source_type==='cad-raster'&&a.status==='uploaded')"
+replace="const selected=("+m.group(1)+").filter(a=>"+filter_expr+");$('pendingCount').textContent=selected.length;return selected;"
+s=s[:start]+block[:m.start()]+replace+block[m.end():]+s[end:]
 # Other asset types are left untouched. CAD references are handled once,
 # and pc_verified reference images remain in cloud for future iPad delivery.
 old="  for(const a of list){"
