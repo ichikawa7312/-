@@ -80,8 +80,8 @@ if s.count('kind=in.(photo,drawing)')!=1:raise RuntimeError('PC asset query layo
 s=s.replace('kind=in.(photo,drawing)','kind=in.(photo,drawing,other)',1)
 # Other asset types are left untouched. CAD references are handled once,
 # and pc_verified reference images remain in cloud for future iPad delivery.
-old="    for(const a of list){"
-new="    for(const a of list){\n      if(a.kind==='other'&&(a.metadata?.source_type!=='cad-raster'||a.status!=='uploaded'))continue;"
+old="  for(const a of list){"
+new="  for(const a of list){\n   if(a.kind==='other'&&(a.metadata?.source_type!=='cad-raster'||a.status!=='uploaded'))continue;"
 if s.count(old)!=1:
     pos=s.find('async function syncOnce')
     raise RuntimeError('PC processing loop layout changed: '+repr(s[pos:pos+2400]))
@@ -94,8 +94,8 @@ new="""  if(a.kind==='other'&&a.metadata?.source_type==='cad-raster'){
     d=await subdir(d,'図面');"""
 if s.count(old)!=1:raise RuntimeError('PC folder layout changed')
 s=s.replace(old,new,1)
-if s.count('        await deleteVerified(a);')!=1:raise RuntimeError('PC deletion guard missing')
-s=s.replace('        await deleteVerified(a);',"        if(a.kind!=='other')await deleteVerified(a);",1)
+if s.count('    await deleteVerified(a);')!=1:raise RuntimeError('PC deletion guard missing')
+s=s.replace('    await deleteVerified(a);',"    if(a.kind!=='other')await deleteVerified(a);",1)
 p.write_text(s)
 
 # Cache the TIFF decoder for offline iPads. Bump the PWA cache once.
