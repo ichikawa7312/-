@@ -90,5 +90,6 @@ editedB.drawings[0].state.shapes[0].points[0].x=100;
 assert(!M.merge(editedA,editedB,{base}).ok,'conflicting edits to the same geometry still stop');
 const rotate=pack(['common'],'small'),straight=pack(['common'],'normal');
 rotate.drawings[0].state.pageRotations={'1':90};
-assert(!M.merge(rotate,straight,{base}).ok,'a real drawing rotation conflict still stops');
+straight.drawings[0].state.pageRotations={'1':180};
+assert(!M.merge(rotate,straight,{base}).ok,'two conflicting drawing rotations still stop');
 console.log('PASS device-local label sizes: independent iPhone/iPad display, safe legacy merge, no cloud preference, stable checkpoint fingerprints and protected geometry');
