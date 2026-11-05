@@ -112,8 +112,15 @@ if marker not in s:raise RuntimeError('DXF PWA resources missing')
 s=s.replace(marker,"'dxf-core.js','dxf-raster-core.js','dxf.js','dxf-raster.js','vendor/pako.min.js','vendor/UTIF.js'",1)
 m=re.search(r'sentlog-pwa-v(\d+)',s)
 if not m:raise RuntimeError('PWA cache marker missing')
-s=s.replace(m.group(0),'sentlog-pwa-v'+str(int(m.group(1))+1))
+new_cache='sentlog-pwa-v'+str(int(m.group(1))+1)
+s=s.replace(m.group(0),new_cache)
 p.write_text(s)
+# Each earlier guarded build stage updates its tests to the final PWA cache.
+# Preserve those assertions, updating only their expected cache marker.
+for test in (ROOT/'tests').iterdir():
+    if test.suffix not in ('.cjs','.py'):continue
+    source=test.read_text()
+    if m.group(0) in source:test.write_text(source.replace(m.group(0),new_cache))
 
 for name in ('sentlog/dxf-raster-core.js','sentlog/dxf-raster.js','sentlog/dxf.js','sentlog/cloud-sync.js'):
     subprocess.run(['node','--check',name],cwd=ROOT,check=True)
