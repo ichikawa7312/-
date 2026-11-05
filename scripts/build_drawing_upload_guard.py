@@ -23,7 +23,7 @@ s=s.replace(old,new)
 # Fix MIME and extension only for actual DXF drawings; preserve original bytes.
 replacements=[
     (
-        "  const ext=extForBlob(blob,fileName);\\n  const storagePath=",
+        "  const ext=extForBlob(blob,fileName);\n  const storagePath=",
         """  const isDxf=kind==='drawing' && (
     metadata?.source_type==='dxf' || /\\.dxf$/i.test(fileName||'') ||
     /^(?:application\\/(?:x-)?dxf|image\\/(?:x-|vnd\\.)?dxf)$/i.test(blob.type||'')
