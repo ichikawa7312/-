@@ -15,6 +15,19 @@ for(const [index,bytes] of inputs.entries()){
  const before=C.scan(bytes),info=C.inspect(bytes);assert(info.hatches>=1);assert(info.warnings.some(w=>w.includes('モデル空間')));assert.equal(info.units,4);
  const names=['腐食_図形','メモ_四角','メモ_丸','漏水_名称','腐食_ハッチング','メモ_文字背景','寸法_線'];primitives.forEach((p,i)=>p.layerName=names[i]);
  const result=C.appendPrimitives(bytes,primitives,{xMin:-500,yMax:6000,unitsPerPixel:10});const after=C.scan(result.bytes);
+ // AutoCAD requires complete new layer records. ezdxf previously accepted the
+ // incomplete export silently, although AutoCAD LT could not open that DXF.
+ const field=(record,code)=>record?.tags.find(t=>t.code===code)?.value;
+ const baseLayer=before.records.find(r=>r.type==='LAYER'&&field(r,2)==='0');
+ const oldLayers=new Set(before.records.filter(r=>r.type==='LAYER').map(r=>field(r,5)));
+ const newLayers=after.records.filter(r=>r.type==='LAYER'&&!oldLayers.has(field(r,5)));
+ assert.equal(newLayers.length,names.length);
+ for(const layer of newLayers){
+  assert.match(after.raw.slice(layer.start,layer.end),/^  0\\r\\nLAYER\\r\\n  5\\r\\n/,'new layer must use canonical three-character DXF group codes');
+  for(const code of [370,390,347]){
+   if(field(baseLayer,code)!==undefined)assert.equal(field(layer,code),field(baseLayer,code),`LAYER ${field(layer,2)} must retain a valid ${code} reference`);
+  }
+ }
  for(const r of before.records){const id=r.tags.find(t=>t.code===5||t.code===105)?.value;if(!id||['TABLE','SECTION'].includes(r.type))continue;const q=after.records.find(x=>x.tags.some(t=>(t.code===5||t.code===105)&&t.value===id));assert(q);assert.equal(before.raw.slice(r.start,r.end),after.raw.slice(q.start,q.end));}
  assert.equal(result.count,7);const second=C.appendPrimitives(result.bytes,primitives,{xMin:-500,yMax:6000,unitsPerPixel:10});for(const n of names){assert.equal(result.layers[n],n);assert.equal(second.layers[n],n+'_2');}
  assert.deepEqual(C.appendPrimitives(bytes,[],{xMin:0,yMax:0,unitsPerPixel:1}).bytes,new Uint8Array(bytes));
