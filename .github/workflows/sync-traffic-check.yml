@@ -16,4 +16,6 @@ jobs:
       - run: python -m pip install playwright==1.56.0
       - run: python -m playwright install --with-deps chromium
       - name: Verify real receipt persistence and Web Locks
-        run: python tests/sync_traffic_ui.py
+        run: |
+          python tests/sync_traffic_ui.py
+          python tests/drawing_order_ui.py
