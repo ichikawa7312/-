@@ -18,6 +18,33 @@ new="""  const fileName=item.fileName||item.drawingName||('drawing-'+item.drawin
   let optimization={blob,optimized:false,originalSize:blob.size};"""
 if s.count(old)!=1:
     raise RuntimeError('drawing upload guard integration mismatch: '+str(s.count(old)))
-p.write_text(s.replace(old,new))
+s=s.replace(old,new)
+# Existing restored DXF Files may have a generic application/octet-stream type.
+# Fix MIME and extension only for actual DXF drawings; preserve original bytes.
+replacements=[
+    (
+        "  const ext=extForBlob(blob,fileName);\\n  const storagePath=",
+        """  const isDxf=kind==='drawing' && (
+    metadata?.source_type==='dxf' || /\\.dxf$/i.test(fileName||'') ||
+    /^(?:application\\/(?:x-)?dxf|image\\/(?:x-|vnd\\.)?dxf)$/i.test(blob.type||'')
+  );
+  const mimeType=isDxf?'application/dxf':(blob.type||'application/octet-stream');
+  const ext=isDxf?'.dxf':extForBlob(blob,fileName);
+  const storagePath="""
+    ),
+    (
+        "method:'POST',headers:headers({'Content-Type':blob.type||'application/octet-stream','x-upsert':'true'}),body:blob",
+        "method:'POST',headers:headers({'Content-Type':mimeType,'x-upsert':'true'}),body:blob"
+    ),
+    (
+        "    mime_type:blob.type||'application/octet-stream',byte_size:blob.size,sha256:hash,status:'uploaded',",
+        "    mime_type:mimeType,byte_size:blob.size,sha256:hash,status:'uploaded',"
+    )
+]
+for before,after in replacements:
+    if s.count(before)!=1:
+        raise RuntimeError('DXF upload MIME integration mismatch: '+str(s.count(before)))
+    s=s.replace(before,after,1)
+p.write_text(s)
 subprocess.run(['node','--check','sentlog/cloud-sync.js'],cwd=ROOT,check=True)
-print('Built Sentlog v1.96: mismatched local drawing cannot overwrite cloud drawing')
+print('Built Sentlog v1.96: guarded drawing uploads with DXF MIME and original PDF/photo support')
