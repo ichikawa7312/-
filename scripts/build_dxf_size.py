@@ -37,6 +37,34 @@ change('tests/dxf.test.cjs',
        "C.scan(new Uint8Array(8*1024*1024+1)),/8MB/",
        "C.scan(new Uint8Array(25*1024*1024+1)),/25MB/")
 
+# Advance offline cache and script URLs. The old v178/v204 URLs must not
+# accidentally load a stale 8 MiB DXF parser from an iPad/browser cache.
+import re
+index=ROOT/'sentlog/index.html'
+html=index.read_text(encoding='utf-8')
+for script,old_version in [('dxf-core',178),('dxf',178),('dxf-raster',204)]:
+    old=f'{script}.js?v={old_version}'
+    new=f'{script}.js?v=205'
+    if html.count(old)!=2:
+        raise RuntimeError('DXF capacity runtime preflight mismatch: '+old+' count='+str(html.count(old)))
+    html=html.replace(old,new)
+index.write_text(html,encoding='utf-8')
+sw=ROOT/'sentlog/sw.js'
+service_worker=sw.read_text(encoding='utf-8')
+marker=re.search(r'sentlog-pwa-v\d+',service_worker)
+if not marker:raise RuntimeError('DXF capacity service-worker marker missing')
+old_cache=marker.group(0)
+new_cache='sentlog-pwa-v'+str(int(old_cache.rsplit('v',1)[1])+1)
+sw.write_text(service_worker.replace(old_cache,new_cache),encoding='utf-8')
+for test in (ROOT/'tests').iterdir():
+    if test.suffix not in ('.cjs','.py'):continue
+    data=test.read_text(encoding='utf-8')
+    for script,ver in [('dxf-core',178),('dxf',178),('dxf-raster',204)]:
+        data=data.replace(f'{script}.js?v={ver}',f'{script}.js?v=205')
+        data=data.replace(fr'{script}\.js\?v={ver}',fr'{script}\.js\?v=205')
+    data=data.replace(old_cache,new_cache)
+    test.write_text(data,encoding='utf-8')
+
 for file in ('sentlog/dxf-core.js', 'sentlog/dxf.js', 'sentlog/dxf-raster.js'):
     subprocess.run(['node', '--check', file], cwd=ROOT, check=True)
 subprocess.run(['node', 'tests/dxf_size.test.cjs'], cwd=ROOT, check=True)
