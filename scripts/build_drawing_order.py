@@ -22,7 +22,7 @@ end='document.open();document.write(html);document.close()'
 if html.count(end)!=1:
     raise RuntimeError('Sentlog dynamic document boot anchor changed')
 html=html.replace(end,
-    """html=html.replace('</body>','<script src="./drawing-order.js?v=208"><\\\\/script></body>');"""+end,1)
+    """html=html.replace('</body>','<script src="./drawing-order.js?v=208"></'+'script></body>');"""+end,1)
 p.write_text(html,encoding='utf-8')
 sw=ROOT/'sentlog/sw.js'
 content=sw.read_text(encoding='utf-8')
