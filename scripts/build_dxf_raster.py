@@ -20,7 +20,7 @@ edit(dxf,
      "v.frame=C.makeFrame(viewer.GetBounds());viewer.controls?.dispose();",
      "v.frame=C.makeFrame(root.SentlogDxfRasterCore?.includeBounds(viewer.GetBounds(),root.SentlogDxfRasterCore.parse(bytes))||viewer.GetBounds());viewer.controls?.dispose();")
 edit(dxf,
-     "  wrap.dataset.dxf='ready';wrap.dataset.dxfPixels=String(pw*ph);",
+     " wrap.dataset.dxf='ready';wrap.dataset.dxfPixels=String(pw*ph);",
      "  wrap.dataset.dxf='ready';wrap.dataset.dxfPixels=String(pw*ph);\n"
      "  root.SentlogDxfRaster?.viewChanged({drawingId:activeDrawingId,scale,tx,ty,width:r.width,height:r.height,devicePixelRatio:d});")
 edit(dxf,
@@ -57,7 +57,7 @@ anchor='      for(const item of collectPhotos(lp)){'
 start=s.find(anchor)
 if start<0 or s.count(anchor)!=1:raise RuntimeError('photo upload loop not found')
 end=s.find('\n    }\n    await window.SentlogRecords.settled();',start)
-if end<0 or 'knownAssets' not in s[max(0,start-800):start+300]:raise RuntimeError('drawing asset loop layout changed')
+if end<0 or 'knownAssets' not in s[max(0,start-10000):start+300]:raise RuntimeError('drawing asset loop layout changed')
 inject="""
       // These images are linked CAD files, not inspection photos; they are
       // independently SHA-verified and never overwrite a different original.
