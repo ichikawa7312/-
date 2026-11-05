@@ -99,7 +99,7 @@ async function opened({drawingId,bytes,frame}){
  const parsed=C.parse(bytes);
  active={id:drawingId,frame,parsed,images:new Map(),errors:new Map()};
  if(parsed.references.length){
-   canvas=el('canvas');canvas.style.cssText='position:absolute;top:0;left:0;pointer-events:none;';
+   canvas=el('canvas');canvas.style.cssText='position:absolute;top:0;left:0;pointer-events:none;mix-blend-mode:multiply;';
    $('stage').insertBefore(canvas,$('svg'));
  }
  updateButton();await refresh(drawingId);
