@@ -101,7 +101,7 @@ function openDialog(){
 }
 const button=dom('button','参照画像');button.id='dxfRasterBtn';button.hidden=true;
 $('dxfInfoBtn')?.parentElement.append(button);button.onclick=openDialog;
-const priorOpen=openFile;openFile=async function(){const result=await priorOpen.apply(this,arguments);if(state.sourceType==='dxf')await loadDrawing(arguments[0]);else clear();return result;};
+const priorOpen=openFile;openFile=async function(){const previous=state.dxf;const result=await priorOpen.apply(this,arguments);if(state.sourceType==='dxf'){if(previous?.sourceHash&&previous.sourceHash===state.dxf?.sourceHash&&previous.rasterRefs)state.dxf.rasterRefs=previous.rasterRefs;await loadDrawing(arguments[0]);}else clear();return result;};
 const priorTransform=applyTransform;applyTransform=function(){const result=priorTransform.apply(this,arguments);refresh();return result;};
 const priorProjects=showProjects;showProjects=function(){clear();return priorProjects.apply(this,arguments);};
 const priorDrawings=showDrawings;showDrawings=function(){clear();return priorDrawings.apply(this,arguments);};
