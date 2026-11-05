@@ -188,6 +188,7 @@ jobs:
           python tests/drawing_list_actions_ui.py
           python tests/editor_drawing_add_ui.py
           python tests/drawing_groups_ui.py
+          python tests/drawing_order_ui.py
           python tests/ui.py
           python tests/archive_click.py
           python tests/full_archive_click.py
