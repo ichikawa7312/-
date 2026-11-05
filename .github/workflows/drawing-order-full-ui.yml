@@ -1,0 +1,49 @@
+name: Sentlog drawing order full-page smoke
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/drawing-order-full-ui.yml'
+      - 'scripts/build_drawing_order.py'
+      - 'tests/drawing_order_boot_ui.py'
+      - 'sentlog/drawing-order.js'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  chromium:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build exactly the current GitHub Pages app
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import subprocess
+          lines=Path('.github/workflows/pages.yml').read_text().splitlines()
+          marker='      - name: Build archive, management and capacity integration'
+          assert lines.count(marker)==1
+          start=lines.index(marker)+1
+          assert lines[start].strip()=='run: |'
+          commands=[]
+          for line in lines[start+1:]:
+              if line.startswith('          '):
+                  commands.append(line[10:])
+              else:
+                  break
+          assert len(commands)>90, 'Production Pages build commands missing'
+          subprocess.run(['bash','-e','-o','pipefail','-c','\n'.join(commands)],check=True)
+          PY
+      - name: Install Chromium
+        run: |
+          python -m pip install playwright==1.57.0
+          python -m playwright install --with-deps chromium
+      - name: Prove the drawing order button appears on the generated app
+        run: |
+          python tests/drawing_order_boot_ui.py
