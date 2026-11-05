@@ -23,7 +23,7 @@ for(const [index,bytes] of inputs.entries()){
  const newLayers=after.records.filter(r=>r.type==='LAYER'&&!oldLayers.has(field(r,5)));
  assert.equal(newLayers.length,names.length);
  for(const layer of newLayers){
-  assert.match(after.raw.slice(layer.start,layer.end),/^  0\\r\\nLAYER\\r\\n  5\\r\\n/,'new layer must use canonical three-character DXF group codes');
+  assert.match(after.raw.slice(layer.start,layer.end),/^  0\r\nLAYER\r\n  5\r\n/,'new layer must use canonical three-character DXF group codes');
   for(const code of [370,390,347]){
    if(field(baseLayer,code)!==undefined)assert.equal(field(layer,code),field(baseLayer,code),`LAYER ${field(layer,2)} must retain a valid ${code} reference`);
   }
