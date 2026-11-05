@@ -78,11 +78,12 @@ pc='sentlog-pc/index.html'
 p=ROOT/pc;s=p.read_text()
 if s.count('kind=in.(photo,drawing)')!=1:raise RuntimeError('PC asset query layout changed')
 s=s.replace('kind=in.(photo,drawing)','kind=in.(photo,drawing,other)',1)
-if 'return active;' in s:
-    s=s.replace('return active;', "return active.filter(a=>a.kind!=='other'||(a.metadata?.source_type==='cad-raster'&&a.status==='uploaded'));",1)
-elif 'return q||[]' in s:
-    s=s.replace('return q||[]', "return (q||[]).filter(a=>a.kind!=='other'||(a.metadata?.source_type==='cad-raster'&&a.status==='uploaded'))",1)
-else:raise RuntimeError('PC asset return layout changed')
+# Other asset types are left untouched. CAD references are handled once,
+# and pc_verified reference images remain in cloud for future iPad delivery.
+old="    for(const a of list){"
+new="    for(const a of list){\n      if(a.kind==='other'&&(a.metadata?.source_type!=='cad-raster'||a.status!=='uploaded'))continue;"
+if s.count(old)!=1:raise RuntimeError('PC processing loop layout changed')
+s=s.replace(old,new,1)
 old="  if(a.kind==='drawing'){\n    d=await subdir(d,'図面');"
 new="""  if(a.kind==='other'&&a.metadata?.source_type==='cad-raster'){
     d=await subdir(d,'CAD参照画像');d=await subdir(d,drawing);
