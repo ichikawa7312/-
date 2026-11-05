@@ -1,6 +1,7 @@
 'use strict';
 const assert=require('node:assert/strict');
 const C=require('../sentlog/dxf-core.js');
+const fs=require('node:fs');
 const MiB=1024*1024;
 
 // 110,000 LINE entities, each 10 physical lines: previously rejected outright
@@ -21,6 +22,8 @@ const last=parsed.records.at(-1);
 assert.equal(last.type,'EOF');
 assert.deepEqual(C.appendPrimitives(input,[],{unitsPerPixel:1,xMin:0,yMax:0}).bytes,input);
 assert.equal(C.inspect(input).entities,110000);
+assert(fs.readFileSync(__dirname+'/../sentlog/dxf.js','utf8').includes('info.entities>50000'));
+
 // Mixed CRLF, LF, CR, valid trailing blanks and malformed odd tag pairs.
 const crlf=new TextEncoder().encode(prefix.replace(/\n/g,'\r\n')+line.replace(/\n/g,'\r\n')+suffix.replace(/\n/g,'\r\n')+'\r\n');
 assert.equal(C.scan(crlf).records.filter(r=>r.type==='LINE').length,1);
