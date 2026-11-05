@@ -90,6 +90,8 @@ jobs:
           node --check sentlog/dxf.js
           node --check sentlog/dxf-core.js
           node tests/dxf.test.cjs
+          node tests/dxf-image-refs.test.cjs
+          node --check sentlog/dxf-raster.js
           node --check sentlog/drawing-memos.js
           node tests/drawing_memos.test.cjs
       - run: |
