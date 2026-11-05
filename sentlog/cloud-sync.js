@@ -225,17 +225,24 @@ async function uploadAsset({cloudProject,deviceId,clientKey,kind,fileName,blob,s
   if(existing && String(existing.sha256).toLowerCase()===hash && Number(existing.byte_size)===blob.size){
     return {status:'exists',asset:existing};
   }
-  const ext=extForBlob(blob,fileName);
+  // A File restored from IndexedDB may report application/octet-stream even
+  // when the saved drawing is DXF. Preserve the CAD format for cloud delivery.
+  const isDxf=kind==='drawing' && (
+    metadata?.source_type==='dxf' || /\.dxf$/i.test(fileName||'') ||
+    /^(?:application\/(?:x-)?dxf|image\/(?:x-|vnd\.)?dxf)$/i.test(blob.type||'')
+  );
+  const mimeType=isDxf?'application/dxf':(blob.type||'application/octet-stream');
+  const ext=isDxf?'.dxf':extForBlob(blob,fileName);
   const storagePath=session.user.id+'/'+cloudProject.id+'/'+storageFolder+'/'+clientKey.replace(/[^a-zA-Z0-9:_-]/g,'_')+ext;
   const up=await syncStatus.track((kind==='drawing'?'PDF・図面':'写真')+'を送信中',()=>fetch(SUPABASE_URL+'/storage/v1/object/'+BUCKET+'/'+storagePath,{
-    method:'POST',headers:headers({'Content-Type':blob.type||'application/octet-stream','x-upsert':'true'}),body:blob
+    method:'POST',headers:headers({'Content-Type':mimeType,'x-upsert':'true'}),body:blob
   }));
   if(!up.ok)throw new Error('ファイル送信に失敗: '+await up.text());
 
   const payload={
     owner_id:session.user.id,project_id:cloudProject.id,source_device_id:deviceId,
     client_key:clientKey,kind,file_name:fileName||('file'+ext),storage_path:storagePath,
-    mime_type:blob.type||'application/octet-stream',byte_size:blob.size,sha256:hash,status:'uploaded',
+    mime_type:mimeType,byte_size:blob.size,sha256:hash,status:'uploaded',
     captured_at:capturedAt||new Date().toISOString(),metadata:metadata||{},updated_at:new Date().toISOString()
   };
   if(existing){
