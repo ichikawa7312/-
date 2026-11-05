@@ -88,6 +88,7 @@ jobs:
           python3 scripts/build_compact_controls.py
           python3 scripts/build_rescue_header.py
           python3 scripts/build_pdf_revision_guard.py
+          python3 scripts/build_dxf_raster.py
           python3 scripts/build_photo_ledger.py
           python3 scripts/build_display_filter.py
           node tests/photo_ledger.test.cjs
@@ -111,6 +112,8 @@ jobs:
           node --check sentlog/dxf.js
           node --check sentlog/dxf-core.js
           node tests/dxf.test.cjs
+          node tests/dxf_raster.test.cjs
+          node --check sentlog/dxf-raster.js
           node --check sentlog/drawing-memos.js
           node tests/drawing_memos.test.cjs
           node tests/image_recovery_view.test.cjs
