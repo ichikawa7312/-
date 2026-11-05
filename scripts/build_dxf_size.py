@@ -42,12 +42,13 @@ change('tests/dxf.test.cjs',
 import re
 index=ROOT/'sentlog/index.html'
 html=index.read_text(encoding='utf-8')
-for script,old_version in [('dxf-core',179),('dxf',179),('dxf-raster',204)]:
-    old=f'{script}.js?v={old_version}'
-    new=f'{script}.js?v=205'
-    if html.count(old)!=2:
-        raise RuntimeError('DXF capacity runtime preflight mismatch: '+old+' count='+str(html.count(old)))
-    html=html.replace(old,new)
+previous_versions={}
+for script in ('dxf-core','dxf','dxf-raster'):
+    found=re.findall(re.escape(script)+r'\.js\?v=(\d+)',html)
+    if len(found)!=2 or len(set(found))!=1:
+        raise RuntimeError('DXF capacity runtime preflight mismatch: '+script+' versions='+str(found))
+    previous_versions[script]=found[0]
+    html=html.replace(f'{script}.js?v={found[0]}',f'{script}.js?v=205')
 index.write_text(html,encoding='utf-8')
 sw=ROOT/'sentlog/sw.js'
 service_worker=sw.read_text(encoding='utf-8')
@@ -59,7 +60,7 @@ sw.write_text(service_worker.replace(old_cache,new_cache),encoding='utf-8')
 for test in (ROOT/'tests').iterdir():
     if test.suffix not in ('.cjs','.py'):continue
     data=test.read_text(encoding='utf-8')
-    for script,ver in [('dxf-core',179),('dxf',179),('dxf-raster',204)]:
+    for script,ver in previous_versions.items():
         data=data.replace(f'{script}.js?v={ver}',f'{script}.js?v=205')
         data=data.replace(fr'{script}\.js\?v={ver}',fr'{script}\.js\?v=205')
     data=data.replace(old_cache,new_cache)
