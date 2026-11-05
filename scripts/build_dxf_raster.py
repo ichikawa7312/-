@@ -26,7 +26,7 @@ edit(dxf,
 edit(dxf,
      "active=v;stage.insertBefore(v.host,svg);empty.style.display='none';$('fileName').textContent=state.fileName;updatePageUI();fit();viewport();render();persist();updateUI();",
      "active=v;stage.insertBefore(v.host,svg);empty.style.display='none';$('fileName').textContent=state.fileName;updatePageUI();fit();viewport();render();persist();updateUI();\n"
-     "   Promise.resolve(root.SentlogDxfRaster?.opened({drawingId:id,bytes:v.bytes,frame})).catch(e=>console.warn('CAD raster opening failed',e));")
+     "   Promise.resolve(root.SentlogDxfRaster?.opened({drawingId:id,bytes:v.bytes,frame})).then(()=>{if(active?.id===id)viewport();}).catch(e=>console.warn('CAD raster opening failed',e));")
 
 # The loader is composed by 20+ earlier builders. Find only the two DXF tags
 # emitted by the official DXF build; never patch its checked source baseline.
