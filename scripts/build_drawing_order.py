@@ -41,4 +41,5 @@ for file in (ROOT/'tests').iterdir():
 
 subprocess.run(['node','--check','sentlog/drawing-order.js'],cwd=ROOT,check=True)
 subprocess.run(['node','tests/drawing_order.test.cjs'],cwd=ROOT,check=True)
+subprocess.run(['node','tests/drawing_order_boot.test.cjs'],cwd=ROOT,check=True)
 print('Built Sentlog: persistent drawing No. and sheet ordering; drag, touch, numeric sort and safe atomic save')
