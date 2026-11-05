@@ -82,7 +82,9 @@ s=s.replace('kind=in.(photo,drawing)','kind=in.(photo,drawing,other)',1)
 # and pc_verified reference images remain in cloud for future iPad delivery.
 old="    for(const a of list){"
 new="    for(const a of list){\n      if(a.kind==='other'&&(a.metadata?.source_type!=='cad-raster'||a.status!=='uploaded'))continue;"
-if s.count(old)!=1:raise RuntimeError('PC processing loop layout changed')
+if s.count(old)!=1:
+    pos=s.find('async function syncOnce')
+    raise RuntimeError('PC processing loop layout changed: '+repr(s[pos:pos+2400]))
 s=s.replace(old,new,1)
 old="  if(a.kind==='drawing'){\n    d=await subdir(d,'図面');"
 new="""  if(a.kind==='other'&&a.metadata?.source_type==='cad-raster'){
