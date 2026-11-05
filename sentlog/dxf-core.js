@@ -72,13 +72,19 @@ function appendPrimitives(bytes,primitives,frame){
  }
  const fallback={damage:'変状_図形',label:'変状_名称',memo:'メモ_図形',dimension:'寸法_線',record:'記録_図形'};
  const requested=p=>String(p.layerName||fallback[p.layer]||fallback.record).normalize('NFC');
- const pair=(c,v)=>`${c}\r\n${typeof v==='number'?Number(v.toPrecision(15)):v}\r\n`,groups=arr=>arr.map(([c,v])=>pair(c,v)).join('');
+ // Fixed-width group codes match AutoCAD's ASCII DXF writer (e.g. '  0', ' 70', '330').
+ const pair=(c,v)=>`${String(c).padStart(3,' ')}\r\n${typeof v==='number'?Number(v.toPrecision(15)):v}\r\n`,groups=arr=>arr.map(([c,v])=>pair(c,v)).join('');
  function resource(table,type,body){
   const header=d.records.find(r=>r.type==='TABLE'&&r.table===table),end=d.records.find(r=>r.type==='ENDTAB'&&r.table===table);if(!header||!end)throw Error('DXFの設定表が不足しています：'+table);
   const text=groups([[0,type],[5,handle()],[330,val(header,5)],[100,'AcDbSymbolTableRecord'],...body]);let change=changes.find(c=>c.table===table);
   if(!change){change={table,start:end.start,end:end.start,text:'',count:0,header};changes.push(change);}change.text+=text;change.count++;
  }
- for(const p of primitives){const name=requested(p);if(Object.hasOwn(layers,name))continue;layers[name]=allocate('LAYER',name);resource('LAYER','LAYER',[[100,'AcDbLayerTableRecord'],[2,symbol(layers[name])],[70,0],[62,p.layer==='damage'?1:p.layer==='dimension'?3:5],[6,'Continuous']]);}
+ // Preserve the source drawing's own valid plot-style/material references on new layers.
+ // In R2000+ DXF, AutoCAD may reject an otherwise readable file when a new LAYER
+ // record omits the attributes (370, 390, 347) present in existing records.
+ const zeroLayer=d.records.find(r=>r.type==='LAYER'&&readName(val(r,2))==='0');
+ const standardLayerTags=[370,390,347].flatMap(code=>{const value=zeroLayer&&val(zeroLayer,code);return value==null||value===''?[]:[[code,value]];});
+ for(const p of primitives){const name=requested(p);if(Object.hasOwn(layers,name))continue;layers[name]=allocate('LAYER',name);resource('LAYER','LAYER',[[100,'AcDbLayerTableRecord'],[2,symbol(layers[name])],[70,0],[62,p.layer==='damage'?1:p.layer==='dimension'?3:5],[6,'Continuous'],...standardLayerTags]);}
  const style=symbol(allocate('STYLE','記録文字'));resource('STYLE','STYLE',[[100,'AcDbTextStyleTableRecord'],[2,style],[70,0],[40,0],[41,1],[50,0],[71,0],[42,1],[3,'msgothic.ttc'],[4,'']]);
  const dashNames=new Map();
  function dashName(dash){const key=dash.join(',');if(dashNames.has(key))return dashNames.get(key);const name=symbol(allocate('LTYPE','記録破線_'+(dashNames.size+1)));dashNames.set(key,name);const values=dash.length%2?[...dash,...dash]:dash;resource('LTYPE','LTYPE',[[100,'AcDbLinetypeTableRecord'],[2,name],[70,0],[3,'Annotation dash'],[72,65],[73,values.length],[40,values.reduce((a,b)=>a+b,0)*k],...values.flatMap((n,i)=>[[49,n*k*(i%2?-1:1)],[74,0]])]);return name;}
