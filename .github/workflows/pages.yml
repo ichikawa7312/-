@@ -94,6 +94,7 @@ jobs:
           python3 scripts/build_dxf_size.py
           python3 scripts/build_dxf_dense.py
           python3 scripts/build_device_label_size.py
+          python3 scripts/build_drawing_order.py
           node tests/photo_ledger.test.cjs
           node tests/photo_ledger_damage.test.cjs
           node tests/photo_ledger_tensile.test.cjs
@@ -138,6 +139,7 @@ jobs:
           node tests/drawing_list_actions.test.cjs
           node tests/editor_drawing_add.test.cjs
           node tests/drawing_groups.test.cjs
+          node tests/drawing_order.test.cjs
           node tests/group_sync_migration.test.cjs
           node tests/dimension_lines.test.cjs
           node tests/shape_dimensions.test.cjs
