@@ -81,6 +81,7 @@ jobs:
           python3 scripts/build_dxf_raster.py
           python3 scripts/build_dxf_size.py
           python3 scripts/build_dxf_dense.py
+          python3 scripts/build_device_label_size.py
           node tests/drawing_export.test.cjs
           node tests/peer_photos.test.cjs
           node tests/sync_review.test.cjs
@@ -90,6 +91,7 @@ jobs:
           node --check sentlog/line-lengths.js
           node tests/line_lengths.test.cjs
           node tests/sync_merge.test.cjs
+          node tests/sync_device_label.test.cjs
           node --check sentlog/dxf.js
           node --check sentlog/dxf-core.js
           node tests/dxf.test.cjs
