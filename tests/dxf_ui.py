@@ -147,9 +147,10 @@ try:
   expect(page.locator('.sl-dxf-card h2')).to_have_text('DXFを取り込む',timeout=60000)
   page.locator('.sl-dxf-card button',has_text='取り込む').click()
   page.wait_for_function("state.sourceType==='dxf'&&state.fileName==='solid-hatch.dxf'&&document.getElementById('stageWrap').dataset.dxf==='ready'",timeout=20000)
-  assert page.locator('#dxfHatchBtn').is_visible()
+  assert page.locator('#dxfInfoBtn').is_visible()
   assert page.evaluate('SentlogDxf.hatchTransparency')==50
-  page.locator('#dxfHatchBtn').click()
+  page.locator('#dxfInfoBtn').click()
+  page.locator('.sl-dxf-card button',has_text='ハッチング透過率を設定').click()
   assert page.locator('#dxfHatchTransparency').input_value()=='50'
   sample="""()=>{const f=state.dxf.frame,c=document.getElementById('bgCanvas'),g=c.getContext('2d');
    const x=Math.floor((4000-f.xMin)/f.unitsPerPixel*c.width/state.width),
@@ -164,7 +165,6 @@ try:
   page.evaluate(set_slider,50)
   page.locator('.sl-dxf-card button',has_text='閉じる').click()
   assert page.evaluate('state.shapes.length')==0
-  assert page.evaluate('state.dxf.sourceHash')==page.evaluate('state.dxf.sourceHash')
   assert not errors,errors;assert not unexpected,unexpected
   print('PASS DXF UI: hatches/Japanese/6 memos, real export, source units, stable reopen frame, responsive viewport, safe invalid-file rejection, CP932')
   ctx.close();browser.close()
