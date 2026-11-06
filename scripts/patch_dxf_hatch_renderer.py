@@ -27,10 +27,13 @@ scene = once(scene, 'shape = false}) {',
 scene = once(scene, 'this.shape = shape',
              'this.shape = shape\n        this.isSolidHatch = isSolidHatch',
              'entity HATCH flag')
-scene = once(scene,
+start = scene.index('    _ProcessTriangles(entity, blockCtx = null) {')
+stop = scene.index('        const batch = this._GetBatch(key)', start)
+region = once(scene[start:stop],
     'entity.color, 0)',
     'entity.color, entity.isSolidHatch ? -32000 : 0)',
     'separate solid HATCH batches')
+scene = scene[:start] + region + scene[stop:]
 scene_path.write_text(scene)
 
 viewer_path = ENGINE / 'DxfViewer.js'
