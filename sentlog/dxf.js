@@ -180,7 +180,7 @@ function exportDialog(){const card=dialog('DXFを出力');card.append(element('p
  const error=element('p');error.setAttribute('role','alert');const save=button('DXFを保存',async()=>{save.disabled=true;try{await exportDxf(check.checked);closePanel();}catch(e){error.textContent=e.message;}finally{save.disabled=false;}});card.append(error,save,button('閉じる',closePanel));}
 function showInfo(){const card=dialog('DXF図面の情報');card.append(element('p','モデル空間／単位 '+(C.UNITS[state.dxf?.units]?.name||'未設定')+'。元の座標を保持しています。'));
  card.append(element('p','元図の文字は表示用フォントで描画します。元DXFの文字設定は出力に保持します。'));
- for(const warning of state.dxf?.warnings||[])card.append(element('p',warning));card.append(button('閉じる',closePanel));}
+ for(const warning of state.dxf?.warnings||[])card.append(element('p',warning));card.append(button('ハッチング透過率を設定',hatchDialog),button('閉じる',closePanel));}
 function hatchDialog(){
  const card=dialog('DXFハッチングの透過率');
  card.append(element('p','塗りつぶしハッチングの見え方だけを調整します。斜線・格子模様や元DXF、記録データは変更しません。'));
@@ -199,12 +199,12 @@ function hatchDialog(){
  });
  card.append(button('閉じる',closePanel));
 }
-const exportButton=button('DXF出力',exportDialog);exportButton.id='dxfExportBtn';const infoButton=button('DXF情報',showInfo);infoButton.id='dxfInfoBtn';const hatchButton=button('ハッチ透過',hatchDialog);hatchButton.id='dxfHatchBtn';
-$('memoPdfBtn')?.parentElement.append(exportButton,infoButton,hatchButton);
-function updateUI(){const enabled=state.sourceType==='dxf';exportButton.hidden=infoButton.hidden=hatchButton.hidden=!enabled;infoButton.textContent=state.dxf?.warnings?.length?'DXF情報 ⚠':'DXF情報';}
+const exportButton=button('DXF出力',exportDialog);exportButton.id='dxfExportBtn';const infoButton=button('DXF情報',showInfo);infoButton.id='dxfInfoBtn';
+$('memoPdfBtn')?.parentElement.append(exportButton,infoButton);
+function updateUI(){const enabled=state.sourceType==='dxf';exportButton.hidden=infoButton.hidden=!enabled;infoButton.textContent=state.dxf?.warnings?.length?'DXF情報 ⚠':'DXF情報';}
 const previousRender=render;render=function(){const r=previousRender.apply(this,arguments);updateUI();return r;};
 for(const id of ['fileInput','drawingAddInput']){const input=$(id);if(input)input.accept=(input.accept||'application/pdf,image/*')+',.dxf,application/dxf';}
-const css=element('style');css.textContent='.sl-dxf-modal{position:fixed;inset:0;z-index:10020;background:#0008;display:grid;place-items:center;padding:14px}.sl-dxf-card{background:white;color:#111827;border-radius:14px;padding:20px;width:min(540px,100%);max-height:90dvh;overflow:auto;box-sizing:border-box}.sl-dxf-card h2{font-size:18px;margin:0 0 12px}.sl-dxf-card p{font-size:13px;line-height:1.65}.sl-dxf-card button{min-height:44px;padding:8px 16px;margin:6px 6px 0 0}.sl-dxf-card select{width:100%;min-height:44px}.sl-dxf-preview{width:100%;max-height:260px;object-fit:contain;background:white;border:1px solid #ddd}.sl-dxf-actions{display:flex;justify-content:flex-end}#sentlogDrawingToolbar #dxfExportBtn,#sentlogDrawingToolbar #dxfInfoBtn,#sentlogDrawingToolbar #dxfHatchBtn{width:auto!important;min-width:0;flex:0 0 auto;padding:6px 9px;font-size:12px}';document.head.append(css);
+const css=element('style');css.textContent='.sl-dxf-modal{position:fixed;inset:0;z-index:10020;background:#0008;display:grid;place-items:center;padding:14px}.sl-dxf-card{background:white;color:#111827;border-radius:14px;padding:20px;width:min(540px,100%);max-height:90dvh;overflow:auto;box-sizing:border-box}.sl-dxf-card h2{font-size:18px;margin:0 0 12px}.sl-dxf-card p{font-size:13px;line-height:1.65}.sl-dxf-card button{min-height:44px;padding:8px 16px;margin:6px 6px 0 0}.sl-dxf-card select{width:100%;min-height:44px}.sl-dxf-preview{width:100%;max-height:260px;object-fit:contain;background:white;border:1px solid #ddd}.sl-dxf-actions{display:flex;justify-content:flex-end}#sentlogDrawingToolbar #dxfExportBtn,#sentlogDrawingToolbar #dxfInfoBtn{width:auto!important;min-width:0;flex:0 0 auto;padding:6px 9px;font-size:12px}';document.head.append(css);
 new ResizeObserver(schedule).observe(wrap);window.addEventListener('pageshow',schedule);document.addEventListener('visibilitychange',()=>{if(!document.hidden)schedule();});
 root.SentlogDxf={version:'v1.79',prepareFile,exportDxf,capturePrimitives,isDxf,isEditing:()=>busy||!!panel,get frame(){return state.dxf?.frame;},get hatchTransparency(){return hatchTransparency;}};updateUI();
 })(window);
