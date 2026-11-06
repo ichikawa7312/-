@@ -28,8 +28,8 @@ scene = once(scene, 'this.shape = shape',
              'this.shape = shape\n        this.isSolidHatch = isSolidHatch',
              'entity HATCH flag')
 scene = once(scene,
-    'BatchingKey.GeometryType.INDEXED_TRIANGLES,\n                                     entity.color, 0)',
-    'BatchingKey.GeometryType.INDEXED_TRIANGLES,\n                                     entity.color, entity.isSolidHatch ? -32000 : 0)',
+    'entity.color, 0)',
+    'entity.color, entity.isSolidHatch ? -32000 : 0)',
     'separate solid HATCH batches')
 scene_path.write_text(scene)
 
@@ -89,14 +89,12 @@ viewer = once(viewer,
     'fragColor = vec4(${fragmentColor}, hatchOpacity);',
     'fragment alpha')
 viewer = once(viewer,
-    '''const material = materialFactory.call(this.viewer, color,
-                                               instanceBatch?.GetInstanceType() ?? InstanceType.NONE)
-
-        let objConstructor''',
-    '''let material = materialFactory.call(this.viewer, color,
-                                               instanceBatch?.GetInstanceType() ?? InstanceType.NONE)
-
-        // Isolate only filled HATCH: other CAD objects retain opaque materials.
+    'const material = materialFactory.call(this.viewer, color,',
+    'let material = materialFactory.call(this.viewer, color,',
+    'mutable material for hatch-specific clone')
+viewer = once(viewer,
+    '        let objConstructor\n',
+    '''        // Solid HATCH receives its own alpha material; other fills stay opaque.
         if (this.key.geometryType === BatchingKey.GeometryType.INDEXED_TRIANGLES &&
             this.key.lineType === -32000) {
             let hatchMaterial = this.viewer.hatchMaterials.get(material)
@@ -110,7 +108,8 @@ viewer = once(viewer,
             material = hatchMaterial
         }
 
-        let objConstructor''',
-    'filled HATCH batch material')
+        let objConstructor
+''',
+    'isolated HATCH material')
 viewer_path.write_text(viewer)
 print('DXF: solid HATCH opacity separated from patterns/linework; original CAD preserved')
