@@ -20,7 +20,7 @@ assert.match(ui,/localStorage\.setItem\(HATCH_KEY/,'do not cloud-sync a per-devi
 assert.match(ui,/function refreshDxfBackground\(\)/,'PDF and PNG backgrounds must follow slider');
 assert.match(ui,/ctx\.drawImage\(active\.viewer\.GetCanvas\(\)/,'refresh the full-sheet bitmap');
 assert.match(ui,/id='dxfHatchTransparency'/,'range input must have a stable test selector');
-assert.match(ui,/hatchButton\.hidden=!enabled/,'hide the control for non-DXF drawings');
+assert.match(ui,/card\.append\(button\('ハッチング透過率を設定',hatchDialog\)/,'provide the slider via the existing DXF info dialog without extra toolbar width');
 assert.equal(index.split('dxf.js?v=210').length-1,2,'runtime and preflight must use new DXF module');
 assert.match(ui,/vendor\/dxf-engine\.js\?v=210/,'do not load old opaque DXF engine');
 assert.match(sw,/vendor\/dxf-engine\.js/,'new engine must be cached for offline use');
