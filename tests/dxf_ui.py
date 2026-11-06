@@ -137,6 +137,34 @@ try:
   drawing_id=page.evaluate('activeDrawingId');entry=next(f for f in pack['files'] if f['key']=='background:'+drawing_id)
   assert base64.b64decode(entry['data'].split(',',1)[1])==cp
   assert pack['drawingStates'][drawing_id]['dxf']['frame']==page.evaluate('state.dxf.frame')
+  # Solid HATCH is translucent without changing source bytes. Pattern hatches
+  # in the original fixture were exercised earlier and must remain as lines.
+  original=(ROOT/'tests/fixtures/dxf-model.dxf').read_bytes()
+  before_hatch=b'  2\nANSI31\n 70\n0\n'
+  assert original.count(before_hatch)==1
+  solid=original.replace(before_hatch,b'  2\nSOLID\n 70\n1\n',1)
+  page.locator('#drawingAddInput').set_input_files({'name':'solid-hatch.dxf','mimeType':'application/dxf','buffer':solid})
+  expect(page.locator('.sl-dxf-card h2')).to_have_text('DXFを取り込む',timeout=60000)
+  page.locator('.sl-dxf-card button',has_text='取り込む').click()
+  page.wait_for_function("state.sourceType==='dxf'&&state.fileName==='solid-hatch.dxf'&&document.getElementById('stageWrap').dataset.dxf==='ready'",timeout=20000)
+  assert page.locator('#dxfInfoBtn').is_visible()
+  assert page.evaluate('SentlogDxf.hatchTransparency')==50
+  page.locator('#dxfInfoBtn').click()
+  page.locator('.sl-dxf-card button',has_text='ハッチング透過率を設定').click()
+  assert page.locator('#dxfHatchTransparency').input_value()=='50'
+  sample="""()=>{const f=state.dxf.frame,c=document.getElementById('bgCanvas'),g=c.getContext('2d');
+   const x=Math.floor((4000-f.xMin)/f.unitsPerPixel*c.width/state.width),
+   y=Math.floor((f.yMax-1200)/f.unitsPerPixel*c.height/state.height);
+   const p=g.getImageData(x,y,1,1).data;return p[0]+p[1]+p[2];}"""
+  set_slider="""v=>{const e=document.getElementById('dxfHatchTransparency');e.value=String(v);e.dispatchEvent(new Event('input',{bubbles:true}));}"""
+  page.evaluate(set_slider,0);opaque=page.evaluate(sample)
+  page.evaluate(set_slider,90);transparent=page.evaluate(sample)
+  assert transparent>opaque+70,('solid fill should lighten by alpha blending',opaque,transparent)
+  assert page.evaluate('SentlogDxf.hatchTransparency')==90
+  assert page.evaluate("localStorage.getItem('sentlog-dxf-hatch-transparency-v1')")=='90'
+  page.evaluate(set_slider,50)
+  page.locator('.sl-dxf-card button',has_text='閉じる').click()
+  assert page.evaluate('state.shapes.length')==0
   assert not errors,errors;assert not unexpected,unexpected
   print('PASS DXF UI: hatches/Japanese/6 memos, real export, source units, stable reopen frame, responsive viewport, safe invalid-file rejection, CP932')
   ctx.close();browser.close()

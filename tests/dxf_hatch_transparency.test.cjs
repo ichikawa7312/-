@@ -1,0 +1,27 @@
+'use strict';
+const assert=require('node:assert/strict');
+const fs=require('node:fs');
+const read=x=>fs.readFileSync(x,'utf8');
+const ui=read('sentlog/dxf.js'), patch=read('scripts/patch_dxf_hatch_renderer.py');
+const bundled=read('sentlog/vendor/dxf-engine.js');
+const index=read('sentlog/index.html');
+const sw=read('sentlog/sw.js');
+
+assert.match(patch,/isSolidHatch: true/,'filled HATCH triangles must be tagged');
+assert.match(patch,/entity\.isSolidHatch \? -32000 : 0/,'HATCH must have a private mesh batch');
+assert.match(patch,/this\.key\.lineType === -32000/,'only solid HATCH gets alpha material');
+assert.match(patch,/hatchMaterial\.transparent =/,'the material must blend with existing lines');
+assert.match(patch,/hatchMaterials\.clear\(\)/,'GPU material cleanup must be implemented');
+assert.match(bundled,/SetHatchOpacity/,'released engine must include alpha API');
+assert.match(bundled,/hatchOpacity/,'released shader must use alpha, not merely expose a button');
+assert.match(ui,/viewer\.SetHatchOpacity\(1-hatchTransparency\/100\)/,'apply preference on DXF load');
+assert.match(ui,/hatchTransparency=savedHatchTransparency\(\)/,'default and per-device setting');
+assert.match(ui,/localStorage\.setItem\(HATCH_KEY/,'do not cloud-sync a per-device view preference');
+assert.match(ui,/function refreshDxfBackground\(\)/,'PDF and PNG backgrounds must follow slider');
+assert.match(ui,/ctx\.drawImage\(active\.viewer\.GetCanvas\(\)/,'refresh the full-sheet bitmap');
+assert.match(ui,/id='dxfHatchTransparency'/,'range input must have a stable test selector');
+assert.match(ui,/card\.append\(button\('ハッチング透過率を設定',hatchDialog\)/,'provide the slider via the existing DXF info dialog without extra toolbar width');
+assert.equal(index.split('dxf.js?v=210').length-1,2,'runtime and preflight must use new DXF module');
+assert.match(ui,/vendor\/dxf-engine\.js\?v=210/,'do not load old opaque DXF engine');
+assert.match(sw,/vendor\/dxf-engine\.js/,'new engine must be cached for offline use');
+console.log('PASS DXF hatch transparency: isolated filled HATCH, shader alpha, live slider, export background, offline cache, no cloud mutation');

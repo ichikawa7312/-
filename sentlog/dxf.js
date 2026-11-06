@@ -7,12 +7,17 @@ let active=null,busy=false,panel=null,serial=0,raf=0,enginePromise=null,pendingA
 const element=(tag,text)=>{const e=document.createElement(tag);if(text!=null)e.textContent=text;return e;};
 const isDxf=(f,fallback='')=>/\.dxf$/i.test(f?.name||fallback)||/^(application|image)\/(x-)?dxf$/i.test(f?.type||'');
 const current=()=>active&&active.id===activeDrawingId&&state.sourceType==='dxf'&&currentView==='editor';
+const HATCH_KEY='sentlog-dxf-hatch-transparency-v1';
+function savedHatchTransparency(){
+ try{const stored=localStorage.getItem(HATCH_KEY);if(stored===null)return 50;const n=Number(stored);return Number.isFinite(n)?Math.min(90,Math.max(0,n)):50;}catch{return 50;}
+}
+let hatchTransparency=savedHatchTransparency();
 const hash=async b=>[...new Uint8Array(await crypto.subtle.digest('SHA-256',b))].map(x=>x.toString(16).padStart(2,'0')).join('');
 function destroy(v){if(!v)return;try{v.viewer.GetRenderer()?.forceContextLoss();v.viewer.Destroy();}catch{}v.host.remove();v.bytes=null;}
 function clear(){serial++;cancelAnimationFrame(raf);raf=0;destroy(active);active=null;stage.style.width='';stage.style.height='';stage.style.overflow='';canvas.style.display='';svg.style.overflow='';svg.removeAttribute('preserveAspectRatio');delete wrap.dataset.dxf;updateUI();}
 function loadEngine(){
  if(root.SentlogDxfEngine)return Promise.resolve(root.SentlogDxfEngine);
- if(!enginePromise)enginePromise=new Promise((resolve,reject)=>{const s=element('script');s.src='./vendor/dxf-engine.js?v=178';s.onload=()=>resolve(root.SentlogDxfEngine);s.onerror=()=>{enginePromise=null;s.remove();reject(Error('DXF表示機能を読み込めません。通信できる場所で一度開いてください。'));};document.head.append(s);});return enginePromise;
+ if(!enginePromise)enginePromise=new Promise((resolve,reject)=>{const s=element('script');s.src='./vendor/dxf-engine.js?v=210';s.onload=()=>resolve(root.SentlogDxfEngine);s.onerror=()=>{enginePromise=null;s.remove();reject(Error('DXF表示機能を読み込めません。通信できる場所で一度開いてください。'));};document.head.append(s);});return enginePromise;
 }
 function dialog(title){
  closePanel();panel=element('div');panel.className='sl-dxf-modal';panel.setAttribute('role','dialog');panel.setAttribute('aria-modal','true');
@@ -39,7 +44,7 @@ async function prepareFile(file,ask=true){
   const host=element('div');host.style.cssText='position:fixed;left:-10000px;top:0;width:512px;height:384px;pointer-events:none;';document.body.append(host);
   const viewer=new engine.DxfViewer(host,{canvasWidth:512,canvasHeight:384,clearColor:engine.white(),fileEncoding:info.encoding,preserveDrawingBuffer:true,antialias:true,retainParsedDxf:false,sceneOptions:{suppressPaperSpace:true}});
   v={viewer,host,bytes,info,sourceHash,warnings:[...info.warnings],id:null};if(!viewer.HasRenderer())throw Error('この端末ではDXF表示を開始できません。ブラウザーを更新して開き直してください。');
-  viewer.GetRenderer().setPixelRatio(1);viewer.SetSize(512,384);
+  viewer.GetRenderer().setPixelRatio(1);viewer.SetSize(512,384);viewer.SetHatchOpacity(1-hatchTransparency/100);
   viewer.Subscribe('message',e=>{if(e.detail.level==='warn')v.warnings.push('表示の一部を再現できません：'+e.detail.message);});
   const url=URL.createObjectURL(file);let timer;
   try{await Promise.race([viewer.Load({url,fonts:[new URL('./vendor/dxf-font.woff',location.href).href],workerFactory:()=>new Worker(new URL('./vendor/dxf-worker.js?v=178',location.href))}),new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('DXFの表示処理が時間内に完了しませんでした。図面を分割してください。')),45000);})]);}
@@ -54,6 +59,16 @@ async function prepareFile(file,ask=true){
  }catch(e){destroy(v);throw e;}finally{busy=false;setLoading(false);}
 }
 function view(v,cx,cy,width,pw,ph){const o=v.viewer.GetOrigin();v.viewer.SetSize(pw,ph);v.viewer.SetView({x:cx-o.x,y:cy-o.y},width);v.viewer.Render();}
+function refreshDxfBackground(){
+ if(!current())return;
+ const f=state.dxf.frame,w=canvas.width,h=canvas.height;
+ if(!(w>0&&h>0))return;
+ // The full-page bitmap is also used by PDF/PNG export. Rebuild it using the
+ // same opacity as the live WebGL layer, then restore the current pan/zoom.
+ view(active,f.xMin+f.width*f.unitsPerPixel/2,f.yMax-f.height*f.unitsPerPixel/2,f.width*f.unitsPerPixel,w,h);
+ ctx.save();ctx.fillStyle='white';ctx.fillRect(0,0,w,h);ctx.drawImage(active.viewer.GetCanvas(),0,0,w,h);ctx.restore();
+ viewport();
+}
 function viewport(){
  if(!current())return;const r=wrap.getBoundingClientRect(),f=state.dxf.frame;if(r.width<1||r.height<1||!(scale>0))return;
  stage.style.transform='none';stage.style.width=r.width+'px';stage.style.height=r.height+'px';stage.style.overflow='hidden';
@@ -165,7 +180,25 @@ function exportDialog(){const card=dialog('DXFを出力');card.append(element('p
  const error=element('p');error.setAttribute('role','alert');const save=button('DXFを保存',async()=>{save.disabled=true;try{await exportDxf(check.checked);closePanel();}catch(e){error.textContent=e.message;}finally{save.disabled=false;}});card.append(error,save,button('閉じる',closePanel));}
 function showInfo(){const card=dialog('DXF図面の情報');card.append(element('p','モデル空間／単位 '+(C.UNITS[state.dxf?.units]?.name||'未設定')+'。元の座標を保持しています。'));
  card.append(element('p','元図の文字は表示用フォントで描画します。元DXFの文字設定は出力に保持します。'));
- for(const warning of state.dxf?.warnings||[])card.append(element('p',warning));card.append(button('閉じる',closePanel));}
+ for(const warning of state.dxf?.warnings||[])card.append(element('p',warning));card.append(button('ハッチング透過率を設定',hatchDialog),button('閉じる',closePanel));}
+function hatchDialog(){
+ const card=dialog('DXFハッチングの透過率');
+ card.append(element('p','塗りつぶしハッチングの見え方だけを調整します。斜線・格子模様や元DXF、記録データは変更しません。'));
+ const label=element('label','塗りつぶしの透過率');
+ const value=element('strong',hatchTransparency+'%');
+ value.style.cssText='display:inline-block;margin-left:12px;font-size:16px;';
+ const slider=element('input');slider.type='range';slider.id='dxfHatchTransparency';slider.min='0';slider.max='90';slider.step='5';slider.value=String(hatchTransparency);
+ slider.style.cssText='width:100%;min-height:44px;display:block;';
+ label.append(slider,value);card.append(label);
+ card.append(element('p','0%＝不透明、50%＝半透明、90%＝ほぼ透明。設定はこの端末だけに保存されます。'));
+ const error=element('p');error.setAttribute('role','alert');card.append(error);
+ slider.addEventListener('input',()=>{
+  hatchTransparency=Number(slider.value);value.textContent=hatchTransparency+'%';
+  try{localStorage.setItem(HATCH_KEY,String(hatchTransparency));}catch{}
+  try{if(current()){active.viewer.SetHatchOpacity(1-hatchTransparency/100);refreshDxfBackground();}}catch(e){error.textContent='透過率を更新できませんでした。図面を開き直してください。';console.warn(e);}
+ });
+ card.append(button('閉じる',closePanel));
+}
 const exportButton=button('DXF出力',exportDialog);exportButton.id='dxfExportBtn';const infoButton=button('DXF情報',showInfo);infoButton.id='dxfInfoBtn';
 $('memoPdfBtn')?.parentElement.append(exportButton,infoButton);
 function updateUI(){const enabled=state.sourceType==='dxf';exportButton.hidden=infoButton.hidden=!enabled;infoButton.textContent=state.dxf?.warnings?.length?'DXF情報 ⚠':'DXF情報';}
@@ -173,5 +206,5 @@ const previousRender=render;render=function(){const r=previousRender.apply(this,
 for(const id of ['fileInput','drawingAddInput']){const input=$(id);if(input)input.accept=(input.accept||'application/pdf,image/*')+',.dxf,application/dxf';}
 const css=element('style');css.textContent='.sl-dxf-modal{position:fixed;inset:0;z-index:10020;background:#0008;display:grid;place-items:center;padding:14px}.sl-dxf-card{background:white;color:#111827;border-radius:14px;padding:20px;width:min(540px,100%);max-height:90dvh;overflow:auto;box-sizing:border-box}.sl-dxf-card h2{font-size:18px;margin:0 0 12px}.sl-dxf-card p{font-size:13px;line-height:1.65}.sl-dxf-card button{min-height:44px;padding:8px 16px;margin:6px 6px 0 0}.sl-dxf-card select{width:100%;min-height:44px}.sl-dxf-preview{width:100%;max-height:260px;object-fit:contain;background:white;border:1px solid #ddd}.sl-dxf-actions{display:flex;justify-content:flex-end}#sentlogDrawingToolbar #dxfExportBtn,#sentlogDrawingToolbar #dxfInfoBtn{width:auto!important;min-width:0;flex:0 0 auto;padding:6px 9px;font-size:12px}';document.head.append(css);
 new ResizeObserver(schedule).observe(wrap);window.addEventListener('pageshow',schedule);document.addEventListener('visibilitychange',()=>{if(!document.hidden)schedule();});
-root.SentlogDxf={version:'v1.79',prepareFile,exportDxf,capturePrimitives,isDxf,isEditing:()=>busy||!!panel,get frame(){return state.dxf?.frame;}};updateUI();
+root.SentlogDxf={version:'v1.79',prepareFile,exportDxf,capturePrimitives,isDxf,isEditing:()=>busy||!!panel,get frame(){return state.dxf?.frame;},get hatchTransparency(){return hatchTransparency;}};updateUI();
 })(window);

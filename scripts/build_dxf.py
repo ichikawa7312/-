@@ -47,6 +47,7 @@ new="""        const box = glyph.getBoundingBox()
 if renderer_text.count(old)!=1:raise RuntimeError('DXF CFF font integration mismatch')
 renderer_text=renderer_text.replace(old,new);renderer.write_text(renderer_text)
 (vendor/'dxf-text-renderer-source.js').write_text(renderer_text)
+subprocess.run(['python3',str(ROOT/'scripts/patch_dxf_hatch_renderer.py')],cwd=ROOT,check=True)
 esbuild=tool/'node_modules/.bin/esbuild'
 for name in ('main','worker'):
  target='dxf-engine.js' if name=='main' else 'dxf-worker.js'

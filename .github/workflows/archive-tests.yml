@@ -83,6 +83,7 @@ jobs:
           python3 scripts/build_dxf_dense.py
           python3 scripts/build_device_label_size.py
           python3 scripts/build_drawing_order.py
+          python3 scripts/build_dxf_transparency.py
           node tests/drawing_export.test.cjs
           node tests/peer_photos.test.cjs
           node tests/sync_review.test.cjs
@@ -99,6 +100,7 @@ jobs:
           node tests/dxf_size.test.cjs
           node tests/dxf_dense.test.cjs
           node tests/dxf_raster.test.cjs
+          node tests/dxf_hatch_transparency.test.cjs
           node --check sentlog/dxf-raster.js
           node --check sentlog/drawing-memos.js
           node tests/drawing_memos.test.cjs
@@ -174,6 +176,7 @@ jobs:
           NODE_PATH="$RUNNER_TEMP/sentlog-dom/node_modules" node tests/drawing_memos_dom.cjs
           pip install playwright==1.57.0
           python -m playwright install --with-deps chromium webkit
+          python tests/dxf_ui.py
           SENTLOG_TEST_BROWSERS=chromium,webkit python tests/peer_photos_ui.py
           python tests/dimension_text_ui.py
           SENTLOG_TEST_BROWSER=webkit python tests/dimension_text_ui.py
@@ -211,7 +214,6 @@ jobs:
           python tests/single_number_ui.py
           python tests/optional_symbol_ui.py
           python tests/dimension_lines_ui.py
-          python tests/dxf_ui.py
           pip install ezdxf==1.4.4
           python tests/dxf_outputs.py
           python tests/shape_dimensions_ui.py
