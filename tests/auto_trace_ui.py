@@ -32,7 +32,12 @@ try:
             else:request.abort()
         page.route('**/*',route)
         page.goto(origin+'/sentlog/')
-        page.wait_for_function("!!window.SentlogAutoTrace && !!window.sentlogAppReady",timeout=45000)
+        try:
+            page.wait_for_function("!!window.SentlogAutoTrace && !!window.sentlogAppReady",timeout=18000)
+        except Exception:
+            print('AUTO_TRACE_BOOT_DIAGNOSTIC',page.evaluate("""()=>({url:location.href,title:document.title,body:document.body?.innerText?.slice(0,1400),ready:!!window.sentlogAppReady,autoTrace:!!window.SentlogAutoTrace,core:!!window.SentlogAutoTraceCore,loader:document.querySelectorAll('script[src*=auto-trace]').length,hasToolbar:!!document.querySelector('#editorView .toolbar'),scripts:[...document.querySelectorAll('script[src]')].slice(-14).map(x=>x.src)})"""),flush=True)
+            print('AUTO_TRACE_BOOT_ERRORS',errors,flush=True)
+            raise
         page.evaluate("async()=>{await window.sentlogAppReady}")
         page.evaluate("""()=>{
           const p={id:'trace-project',name:'自動描写テスト',drawings:[{
