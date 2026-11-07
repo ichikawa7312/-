@@ -25,7 +25,7 @@ function installStyle(){
  if(styleAdded)return;styleAdded=true;
  const s=element('style');s.id='slAutoTraceStyle';
  s.textContent=[
- '.sl-trace-open{background:#ecfeff!important;border-color:#0891b2!important;color:#155e75!important;font-weight:800!important}',
+ '.sl-trace-open{background:#ecfeff!important;border-color:#0891b2!important;color:#155e75!important;font-weight:800!important;width:110px!important;min-width:110px!important;flex:0 0 110px!important;height:44px!important;padding:0 7px!important;white-space:nowrap!important}',
  '.sl-trace-modal{position:fixed;inset:0;z-index:1500;display:flex;justify-content:center;align-items:center;background:rgba(15,23,42,.76);padding:8px;box-sizing:border-box}',
  '.sl-trace-dialog{display:flex;flex-direction:column;gap:9px;width:min(940px,100%);height:min(96dvh,950px);overflow:hidden;background:#fff;color:#0f172a;border-radius:13px;padding:12px;box-sizing:border-box;font:14px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}',
  '.sl-trace-header{display:flex;align-items:center;justify-content:space-between;gap:8px}',
@@ -428,6 +428,8 @@ async function commitPlacement(){
  }
  try{root.SentlogRecords?.assertSafe?.();}catch(e){alert('端末の保存状態を確認してください：'+e.message);return;}
  const btn=ctx.panel.querySelector('.sl-trace-primary');if(btn)btn.disabled=true;
+ for(const control of ctx.panel.querySelectorAll('button'))control.disabled=true;
+ ctx.panel.querySelector('.sl-trace-place-msg').textContent='変状・撮影写真を保存中です。完了まで図面を切り替えないでください。';
  let created=[],persisted=false;
  try{
    pushHistory(ctx.page);
@@ -443,7 +445,6 @@ async function commitPlacement(){
    }
    persist();persisted=true;
    selected=created.at(-1).id;selectShape(selected);
-   dismissPlacement(false);
    if(ctx.attach&&ctx.sourcePhoto){
      try{
        const photo=await preparePhoto(ctx.sourcePhoto);
@@ -460,9 +461,12 @@ async function commitPlacement(){
        alert('変状は登録しましたが、一部の撮影写真の保存に失敗しました。端末の保存状態と写真一覧を確認してください。');
      }
    }
+   dismissPlacement(false);
  }catch(e){
    if(!persisted&&created.length){state.shapes=state.shapes.filter(s=>!created.some(v=>v.id===s.id));rebuildNumberingState();render();}
    console.error('auto trace commit',e);alert('変状の保存に失敗しました：'+(e.message||e));
+   for(const control of ctx.panel.querySelectorAll('button'))control.disabled=false;
+   ctx.panel.querySelector('.sl-trace-place-msg').textContent='保存できませんでした。登録状態を確認してから再操作してください。';
    if(btn)btn.disabled=false;return;
  }
  // Changes use the same shape JSON, photo storage, history and sync as manual records.
