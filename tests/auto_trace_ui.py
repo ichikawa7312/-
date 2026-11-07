@@ -20,7 +20,9 @@ try:
         browser=pw.chromium.launch(**args)
         page=browser.new_page(viewport={'width':390,'height':844},service_workers='block',accept_downloads=True)
         errors=[]
+        logs=[]
         page.on('pageerror',lambda e:errors.append(str(e)))
+        page.on('console',lambda m:logs.append(m.type+': '+m.text))
         def route(request):
             url=request.request.url
             if url.startswith(origin) or url.startswith('blob:'):
@@ -35,8 +37,9 @@ try:
         try:
             page.wait_for_function("!!window.SentlogAutoTrace && !!window.sentlogAppReady",timeout=18000)
         except Exception:
-            print('AUTO_TRACE_BOOT_DIAGNOSTIC',page.evaluate("""()=>({url:location.href,title:document.title,body:document.body?.innerText?.slice(0,1400),ready:!!window.sentlogAppReady,autoTrace:!!window.SentlogAutoTrace,core:!!window.SentlogAutoTraceCore,loader:document.querySelectorAll('script[src*=auto-trace]').length,hasToolbar:!!document.querySelector('#editorView .toolbar'),scripts:[...document.querySelectorAll('script[src]')].slice(-14).map(x=>x.src)})"""),flush=True)
+            print('AUTO_TRACE_BOOT_DIAGNOSTIC',page.evaluate("""()=>({url:location.href,title:document.title,body:document.body?.innerText?.slice(0,1400),ready:!!window.sentlogAppReady,autoTrace:!!window.SentlogAutoTrace,core:!!window.SentlogAutoTraceCore,loader:document.querySelectorAll('script[src*=auto-trace]').length,style:!!document.getElementById('slAutoTraceStyle'),button:!!document.getElementById('slAutoTraceButton'),photoInput:!!document.getElementById('slAutoTraceCamera'),hasToolbar:!!document.querySelector('#editorView .toolbar'),scripts:[...document.querySelectorAll('script[src]')].slice(-14).map(x=>x.src)})"""),flush=True)
             print('AUTO_TRACE_BOOT_ERRORS',errors,flush=True)
+            print('AUTO_TRACE_BOOT_CONSOLE',logs[-30:],flush=True)
             raise
         page.evaluate("async()=>{await window.sentlogAppReady}")
         page.evaluate("""()=>{
