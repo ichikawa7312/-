@@ -5,6 +5,7 @@ on:
       - 'sentlog/auto-trace*.js'
       - 'scripts/build_auto_trace.py'
       - 'tests/auto_trace.test.cjs'
+      - 'tests/auto_trace_ui.py'
       - '.github/workflows/pages.yml'
       - '.github/workflows/auto-trace-check.yml'
   workflow_dispatch:
@@ -171,3 +172,10 @@ jobs:
           node tests/plain_numbers.test.cjs
           node tests/single_number_ui.test.cjs
           node tests/optional_symbol_ui.test.cjs
+      - name: Install Chromium for full-page test
+        run: |
+          python -m pip install playwright==1.57.0
+          python -m playwright install --with-deps chromium
+      - name: Verify on generated mobile Sentlog app
+        run: |
+          python tests/auto_trace_ui.py
