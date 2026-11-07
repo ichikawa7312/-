@@ -97,6 +97,7 @@ try:
         assert any(s['kind']=='freehand-area' and s['type']=='剥離' for s in result),result
         assert all(not s['hasRecordKind'] and s['page']==1 and s['id'] for s in result),result
         page.wait_for_function("state.shapes.every(s=>s.photos.length===1)",timeout=20000)
+        assert page.evaluate("new Set(state.shapes.map(s=>s.photos[0].id)).size===1"),'One photo must not be physically duplicated for each crack.'
         assert page.evaluate("""()=>{
           const raw=window.SentlogRecords.getItem(drawingStorageKey('trace-drawing'));
           return JSON.parse(raw).shapes.length===state.shapes.length;
