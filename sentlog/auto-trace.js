@@ -448,14 +448,16 @@ async function commitPlacement(){
    if(ctx.attach&&ctx.sourcePhoto){
      try{
        const photo=await preparePhoto(ctx.sourcePhoto);
-       let added=0;
-       for(const shape of created){
-         const photoId=uidSafe();
-         await savePhotoBlob(photoId,photo,ctx.drawingId);
-         shape.photos.push({id:photoId,name:ctx.sourcePhoto.name||'自動描写の撮影写真',createdAt:Date.now(),type:photo.type||ctx.sourcePhoto.type||'image/jpeg',size:photo.size||ctx.sourcePhoto.size||0});
-         persist();added++;
-       }
-       if(added&&selected===created.at(-1)?.id)await renderSelectedPhotos();
+       // One camera photo can mark many defects. Keep a single physical blob
+       // per drawing and reference its ID from each ordinary damage shape.
+       // Duplicating the blob for every detected line would exhaust offline
+       // storage and cloud traffic on crack-dense field photos.
+       const photoId=uidSafe();
+       await savePhotoBlob(photoId,photo,ctx.drawingId);
+       const meta={id:photoId,name:ctx.sourcePhoto.name||'自動描写の撮影写真',createdAt:Date.now(),type:photo.type||ctx.sourcePhoto.type||'image/jpeg',size:photo.size||ctx.sourcePhoto.size||0};
+       for(const shape of created)shape.photos.push({...meta});
+       persist();
+       if(selected===created.at(-1)?.id)await renderSelectedPhotos();
      }catch(photoError){
        console.warn('Auto trace photo attachment',photoError);
        alert('変状は登録しましたが、一部の撮影写真の保存に失敗しました。端末の保存状態と写真一覧を確認してください。');
