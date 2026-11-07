@@ -474,7 +474,12 @@ function setup(){
    if(currentView!=='editor'||!activeDrawingId||!state.sourceType){alert('図面を開いてから使用してください。');return;}
    photoInput.click();
  },'sl-trace-open');button.id='slAutoTraceButton';button.title='白チョークを撮影して線・範囲を自動描写';
- bar.insertBefore(button,$('undoBtn')||bar.lastChild);
+ const historyGroup=bar.querySelector(':scope > .sl-tool-history');
+ const undo=$('undoBtn');
+ // The icon toolbar nests Undo inside its history group; never use a non-child
+ // as the insertBefore reference (this silently prevents camera UI mounting).
+ const before=historyGroup||(undo?.parentNode===bar?undo:null);
+ bar.insertBefore(button,before);
  photoInput=element('input');photoInput.type='file';photoInput.accept='image/*';photoInput.setAttribute('capture','environment');photoInput.hidden=true;photoInput.id='slAutoTraceCamera';
  photoInput.onchange=e=>{const file=e.target.files?.[0];photoInput.value='';if(file)openFile(file);};document.body.append(photoInput);
  root.SentlogAutoTrace={version:1,open:()=>photoInput.click(),core:Core};
