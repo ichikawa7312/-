@@ -96,6 +96,7 @@ jobs:
           python3 scripts/build_device_label_size.py
           python3 scripts/build_drawing_order.py
           python3 scripts/build_dxf_transparency.py
+          python3 scripts/build_auto_trace.py
           node tests/photo_ledger.test.cjs
           node tests/photo_ledger_damage.test.cjs
           node tests/photo_ledger_tensile.test.cjs
@@ -122,6 +123,9 @@ jobs:
           node tests/dxf_dense.test.cjs
           node tests/dxf_raster.test.cjs
           node tests/dxf_hatch_transparency.test.cjs
+          node tests/auto_trace.test.cjs
+          node --check sentlog/auto-trace-core.js
+          node --check sentlog/auto-trace.js
           node --check sentlog/dxf-raster.js
           node --check sentlog/drawing-memos.js
           node tests/drawing_memos.test.cjs
