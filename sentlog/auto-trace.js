@@ -77,8 +77,8 @@ async function imageFromFile(file){
  if(!file||!String(file.type).startsWith('image/'))throw Error('写真ファイルを選択してください。');
  let image=null,url=null;
  try{
-   if(root.createImageBitmap)image=await createImageBitmap(file);
-   else{
+   if(root.createImageBitmap){try{image=await createImageBitmap(file);}catch(_){image=null;}}
+   if(!image){
      url=URL.createObjectURL(file);
      image=await new Promise((resolve,reject)=>{
        const im=new Image();im.onload=()=>resolve(im);im.onerror=()=>reject(Error('写真を開けませんでした'));im.src=url;
@@ -236,16 +236,17 @@ function eraseAt(p){
  const radius=12;let changed=false,next=[];
  for(const c of session.candidates){
    if(c.kind==='area'){next.push(c);continue;}
+   let touched=false;
    const expanded=[];
    for(let i=0;i<c.points.length-1;i++){
      const a=c.points[i],b=c.points[i+1],len=Core.pathLength([a,b]),count=Math.max(1,Math.ceil(len/4));
      for(let j=0;j<count;j++)expanded.push({x:a.x+(b.x-a.x)*j/count,y:a.y+(b.y-a.y)*j/count});
    }expanded.push(c.points[c.points.length-1]);
    const sections=[],keep=[];for(const v of expanded){
-     if(Math.hypot(v.x-p.x,v.y-p.y)<=radius){if(keep.length>=3)sections.push([...keep]);keep.length=0;changed=true;}
+     if(Math.hypot(v.x-p.x,v.y-p.y)<=radius){if(keep.length>=3)sections.push([...keep]);keep.length=0;changed=true;touched=true;}
      else keep.push(v);
    }if(keep.length>=3)sections.push(keep);
-   if(!changed){next.push(c);continue;}
+   if(!touched){next.push(c);continue;}
    for(let i=0;i<sections.length;i++)next.push({...c,id:i===0?c.id:uidSafe(),points:Core.simplify(sections[i],.8)});
  }
  if(changed){session.candidates=next;session.selectedId=next.find(c=>c.id===session.selectedId)?.id||next[0]?.id||null;}
@@ -419,7 +420,7 @@ function drawPlacement(){
 }
 async function commitPlacement(){
  if(!placing||!session||!placing.list.length)return;
- const ctx={...placing};
+ const ctx={...placing,sourcePhoto:session.file};
  if(currentView!=='editor'||activeDrawingId!==ctx.drawingId||state.currentPage!==ctx.page){alert('図面が切り替わりました。登録せずに中止します。');dismissPlacement(true);return;}
  const proposals=ctx.list.map(c=>({candidate:c,points:placedPoints(c)}));
  if(proposals.some(p=>p.points.length<2||p.points.some(q=>!Number.isFinite(q.x)||!Number.isFinite(q.y)||q.x<0||q.y<0||q.x>state.width||q.y>state.height))){
@@ -443,18 +444,28 @@ async function commitPlacement(){
    persist();persisted=true;
    selected=created.at(-1).id;selectShape(selected);
    dismissPlacement(false);
-   if(ctx.attach&&session===null&&ctx.list.length){
-     // This branch intentionally never executes: source file was cleared at close.
-   }
-   if(ctx.attach&&ctx.list.length) {
-     // Photo file must be captured before close; see sourcePhoto variable below.
+   if(ctx.attach&&ctx.sourcePhoto){
+     try{
+       const photo=await preparePhoto(ctx.sourcePhoto);
+       let added=0;
+       for(const shape of created){
+         const photoId=uidSafe();
+         await savePhotoBlob(photoId,photo,ctx.drawingId);
+         shape.photos.push({id:photoId,name:ctx.sourcePhoto.name||'自動描写の撮影写真',createdAt:Date.now(),type:photo.type||ctx.sourcePhoto.type||'image/jpeg',size:photo.size||ctx.sourcePhoto.size||0});
+         persist();added++;
+       }
+       if(added&&selected===created.at(-1)?.id)await renderSelectedPhotos();
+     }catch(photoError){
+       console.warn('Auto trace photo attachment',photoError);
+       alert('変状は登録しましたが、一部の撮影写真の保存に失敗しました。端末の保存状態と写真一覧を確認してください。');
+     }
    }
  }catch(e){
    if(!persisted&&created.length){state.shapes=state.shapes.filter(s=>!created.some(v=>v.id===s.id));rebuildNumberingState();render();}
    console.error('auto trace commit',e);alert('変状の保存に失敗しました：'+(e.message||e));
    if(btn)btn.disabled=false;return;
  }
- // Captured photos can be attached through the ordinary inspector when required.
+ // Changes use the same shape JSON, photo storage, history and sync as manual records.
 }
 function setup(){
  const bar=document.querySelector('#editorView .toolbar')||document.querySelector('.toolbar');
