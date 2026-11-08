@@ -75,6 +75,17 @@ try:
         assert page.locator('.sl-trace-candidates-panel').get_attribute('open') is None
         assert not page.locator('.sl-trace-row').first.is_visible()
         assert page.locator('.sl-trace-scroll').bounding_box()['height'] >= 120
+        # No redundant title, no zoom/undo footer row: all four controls share one safe header.
+        assert page.locator('.sl-trace-header h2').count()==0
+        assert page.locator('.sl-trace-header button').all_text_contents()==['− 縮小','＋ 拡大','↶ 取消','← 戻る']
+        assert page.locator('.sl-trace-footer .sl-trace-zoom').count()==0
+        assert page.locator('.sl-trace-header .sl-trace-zoom').count()==1
+        assert page.locator('.sl-trace-canvas').evaluate("e=>e.style.width")=='100%'
+        page.get_by_role('button',name='写真を拡大').click()
+        assert page.locator('.sl-trace-canvas').evaluate("e=>e.style.width")=='150%'
+        page.get_by_role('button',name='写真を縮小').click()
+        assert page.locator('.sl-trace-canvas').evaluate("e=>e.style.width")=='100%'
+        assert page.get_by_role('button',name='直前の編集を取り消す').is_disabled()
         # All seven photo-edit commands must remain in one row on smaller phones.
         buttons=page.locator('.sl-trace-modes [data-mode]')
         assert buttons.count()==7
@@ -94,9 +105,18 @@ try:
             assert len({round(b['top']) for b in layout})==1,(width,layout)
             assert all(b['visible'] and b['left']>=b['containerLeft']-1 and b['right']<=b['containerRight']+1 for b in layout),(width,layout)
             assert all(b['scroll']<=b['client']+2 for b in layout),(width,layout)
-            back=page.locator('.sl-trace-header button').bounding_box()
+            back=page.locator('.sl-trace-header .sl-trace-back').bounding_box()
             assert back and back['height']>=48 and back['width']>=82,(width,back)
             if width<=520: assert back['y']>=56,(width,back)
+            header=page.locator('.sl-trace-header')
+            hb=header.locator('button')
+            assert hb.count()==4,(width,hb.count())
+            head=header.bounding_box()
+            rects=[b.bounding_box() for b in hb.all()]
+            assert all(r and r['height']>=44 and r['width']>=44 for r in rects),(width,rects)
+            assert len({round(r['y']) for r in rects})==1,(width,rects)
+            assert all(r['x']>=head['x']-1 and r['x']+r['width']<=head['x']+head['width']+1 for r in rects),(width,rects,head)
+            assert all(hb.nth(i).evaluate("e=>e.scrollWidth<=e.clientWidth+2") for i in range(4)),(width,rects)
         page.set_viewport_size({'width':390,'height':844})
         for mode in ('erase','add-line','add-area','ref','region','pan','edit'):
             item=page.locator('.sl-trace-modes [data-mode="'+mode+'"]')
@@ -135,7 +155,7 @@ try:
           occluder.style.cssText='position:fixed;top:0;left:0;right:0;height:64px;z-index:2000;background:#111;pointer-events:auto;';
           document.body.appendChild(occluder);
         }""")
-        back=page.locator('.sl-trace-header button')
+        back=page.locator('.sl-trace-header .sl-trace-back')
         bounds=back.bounding_box()
         assert bounds and bounds['y']>=69 and bounds['height']>=48,bounds
         assert back.get_attribute('title')=='図面に戻る（未確定の候補は破棄）'
