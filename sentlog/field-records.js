@@ -420,22 +420,24 @@
     const tri=svgEl('polygon',{points:`${end.x},${end.y} ${neck.x+px*wing},${neck.y+py*wing} ${neck.x-px*wing},${neck.y-py*wing}`,fill:color});
     const circle=svgEl('circle',{cx:p.x,cy:p.y,r,fill:'#fff',stroke:color,'stroke-width':1.8/z()});
     for(const e of [line,tri,circle]){e.style.pointerEvents='none';svg.appendChild(e);}
-    drawRecordLabel(s,selectedNow);
     if(tool==='pan'){
       const hit=svgEl('line',{x1:p.x,y1:p.y,x2:end.x,y2:end.y,stroke:'rgba(0,0,0,.001)','stroke-width':24/z(),'pointer-events':'stroke'});
       bindRecordHit(hit,s.id);svg.appendChild(hit);
       const dotHit=svgEl('circle',{cx:p.x,cy:p.y,r:14/z(),fill:'rgba(0,0,0,.001)','pointer-events':'all'});
       bindRecordHit(dotHit,s.id);svg.appendChild(dotHit);
     }
+    // The text has its own event target. Keep that above the broader marker
+    // hit zones so the user can grab the actual letters near a camera circle.
+    drawRecordLabel(s,selectedNow);
   }
   function drawSurveyPoint(s){
     const p=surveyPointFrom(s),selectedNow=s.id===selected||recordMove?.id===s.id,color=selectedNow?'#2563eb':'#334155',r=SURVEY_POINT_RADIUS/z();
     const outer=svgEl('circle',{cx:p.x,cy:p.y,r,fill:'#fff',stroke:color,'stroke-width':2.2/z()});
     const inner=svgEl('circle',{cx:p.x,cy:p.y,r:r*.35,fill:color,stroke:'none'});outer.style.pointerEvents=inner.style.pointerEvents='none';svg.append(outer,inner);
-    drawRecordLabel(s,selectedNow);
     if(tool==='pan'){
       const hit=svgEl('circle',{cx:p.x,cy:p.y,r:16/z(),fill:'rgba(0,0,0,.001)','pointer-events':'all'});bindRecordHit(hit,s.id);svg.appendChild(hit);
     }
+    drawRecordLabel(s,selectedNow);
   }
   function drawSurveyArrow(s){
     const tail=normPoint(s.points?.[0]),tip=normPoint(s.points?.[1]),poly=surveyArrowPolygon(tail,tip,z());if(!poly.length)return;
