@@ -442,10 +442,12 @@
     const selectedNow=s.id===selected||recordMove?.id===s.id,color=selectedNow?'#2563eb':'#334155';
     const arrow=svgEl('polygon',{points:poly.map(p=>p.x+','+p.y).join(' '),fill:'#fff',stroke:color,'stroke-width':2.4/z(),'stroke-linejoin':'round'});
     arrow.style.pointerEvents='none';svg.appendChild(arrow);
-    drawRecordLabel(s,selectedNow);
     if(tool==='pan'){
       const hit=svgEl('line',{x1:tail.x,y1:tail.y,x2:tip.x,y2:tip.y,stroke:'rgba(0,0,0,.001)','stroke-width':30/z(),'pointer-events':'stroke'});bindRecordHit(hit,s.id);svg.appendChild(hit);
     }
+    // On outlined arrows the name starts near the shaft. Give its text hit
+    // target priority while leaving the rest of the arrow draggable by hold.
+    drawRecordLabel(s,selectedNow);
   }
   function drawRecords(records){
     for(const s of records){
