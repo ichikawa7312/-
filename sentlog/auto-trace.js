@@ -28,9 +28,13 @@ function installStyle(){
  '.sl-trace-open{background:#ecfeff!important;border-color:#0891b2!important;color:#155e75!important;font-weight:800!important;width:110px!important;min-width:110px!important;flex:0 0 110px!important;height:44px!important;padding:0 7px!important;white-space:nowrap!important}',
  '.sl-trace-modal{position:fixed;inset:0;z-index:1500;display:flex;justify-content:center;align-items:center;background:rgba(15,23,42,.76);padding:8px;box-sizing:border-box}',
  '.sl-trace-dialog{display:flex;flex-direction:column;gap:9px;width:min(940px,100%);height:min(96dvh,950px);overflow:hidden;background:#fff;color:#0f172a;border-radius:13px;padding:12px;box-sizing:border-box;font:14px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}',
- '.sl-trace-header{display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:48px;flex:0 0 auto;position:relative;z-index:1}',
+ '.sl-trace-header{display:flex;align-items:center;justify-content:space-between;gap:6px;min-width:0;width:100%;min-height:48px;flex:0 0 auto;position:relative;z-index:1}',
  '.sl-trace-header button{display:inline-flex;justify-content:center;align-items:center;min-width:82px;min-height:48px;padding:9px 12px;flex:0 0 auto;touch-action:manipulation;white-space:nowrap;font-size:13px}',
  '.sl-trace-header button:focus-visible{outline:3px solid #0284c7;outline-offset:2px}',
+ '.sl-trace-zoom{display:grid!important;grid-template-columns:repeat(3,minmax(0,1fr));gap:4px;min-width:0;flex:1 1 0;align-items:center;flex-wrap:nowrap!important}',
+ '.sl-trace-header .sl-trace-zoom button{box-sizing:border-box;min-width:44px!important;width:100%;max-width:none;min-height:48px!important;padding:5px 2px!important;flex:1 1 0!important;font-size:clamp(10px,2.75vw,13px)!important;white-space:nowrap;line-height:1.15}',
+ '.sl-trace-header .sl-trace-back{flex:0 0 auto;min-width:82px!important;min-height:48px!important;padding:8px 10px!important;font-size:12px!important;white-space:nowrap}',
+
  '.sl-trace-header h2{font-size:17px;margin:0}',
  '.sl-trace-actions{display:flex;flex-wrap:wrap;gap:6px;align-items:center}',
  '.sl-trace-actions button,.sl-trace-row button{font-size:12px;min-height:36px;padding:6px 9px;border-radius:7px}',
@@ -385,10 +389,20 @@ function openEditor(){
  modal=element('div','sl-trace-modal');modal.setAttribute('role','dialog');modal.setAttribute('aria-modal','true');modal.setAttribute('aria-label','自動描写を修正');
  const dialog=element('div','sl-trace-dialog');
  const header=element('div','sl-trace-header');
- const back=newButton('← 戻る',()=>closeModal());
+ // Keep photography zoom and edit undo on the title row to free vertical space.
+ // Back is a distinct control and remains below the iPhone status bar.
+ const zoom=group();zoom.classList.add('sl-trace-zoom');zoom.setAttribute('role','group');zoom.setAttribute('aria-label','写真の拡大縮小と編集の取消');
+ const zoomOut=newButton('− 縮小',()=>{if(session){session.zoom=Math.max(1,session.zoom/1.5);redraw();}});
+ zoomOut.title='写真を縮小';zoomOut.setAttribute('aria-label','写真を縮小');
+ const zoomIn=newButton('＋ 拡大',()=>{if(session){session.zoom=Math.min(5,session.zoom*1.5);redraw();}});
+ zoomIn.title='写真を拡大';zoomIn.setAttribute('aria-label','写真を拡大');
+ const undoEdit=newButton('↶ 取消',revert);
+ undoEdit.title='写真上の直前の修正を取り消す';undoEdit.setAttribute('aria-label','直前の編集を取り消す');
+ zoom.append(zoomOut,zoomIn,undoEdit);
+ const back=newButton('← 戻る',()=>closeModal(),'sl-trace-back');
  back.title='図面に戻る（未確定の候補は破棄）';
  back.setAttribute('aria-label','写真編集を閉じて図面に戻る');
- header.append(element('h2',null,'写真から自動描写・修正'),back);
+ header.append(zoom,back);
  // Seven commands always stay on one row, including on 320px iPhones.
  // Full instructions remain available to screen readers and pointer tooltips.
  const modes=group();modes.classList.add('sl-trace-modes');
@@ -414,10 +428,6 @@ function openEditor(){
  canvas.addEventListener('pointerdown',pointerDown);canvas.addEventListener('pointermove',pointerMove);canvas.addEventListener('pointerup',pointerUp);
  canvas.addEventListener('pointercancel',()=>{if(editor)editor.gesture=null;redraw();});
  const footer=element('div','sl-trace-footer');
- const zoom=group();
- zoom.append(newButton('− 縮小',()=>{if(session){session.zoom=Math.max(1,session.zoom/1.5);redraw();}}),
-   newButton('＋ 拡大',()=>{if(session){session.zoom=Math.min(5,session.zoom*1.5);redraw();}}),
-   newButton('戻す',revert));
  const helper=element('span','sl-trace-help','緑：線　黄：囲い／斜線は図面に登録しません。誤認識は削除でき、実測長さも修正できます。');
  const settingsPanel=element('details','sl-trace-settings');
  const settingsSummary=element('summary',null,'白チョーク認識調整（標準）');
@@ -463,9 +473,9 @@ function openEditor(){
  const status=element('div','sl-trace-status');status.setAttribute('role','status');
  const buttonNext=newButton('図面に仮配置 →',beginPlacement,'sl-trace-primary');
  actions.append(attachLabel,newButton('撮り直す',()=>photoInput?.click()),buttonNext);
- footer.append(zoom,helper,settingsPanel,candidatesPanel,calibration,actions,status);
+ footer.append(helper,settingsPanel,candidatesPanel,calibration,actions,status);
  dialog.append(header,modes,scroll,footer);modal.append(dialog);document.body.append(modal);
- editor={canvas,rows,modes,refInput,referenceText,status,undo:zoom.querySelector('button:nth-child(3)'),attach,gesture:null,settingsPanel,settingsSummary,sensitivity,regionText,candidatesPanel,candidatesSummary};
+ editor={canvas,rows,modes,refInput,referenceText,status,undo:undoEdit,attach,gesture:null,settingsPanel,settingsSummary,sensitivity,regionText,candidatesPanel,candidatesSummary};
  if(session){canvas.width=session.photo.width;canvas.height=session.photo.height;redraw();}
  else statusText('カメラで撮影すると自動描写を開始します。');
 }
