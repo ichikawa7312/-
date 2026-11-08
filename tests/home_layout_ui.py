@@ -47,7 +47,6 @@ try:
       assert not page.locator('#projectsView #slArchiveListTitle').is_visible()
       assert not page.locator('#projectsView .sentlog-build').is_visible()
       assert not page.locator('#projectsView #slPeerPhotosList').is_visible() if page.locator('#projectsView #slPeerPhotosList').count() else True
-      assert page.locator('#slTopPhotoBadge').count()==0 if False else True # only live photo source is used
       assert page.locator('#slHomeHeaderVersion').inner_text()==page.evaluate('window.SENTLOG_BUILD')
       assert page.locator('#slHomeHeaderRight #sentlogSettingsBtn').count()==1
       assert page.locator('#slHomeHeaderLeft #sentlogRecordRescueBtn').count()==1
