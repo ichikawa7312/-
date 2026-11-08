@@ -20,7 +20,7 @@ assert.ok(js.includes("rescue.parentElement!==left"),'Keep the original rescue a
 assert.ok(js.includes("cloud.parentElement!==left"),'Keep the original cloud status button');
 assert.ok(js.includes('root.ResizeObserver')&&js.includes('--sl-home-header-height'),'Actual header height must drive document layout');
 assert.ok(js.includes('safe-area-inset-top')&&js.includes('sl-home-layout.sentlog-phone header'),'Account for iPhone PWA status bar');
-assert.ok(js.includes('#slArchiveBack')&&js.includes("archived?'保管':'案件一覧'"),'Do not lose the archive view heading');
+assert.ok(js.includes("$('slArchiveBack')")&&js.includes("archived?'保管':'案件一覧'"),'Do not lose the archive view heading');
 assert.ok(js.includes('#projectsView #slPeerPhotosList')&&js.includes('#projectsView .sentlog-build'));
 assert.ok(js.includes('#projectsView .manager-brand-sub')&&js.includes('#projectsView .manager-head p'));
 assert.ok(js.includes('#slHomeHeaderRight')&&js.includes('#slHomeHeaderVersion'));
