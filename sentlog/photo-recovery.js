@@ -78,11 +78,6 @@
     for(const shape of state.shapes||[])for(const photo of shape.photos||[]){
      if(photo?.id)keys.add(photoKey(d.id,photo.id));
     }
-    // Photographs from automatic tracing remain recoverable even when not
-    // attached to any defect: PC redelivery must recognize these keys.
-    for(const photo of state.autoTracePhotos||[]){
-     if(photo?.id)keys.add(photoKey(d.id,photo.id));
-    }
    }
   }
   return {keys,projects};
