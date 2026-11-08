@@ -155,6 +155,53 @@ with sync_playwright() as p:
     assert page.locator('#fieldRecordPanel').is_visible()
     assert 'open' not in (page.locator('#inspector').get_attribute('class') or '')
 
+    # Existing photo/survey records: dragging the text extends a fine leader
+    # without touching the recorded point, and the change survives redraw.
+    photo_point_before=page.evaluate("({...state.shapes.find(x=>x.recordType==='photo').point})")
+    photo_text_hit=page.locator(f'[data-field-record-label-id="{photo_after["id"]}"]')
+    assert photo_text_hit.count()==1
+    label_box=photo_text_hit.bounding_box()
+    lx=label_box['x']+label_box['width']/2
+    ly=label_box['y']+label_box['height']/2
+    page.mouse.move(lx,ly)
+    page.mouse.down()
+    page.mouse.move(lx+65,ly+42,steps=6)
+    page.mouse.up()
+    photo_label_after=page.evaluate("state.shapes.find(x=>x.recordType==='photo')")
+    assert photo_label_after['point']==photo_point_before,photo_label_after
+    assert 'labelPos' in photo_label_after,photo_label_after
+    assert page.locator(f'[data-field-record-leader-id="{photo_after["id"]}"]').count()==1
+    assert 'open' not in (page.locator('#inspector').get_attribute('class') or '')
+
+    # Long-pressing the original marker still moves both the marker and the
+    # now-customized text together, preserving their relative positions.
+    old_label=photo_label_after['labelPos']
+    page.mouse.move(box['x']+photo_point_before['x'],box['y']+photo_point_before['y'])
+    page.mouse.down()
+    page.wait_for_timeout(560)
+    page.mouse.move(box['x']+photo_point_before['x']+18,box['y']+photo_point_before['y']-12,steps=4)
+    page.mouse.up()
+    shifted=page.evaluate("state.shapes.find(x=>x.recordType==='photo')")
+    assert abs(shifted['point']['x']-photo_point_before['x']-18)<1.5,shifted
+    assert abs(shifted['labelPos']['x']-old_label['x']-18)<1.5,shifted
+    assert abs(shifted['labelPos']['y']-old_label['y']+12)<1.5,shifted
+
+    # Survey point labels are independently draggable too.
+    survey_point_before=page.evaluate("({...state.shapes.find(x=>x.recordType==='survey').point})")
+    survey_hit=page.locator(f'[data-field-record-label-id="{survey2["id"]}"]')
+    assert survey_hit.count()==1
+    survey_box=survey_hit.bounding_box()
+    ux=survey_box['x']+survey_box['width']/2
+    uy=survey_box['y']+survey_box['height']/2
+    page.mouse.move(ux,uy)
+    page.mouse.down()
+    page.mouse.move(ux+55,uy-28,steps=5)
+    page.mouse.up()
+    survey_dragged=page.evaluate("state.shapes.find(x=>x.recordType==='survey')")
+    assert survey_dragged['point']==survey_point_before,survey_dragged
+    assert 'labelPos' in survey_dragged,survey_dragged
+    assert page.locator(f'[data-field-record-leader-id="{survey2["id"]}"]').count()==1
+
     # Normal damage selection restores the normal inspector.
     page.evaluate("selectShape('d1')")
     assert page.locator('#fieldRecordPanel').is_hidden()
