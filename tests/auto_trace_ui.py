@@ -90,7 +90,20 @@ try:
         page.mouse.down()
         page.mouse.move(bb['x']+bb['width']*.40,bb['y']+bb['height']*.95,steps=9)
         page.mouse.up()
-        page.wait_for_function("document.querySelectorAll('.sl-trace-row').length===1",timeout=15000)
+        try:
+            page.wait_for_function("document.querySelectorAll('.sl-trace-row').length===1",timeout=6000)
+        except Exception:
+            print('REGION_TEST_DIAGNOSTIC',page.evaluate("""()=>({
+              status:document.querySelector('.sl-trace-status')?.innerText,
+              count:document.querySelectorAll('.sl-trace-row').length,
+              rows:[...document.querySelectorAll('.sl-trace-row')].map(x=>x.textContent.slice(0,50)),
+              active:[...document.querySelectorAll('[data-mode].active')].map(x=>x.dataset.mode),
+              photo:(()=>{const e=document.querySelector('.sl-trace-canvas');const r=e?.getBoundingClientRect();return {width:e?.width,height:e?.height,rect:r&&{x:r.x,y:r.y,w:r.width,h:r.height}}})(),
+              preview:document.querySelector('.sl-trace-settings')?.open,
+              canvasOver:document.elementFromPoint(20,260)?.className
+            })"""),flush=True)
+            print('REGION_CONSOLE',logs[-20:],flush=True)
+            raise
         assert 'ひび割れ線' in page.locator('.sl-trace-row').first.inner_text()
         assert page.evaluate('state.shapes.length')==0
         page.locator('.sl-trace-settings summary').click()
