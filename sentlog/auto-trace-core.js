@@ -44,31 +44,59 @@ function simplify(points,tolerance=1.8,closed=false){
   if(out.length>160){const step=Math.ceil(out.length/160);out=out.filter((_,i)=>i%step===0);}
   return out;
 }
+const PRESETS=Object.freeze({
+  strict:{minBrightness:210,contrast:32,maxChroma:28,ridgeFraction:.58,ridgeContrast:20},
+  standard:{minBrightness:185,contrast:23,maxChroma:39,ridgeFraction:.34,ridgeContrast:14},
+  wide:{minBrightness:145,contrast:12,maxChroma:60,ridgeFraction:.13,ridgeContrast:8}
+});
+function settingsFor(opts={}){
+  const preset=PRESETS[opts.sensitivity]||PRESETS.standard;
+  const clamp=(v,lo,hi)=>Math.max(lo,Math.min(hi,v));
+  return {
+    minBrightness:clamp(Number.isFinite(Number(opts.minBrightness))&&opts.minBrightness!=null?Number(opts.minBrightness):preset.minBrightness,80,250),
+    contrast:clamp(Number.isFinite(Number(opts.contrast))&&opts.contrast!=null?Number(opts.contrast):preset.contrast,5,80),
+    maxChroma:clamp(Number.isFinite(Number(opts.maxChroma))&&opts.maxChroma!=null?Number(opts.maxChroma):preset.maxChroma,10,95),
+    ridgeFraction:clamp(preset.ridgeFraction,0,1),ridgeContrast:preset.ridgeContrast,
+    radius:clamp(Number(opts.radius)||11,5,22)
+  };
+}
+function normalizeRegion(region,w,h){
+  if(!region)return null;
+  const coords=[region.x0,region.y0,region.x1,region.y1].map(Number);
+  if(coords.some(v=>!Number.isFinite(v)))return null;
+  const x0=Math.max(0,Math.min(w,Math.floor(Math.min(coords[0],coords[2]))));
+  const y0=Math.max(0,Math.min(h,Math.floor(Math.min(coords[1],coords[3]))));
+  const x1=Math.max(0,Math.min(w,Math.ceil(Math.max(coords[0],coords[2]))));
+  const y1=Math.max(0,Math.min(h,Math.ceil(Math.max(coords[1],coords[3]))));
+  return x1-x0>=8&&y1-y0>=8?{x0,y0,x1,y1}:null;
+}
 function chalkMask(image,opts={}){
   const w=image.width|0,h=image.height|0,n=w*h;
   if(w<1||h<1||!image.data||image.data.length<n*4)throw Error('画像の形式が不正です');
-  const radius=Math.max(4,Math.min(18,opts.radius||10));
-  const contrast=Math.max(6,Math.min(60,Number(opts.contrast)||18));
+  const cfg=settingsFor(opts),radius=cfg.radius,region=normalizeRegion(opts.region,w,h);
   const lum=new Uint8Array(n),neutral=new Uint8Array(n);
   for(let i=0;i<n;i++){
     const j=i*4,r=image.data[j],g=image.data[j+1],b=image.data[j+2];
     lum[i]=Math.round(.213*r+.715*g+.072*b);
-    neutral[i]=Math.max(r,g,b)-Math.min(r,g,b)<=70?1:0;
+    neutral[i]=Math.max(r,g,b)-Math.min(r,g,b)<=cfg.maxChroma?1:0;
   }
+  // Local positive contrast emphasizes chalk pigment over ordinary outlines.
   const stride=w+1,integral=new Float64Array((w+1)*(h+1));
   for(let y=0;y<h;y++){let sum=0;for(let x=0;x<w;x++){sum+=lum[y*w+x];integral[(y+1)*stride+x+1]=integral[y*stride+x+1]+sum;}}
   const mask=new Uint8Array(n);
-  for(let y=0;y<h;y++){
+  const xMin=region?region.x0:0,xMax=region?region.x1:w,yMin=region?region.y0:0,yMax=region?region.y1:h;
+  for(let y=yMin;y<yMax;y++){
     const y0=Math.max(0,y-radius),y1=Math.min(h,y+radius+1);
-    for(let x=0;x<w;x++){
-      const i=y*w+x;if(!neutral[i]||lum[i]<135)continue;
+    for(let x=xMin;x<xMax;x++){
+      const i=y*w+x;if(!neutral[i]||lum[i]<cfg.minBrightness)continue;
       const x0=Math.max(0,x-radius),x1=Math.min(w,x+radius+1);
       const local=(integral[y1*stride+x1]-integral[y0*stride+x1]-integral[y1*stride+x0]+integral[y0*stride+x0])/((x1-x0)*(y1-y0));
-      if(lum[i]-local>=contrast)mask[i]=1;
+      if(lum[i]-local>=cfg.contrast)mask[i]=1;
     }
   }
   return mask;
 }
+
 function dilate(mask,w,h){
   const out=new Uint8Array(mask.length);
   for(let y=1;y<h-1;y++)for(let x=1;x<w-1;x++){
@@ -203,10 +231,58 @@ function traceSkeleton(local){
   for(const i of indexes)for(const next of nodes.get(i)||[])if(!visited.has(key(i,next)))follow(i,next);
   return edges;
 }
+// A bright painted/structural edge usually has a dark side and a bright side.
+// A chalk stroke is a narrow bright ridge with lower luminance on BOTH sides.
+// This filter is conservative: operators can choose "wide" sensitivity or a
+// targeted region if the chalk is thin or photographed in bright sunlight.
+function luminanceAt(image,x,y){
+  const w=image.width|0,h=image.height|0;
+  const ix=Math.round(x),iy=Math.round(y);
+  if(ix<0||iy<0||ix>=w||iy>=h)return null;
+  const i=(iy*w+ix)*4,d=image.data;
+  return .213*d[i]+.715*d[i+1]+.072*d[i+2];
+}
+function ridgeSupport(image,points,closed=false,minContrast=14){
+  if(!Array.isArray(points)||points.length<2)return 0;
+  let passed=0,tested=0;
+  const n=points.length,segments=closed?n:n-1;
+  for(let i=0;i<segments;i++){
+    const a=points[i],b=points[(i+1)%n],len=distance(a,b);
+    if(len<.5)continue;
+    const nx=-(b.y-a.y)/len,ny=(b.x-a.x)/len;
+    const steps=Math.max(1,Math.ceil(len/8));
+    for(let j=0;j<steps;j++){
+      const t=(j+.5)/steps,x=a.x+(b.x-a.x)*t,y=a.y+(b.y-a.y)*t;
+      let center=luminanceAt(image,x,y);
+      if(center==null)continue;
+      // Outer polygon contours often lie half a pixel outside the chalk.
+      if(closed){
+        const p1=luminanceAt(image,x+nx*1.5,y+ny*1.5);
+        const p2=luminanceAt(image,x-nx*1.5,y-ny*1.5);
+        center=Math.max(center,p1??0,p2??0);
+      }
+      let left=-Infinity,right=-Infinity;
+      for(const d of [6,10,14]){
+        const l=luminanceAt(image,x+nx*d,y+ny*d),r=luminanceAt(image,x-nx*d,y-ny*d);
+        if(l!=null)left=Math.max(left,center-l);
+        if(r!=null)right=Math.max(right,center-r);
+      }
+      if(!Number.isFinite(left)||!Number.isFinite(right))continue;
+      tested++;if(left>=minContrast&&right>=minContrast)passed++;
+    }
+  }
+  return tested?passed/tested:0;
+}
 function analyze(image,opts={}){
   const w=image.width|0,h=image.height|0;
   if(w*h>900000)throw Error('認識画像を縮小してください（最大90万画素）');
-  const mask=erode(dilate(chalkMask(image,opts),w,h),w,h);
+  const cfg=settingsFor(opts),region=normalizeRegion(opts.region,w,h);
+  const mask=erode(dilate(chalkMask(image,{...opts,region}),w,h),w,h);
+  // Morphology must never add pixels beyond the selected inspection area.
+  if(region){
+    for(let y=0;y<h;y++)for(let x=0;x<w;x++)
+      if(x<region.x0||x>=region.x1||y<region.y0||y>=region.y1)mask[y*w+x]=0;
+  }
   const comps=components(mask,w,h),areas=[],lines=[];
   const maxCandidates=Math.max(1,Math.min(80,opts.maxCandidates||45));
   for(const comp of comps.slice(0,90)){
@@ -216,10 +292,13 @@ function analyze(image,opts={}){
     const local=localComponent(comp,w),hole=holePixels(local);
     if(cw>=20&&ch>=20&&hole>=Math.max(35,cw*ch*.055)){
       const pts=outerContour(local);
-      if(pts.length>=3&&Math.abs(signedArea(pts))>100)areas.push({kind:'area',points:pts,source:'chalking'});
+      if(pts.length>=3&&Math.abs(signedArea(pts))>100&&
+         ridgeSupport(image,pts,true,cfg.ridgeContrast)>=cfg.ridgeFraction*.68)
+         areas.push({kind:'area',points:pts,source:'chalking'});
     }else if(comp.pixels.length>=28){
       for(const pts of traceSkeleton(local)){
-        if(pts.length>=2)lines.push({kind:'line',points:pts,source:'chalking'});
+        if(pts.length>=2&&ridgeSupport(image,pts,false,cfg.ridgeContrast)>=cfg.ridgeFraction)
+          lines.push({kind:'line',points:pts,source:'chalking'});
       }
     }
     if(areas.length+lines.length>maxCandidates*3)break;
@@ -231,5 +310,6 @@ function analyze(image,opts={}){
   const all=[...areas,...survivors].sort((a,b)=>pathLength(b.points,b.kind==='area')-pathLength(a.points,a.kind==='area')).slice(0,maxCandidates);
   return {width:w,height:h,candidates:all.map((c,i)=>({...c,id:'trace-'+(i+1)})),stats:{components:comps.length,areas:areas.length,lines:survivors.length}};
 }
-return {chalkMask,analyze,pathLength,signedArea,simplify,pointInPolygon};
+
+return {chalkMask,analyze,pathLength,signedArea,simplify,pointInPolygon,settingsFor,normalizeRegion,ridgeSupport};
 });

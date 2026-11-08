@@ -41,7 +41,16 @@ function installStyle(){
  '.sl-trace-set label{font-size:12px;margin:0;color:#334155;font-weight:700}',
  '.sl-trace-set input[type=number]{width:105px;height:39px;font-size:15px}',
  '.sl-trace-set input[type=checkbox]{width:18px;height:18px}',
- '.sl-trace-candidates{display:flex;gap:6px;overflow-x:auto;min-height:57px;padding:3px 0}',
+ '.sl-trace-candidates{display:flex;gap:6px;overflow-x:auto;min-height:57px;padding:5px 1px}',
+ '.sl-trace-candidates-panel,.sl-trace-settings{border:1px solid #cbd5e1;border-radius:9px;background:#f8fafc;padding:0 9px}',
+ '.sl-trace-candidates-panel summary,.sl-trace-settings summary{display:flex;align-items:center;justify-content:space-between;min-height:40px;font-weight:700;color:#0f172a;cursor:pointer;list-style:none;font-size:13px}',
+ '.sl-trace-candidates-panel summary::-webkit-details-marker,.sl-trace-settings summary::-webkit-details-marker{display:none}',
+ '.sl-trace-candidates-panel summary::after,.sl-trace-settings summary::after{content:"▾";margin-left:8px;color:#64748b;transform:rotate(-90deg)}',
+ '.sl-trace-candidates-panel[open] summary::after,.sl-trace-settings[open] summary::after{transform:rotate(0)}',
+ '.sl-trace-candidates-panel[open] .sl-trace-candidates{max-height:min(30dvh,235px);overflow-y:auto;align-items:flex-start}',
+ '.sl-trace-detect{display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding:0 0 9px}',
+ '.sl-trace-detect select{flex:1 1 110px;max-width:180px;min-height:39px;padding:6px;font-size:13px}',
+ '.sl-trace-region-label{font-size:11px;color:#334155;flex:1 1 100%}',
  '.sl-trace-row{flex:0 0 198px;padding:7px;border:1px solid #cbd5e1;border-radius:8px;background:#f8fafc;display:grid;gap:5px}',
  '.sl-trace-row.selected{border:2px solid #0891b2;padding:6px;background:#ecfeff}',
  '.sl-trace-rowline{display:flex;align-items:center;gap:6px;justify-content:space-between}',
@@ -108,9 +117,9 @@ async function openFile(file){
  try{
    const {canvas:photo,pixels}=await imageFromFile(file);
    await new Promise(resolve=>requestAnimationFrame(resolve));
-   const result=Core.analyze(pixels);
+   const result=Core.analyze(pixels,{sensitivity:'standard'});
    const candidates=result.candidates.map(c=>({...c,active:true,type:chooseType(c.kind),manualM:null}));
-   session={file,photo,candidates,selectedId:candidates[0]?.id||null,mode:'edit',undo:[],zoom:1,reference:null,refM:null,refPicks:[],drawingId:activeDrawingId,page:state.currentPage};
+   session={file,photo,candidates,selectedId:candidates[0]?.id||null,mode:'edit',undo:[],zoom:1,reference:null,refM:null,refPicks:[],region:null,sensitivity:'standard',dirty:false,drawingId:activeDrawingId,page:state.currentPage};
    if(!editor)openEditor();
    editor.canvas.width=photo.width;editor.canvas.height=photo.height;
    redraw();
@@ -120,12 +129,13 @@ async function openFile(file){
 }
 function remember(){
  if(!session)return;
- session.undo.push({candidates:cloneCandidates(session.candidates),selectedId:session.selectedId,reference:session.reference?cloneCandidates(session.reference):null});
+ session.undo.push({candidates:cloneCandidates(session.candidates),selectedId:session.selectedId,reference:session.reference?cloneCandidates(session.reference):null,dirty:!!session.dirty});
+ session.dirty=true;
  if(session.undo.length>40)session.undo.shift();
 }
 function revert(){
  if(!session?.undo.length)return;
- const prev=session.undo.pop();session.candidates=prev.candidates;session.selectedId=prev.selectedId;session.reference=prev.reference;
+ const prev=session.undo.pop();session.candidates=prev.candidates;session.selectedId=prev.selectedId;session.reference=prev.reference;session.dirty=prev.dirty;
  redraw();
 }
 function photoRatio(){
@@ -141,6 +151,32 @@ function estimatedLength(c){
  if(validM(c.manualM))return validM(c.manualM);
  const ratio=photoRatio();return ratio?Core.pathLength(c.points,false)*ratio:null;
 }
+function sensitivityLabel(value){
+ return value==='strict'?'厳しめ':value==='wide'?'広め':'標準';
+}
+function reanalyze(){
+ if(!session?.photo)return false;
+ if(session.dirty&&!confirm('手動で修正した候補を再認識の結果に置き換えますか？\n図面に確定済みの変状には影響しません。'))return false;
+ try{
+   const c=session.photo,cx=c.getContext('2d',{willReadFrequently:true});
+   if(!cx)throw Error('写真を読み取れませんでした');
+   const result=Core.analyze(cx.getImageData(0,0,c.width,c.height),{
+     sensitivity:session.sensitivity||'standard',region:session.region||undefined
+   });
+   remember();
+   session.candidates=result.candidates.map(c=>({...c,active:true,type:chooseType(c.kind),manualM:null}));
+   session.selectedId=session.candidates[0]?.id||null;
+   // A user-drawn pair of reference points remains valid for this same photo,
+   // but a reference candidate may not exist after re-analysis.
+   if(session.reference?.kind==='candidate')session.reference=null;
+   session.refPicks=[];session.mode='edit';session.dirty=false;
+   redraw();
+   statusText('再認識：'+result.candidates.length+'件（'+sensitivityLabel(session.sensitivity)+'）'
+     +(session.region?'・指定範囲のみ':'・写真全体')+'。図面へは未確定です。');
+   return true;
+ }catch(e){errorText('再認識に失敗しました：'+(e?.message||e));return false;}
+}
+
 function redraw(){
  if(!session||!editor)return;
  paint();renderCandidates();renderStatus();
@@ -152,28 +188,32 @@ function renderStatus(){
  editor.referenceText.textContent=ratio?'基準設定済み：1 px ≒ '+(ratio*1000).toFixed(2)+' mm（撮影面が平面である前提）':'基準未設定：線を選ぶか、写真上の2点を指定してください。';
  editor.undo.disabled=!session.undo.length;
  for(const b of editor.modes.querySelectorAll('[data-mode]'))b.classList.toggle('active',b.dataset.mode===session.mode);
+ editor.settingsSummary.textContent='白チョーク認識調整（'+sensitivityLabel(session.sensitivity)+'）';
+ editor.sensitivity.value=session.sensitivity||'standard';
+ editor.regionText.textContent=session.region?'認識範囲を指定中（点線の内側のみ）':'認識範囲：写真全体';
  editor.canvas.style.width=(session.zoom*100)+'%';
  editor.canvas.style.touchAction=session.mode==='pan'?'pan-x pan-y':'none';
 }
 function renderCandidates(){
  const host=editor.rows;host.replaceChildren();
+ editor.candidatesSummary.textContent='認識候補 '+session.candidates.length+'件（選択 '+selectedCandidates().length+'件）';
  if(!session.candidates.length){host.append(element('span','sl-trace-help','候補なし：線を描き足す／囲いを追加から描けます。'));return;}
  for(const c of session.candidates){
    const row=element('div','sl-trace-row'+(c.id===session.selectedId?' selected':''));
    row.onclick=()=>{session.selectedId=c.id;redraw();};
    const top=element('div','sl-trace-rowline');
    const tick=element('input');tick.type='checkbox';tick.checked=c.active!==false;tick.setAttribute('aria-label','この候補を配置する');
-   tick.onchange=e=>{e.stopPropagation();c.active=tick.checked;redraw();};
+   tick.onchange=e=>{e.stopPropagation();c.active=tick.checked;session.dirty=true;redraw();};
    const title=element('b',null,(c.kind==='area'?'範囲':'線')+' '+c.id.replace(/[^0-9]/g,''));
    top.append(tick,title,element('span','sl-trace-help',c.kind==='area'?'囲い':'ひび割れ線'));row.append(top);
    const select=element('select');for(const type of TYPES){const option=element('option',null,type);option.value=type;select.append(option);}
-   select.value=c.type;select.onchange=e=>{e.stopPropagation();c.type=select.value;};select.onclick=e=>e.stopPropagation();row.append(select);
+   select.value=c.type;select.onchange=e=>{e.stopPropagation();c.type=select.value;session.dirty=true;};select.onclick=e=>e.stopPropagation();row.append(select);
    if(c.kind==='line'){
      const line=element('div','sl-trace-rowline');
      const len=estimatedLength(c);
      line.append(element('span','sl-trace-help',len==null?'長さ 未設定':(validM(c.manualM)?'手入力 ':'自動算出 ')+formatM(len)));
      const value=element('input');value.type='number';value.inputMode='decimal';value.step='.001';value.min='.001';value.placeholder='修正m';value.title='この線の長さを手入力で修正';value.value=validM(c.manualM)||'';
-     value.onchange=e=>{e.stopPropagation();const v=value.value.trim();if(v&&!validM(v)){errorText('長さは0.001～10000mで入力してください。');value.value=validM(c.manualM)||'';return;}c.manualM=v?validM(v):null;redraw();};
+     value.onchange=e=>{e.stopPropagation();const v=value.value.trim();if(v&&!validM(v)){errorText('長さは0.001～10000mで入力してください。');value.value=validM(c.manualM)||'';return;}c.manualM=v?validM(v):null;session.dirty=true;redraw();};
      value.onclick=e=>e.stopPropagation();
      line.append(value);row.append(line);
    }else{
@@ -225,6 +265,15 @@ function paint(){
      for(let i=0;i<pts.length;i+=step){cx.beginPath();cx.arc(pts[i].x,pts[i].y,3,0,Math.PI*2);cx.fill();cx.stroke();}
    }
  }
+ const shownRegion=editor.gesture?.kind==='region'
+   ?{x0:editor.gesture.start.x,y0:editor.gesture.start.y,x1:editor.gesture.end.x,y1:editor.gesture.end.y}
+   :session.region;
+ if(shownRegion){
+   const x=Math.min(shownRegion.x0,shownRegion.x1),y=Math.min(shownRegion.y0,shownRegion.y1);
+   const w=Math.abs(shownRegion.x1-shownRegion.x0),h=Math.abs(shownRegion.y1-shownRegion.y0);
+   cx.save();cx.setLineDash([7,4]);cx.strokeStyle='#0284c7';cx.lineWidth=2.5;
+   cx.fillStyle='rgba(2,132,199,.07)';cx.fillRect(x,y,w,h);cx.strokeRect(x,y,w,h);cx.restore();
+ }
  if(session.refPicks?.length){cx.fillStyle='#0ea5e9';for(const p of session.refPicks){cx.beginPath();cx.arc(p.x,p.y,5,0,Math.PI*2);cx.fill();}}
  if(editor.gesture?.kind==='draw'&&editor.gesture.points.length){
    cx.beginPath();const pts=editor.gesture.points;cx.moveTo(pts[0].x,pts[0].y);for(let i=1;i<pts.length;i++)cx.lineTo(pts[i].x,pts[i].y);
@@ -264,6 +313,9 @@ function pointerDown(e){
    }redraw();return;
  }
  editor.canvas.setPointerCapture(e.pointerId);
+ if(session.mode==='region'){
+   editor.gesture={kind:'region',pointerId:e.pointerId,start:p,end:p};paint();return;
+ }
  if(session.mode==='add-line'||session.mode==='add-area'){
    editor.gesture={kind:'draw',pointerId:e.pointerId,shapeKind:session.mode==='add-area'?'area':'line',points:[p]};
    paint();return;
@@ -287,7 +339,8 @@ function pointerDown(e){
 function pointerMove(e){
  const g=editor?.gesture;if(!g||g.pointerId!==e.pointerId||!session)return;
  e.preventDefault();const p=photoPoint(e);
- if(g.kind==='draw'){const last=g.points[g.points.length-1];if(Core.pathLength([last,p])>=2)g.points.push(p);}
+ if(g.kind==='region')g.end=p;
+ else if(g.kind==='draw'){const last=g.points[g.points.length-1];if(Core.pathLength([last,p])>=2)g.points.push(p);}
  else if(g.kind==='erase')eraseAt(p);
  else if(g.kind==='drag'){
    const c=session.candidates.find(v=>v.id===g.id);if(!c)return;
@@ -303,6 +356,14 @@ function pointerMove(e){
 function pointerUp(e){
  const g=editor?.gesture;if(!g||g.pointerId!==e.pointerId||!session)return;
  e.preventDefault();
+ if(g.kind==='region'){
+   const next=Core.normalizeRegion({x0:g.start.x,y0:g.start.y,x1:g.end.x,y1:g.end.y},session.photo.width,session.photo.height);
+   editor.gesture=null;
+   if(!next||next.x1-next.x0<24||next.y1-next.y0<24){errorText('認識したい場所を指で囲ってください（24px以上）。');redraw();return;}
+   const old=session.region;session.region=next;
+   if(!reanalyze()){session.region=old;redraw();}
+   return;
+ }
  if(g.kind==='draw'&&g.points.length>=2){
    const points=Core.simplify(g.points,1.4,g.shapeKind==='area');
    if(Core.pathLength(points,g.shapeKind==='area')>15&&(g.shapeKind==='line'?points.length>=2:points.length>=3&&Math.abs(Core.signedArea(points))>45)){
@@ -319,7 +380,7 @@ function openEditor(){
  const dialog=element('div','sl-trace-dialog');
  const header=element('div','sl-trace-header');header.append(element('h2',null,'写真から自動描写・修正'),newButton('閉じる',()=>closeModal()));
  const modes=group();
- for(const [id,name] of [['edit','選択・形を直す'],['erase','部分消去'],['add-line','線を追加'],['add-area','囲いを追加'],['ref','基準2点'],['pan','移動']]){
+ for(const [id,name] of [['edit','選択・形を直す'],['erase','部分消去'],['add-line','線を追加'],['add-area','囲いを追加'],['ref','基準2点'],['region','認識範囲を指定'],['pan','移動']]){
    const b=newButton(name,()=>{if(!session)return;session.mode=id;session.refPicks=[];redraw();});b.dataset.mode=id;modes.append(b);
  }
  const scroll=element('div','sl-trace-scroll'),canvas=element('canvas','sl-trace-canvas');scroll.append(canvas);
@@ -330,8 +391,34 @@ function openEditor(){
  zoom.append(newButton('− 縮小',()=>{if(session){session.zoom=Math.max(1,session.zoom/1.5);redraw();}}),
    newButton('＋ 拡大',()=>{if(session){session.zoom=Math.min(5,session.zoom*1.5);redraw();}}),
    newButton('戻す',revert));
- const helper=element('span','sl-trace-help','緑：線　黄：囲い／斜線は図面に登録しません。線は指で引っ張って修正、不要な線は消去できます。');
- const rows=element('div','sl-trace-candidates');
+ const helper=element('span','sl-trace-help','緑：線　黄：囲い／斜線は図面に登録しません。誤認識は削除でき、実測長さも修正できます。');
+ const settingsPanel=element('details','sl-trace-settings');
+ const settingsSummary=element('summary',null,'白チョーク認識調整（標準）');
+ const detect=element('div','sl-trace-detect');
+ const sensLabel=element('label',null,'感度');
+ const sensitivity=element('select');sensitivity.setAttribute('aria-label','白チョーク認識感度');
+ for(const [value,name] of [['strict','厳しめ'],['standard','標準'],['wide','広め']]){
+   const opt=element('option',null,name);opt.value=value;sensitivity.append(opt);
+ }
+ sensitivity.value='standard';
+ sensitivity.onchange=()=>{if(!session)return;session.sensitivity=sensitivity.value;redraw();statusText('感度を変更しました。「再認識」で反映します。');};
+ const regionButton=newButton('範囲指定',()=>{
+   if(!session)return;
+   session.mode='region';settingsPanel.open=false;redraw();
+   statusText('写真上の認識したい範囲を指で四角く囲ってください。選択後、自動で再認識します。');
+ });
+ const clearRegion=newButton('全体に戻す',()=>{
+   if(!session)return;
+   const previous=session.region;session.region=null;
+   if(!reanalyze()){session.region=previous;redraw();}
+ });
+ const runAgain=newButton('再認識',reanalyze,'sl-trace-primary');
+ const regionText=element('div','sl-trace-region-label','認識範囲：写真全体');
+ detect.append(sensLabel,sensitivity,regionButton,clearRegion,runAgain,regionText);
+ settingsPanel.append(settingsSummary,detect);
+ const candidatesPanel=element('details','sl-trace-candidates-panel');
+ const candidatesSummary=element('summary',null,'認識候補 0件');
+ const rows=element('div','sl-trace-candidates');candidatesPanel.append(candidatesSummary,rows);
  const calibration=element('div','sl-trace-set');
  const lineRef=newButton('選択線を基準',()=>{
    const c=currentCandidate();if(!c){errorText('基準にする線を選択してください。');return;}
@@ -349,9 +436,9 @@ function openEditor(){
  const status=element('div','sl-trace-status');status.setAttribute('role','status');
  const buttonNext=newButton('図面に仮配置 →',beginPlacement,'sl-trace-primary');
  actions.append(attachLabel,newButton('撮り直す',()=>photoInput?.click()),buttonNext);
- footer.append(zoom,helper,rows,calibration,actions,status);
+ footer.append(zoom,helper,settingsPanel,candidatesPanel,calibration,actions,status);
  dialog.append(header,modes,scroll,footer);modal.append(dialog);document.body.append(modal);
- editor={canvas,rows,modes,refInput,referenceText,status,undo:zoom.querySelector('button:nth-child(3)'),attach,gesture:null};
+ editor={canvas,rows,modes,refInput,referenceText,status,undo:zoom.querySelector('button:nth-child(3)'),attach,gesture:null,settingsPanel,settingsSummary,sensitivity,regionText,candidatesPanel,candidatesSummary};
  if(session){canvas.width=session.photo.width;canvas.height=session.photo.height;redraw();}
  else statusText('カメラで撮影すると自動描写を開始します。');
 }

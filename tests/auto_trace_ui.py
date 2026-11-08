@@ -70,11 +70,43 @@ try:
         photo_file()
         page.wait_for_function("document.querySelectorAll('.sl-trace-row').length>=2",timeout=15000)
         assert page.locator('.sl-trace-row').count()>=2
+        # The candidate cards are available, but start collapsed to leave room for the photograph.
+        assert page.locator('.sl-trace-candidates-panel').count()==1
+        assert page.locator('.sl-trace-candidates-panel').get_attribute('open') is None
+        assert not page.locator('.sl-trace-row').first.is_visible()
+        assert page.locator('.sl-trace-scroll').bounding_box()['height'] >= 120
+
+        page.locator('.sl-trace-settings summary').click()
+        page.locator('.sl-trace-detect select').select_option('strict')
+        page.locator('.sl-trace-detect').get_by_role('button',name='再認識').click()
+        assert '厳しめ' in page.locator('.sl-trace-status').inner_text()
+        # Draw a detection window around the chalk curve, excluding the distant hatched area.
+        page.locator('.sl-trace-detect').get_by_role('button',name='範囲指定').click()
+        picture=page.locator('.sl-trace-canvas')
+        picture.scroll_into_view_if_needed()
+        bb=picture.bounding_box()
+        assert bb and bb['height']>50,bb
+        page.mouse.move(bb['x']+bb['width']*.025,bb['y']+bb['height']*.04)
+        page.mouse.down()
+        page.mouse.move(bb['x']+bb['width']*.40,bb['y']+bb['height']*.95,steps=9)
+        page.mouse.up()
+        page.wait_for_function("document.querySelector('.sl-trace-status')?.textContent.includes('指定範囲のみ') && document.querySelectorAll('.sl-trace-row').length>=1",timeout=10000)
+        # Branches in a single hand-drawn crack may become separate short line segments;
+        # the selected region must exclude the distant outlined and hatched area.
+        assert page.locator('.sl-trace-row').count()<=5
+        assert all('ひび割れ線' in text for text in page.locator('.sl-trace-row').all_text_contents())
+        assert page.evaluate('state.shapes.length')==0
+        page.locator('.sl-trace-settings summary').click()
+        page.locator('.sl-trace-detect').get_by_role('button',name='全体に戻す').click()
+        page.wait_for_function("document.querySelectorAll('.sl-trace-row').length>=2",timeout=15000)
         # The user can leave at any time without writing the draft to the drawing.
         page.get_by_role('button',name='閉じる').click()
         assert page.evaluate('state.shapes.length')==0
         photo_file()
         page.wait_for_function("document.querySelectorAll('.sl-trace-row').length>=2",timeout=15000)
+        assert page.locator('.sl-trace-candidates-panel').get_attribute('open') is None
+        page.locator('.sl-trace-candidates-panel summary').click()
+        assert page.locator('.sl-trace-row').first.is_visible()
         page.locator('.sl-trace-row').first.locator('select').select_option('剥離')
         line_row=page.locator('.sl-trace-row').filter(has_text='ひび割れ線').first
         assert line_row.count()==1
@@ -106,6 +138,6 @@ try:
         assert page.evaluate('state.shapes.length')==0,'One undo should revert all auto-traced shapes.'
         assert not errors,errors
         browser.close()
-        print('PASS generated Sentlog page: auto-trace -> normal damage, measured line, photo, sync storage, undo')
+        print('PASS generated Sentlog page: collapsed candidates, sensitivity + range reanalysis, normal damage, photo and undo')
 finally:
     server.shutdown()
