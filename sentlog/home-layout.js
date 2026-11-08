@@ -28,6 +28,7 @@ function style(){
  'html.sl-home-layout header #sentlogRecordRescueBtn{font-size:12px!important;min-width:78px!important;width:auto!important;height:44px!important;min-height:44px!important;padding:5px 9px!important;border-radius:8px!important;flex:0 0 auto;white-space:nowrap!important}',
  'html.sl-home-layout header #sentlogRecordRescueBtn::after{content:none!important}',
  'html.sl-home-layout header #sentlogCloudStatus{display:inline-flex!important;align-items:center;justify-content:center;min-width:0!important;width:auto!important;max-width:100%;height:44px!important;min-height:44px!important;padding:6px 9px!important;margin:0!important;font-size:11px!important;border-radius:8px!important;flex:0 1 auto;white-space:nowrap}',
+ 'html.sl-home-layout #slHomePhotoBadge[hidden],html.sl-home-layout #slHomeHeaderVersion[hidden]{display:none!important}',
  'html.sl-home-layout #slHomePhotoBadge{display:inline-flex;align-items:center;gap:4px;max-width:100%;min-height:36px;white-space:nowrap;font-size:11px;font-weight:700;letter-spacing:0;font-variant-numeric:tabular-nums;color:#e2e8f0}',
  'html.sl-home-layout #slHomePhotoBadge[data-state=ok]{color:#86efac}',
  'html.sl-home-layout #slHomePhotoBadge[data-state=warn]{color:#fde68a}',
