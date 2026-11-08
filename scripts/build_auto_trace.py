@@ -110,23 +110,22 @@ merge_code=merge_code.replace(old_validate,old_validate+
 "\n        if(d.state.autoTracePhotos!==undefined)map(d.state.autoTracePhotos,label+' / 自動描写写真');",1)
 merge_path.write_text(merge_code,encoding='utf-8')
 
-hook('sentlog-pc/index.html',"""  if(a.kind==='drawing'){
-    d=await subdir(d,'図面');
-    logicalParts.push('図面');
-  }else{
-    d=await subdir(d,'写真');d=await subdir(d,drawing);d=await subdir(d,label);
-    logicalParts.push('写真',safe(drawing),safe(label));
-  }""","""  if(a.kind==='drawing'){
-    d=await subdir(d,'図面');
-    logicalParts.push('図面');
-  }else if(a.metadata?.photo_album==='auto-trace'){
+# Insert the album path as an extra branch; preserve the existing PC folder
+# logic (which other build steps may have extended for verified drawing PDFs).
+pc_path=ROOT/'sentlog-pc/index.html'
+pc_code=pc_path.read_text(encoding='utf-8')
+pc_start=pc_code.index('async function saveVerified(a){')
+pc_branch=pc_code.index("  if(a.kind==='drawing'){",pc_start)
+pc_else=pc_code.index("  }else{",pc_branch)
+pc_end=pc_code.index('  const name=safe(a.file_name',pc_branch)
+if not pc_branch<pc_else<pc_end or 'logicalParts' not in pc_code[pc_branch:pc_end]:
+    raise RuntimeError('Cannot safely locate PC asset folder branching')
+pc_code=pc_code[:pc_else]+"""  }else if(a.metadata?.photo_album==='auto-trace'){
     const group=a.metadata?.drawing_group||drawing;
     d=await subdir(d,'自動描写');d=await subdir(d,group);d=await subdir(d,drawing);
     logicalParts.push('自動描写',safe(group),safe(drawing));
-  }else{
-    d=await subdir(d,'写真');d=await subdir(d,drawing);d=await subdir(d,label);
-    logicalParts.push('写真',safe(drawing),safe(label));
-  }""")
+"""+pc_code[pc_else:]
+pc_path.write_text(pc_code,encoding='utf-8')
 
 for file in (ROOT/'tests').iterdir():
     if file.name=='auto_trace.test.cjs' or file.suffix not in ('.cjs','.py'):continue
