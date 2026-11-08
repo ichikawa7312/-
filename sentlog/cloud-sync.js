@@ -199,7 +199,7 @@ function collectPhotos(localProject){
     for(const photo of st.autoTracePhotos||[]){
       if(!photo?.id||seen.has(d.id+':'+photo.id))continue;
       seen.add(d.id+':'+photo.id);
-      out.push({drawingId:d.id,drawingName:d.name||'',shapeId:'',shapeType:'',shapeLabel:'自動描写',album:'auto-trace',photo});
+      out.push({drawingId:d.id,drawingName:d.name||'',drawingGroup:d.groupName||d.name||'図面No.',shapeId:'',shapeType:'',shapeLabel:'自動描写',album:'auto-trace',photo});
     }
     for(const sh of st.shapes||[]){
       for(const photo of sh.photos||[]){
@@ -276,7 +276,7 @@ async function uploadPhoto(cloudProject,deviceId,item){
     cloudProject,deviceId,clientKey:'photo:'+item.drawingId+':'+p.id,kind:'photo',
     fileName:p.name||('photo-'+p.id+'.jpg'),blob,storageFolder:'photos',
     capturedAt:p.createdAt?new Date(p.createdAt).toISOString():new Date().toISOString(),
-    metadata:{local_project_key:cloudProject.client_key||'',drawing_id:item.drawingId,drawing_name:item.drawingName,shape_id:item.shapeId,shape_type:item.shapeType,shape_label:item.shapeLabel,photo_id:p.id,...(item.album?{photo_album:item.album}:{})}
+    metadata:{local_project_key:cloudProject.client_key||'',drawing_id:item.drawingId,drawing_name:item.drawingName,shape_id:item.shapeId,shape_type:item.shapeType,shape_label:item.shapeLabel,photo_id:p.id,...(item.album?{photo_album:item.album,drawing_group:item.drawingGroup||item.drawingName}:{})}
   });
 }
 
