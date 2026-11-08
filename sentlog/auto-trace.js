@@ -33,6 +33,10 @@ function installStyle(){
  '.sl-trace-actions{display:flex;flex-wrap:wrap;gap:6px;align-items:center}',
  '.sl-trace-actions button,.sl-trace-row button{font-size:12px;min-height:36px;padding:6px 9px;border-radius:7px}',
  '.sl-trace-actions button.active{background:#0e7490;color:#fff;border-color:#0e7490}',
+ '.sl-trace-modes{display:grid!important;grid-template-columns:repeat(7,minmax(0,1fr));gap:3px;width:100%;align-items:stretch;flex-wrap:nowrap!important}',
+ '.sl-trace-modes>button{box-sizing:border-box;min-width:0!important;width:100%;min-height:44px;padding:5px 1px!important;white-space:nowrap;overflow:hidden;text-overflow:clip;font-weight:700;font-size:clamp(10px,2.8vw,12px)!important;line-height:1.15}',
+ '.sl-trace-modes>button.active{outline:2px solid #0e7490;outline-offset:-2px}',
+ '.sl-trace-modes>button:focus-visible{outline:3px solid #0284c7;outline-offset:2px}',
  '.sl-trace-scroll{flex:1;min-height:120px;overflow:auto;overscroll-behavior:contain;background:#d7d9d6;border-radius:8px;text-align:left}',
  '.sl-trace-canvas{display:block;touch-action:none;max-width:none;height:auto;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}',
  '.sl-trace-footer{display:grid;gap:7px}',
@@ -187,7 +191,7 @@ function renderStatus(){
  const ratio=photoRatio();
  editor.referenceText.textContent=ratio?'基準設定済み：1 px ≒ '+(ratio*1000).toFixed(2)+' mm（撮影面が平面である前提）':'基準未設定：線を選ぶか、写真上の2点を指定してください。';
  editor.undo.disabled=!session.undo.length;
- for(const b of editor.modes.querySelectorAll('[data-mode]'))b.classList.toggle('active',b.dataset.mode===session.mode);
+ for(const b of editor.modes.querySelectorAll('[data-mode]')){const active=b.dataset.mode===session.mode;b.classList.toggle('active',active);b.setAttribute('aria-pressed',String(active));}
  editor.settingsSummary.textContent='白チョーク認識調整（'+sensitivityLabel(session.sensitivity)+'）';
  editor.sensitivity.value=session.sensitivity||'standard';
  editor.regionText.textContent=session.region?'認識範囲を指定中（点線の内側のみ）':'認識範囲：写真全体';
@@ -379,9 +383,26 @@ function openEditor(){
  modal=element('div','sl-trace-modal');modal.setAttribute('role','dialog');modal.setAttribute('aria-modal','true');modal.setAttribute('aria-label','自動描写を修正');
  const dialog=element('div','sl-trace-dialog');
  const header=element('div','sl-trace-header');header.append(element('h2',null,'写真から自動描写・修正'),newButton('閉じる',()=>closeModal()));
- const modes=group();
- for(const [id,name] of [['edit','選択・形を直す'],['erase','部分消去'],['add-line','線を追加'],['add-area','囲いを追加'],['ref','基準2点'],['region','認識範囲を指定'],['pan','移動']]){
-   const b=newButton(name,()=>{if(!session)return;session.mode=id;session.refPicks=[];redraw();});b.dataset.mode=id;modes.append(b);
+ // Seven commands always stay on one row, including on 320px iPhones.
+ // Full instructions remain available to screen readers and pointer tooltips.
+ const modes=group();modes.classList.add('sl-trace-modes');
+ const modeDefs=[
+   ['edit','修正','選択した線や囲いの形を直す'],
+   ['erase','消去','不要な線を指でなぞって部分消去'],
+   ['add-line','＋線','線を手描きで追加'],
+   ['add-area','＋囲い','変状の囲いを手描きで追加'],
+   ['ref','基準','写真の2点を指定して実測長さの基準にする'],
+   ['region','範囲','再認識する写真の範囲を指定'],
+   ['pan','移動','写真をスクロールして移動']
+ ];
+ for(const [id,label,description] of modeDefs){
+   const b=newButton(label,()=>{
+     if(!session)return;
+     session.mode=id;session.refPicks=[];redraw();
+     statusText(description);
+   });
+   b.dataset.mode=id;b.title=description;b.setAttribute('aria-label',description);
+   modes.append(b);
  }
  const scroll=element('div','sl-trace-scroll'),canvas=element('canvas','sl-trace-canvas');scroll.append(canvas);
  canvas.addEventListener('pointerdown',pointerDown);canvas.addEventListener('pointermove',pointerMove);canvas.addEventListener('pointerup',pointerUp);
