@@ -73,4 +73,24 @@ assert.ok(cloud.includes('st.autoTracePhotos||[]')&&cloud.includes("photo_album:
 assert.ok(pc.includes("a.metadata?.photo_album==='auto-trace'")&&pc.includes("subdir(d,'自動描写')"),'Verified PC copy belongs in separate evidence folder');
 assert.ok(recovery.includes('state.autoTracePhotos||[]'),'Verified remote originals must be available for redelivery');
 assert.ok(merger.includes('st.autoTracePhotos=entities('),'Concurrent device additions must merge by photo ID');
-console.log('PASS auto-trace: offline source album, separated ledger, safe cloud + PC archive and recovery');
+// This test runs AFTER the final photo-album builder applies the guarded merge hook.
+const M=require('../sentlog/sync-merge.js');
+const identical=(a)=>JSON.parse(JSON.stringify(a));
+const drawing={id:'d',name:'側面',sourceType:null,fileName:'',updatedAt:1};
+const mk=photos=>({
+ project:{id:'p',name:'現場',updatedAt:1,drawings:[identical(drawing)]},
+ drawings:[{meta:identical(drawing),state:{
+   sourceType:null,fileName:'',pageSettings:{},pageRotations:{},shapes:[],
+   autoTracePhotos:photos
+ }}]
+});
+const x=mk([{id:'trace-ipad',name:'ipad.jpg',createdAt:1}]);
+const y=mk([{id:'trace-iphone',name:'iphone.jpg',createdAt:2}]);
+const merged=M.merge(x,y,{preserve:true});
+assert.ok(merged.ok,'Independent photo captures should merge by ID: '+JSON.stringify(merged.conflicts));
+assert.deepEqual(merged.payload.drawings[0].state.autoTracePhotos.map(p=>p.id),['trace-iphone','trace-ipad']);
+assert.equal(merged.payload.drawings[0].state.shapes.length,0);
+const conflict=mk([{id:'trace-ipad',name:'conflict.jpg',createdAt:1}]);
+assert.equal(M.merge(x,conflict,{preserve:true}).ok,false,'Conflicting metadata for one photo must not be overwritten');
+assert.ok(M.merge(x,y,{base:mk([])}).ok);
+console.log('PASS auto-trace: offline source album, separated ledger, verified cloud/PC, merge and recovery');
