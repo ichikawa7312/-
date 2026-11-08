@@ -274,6 +274,43 @@ try:
             assert actions.locator('[data-sl-auto-album-button]').is_visible()
             assert actions.locator('[data-sl-auto-album-button]').bounding_box()['height']>=40
 
+        # Card action buttons must be an even 2×2 grid across PC / iPad / phone.
+        # In particular, no lone ledger button or a lone Delete button on the right.
+        for width in (320,390,760,1024,1280):
+            page.set_viewport_size({'width':width,'height':844})
+            layout=page.evaluate("""()=>{
+              const parent=document.querySelector('#drawingsGrid [data-drawing-group-id] .sl-album-actions');
+              const names=['[data-ledger-button]','[data-sl-auto-album-button]','.rename','.delete'];
+              const outer=parent.getBoundingClientRect();
+              const children=names.map(selector=>{
+                const element=parent.querySelector(selector),r=element.getBoundingClientRect();
+                return {text:element.textContent,x:r.x,y:r.y,w:r.width,h:r.height,
+                        right:r.right,bottom:r.bottom,scroll:element.scrollWidth,client:element.clientWidth};
+              });
+              return {display:getComputedStyle(parent).display,columns:getComputedStyle(parent).gridTemplateColumns,
+                      outer:{x:outer.x,right:outer.right},children};
+            }""")
+            buttons2=layout['children']
+            assert layout['display']=='grid',(width,layout)
+            assert len(layout['columns'].split())==2,(width,layout)
+            assert len(buttons2)==4,(width,layout)
+            assert abs(buttons2[0]['y']-buttons2[1]['y'])<2,(width,layout)
+            assert abs(buttons2[2]['y']-buttons2[3]['y'])<2,(width,layout)
+            assert buttons2[2]['y']>=buttons2[0]['bottom']+5,(width,layout)
+            assert abs(buttons2[0]['x']-buttons2[2]['x'])<2,(width,layout)
+            assert abs(buttons2[1]['x']-buttons2[3]['x'])<2,(width,layout)
+            assert all(b['h']>=44 and b['w']>=70 for b in buttons2),(width,layout)
+            assert all(b['x']>=layout['outer']['x']-1 and b['right']<=layout['outer']['right']+1 for b in buttons2),(width,layout)
+            assert all(b['scroll']<=b['client']+2 for b in buttons2),(width,layout)
+        page.set_viewport_size({'width':390,'height':844})
+
+        # Reordering hides card actions, preserving dedicated drag/up/down UI.
+        page.locator('#slDrawingOrderToolbar [data-role=toggle]').click()
+        assert page.locator('#drawingsGrid.sl-order-edit').count()==1
+        assert not group01.locator('.drawing-group-actions').is_visible()
+        page.locator('#slDrawingOrderToolbar [data-role=toggle]').click()
+        assert group01.locator('.drawing-group-actions').is_visible()
+
         group01.locator('[data-sl-auto-album-button]').click()
         page.wait_for_function("document.querySelectorAll('.sl-album-photo').length===3",timeout=10000)
         assert page.locator('.sl-album-group').count()==1
@@ -295,6 +332,6 @@ try:
         assert page.locator('[data-sl-auto-album]').count()==0
         assert not errors,errors
         browser.close()
-        print('PASS generated Sentlog page: group-specific photo actions, two sheets in 01, isolated 02, no standalone card, preservation and undo')
+        print('PASS generated Sentlog page: 2x2 desktop/mobile action grid, sorting visibility, group-specific photo album, preservation and undo')
 finally:
     server.shutdown()
