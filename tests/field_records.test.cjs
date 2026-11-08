@@ -25,6 +25,15 @@ assert.equal(feature.recordLabel(photo),'全景-3');
 assert.equal(feature.recordLabel(survey),'調査-2');
 assert.equal(feature.nextRecordNumber([photo,{...photo,typeNo:4}], 'photo'),3);
 assert.deepEqual(feature.surveyPointFrom(survey),{x:12,y:34});
+assert.deepEqual(feature.recordLeaderOrigin(survey),{x:12,y:34},'survey leader stays attached to the survey point');
+assert.equal(feature.recordLabelLayout(survey,1).x,42,'unmodified survey text retains existing placement');
+assert.deepEqual(feature.recordLeaderOrigin({...photo,point:{x:15,y:25}}),{x:15,y:25},'overview leader starts at photo circle');
+const labelMoved={...survey,labelPos:{x:115,y:200,anchor:'middle'}};
+assert.deepEqual(feature.recordLabelLayout(labelMoved,1),{x:115,y:200,anchor:'middle'},'saved label coordinates override automatic position');
+const outlined={...survey,displayKind:'arrow',points:[{x:20,y:30},{x:120,y:35}]};
+assert.deepEqual(feature.recordLeaderOrigin(outlined),{x:120,y:35},'outlined survey arrow is anchored at its tip');
+assert.ok(Number.isFinite(feature.recordLabelLayout(outlined,2).x));
+
 
 const a={x:10,y:20},b={x:30,y:20};
 assert.equal(feature.angleFrom(a,b),0);
@@ -66,6 +75,10 @@ assert.match(source,/fill:'#fff',stroke:color/);
 assert.match(source,/実施内容（複数選択可）/);
 assert.match(source,/RECORD_HOLD_MS=500/);
 assert.match(source,/setRecordPosition/);
+assert.match(source,/function bindRecordLabelHit/,'record texts have an independent drag hit target');
+assert.match(source,/function stopRecordLabelMove/,'label drags persist with undo support');
+assert.match(source,/fieldRecordLeaderId/,'moved record text draws a marker-anchored leader');
+assert.match(source,/if\(original\.labelPos\)s\.labelPos=/,'moving the entire marker keeps its customized label with it');
 assert.match(source,/selectRecord\(request\.id\)/,'record selection occurs only after a completed tap');
 const selectRecordSource=source.slice(source.indexOf('function selectRecord(id){'),source.indexOf('function sourceRecord(id){'));
 assert.doesNotMatch(selectRecordSource,/classList\.add\(['"]open['"]\)/,'selecting a field record must not raise the mobile inspector');

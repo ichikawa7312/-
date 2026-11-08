@@ -77,7 +77,31 @@
     if(s.displayKind==='arrow'&&Array.isArray(s.points)&&s.points[1])return normPoint(s.points[1]);
     return normPoint(s.point||s.points?.[0]);
   }
-  const pure={PHOTO_TYPE,SURVEY_TYPE,SURVEY_ITEMS,PHOTO_CIRCLE_RADIUS,PHOTO_ARROW_VISIBLE_LENGTH,PHOTO_SCREEN_LENGTH,PHOTO_LABEL_GAP,PHOTO_LABEL_VERTICAL_GAP,PHOTO_LABEL_DIAGONAL_SHIFT,RECORD_HOLD_MS,RECORD_HOLD_SLOP,isFieldRecord,recordLabel,angleFrom,photoEnd,photoLabelPos,surveyArrowPolygon,nextRecordNumber,surveyPointFrom};
+  // A movable text position is optional: existing markers and old records
+  // keep the same appearance until their text is deliberately dragged.
+  function recordLabelLayout(s,zoom=1){
+    const z=Math.max(.001,Number(zoom)||1);
+    if(!isFieldRecord(s))return {x:0,y:0,anchor:'middle'};
+    let automatic;
+    if(s.recordType==='photo'){
+      automatic=photoLabelPos(s.point||s.points?.[0],s.angle,z);
+    }else if(s.displayKind==='arrow'){
+      const tail=normPoint(s.points?.[0]),tip=normPoint(s.points?.[1]);
+      const dx=tip.x-tail.x,dy=tip.y-tail.y,len=Math.hypot(dx,dy)||1;
+      automatic={x:tail.x-dy/len*15/z,y:tail.y+dx/len*15/z,anchor:'middle'};
+    }else{
+      const p=surveyPointFrom(s);
+      automatic={x:p.x+30/z,y:p.y,anchor:'middle'};
+    }
+    if(!s.labelPos||!Number.isFinite(s.labelPos.x)||!Number.isFinite(s.labelPos.y))return automatic;
+    return {x:s.labelPos.x,y:s.labelPos.y,
+      anchor:['start','middle','end'].includes(s.labelPos.anchor)?s.labelPos.anchor:automatic.anchor};
+  }
+  function recordLeaderOrigin(s){
+    if(!isFieldRecord(s))return null;
+    return s.recordType==='photo'?normPoint(s.point||s.points?.[0]):surveyPointFrom(s);
+  }
+  const pure={PHOTO_TYPE,SURVEY_TYPE,SURVEY_ITEMS,PHOTO_CIRCLE_RADIUS,PHOTO_ARROW_VISIBLE_LENGTH,PHOTO_SCREEN_LENGTH,PHOTO_LABEL_GAP,PHOTO_LABEL_VERTICAL_GAP,PHOTO_LABEL_DIAGONAL_SHIFT,RECORD_HOLD_MS,RECORD_HOLD_SLOP,isFieldRecord,recordLabel,angleFrom,photoEnd,photoLabelPos,surveyArrowPolygon,nextRecordNumber,surveyPointFrom,recordLabelLayout,recordLeaderOrigin};
   if(typeof module!=='undefined'&&module.exports){module.exports=pure;return;}
   if(!root.document||root.SentlogFieldRecords)return;
 
@@ -85,7 +109,7 @@
   const stageWrap=$('stageWrap'),toolbar=document.querySelector('.toolbar'),inspector=$('inspector'),svg=$('svg');
   if(!stageWrap||!toolbar||!inspector||!svg)return;
 
-  let recordDraft=null,recordPanel=null,recordModeModal=null,recordBtn=null,recordPress=null,recordMove=null;
+  let recordDraft=null,recordPanel=null,recordModeModal=null,recordBtn=null,recordPress=null,recordMove=null,recordLabelMove=null;
   const standard={};
   const defaultDeleteText=$('deleteBtn')?.textContent||'選択変状を削除';
 
@@ -277,12 +301,14 @@
   function recordSpatialSnapshot(s){
     return {
       point:s?.point?{...s.point}:null,
-      points:Array.isArray(s?.points)?s.points.map(p=>({...p})):null
+      points:Array.isArray(s?.points)?s.points.map(p=>({...p})):null,
+      labelPos:s?.labelPos?{...s.labelPos}:null
     };
   }
   function setRecordPosition(s,original,dx,dy){
     if(original.point)s.point={...original.point,x:original.point.x+dx,y:original.point.y+dy};
     if(original.points)s.points=original.points.map(p=>({...p,x:p.x+dx,y:p.y+dy}));
+    if(original.labelPos)s.labelPos={...original.labelPos,x:original.labelPos.x+dx,y:original.labelPos.y+dy};
   }
   function stopRecordMove(commit){
     if(!recordMove)return;
@@ -297,9 +323,35 @@
     }
     render();
   }
+  function stopRecordLabelMove(commit){
+    if(!recordLabelMove)return;
+    const m=recordLabelMove;recordLabelMove=null;
+    const s=sourceRecord(m.id);if(!s)return;
+    if(!commit||Math.hypot(m.dx,m.dy)*z()<RECORD_COMMIT_SLOP){
+      if(m.previous)s.labelPos={...m.previous};else delete s.labelPos;
+    }else{
+      const h=historyFor(m.page);h.undo.push(m.before);if(h.undo.length>80)h.undo.shift();h.redo=[];
+      updateHistoryButtons();persist();
+    }
+    render();
+  }
   function cancelRecordInteraction(){
     clearRecordPress();
     if(recordMove)stopRecordMove(false);
+    if(recordLabelMove)stopRecordLabelMove(false);
+  }
+  function bindRecordLabelHit(hit,id){
+    hit.style.cursor='grab';hit.style.touchAction='none';hit.dataset.fieldRecordLabelId=id;
+    hit.addEventListener('pointerdown',e=>{
+      if(tool!=='pan'||gestureLock||(e.pointerType==='mouse'&&e.button!==0)||touchCount()>1)return;
+      const shape=sourceRecord(id);if(!shape)return;
+      cancelRecordInteraction();
+      recordLabelMove={id,pointerId:e.pointerId,start:point(e),
+        origin:recordLabelLayout(shape,z()),previous:shape.labelPos?{...shape.labelPos}:null,
+        before:snapshotPage(),dx:0,dy:0,page:state.currentPage,drawingId:activeDrawingId};
+      try{stageWrap.setPointerCapture(e.pointerId)}catch{}
+      e.preventDefault();e.stopPropagation();selectRecord(id);
+    });
   }
   function bindRecordHit(hit,id){
     hit.style.cursor='grab';hit.dataset.fieldRecordId=id;hit.style.touchAction='none';
@@ -329,6 +381,35 @@
       fill:selectedNow?'#1d4ed8':'#111827','font-weight':'700','paint-order':'stroke fill',stroke:'#fff','stroke-width':3/z(),'pointer-events':'none'});
     t.textContent=text;svg.appendChild(t);return t;
   }
+  function drawRecordLabel(s,selectedNow){
+    const label=recordLabel(s),pos=recordLabelLayout(s,z());
+    const t=drawText(label,pos.x,pos.y,selectedNow,pos.anchor),fontSize=Math.max(11,14/z());
+    let textWidth=0;try{textWidth=t.getComputedTextLength?.()||0;}catch(_){}
+    if(!(textWidth>0))textWidth=Math.max(fontSize,label.length*fontSize*.7);
+    const left=pos.anchor==='end'?pos.x-textWidth:pos.anchor==='start'?pos.x:pos.x-textWidth/2;
+    // A fine leader ends at the label edge instead of crossing its text.
+    if(s.labelPos){
+      const from=recordLeaderOrigin(s),pad=3/z();
+      const x=Math.max(left-pad,Math.min(left+textWidth+pad,from.x));
+      const y=Math.max(pos.y-fontSize*.62-pad,Math.min(pos.y+fontSize*.62+pad,from.y));
+      const dx=x-from.x,dy=y-from.y,d=Math.hypot(dx,dy);
+      if(d*z()>12){
+        const radius=s.recordType==='photo'?PHOTO_CIRCLE_RADIUS:s.displayKind==='arrow'?1:SURVEY_POINT_RADIUS;
+        const off=Math.min(radius/z(),d*.3);
+        const line=svgEl('line',{x1:from.x+dx/d*off,y1:from.y+dy/d*off,
+          x2:x,y2:y,stroke:selectedNow?'#2563eb':'#374151',
+          'stroke-width':.8/z(),'stroke-linecap':'round','pointer-events':'none'});
+        line.dataset.fieldRecordLeaderId=s.id;svg.insertBefore(line,t);
+      }
+    }
+    if(tool==='pan'){
+      const coarse=(typeof matchMedia==='function'&&matchMedia('(any-pointer:coarse)').matches)||navigator.maxTouchPoints>0;
+      const w=Math.max(textWidth+12/z(),(coarse?44:26)/z()),h=Math.max(fontSize+12/z(),(coarse?44:26)/z());
+      const hit=svgEl('rect',{x:left+textWidth/2-w/2,y:pos.y-h/2,width:w,height:h,
+        rx:5/z(),ry:5/z(),fill:'rgba(0,0,0,.001)','pointer-events':'all'});
+      bindRecordLabelHit(hit,s.id);svg.appendChild(hit);
+    }
+  }
   function drawPhotoRecord(s){
     const p=normPoint(s.point||s.points?.[0]),end=photoEnd(p,s.angle,z()),selectedNow=s.id===selected||recordMove?.id===s.id;
     const color=selectedNow?'#2563eb':'#111827',r=PHOTO_CIRCLE_RADIUS/z(),head=8/z(),wing=5/z();
@@ -339,33 +420,36 @@
     const tri=svgEl('polygon',{points:`${end.x},${end.y} ${neck.x+px*wing},${neck.y+py*wing} ${neck.x-px*wing},${neck.y-py*wing}`,fill:color});
     const circle=svgEl('circle',{cx:p.x,cy:p.y,r,fill:'#fff',stroke:color,'stroke-width':1.8/z()});
     for(const e of [line,tri,circle]){e.style.pointerEvents='none';svg.appendChild(e);}
-    const labelPos=photoLabelPos(p,s.angle,z());drawText(recordLabel(s),labelPos.x,labelPos.y,selectedNow,labelPos.anchor);
     if(tool==='pan'){
       const hit=svgEl('line',{x1:p.x,y1:p.y,x2:end.x,y2:end.y,stroke:'rgba(0,0,0,.001)','stroke-width':24/z(),'pointer-events':'stroke'});
       bindRecordHit(hit,s.id);svg.appendChild(hit);
       const dotHit=svgEl('circle',{cx:p.x,cy:p.y,r:14/z(),fill:'rgba(0,0,0,.001)','pointer-events':'all'});
       bindRecordHit(dotHit,s.id);svg.appendChild(dotHit);
     }
+    // The text has its own event target. Keep that above the broader marker
+    // hit zones so the user can grab the actual letters near a camera circle.
+    drawRecordLabel(s,selectedNow);
   }
   function drawSurveyPoint(s){
     const p=surveyPointFrom(s),selectedNow=s.id===selected||recordMove?.id===s.id,color=selectedNow?'#2563eb':'#334155',r=SURVEY_POINT_RADIUS/z();
     const outer=svgEl('circle',{cx:p.x,cy:p.y,r,fill:'#fff',stroke:color,'stroke-width':2.2/z()});
     const inner=svgEl('circle',{cx:p.x,cy:p.y,r:r*.35,fill:color,stroke:'none'});outer.style.pointerEvents=inner.style.pointerEvents='none';svg.append(outer,inner);
-    drawText(recordLabel(s),p.x+30/z(),p.y,selectedNow);
     if(tool==='pan'){
       const hit=svgEl('circle',{cx:p.x,cy:p.y,r:16/z(),fill:'rgba(0,0,0,.001)','pointer-events':'all'});bindRecordHit(hit,s.id);svg.appendChild(hit);
     }
+    drawRecordLabel(s,selectedNow);
   }
   function drawSurveyArrow(s){
     const tail=normPoint(s.points?.[0]),tip=normPoint(s.points?.[1]),poly=surveyArrowPolygon(tail,tip,z());if(!poly.length)return;
     const selectedNow=s.id===selected||recordMove?.id===s.id,color=selectedNow?'#2563eb':'#334155';
     const arrow=svgEl('polygon',{points:poly.map(p=>p.x+','+p.y).join(' '),fill:'#fff',stroke:color,'stroke-width':2.4/z(),'stroke-linejoin':'round'});
     arrow.style.pointerEvents='none';svg.appendChild(arrow);
-    const dx=tip.x-tail.x,dy=tip.y-tail.y,len=Math.hypot(dx,dy)||1,px=-dy/len,py=dx/len;
-    drawText(recordLabel(s),tail.x+px*15/z(),tail.y+py*15/z(),selectedNow);
     if(tool==='pan'){
       const hit=svgEl('line',{x1:tail.x,y1:tail.y,x2:tip.x,y2:tip.y,stroke:'rgba(0,0,0,.001)','stroke-width':30/z(),'pointer-events':'stroke'});bindRecordHit(hit,s.id);svg.appendChild(hit);
     }
+    // On outlined arrows the name starts near the shaft. Give its text hit
+    // target priority while leaving the rest of the arrow draggable by hold.
+    drawRecordLabel(s,selectedNow);
   }
   function drawRecords(records){
     for(const s of records){
@@ -421,6 +505,18 @@
     if(s)syncInspector();
   }
 
+  function handleRecordLabelMove(e){
+    if(!recordLabelMove||recordLabelMove.pointerId!==e.pointerId)return;
+    if(gestureLock||touchCount()>1){stopRecordLabelMove(false);return;}
+    const m=recordLabelMove,shape=sourceRecord(m.id);
+    if(!shape||currentView!=='editor'||activeDrawingId!==m.drawingId||state.currentPage!==m.page){stopRecordLabelMove(false);return;}
+    const p=point(e);m.dx=p.x-m.start.x;m.dy=p.y-m.start.y;
+    if(Math.hypot(m.dx,m.dy)*z()>=RECORD_COMMIT_SLOP)
+      shape.labelPos={x:m.origin.x+m.dx,y:m.origin.y+m.dy,anchor:m.origin.anchor};
+    else if(m.previous)shape.labelPos={...m.previous};
+    else delete shape.labelPos;
+    if(e.cancelable)e.preventDefault();e.stopImmediatePropagation();render();
+  }
   function handleRecordMove(e){
     if(recordPress?.pointerId===e.pointerId){
       if(gestureLock||touchCount()>1||
@@ -439,6 +535,12 @@
     if(e.cancelable)e.preventDefault();e.stopImmediatePropagation();render();
   }
   function finishRecordInteraction(e,cancelled=false){
+    if(recordLabelMove?.pointerId===e.pointerId){
+      const commit=!cancelled&&!gestureLock&&touchCount()<=1;
+      stopRecordLabelMove(commit);
+      try{stageWrap.releasePointerCapture(e.pointerId)}catch{}
+      if(e.cancelable)e.preventDefault();e.stopImmediatePropagation();return true;
+    }
     if(recordMove?.pointerId===e.pointerId){
       const canCommit=!cancelled&&!gestureLock&&touchCount()<=1;
       stopRecordMove(canCommit);
@@ -461,17 +563,19 @@
   function installEvents(){
     stageWrap.addEventListener('pointerdown',pointerDown,{capture:true,passive:false});
     stageWrap.addEventListener('pointermove',pointerMove,{capture:true,passive:false});
+    stageWrap.addEventListener('pointermove',handleRecordLabelMove,{capture:true,passive:false});
     stageWrap.addEventListener('pointermove',handleRecordMove,{capture:true,passive:false});
     stageWrap.addEventListener('pointerup',pointerUp,{capture:true,passive:false});
     stageWrap.addEventListener('pointercancel',e=>{if(recordDraft?.pointerId===e.pointerId){recordDraft=null;render();}},{capture:true});
     window.addEventListener('pointerdown',e=>{
       if(recordDraft&&e.pointerType==='touch'&&e.pointerId!==recordDraft.pointerId){recordDraft=null;render();}
-      if((recordPress&&e.pointerId!==recordPress.pointerId)||(recordMove&&e.pointerId!==recordMove.pointerId))cancelRecordInteraction();
+      if((recordPress&&e.pointerId!==recordPress.pointerId)||(recordMove&&e.pointerId!==recordMove.pointerId)||(recordLabelMove&&e.pointerId!==recordLabelMove.pointerId))cancelRecordInteraction();
     },{capture:true});
     window.addEventListener('pointerup',e=>finishRecordInteraction(e,false),{capture:true,passive:false});
     window.addEventListener('pointercancel',e=>finishRecordInteraction(e,true),{capture:true,passive:false});
     stageWrap.addEventListener('lostpointercapture',e=>{
       if(recordMove?.pointerId===e.pointerId){stopRecordMove(false);}
+      if(recordLabelMove?.pointerId===e.pointerId){stopRecordLabelMove(false);}
       if(recordPress?.pointerId===e.pointerId)clearRecordPress();
     });
     window.addEventListener('blur',cancelRecordInteraction);
