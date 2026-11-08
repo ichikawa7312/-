@@ -93,7 +93,7 @@ function updatePhoto(){
  if(!photoBadge||!photoValue)return;
  const source=$('slPhotoRedeliveryStatus'),full=source?.textContent?.trim()||'';
  const ratio=full.match(/写真\s*(\d+)\s*\/\s*(\d+)\s*件/)||full.match(/確認済み\s*(\d+)\s*\/\s*(\d+)\s*件/);
- const error=/要確認|失敗|エラー|一致しません|取得不可/.test(full);
+ const error=/要確認|確認が必要|確認できません|未保存|不足|失敗|エラー|一致しません|取得不可/.test(full);
  const waiting=/再取得待ち|未受信|待機|処理中/.test(full);
  photoBadge.hidden=!ratio&&!error&&!waiting;
  if(photoBadge.hidden)return;
