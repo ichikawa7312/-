@@ -70,6 +70,18 @@ try:
         photo_file()
         page.wait_for_function("document.querySelectorAll('.sl-trace-row').length>=2",timeout=15000)
         assert page.locator('.sl-trace-row').count()>=2
+        assert page.locator('.sl-trace-footer input[type=checkbox]').count()==0,'Source photos must never auto-attach to all shapes.'
+        assert page.evaluate('state.autoTracePhotos.length')==1,'Source image must already be saved before confirmation.'
+        original=page.evaluate("""async()=>{
+          const id=state.autoTracePhotos[0].id;
+          const saved=JSON.parse(window.SentlogRecords.getItem(drawingStorageKey('trace-drawing')));
+          const [shared,original]=await Promise.all([
+            getPhotoBlob(id,'trace-drawing'),
+            window.SentlogOriginalPhotos.getOriginal('trace-drawing',id)
+          ]);
+          return {indexed:saved.autoTracePhotos?.length||0,shared:shared?.size||0,original:original?.size||0};
+        }""")
+        assert original['indexed']==1 and original['shared']>0 and original['original']>0,original
         # The candidate cards are available, but start collapsed to leave room for the photograph.
         assert page.locator('.sl-trace-candidates-panel').count()==1
         assert page.locator('.sl-trace-candidates-panel').get_attribute('open') is None
@@ -166,8 +178,10 @@ try:
         }""")
         assert page.locator('.sl-trace-modal').count()==0
         assert page.evaluate('state.shapes.length')==0
+        assert page.evaluate('state.autoTracePhotos.length')==1,'Closing an unconfirmed trace must preserve its photo.'
         photo_file()
         page.wait_for_function("document.querySelectorAll('.sl-trace-row').length>=2",timeout=15000)
+        assert page.evaluate('state.autoTracePhotos.length')==2,'Second capture stays as another source photo.'
         assert page.locator('.sl-trace-candidates-panel').get_attribute('open') is None
         page.locator('.sl-trace-candidates-panel summary').click()
         assert page.locator('.sl-trace-row').first.is_visible()
@@ -187,21 +201,49 @@ try:
         page.wait_for_function("state.shapes.length>=2",timeout=15000)
         result=page.evaluate("""()=>state.shapes.map(s=>({
           kind:s.kind,type:s.type,points:s.points.length,len:s.lineLengthM||null,
-          id:s.id,page:s.page,hasRecordKind:!!s.recordKind,photos:s.photos.length
+          id:s.id,page:s.page,hasRecordKind:!!s.recordKind,photos:s.photos.length,
+          sourceAutoTracePhotoId:s.sourceAutoTracePhotoId
         }))""")
         assert any(s['kind']=='freehand-line' and s['len']>0 for s in result),result
         assert any(s['kind']=='freehand-area' and s['type']=='剥離' for s in result),result
         assert all(not s['hasRecordKind'] and s['page']==1 and s['id'] for s in result),result
-        page.wait_for_function("state.shapes.every(s=>s.photos.length===1)",timeout=20000)
-        assert page.evaluate("new Set(state.shapes.map(s=>s.photos[0].id)).size===1"),'One photo must not be physically duplicated for each crack.'
+        assert all(s['photos']==0 for s in result),'Auto trace source photos must not enter the ledger.'
+        assert all(s['sourceAutoTracePhotoId'] for s in result),'Origin must remain traceable without attaching photos.'
+        assert len({s['sourceAutoTracePhotoId'] for s in result})==1
         assert page.evaluate("""()=>{
           const raw=window.SentlogRecords.getItem(drawingStorageKey('trace-drawing'));
-          return JSON.parse(raw).shapes.length===state.shapes.length;
+          const saved=JSON.parse(raw);
+          return saved.shapes.length===state.shapes.length &&
+                 saved.autoTracePhotos?.length===2 &&
+                 saved.shapes.every(s=>s.photos.length===0);
         }""")
+        # Explicitly select a single photo for a single damage, rather than auto-adding it to all.
+        assert page.locator('#slAutoAlbumPick').count()==1
+        page.evaluate("document.getElementById('slAutoAlbumPick').click()")
+        page.wait_for_function("document.querySelectorAll('.sl-album-photo').length===2",timeout=10000)
+        assert page.locator('.sl-album-photo').count()==2
+        assert '壁面図' in page.locator('.sl-album-group summary').first.inner_text()
+        page.locator('.sl-album-photo').first.get_by_role('button',name='選択中の変状に添付').click()
+        assert page.evaluate("state.shapes.filter(s=>s.photos.length===1).length") == 1
+        assert page.evaluate("state.shapes.filter(s=>s.photos.length===0).length") == len(result)-1
+        page.locator('.sl-album-modal').get_by_role('button',name='閉じる').click()
         page.evaluate('undo()')
-        assert page.evaluate('state.shapes.length')==0,'One undo should revert all auto-traced shapes.'
+        assert page.evaluate("state.shapes.every(s=>s.photos.length===0)"),'Undo removes only the explicit attachment.'
+        page.evaluate('undo()')
+        assert page.evaluate('state.shapes.length')==0,'Next undo reverts all traced shapes.'
+        assert page.evaluate('state.autoTracePhotos.length')==2,'Editing undo must not delete independently stored photos.'
+
+        # The project drawing list exposes a dedicated folder grouped by drawing number.
+        page.evaluate("showDrawings('trace-project')")
+        card=page.locator('[data-sl-auto-album]')
+        assert card.count()==1 and '2枚' in card.inner_text()
+        card.click()
+        page.wait_for_function("document.querySelectorAll('.sl-album-photo').length===2",timeout=10000)
+        assert page.locator('.sl-album-photo img').count()==2
+        assert page.locator('.sl-album-photo button').count()==0,'No shape is selected on the project album screen.'
+        page.locator('.sl-album-modal').get_by_role('button',name='閉じる').click()
         assert not errors,errors
         browser.close()
-        print('PASS generated Sentlog page: collapsed candidates, sensitivity + range reanalysis, normal damage, photo and undo')
+        print('PASS generated Sentlog page: standalone source album + original, no auto ledger attachment, opt-in attach, undo and folder')
 finally:
     server.shutdown()
