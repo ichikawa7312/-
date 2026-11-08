@@ -62,6 +62,10 @@ assert.ok(album.includes('state.autoTracePhotos')&&album.includes('root.SentlogO
 assert.ok(!ui.includes('ctx.attach&&ctx.sourcePhoto')&&!ui.includes('撮影写真も各変状に添付'));
 assert.ok(ui.includes('sourceAutoTracePhotoId:ctx.sourceMeta?.id'));
 assert.ok(album.includes("'自動描写'")&&album.includes('renderDrawings=function()'));
+assert.ok(album.includes("card.querySelector('.drawing-group-actions')")&&album.includes("'[data-ledger-button]'"),'Album action must appear beside photo ledger, rename and delete on the group card');
+assert.ok(album.includes('filter(g=>groupId==null||g.id===groupId)'),'Opening one drawing No. must not expose photographs from other groups');
+assert.ok(!album.includes("manager-card sl-album-folder"),'Separate full-size folder card must be removed');
+assert.ok(album.includes('addGroupButtons()'),'Album actions need to be installed after drawing list rendering');
 assert.ok(album.includes('selectedShape()')&&album.includes('shape.photos.push('));
 assert.ok(ui.includes('sl-trace-candidates-panel')&&ui.includes('sl-trace-settings'));
 assert.ok(ui.includes('function reanalyze()')&&ui.includes("session.mode='region'"));
