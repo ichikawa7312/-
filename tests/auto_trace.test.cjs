@@ -65,4 +65,12 @@ assert.ok(album.includes("'自動描写'")&&album.includes('renderDrawings=funct
 assert.ok(album.includes('selectedShape()')&&album.includes('shape.photos.push('));
 assert.ok(ui.includes('sl-trace-candidates-panel')&&ui.includes('sl-trace-settings'));
 assert.ok(ui.includes('function reanalyze()')&&ui.includes("session.mode='region'"));
-console.log('PASS auto-trace: line/hatched area/blank image and standard record integration');
+const cloud=fs.readFileSync(path.join(root,'sentlog/cloud-sync.js'),'utf8');
+const pc=fs.readFileSync(path.join(root,'sentlog-pc/index.html'),'utf8');
+const recovery=fs.readFileSync(path.join(root,'sentlog/photo-recovery.js'),'utf8');
+const merger=fs.readFileSync(path.join(root,'sentlog/sync-merge.js'),'utf8');
+assert.ok(cloud.includes('st.autoTracePhotos||[]')&&cloud.includes("photo_album:item.album"),'Standalone source photos must be uploaded as normal verified photo assets');
+assert.ok(pc.includes("a.metadata?.photo_album==='auto-trace'")&&pc.includes("subdir(d,'自動描写')"),'Verified PC copy belongs in separate evidence folder');
+assert.ok(recovery.includes('state.autoTracePhotos||[]'),'Verified remote originals must be available for redelivery');
+assert.ok(merger.includes('st.autoTracePhotos=entities('),'Concurrent device additions must merge by photo ID');
+console.log('PASS auto-trace: offline source album, separated ledger, safe cloud + PC archive and recovery');
