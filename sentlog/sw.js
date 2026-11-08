@@ -1,5 +1,4 @@
 /* Only static app resources belong in Cache Storage. Never cache user APIs. */
-/* 2026-11-09: refresh installed PWA resources for field-record movable labels. */
 const CACHE='sentlog-pwa-v145';
 const ROOT=new URL('./',self.registration.scope);
 const FILES=['','index.html','manifest.webmanifest','icon.svg','cloud-sync.js','sync-status.js','phone-runtime.js','pdf-quality.js','sync-view.js','inspector-interaction.js','label-settings.js','app-settings.js','record-store.js','storage-ui.js','phone-layout.css','pdf-recovery.js',...Array.from({length:9},(_,i)=>'part0'+(i+1)+'.txt')];
