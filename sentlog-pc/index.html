@@ -167,11 +167,6 @@ async function saveVerified(a){
   if(a.kind==='drawing'){
     d=await subdir(d,'図面');
     logicalParts.push('図面');
-  }else if(a.metadata?.photo_album==='auto-trace'){
-    // Store independent tracing evidence away from photos used in the ledger.
-    const group=a.metadata?.drawing_group||drawing;
-    d=await subdir(d,'自動描写');d=await subdir(d,group);d=await subdir(d,drawing);
-    logicalParts.push('自動描写',safe(group),safe(drawing));
   }else{
     d=await subdir(d,'写真');d=await subdir(d,drawing);d=await subdir(d,label);
     logicalParts.push('写真',safe(drawing),safe(label));
