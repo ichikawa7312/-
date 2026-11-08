@@ -66,6 +66,11 @@ assert.ok(album.includes("card.querySelector('.drawing-group-actions')")&&album.
 assert.ok(album.includes('filter(g=>groupId==null||g.id===groupId)'),'Opening one drawing No. must not expose photographs from other groups');
 assert.ok(!album.includes("manager-card sl-album-folder"),'Separate full-size folder card must be removed');
 assert.ok(album.includes('addGroupButtons()'),'Album actions need to be installed after drawing list rendering');
+assert.ok(album.includes("'.sl-album-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))"),'Desktop group actions must use two equal columns');
+assert.ok(album.includes(".sl-album-actions [data-ledger-button]{order:1}")&&album.includes(".sl-album-actions .delete{order:4}"),'Ledger and auto-trace above rename and delete');
+assert.ok(!album.includes("'.sl-album-actions{display:grid!important"),'Manual sort mode must still hide group actions');
+assert.ok(album.includes("min-height:44px!important"),'Card actions must remain finger-sized');
+
 assert.ok(album.includes('selectedShape()')&&album.includes('shape.photos.push('));
 assert.ok(ui.includes('sl-trace-candidates-panel')&&ui.includes('sl-trace-settings'));
 assert.ok(ui.includes('function reanalyze()')&&ui.includes("session.mode='region'"));

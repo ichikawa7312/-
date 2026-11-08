@@ -45,9 +45,16 @@ function countPhotos(project){return projectPhotos(project).reduce((sum,g)=>sum+
 function style(){
  if(styleAdded)return;styleAdded=true;
  const s=el('style');s.id='slAutoTraceAlbumStyle';s.textContent=[
- '.sl-album-actions{flex-wrap:wrap}',
+ // Four actions stay in a balanced 2 x 2 grid on desktop, tablet and phone.
+ // Do not use !important on display: sort-edit mode must still hide actions.
+ '.sl-album-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));grid-auto-flow:row;align-items:stretch;justify-content:stretch;gap:7px}',
+ '.sl-album-actions>button{box-sizing:border-box;display:flex;align-items:center;justify-content:center;width:100%!important;min-width:0!important;min-height:44px!important;height:100%;margin:0!important;padding:7px 4px!important;text-align:center;white-space:normal;overflow-wrap:anywhere;line-height:1.3;font-size:12px}',
+ '.sl-album-actions [data-ledger-button]{order:1}',
+ '.sl-album-actions [data-sl-auto-album-button]{order:2}',
+ '.sl-album-actions .rename{order:3}',
+ '.sl-album-actions .delete{order:4}',
  '.sl-album-actions .sl-album-action{color:#155e75;border-color:#99d5db;background:#effdfd}',
- '@media(max-width:520px){.sl-album-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px}.sl-album-actions button{width:100%!important;min-width:0!important;white-space:normal;padding:7px 4px}}',
+ '@media(max-width:520px){.sl-album-actions{gap:7px}.sl-album-actions>button{min-height:44px!important;padding:7px 3px!important}}',
  '.sl-album-backdrop{position:fixed;inset:0;z-index:1600;background:rgba(15,23,42,.8);display:flex;align-items:center;justify-content:center;padding:calc(max(12px,env(safe-area-inset-top,0px)) + 6px) 10px calc(max(12px,env(safe-area-inset-bottom,0px)) + 6px);box-sizing:border-box}',
  '.sl-album-modal{width:min(850px,100%);max-height:100%;min-height:0;display:flex;flex-direction:column;overflow:hidden;background:#fff;color:#0f172a;border-radius:12px;padding:12px;box-sizing:border-box;gap:8px;font:14px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}',
  '.sl-album-header{display:flex;justify-content:space-between;align-items:center;gap:8px;flex:0 0 auto}',
