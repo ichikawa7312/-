@@ -224,6 +224,7 @@ try:
         assert page.locator('.sl-album-photo').count()==2
         assert '壁面図' in page.locator('.sl-album-group summary').first.inner_text()
         page.locator('.sl-album-photo').first.get_by_role('button',name='選択中の変状に添付').click()
+        page.wait_for_function("state.shapes.filter(s=>s.photos.length===1).length===1",timeout=10000)
         assert page.evaluate("state.shapes.filter(s=>s.photos.length===1).length") == 1
         assert page.evaluate("state.shapes.filter(s=>s.photos.length===0).length") == len(result)-1
         page.locator('.sl-album-modal').get_by_role('button',name='閉じる').click()
