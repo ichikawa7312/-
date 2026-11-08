@@ -81,7 +81,7 @@ try:
       with page.expect_file_chooser() as event:
         page.locator('#slDrawingHeaderAdd').click()
       chooser=event.value
-      assert chooser.is_multiple is False
+      assert chooser.element.get_attribute('id')=='drawingAddInput','Must open the original drawing file picker.'
       assert page.evaluate("document.getElementById('slDrawingHeaderAdd').control===document.getElementById('drawingAddInput')")
       # Existing reorder edit and numeric sort remain reachable from moved buttons.
       page.locator('#slDrawingOrderToolbar [data-role=toggle]').click()
