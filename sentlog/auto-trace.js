@@ -31,7 +31,7 @@ function installStyle(){
  '.sl-trace-header{display:flex;align-items:center;justify-content:space-between;gap:6px;min-width:0;width:100%;min-height:48px;flex:0 0 auto;position:relative;z-index:1}',
  '.sl-trace-header button{display:inline-flex;justify-content:center;align-items:center;min-width:82px;min-height:48px;padding:9px 12px;flex:0 0 auto;touch-action:manipulation;white-space:nowrap;font-size:13px}',
  '.sl-trace-header button:focus-visible{outline:3px solid #0284c7;outline-offset:2px}',
- '.sl-trace-zoom{display:grid!important;grid-template-columns:repeat(3,minmax(0,1fr));gap:4px;min-width:0;flex:1 1 0;align-items:center;flex-wrap:nowrap!important}',
+ '.sl-trace-zoom{display:grid!important;grid-template-columns:repeat(3,minmax(0,1fr));gap:4px;min-width:0;max-width:340px;flex:1 1 0;align-items:center;flex-wrap:nowrap!important}',
  '.sl-trace-header .sl-trace-zoom button{box-sizing:border-box;min-width:44px!important;width:100%;max-width:none;min-height:48px!important;padding:5px 2px!important;flex:1 1 0!important;font-size:clamp(10px,2.75vw,13px)!important;white-space:nowrap;line-height:1.15}',
  '.sl-trace-header .sl-trace-back{flex:0 0 auto;min-width:82px!important;min-height:48px!important;padding:8px 10px!important;font-size:12px!important;white-space:nowrap}',
 
