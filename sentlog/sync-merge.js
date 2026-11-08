@@ -103,8 +103,13 @@
       for(const [key,label] of Object.entries(frameFields)){
         if(!equal(l.state[key],r.state[key])){clash(path,label+'が異なります');return;}
       }
-      const st=properties(l.state,r.state,b?.state,path+' / 用紙・縮尺',['shapes',...viewKeys]);
+      const st=properties(l.state,r.state,b?.state,path+' / 用紙・縮尺',['shapes','autoTracePhotos',...viewKeys]);
       st.shapes=entities(l.state.shapes||[],r.state.shapes||[],b?.state?.shapes||[],path,shapeValue,(a,z,ancestor,label)=>shape(a,z,ancestor,label,l.meta.id));
+      // Separate auto-trace source photos must merge by ID. Comparing entire arrays
+      // would create unnecessary conflicts or drop pictures from the other device.
+      if(l.state.autoTracePhotos||r.state.autoTracePhotos||b?.state?.autoTracePhotos){
+        st.autoTracePhotos=entities(l.state.autoTracePhotos||[],r.state.autoTracePhotos||[],b?.state?.autoTracePhotos||[],path+' / 自動描写写真',x=>x,photo);
+      }
       for(const k of viewKeys)if(l.state[k]!==undefined)st[k]=copy(l.state[k]);
       meta.updatedAt=Math.max(Number(l.meta.updatedAt)||0,Number(r.meta.updatedAt)||0);
       return {id:l.id,meta,state:st};
@@ -120,6 +125,7 @@
         seen.add(id);out.push({id,...copy(d)});
         map(d.state.shapes,label+' / '+(d.meta.name||id));
         for(const s of d.state.shapes)map(s.photos||[],label+' / 写真');
+        if(d.state.autoTracePhotos!==undefined)map(d.state.autoTracePhotos,label+' / 自動描写写真');
       }
       if(seen.size!==metas.size)clash(label,'不足した図面記録があります');
       return out;
