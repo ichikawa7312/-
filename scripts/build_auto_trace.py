@@ -81,18 +81,34 @@ hook('sentlog/photo-recovery.js',"""    for(const shape of state.shapes||[])for(
      if(photo?.id)keys.add(photoKey(d.id,photo.id));
     }""")
 
-hook('sentlog/sync-merge.js',"""      const st=properties(l.state,r.state,b?.state,path+' / 用紙・縮尺',['shapes',...viewKeys]);
-      st.shapes=entities(l.state.shapes||[],r.state.shapes||[],b?.state?.shapes||[],path,shapeValue,(a,z,ancestor,label)=>shape(a,z,ancestor,label,l.meta.id));
-      for(const k of viewKeys)if(l.state[k]!==undefined)st[k]=copy(l.state[k]);""","""      const st=properties(l.state,r.state,b?.state,path+' / 用紙・縮尺',['shapes','autoTracePhotos',...viewKeys]);
-      st.shapes=entities(l.state.shapes||[],r.state.shapes||[],b?.state?.shapes||[],path,shapeValue,(a,z,ancestor,label)=>shape(a,z,ancestor,label,l.meta.id));
-      // Keep simultaneous captures from two devices; never silently discard an image.
+# Merge source-photo lists by ID even if previous builders changed the field list
+# in the drawing function (e.g. PDF page-count safety extensions).
+merge_path=ROOT/'sentlog/sync-merge.js'
+merge_code=merge_path.read_text(encoding='utf-8')
+start=merge_code.index('function drawing(l,r,b,path){')
+stop=merge_code.index('function validate(',start)
+drawing_fn=merge_code[start:stop]
+line=re.search(r'(?m)^ *const st=properties\([^\n;]+;',drawing_fn)
+if not line or "['shapes'" not in line.group(0):
+    raise RuntimeError('Cannot identify drawing field merge and protect autoTracePhotos')
+fixed=line.group(0).replace("['shapes'","['shapes','autoTracePhotos'",1)
+drawing_fn=drawing_fn[:line.start()]+fixed+drawing_fn[line.end():]
+append_point="      for(const k of viewKeys)if(l.state[k]!==undefined)st[k]=copy(l.state[k]);"
+if drawing_fn.count(append_point)!=1:
+    raise RuntimeError('Missing drawing field merge insertion point')
+drawing_fn=drawing_fn.replace(append_point,
+"""      // Preserve captures from separate devices; do not place them in shape.photos.
       if(l.state.autoTracePhotos||r.state.autoTracePhotos||b?.state?.autoTracePhotos){
         st.autoTracePhotos=entities(l.state.autoTracePhotos||[],r.state.autoTracePhotos||[],b?.state?.autoTracePhotos||[],path+' / 自動描写写真',x=>x,photo);
       }
-      for(const k of viewKeys)if(l.state[k]!==undefined)st[k]=copy(l.state[k]);""")
-
-hook('sentlog/sync-merge.js',"""        for(const s of d.state.shapes)map(s.photos||[],label+' / 写真');""","""        for(const s of d.state.shapes)map(s.photos||[],label+' / 写真');
-        if(d.state.autoTracePhotos!==undefined)map(d.state.autoTracePhotos,label+' / 自動描写写真');""")
+"""+append_point,1)
+merge_code=merge_code[:start]+drawing_fn+merge_code[stop:]
+old_validate="        for(const s of d.state.shapes)map(s.photos||[],label+' / 写真');"
+if merge_code.count(old_validate)!=1:
+    raise RuntimeError('Missing photo registry validation insertion point')
+merge_code=merge_code.replace(old_validate,old_validate+
+"\n        if(d.state.autoTracePhotos!==undefined)map(d.state.autoTracePhotos,label+' / 自動描写写真');",1)
+merge_path.write_text(merge_code,encoding='utf-8')
 
 hook('sentlog-pc/index.html',"""  if(a.kind==='drawing'){
     d=await subdir(d,'図面');
