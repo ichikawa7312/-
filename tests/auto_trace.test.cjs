@@ -3,6 +3,7 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('n
 const root=path.resolve(__dirname,'..');
 const Core=require('../sentlog/auto-trace-core.js');
 const ui=fs.readFileSync(path.join(root,'sentlog/auto-trace.js'),'utf8');
+const album=fs.readFileSync(path.join(root,'sentlog/auto-trace-album.js'),'utf8');
 const html=fs.readFileSync(path.join(root,'sentlog/index.html'),'utf8');
 const sw=fs.readFileSync(path.join(root,'sentlog/sw.js'),'utf8');
 function photo(w,h,base=102){
@@ -49,13 +50,47 @@ assert.deepEqual(Core.normalizeRegion({x0:50,y0:70,x1:5,y1:10},100,80),{x0:5,y0:
 assert.equal(Core.pathLength([{x:0,y:0},{x:3,y:4}]),5);
 assert.ok(Core.pointInPolygon({x:3,y:3},[{x:0,y:0},{x:8,y:0},{x:8,y:8},{x:0,y:8}]));
 assert.ok(!Core.pointInPolygon({x:10,y:3},[{x:0,y:0},{x:8,y:0},{x:8,y:8},{x:0,y:8}]));
-for(const token of ["capture','environment'","photoRatio()","pushHistory(ctx.page)","shape.lineLengthM=","assignNumbers(shape);state.shapes.push(shape)","savePhotoBlob(photoId,photo,ctx.drawingId)"]){
+for(const token of ["capture','environment'","photoRatio()","pushHistory(ctx.page)","shape.lineLengthM=","assignNumbers(shape);state.shapes.push(shape)","root.SentlogAutoTraceAlbum.capture(file"]){
  assert.ok(ui.includes(token),'missing integration: '+token);
 }
 assert.ok(!ui.includes("recordKind:'auto"),'no parallel record type');
-assert.equal((html.match(/auto-trace-core\.js\?v=221/g)||[]).length,1);
-assert.equal((html.match(/auto-trace\.js\?v=221/g)||[]).length,1);
-assert.ok(sw.includes("'auto-trace-core.js','auto-trace.js'"));
+assert.equal((html.match(/auto-trace-core\.js\?v=231/g)||[]).length,1);
+assert.equal((html.match(/auto-trace\.js\?v=231/g)||[]).length,1);
+assert.equal((html.match(/auto-trace-album\.js\?v=231/g)||[]).length,1);
+assert.ok(sw.includes("'auto-trace-core.js','auto-trace-album.js','auto-trace.js'"));
+assert.ok(album.includes('state.autoTracePhotos')&&album.includes('root.SentlogOriginalPhotos')&&album.includes('savePhotoBlob(photoId,shared,drawingId)'));
+assert.ok(!ui.includes('ctx.attach&&ctx.sourcePhoto')&&!ui.includes('撮影写真も各変状に添付'));
+assert.ok(ui.includes('sourceAutoTracePhotoId:ctx.sourceMeta?.id'));
+assert.ok(album.includes("'自動描写'")&&album.includes('renderDrawings=function()'));
+assert.ok(album.includes('selectedShape()')&&album.includes('shape.photos.push('));
 assert.ok(ui.includes('sl-trace-candidates-panel')&&ui.includes('sl-trace-settings'));
 assert.ok(ui.includes('function reanalyze()')&&ui.includes("session.mode='region'"));
-console.log('PASS auto-trace: line/hatched area/blank image and standard record integration');
+const cloud=fs.readFileSync(path.join(root,'sentlog/cloud-sync.js'),'utf8');
+const pc=fs.readFileSync(path.join(root,'sentlog-pc/index.html'),'utf8');
+const recovery=fs.readFileSync(path.join(root,'sentlog/photo-recovery.js'),'utf8');
+const merger=fs.readFileSync(path.join(root,'sentlog/sync-merge.js'),'utf8');
+assert.ok(cloud.includes('st.autoTracePhotos||[]')&&cloud.includes("photo_album:item.album"),'Standalone source photos must be uploaded as normal verified photo assets');
+assert.ok(pc.includes("a.metadata?.photo_album==='auto-trace'")&&pc.includes("subdir(d,'自動描写')"),'Verified PC copy belongs in separate evidence folder');
+assert.ok(recovery.includes('state.autoTracePhotos||[]'),'Verified remote originals must be available for redelivery');
+assert.ok(merger.includes('st.autoTracePhotos=entities('),'Concurrent device additions must merge by photo ID');
+// This test runs AFTER the final photo-album builder applies the guarded merge hook.
+const M=require('../sentlog/sync-merge.js');
+const identical=(a)=>JSON.parse(JSON.stringify(a));
+const drawing={id:'d',name:'側面',sourceType:null,fileName:'',updatedAt:1};
+const mk=photos=>({
+ project:{id:'p',name:'現場',updatedAt:1,drawings:[identical(drawing)]},
+ drawings:[{meta:identical(drawing),state:{
+   sourceType:null,fileName:'',pageSettings:{},pageRotations:{},shapes:[],
+   autoTracePhotos:photos
+ }}]
+});
+const x=mk([{id:'trace-ipad',name:'ipad.jpg',createdAt:1}]);
+const y=mk([{id:'trace-iphone',name:'iphone.jpg',createdAt:2}]);
+const merged=M.merge(x,y,{preserve:true});
+assert.ok(merged.ok,'Independent photo captures should merge by ID: '+JSON.stringify(merged.conflicts));
+assert.deepEqual(merged.payload.drawings[0].state.autoTracePhotos.map(p=>p.id),['trace-iphone','trace-ipad']);
+assert.equal(merged.payload.drawings[0].state.shapes.length,0);
+const conflict=mk([{id:'trace-ipad',name:'conflict.jpg',createdAt:1}]);
+assert.equal(M.merge(x,conflict,{preserve:true}).ok,false,'Conflicting metadata for one photo must not be overwritten');
+assert.ok(M.merge(x,y,{base:mk([])}).ok);
+console.log('PASS auto-trace: offline source album, separated ledger, verified cloud/PC, merge and recovery');

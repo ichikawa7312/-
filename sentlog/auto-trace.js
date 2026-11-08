@@ -123,18 +123,22 @@ async function openFile(file){
  if(currentView!=='editor'||!activeDrawingId||!state.sourceType){alert('図面を開いてから自動描写を使用してください。');return;}
  if(placing)dismissPlacement(true);
  if(!modal)openEditor();
- statusText('写真を読み込み、白チョークを認識しています…');
+ statusText('撮影写真を「自動描写」フォルダに保管しています…');
  try{
+   if(!root.SentlogAutoTraceAlbum?.capture)throw Error('自動描写の写真保管機能を読み込めませんでした');
+   // Save the original BEFORE analysis, even when no trace can be detected.
+   const meta=await root.SentlogAutoTraceAlbum.capture(file,{projectId:activeProjectId,drawingId:activeDrawingId,page:state.currentPage});
+   statusText('元写真を保管しました。白チョークを認識しています…');
    const {canvas:photo,pixels}=await imageFromFile(file);
    await new Promise(resolve=>requestAnimationFrame(resolve));
    const result=Core.analyze(pixels,{sensitivity:'standard'});
    const candidates=result.candidates.map(c=>({...c,active:true,type:chooseType(c.kind),manualM:null}));
-   session={file,photo,candidates,selectedId:candidates[0]?.id||null,mode:'edit',undo:[],zoom:1,reference:null,refM:null,refPicks:[],region:null,sensitivity:'standard',dirty:false,drawingId:activeDrawingId,page:state.currentPage};
+   session={file,photo,sourceMeta:meta,candidates,selectedId:candidates[0]?.id||null,mode:'edit',undo:[],zoom:1,reference:null,refM:null,refPicks:[],region:null,sensitivity:'standard',dirty:false,drawingId:activeDrawingId,page:state.currentPage};
    if(!editor)openEditor();
    editor.canvas.width=photo.width;editor.canvas.height=photo.height;
    redraw();
-   if(candidates.length)statusText('候補 '+candidates.length+' 件。誤認識は消去・削除・変形してから図面に配置できます。');
-   else statusText('自動で線を検出できませんでした。手動で線や囲いを追加することもできます。');
+   if(candidates.length)statusText('写真は「自動描写」に保存済み。候補 '+candidates.length+' 件を修正して配置できます。');
+   else statusText('写真は「自動描写」に保存済み。線を検出できない場合は手動追加できます。');
  }catch(e){errorText('認識できませんでした：'+(e?.message||e));console.error('auto trace',e);}
 }
 function remember(){
@@ -468,14 +472,13 @@ function openEditor(){
    session.refM=v?validM(v):null;redraw();
  };
  const referenceText=element('span','sl-trace-help');calibration.append(lineRef,refLabel,refInput,referenceText);
- const actions=group();const attachLabel=element('label');attachLabel.style.cssText='display:inline-flex;align-items:center;gap:4px;white-space:nowrap;font-size:12px';
- const attach=element('input');attach.type='checkbox';attach.checked=true;attachLabel.append(attach,document.createTextNode('撮影写真も各変状に添付'));
+ const actions=group();
  const status=element('div','sl-trace-status');status.setAttribute('role','status');
  const buttonNext=newButton('図面に仮配置 →',beginPlacement,'sl-trace-primary');
- actions.append(attachLabel,newButton('撮り直す',()=>photoInput?.click()),buttonNext);
+ actions.append(newButton('撮り直す',()=>photoInput?.click()),buttonNext);
  footer.append(helper,settingsPanel,candidatesPanel,calibration,actions,status);
  dialog.append(header,modes,scroll,footer);modal.append(dialog);document.body.append(modal);
- editor={canvas,rows,modes,refInput,referenceText,status,undo:undoEdit,attach,gesture:null,settingsPanel,settingsSummary,sensitivity,regionText,candidatesPanel,candidatesSummary};
+ editor={canvas,rows,modes,refInput,referenceText,status,undo:undoEdit,gesture:null,settingsPanel,settingsSummary,sensitivity,regionText,candidatesPanel,candidatesSummary};
  if(session){canvas.width=session.photo.width;canvas.height=session.photo.height;redraw();}
  else statusText('カメラで撮影すると自動描写を開始します。');
 }
@@ -499,7 +502,6 @@ function beginPlacement(){
  const drawingUnit=drawingMetresPerPixel(),photometric=photoRatio();
  const factor=drawingUnit&&photometric?photometric/drawingUnit:
    Math.min(state.width*.32/Math.max(1,bounds.w),state.height*.32/Math.max(1,bounds.h));
- const attach=!!editor?.attach.checked;
  modal.remove();modal=null;editor=null;
  const overlay=element('div','sl-trace-placement-hit');$('stageWrap').append(overlay);
  const preview=makeEl('svg',{width:state.width,height:state.height,viewBox:'0 0 '+state.width+' '+state.height});
@@ -509,7 +511,7 @@ function beginPlacement(){
  const info=element('div','sl-trace-place-msg','線を指でドラッグして移動。向き・倍率を調整して「確定」するまで、既存の図面は変更しません。');
  panel.append(info);
  const controls=group();
- placing={overlay,svg:preview,panel,bounds,list,baseFactor:factor,factor,angle:0,x:bound(center.x,0,state.width),y:bound(center.y,0,state.height),attach,drawingId:session.drawingId,page:session.page,drag:null};
+ placing={overlay,svg:preview,panel,bounds,list,baseFactor:factor,factor,angle:0,x:bound(center.x,0,state.width),y:bound(center.y,0,state.height),sourceMeta:session.sourceMeta,drawingId:session.drawingId,page:session.page,drag:null};
  controls.append(newButton('↶15°',()=>{placing.angle-=Math.PI/12;drawPlacement();}),
  newButton('15°↷',()=>{placing.angle+=Math.PI/12;drawPlacement();}),
  newButton('縮小',()=>{placing.factor*=.9;drawPlacement();}),
@@ -544,7 +546,7 @@ function drawPlacement(){
 }
 async function commitPlacement(){
  if(!placing||!session||!placing.list.length)return;
- const ctx={...placing,sourcePhoto:session.file};
+ const ctx={...placing};
  if(currentView!=='editor'||activeDrawingId!==ctx.drawingId||state.currentPage!==ctx.page){alert('図面が切り替わりました。登録せずに中止します。');dismissPlacement(true);return;}
  const proposals=ctx.list.map(c=>({candidate:c,points:placedPoints(c)}));
  if(proposals.some(p=>p.points.length<2||p.points.some(q=>!Number.isFinite(q.x)||!Number.isFinite(q.y)||q.x<0||q.y<0||q.x>state.width||q.y>state.height))){
@@ -553,14 +555,14 @@ async function commitPlacement(){
  try{root.SentlogRecords?.assertSafe?.();}catch(e){alert('端末の保存状態を確認してください：'+e.message);return;}
  const btn=ctx.panel.querySelector('.sl-trace-primary');if(btn)btn.disabled=true;
  for(const control of ctx.panel.querySelectorAll('button'))control.disabled=true;
- ctx.panel.querySelector('.sl-trace-place-msg').textContent='変状・撮影写真を保存中です。完了まで図面を切り替えないでください。';
+ ctx.panel.querySelector('.sl-trace-place-msg').textContent='変状を保存中です。写真はすでに「自動描写」に保存されています。';
  let created=[],persisted=false;
  try{
    pushHistory(ctx.page);
    const ratio=photoRatio(),member=$('member')?.value||'',memo=$('memo')?.value||'';
    for(const p of proposals){
      const c=p.candidate,shape={kind:c.kind==='area'?'freehand-area':'freehand-line',points:p.points,id:uidSafe(),page:ctx.page,
-       type:c.type,no:'',member,memo,strokeWidth:Number($('lineWidth')?.value)||1.2,photos:[]};
+       type:c.type,no:'',member,memo,strokeWidth:Number($('lineWidth')?.value)||1.2,photos:[],sourceAutoTracePhotoId:ctx.sourceMeta?.id||''};
      if(c.kind==='line'){
        const measured=validM(c.manualM)||(ratio?Core.pathLength(c.points)*ratio:null);
        if(measured&&measured>=.001&&measured<=10000)shape.lineLengthM=Math.round(measured*1000)/1000;
@@ -569,24 +571,6 @@ async function commitPlacement(){
    }
    persist();persisted=true;
    selected=created.at(-1).id;selectShape(selected);
-   if(ctx.attach&&ctx.sourcePhoto){
-     try{
-       const photo=await preparePhoto(ctx.sourcePhoto);
-       // One camera photo can mark many defects. Keep a single physical blob
-       // per drawing and reference its ID from each ordinary damage shape.
-       // Duplicating the blob for every detected line would exhaust offline
-       // storage and cloud traffic on crack-dense field photos.
-       const photoId=uidSafe();
-       await savePhotoBlob(photoId,photo,ctx.drawingId);
-       const meta={id:photoId,name:ctx.sourcePhoto.name||'自動描写の撮影写真',createdAt:Date.now(),type:photo.type||ctx.sourcePhoto.type||'image/jpeg',size:photo.size||ctx.sourcePhoto.size||0};
-       for(const shape of created)shape.photos.push({...meta});
-       persist();
-       if(selected===created.at(-1)?.id)await renderSelectedPhotos();
-     }catch(photoError){
-       console.warn('Auto trace photo attachment',photoError);
-       alert('変状は登録しましたが、一部の撮影写真の保存に失敗しました。端末の保存状態と写真一覧を確認してください。');
-     }
-   }
    dismissPlacement(false);
  }catch(e){
    if(!persisted&&created.length){state.shapes=state.shapes.filter(s=>!created.some(v=>v.id===s.id));rebuildNumberingState();render();}
@@ -595,7 +579,7 @@ async function commitPlacement(){
    ctx.panel.querySelector('.sl-trace-place-msg').textContent='保存できませんでした。登録状態を確認してから再操作してください。';
    if(btn)btn.disabled=false;return;
  }
- // Changes use the same shape JSON, photo storage, history and sync as manual records.
+ // Shapes use standard damage history/sync; only explicit album selection attaches photos.
 }
 function setup(){
  const bar=document.querySelector('#editorView .toolbar')||document.querySelector('.toolbar');
