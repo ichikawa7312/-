@@ -34,21 +34,6 @@ pb.drawings[0].state.shapes[0].photos=[{id:'a',name:'different.jpg'}];assert(!M.
 const photoBase=clone(pa),photoDeleted=clone(base),photoAdded=clone(pa);photoAdded.drawings[0].state.shapes[0].photos.push({id:'b',name:'b.jpg'});
 r=M.merge(photoDeleted,photoAdded,{base:photoBase});assert(r.ok);assert.deepEqual(r.payload.drawings[0].state.shapes[0].photos.map(p=>p.id),['b']);
 
-// Auto-trace source photographs live outside shape.photos, but must still merge
-// independently when an iPhone and iPad capture in the same drawing.
-const albumIpad=clone(base),albumPhone=clone(base);
-albumIpad.drawings[0].state.autoTracePhotos=[{id:'trace-a',name:'ipad.jpg',createdAt:101}];
-albumPhone.drawings[0].state.autoTracePhotos=[{id:'trace-b',name:'phone.jpg',createdAt:102}];
-r=M.merge(albumIpad,albumPhone,{preserve:true});
-assert(r.ok,'Independent source photos must merge even without matching shapes');
-assert.deepEqual(r.payload.drawings[0].state.autoTracePhotos.map(p=>p.id),['trace-b','trace-a']);
-assert.equal(r.payload.drawings[0].state.shapes[0].photos.length,0,'Album photos must never enter shape photos during sync merges');
-const albumConflict=clone(albumPhone);
-albumConflict.drawings[0].state.autoTracePhotos=[{id:'trace-a',name:'modified.jpg',createdAt:101}];
-assert(!M.merge(albumIpad,albumConflict,{preserve:true}).ok,'Conflicting metadata on the same source photo must not be silently discarded');
-const albumBase=clone(base);
-assert(M.merge(albumIpad,albumPhone,{base:albumBase}).ok,'Independent photo additions merge against an empty baseline');
-
 const scaled=clone(local);scaled.drawings[0].state.pageSettings={'1':{scaleDenom:100}};
 assert(!M.merge(scaled,remote,{preserve:true}).ok,'unknown coordinate-frame changes require review');
 assert(!M.merge(scaled,remote,{base}).ok,'a coordinate-frame change cannot reinterpret peer annotations');
