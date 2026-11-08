@@ -75,6 +75,31 @@ try:
         assert page.locator('.sl-trace-candidates-panel').get_attribute('open') is None
         assert not page.locator('.sl-trace-row').first.is_visible()
         assert page.locator('.sl-trace-scroll').bounding_box()['height'] >= 120
+        # All seven photo-edit commands must remain in one row on smaller phones.
+        buttons=page.locator('.sl-trace-modes [data-mode]')
+        assert buttons.count()==7
+        assert buttons.all_text_contents()==['修正','消去','＋線','＋囲い','基準','範囲','移動']
+        for width in (320,360,390,768):
+            page.set_viewport_size({'width':width,'height':844})
+            layout=page.evaluate("""()=>{
+              const menu=document.querySelector('.sl-trace-modes'),r=menu.getBoundingClientRect();
+              return [...menu.querySelectorAll('button')].map(b=>{
+                const x=b.getBoundingClientRect();
+                return {top:x.top,bottom:x.bottom,left:x.left,right:x.right,
+                        text:b.innerText,scroll:b.scrollWidth,client:b.clientWidth,
+                        visible:x.width>25&&x.height>=39,containerLeft:r.left,containerRight:r.right};
+              });
+            }""")
+            assert len(layout)==7,(width,layout)
+            assert len({round(b['top']) for b in layout})==1,(width,layout)
+            assert all(b['visible'] and b['left']>=b['containerLeft']-1 and b['right']<=b['containerRight']+1 for b in layout),(width,layout)
+            assert all(b['scroll']<=b['client']+2 for b in layout),(width,layout)
+        page.set_viewport_size({'width':390,'height':844})
+        for mode in ('erase','add-line','add-area','ref','region','pan','edit'):
+            item=page.locator('.sl-trace-modes [data-mode="'+mode+'"]')
+            assert item.get_attribute('title')
+            item.click()
+            assert item.get_attribute('aria-pressed')=='true',mode
 
         page.locator('.sl-trace-settings summary').click()
         page.locator('.sl-trace-detect select').select_option('strict')
