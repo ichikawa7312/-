@@ -259,8 +259,10 @@ try:
         assert page.locator('[data-sl-auto-album]').count()==0,'No standalone album card at the same level as drawing No.'
         cards=page.locator('#drawingsGrid .manager-card[data-drawing-group-id]')
         assert cards.count()==2,'01 (two sheets) and 02 (one sheet) should be the only group cards.'
-        group01=cards.filter(has_text='壁面図')
-        group02=cards.filter(has_text='02')
+        # Identify cards by stable group ID, not text matching: updated time or photo
+        # labels can legitimately contain '02' and match both cards.
+        group01=page.locator('#drawingsGrid [data-drawing-group-id="trace-drawing"]')
+        group02=page.locator('#drawingsGrid [data-drawing-group-id="trace-group-02"]')
         assert group01.count()==1 and group02.count()==1
         assert group01.locator('.drawing-group-actions [data-sl-auto-album-button]').count()==1
         assert group02.locator('.drawing-group-actions [data-sl-auto-album-button]').count()==1
