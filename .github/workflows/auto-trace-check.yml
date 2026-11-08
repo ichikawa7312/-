@@ -3,6 +3,9 @@ on:
   pull_request:
     paths:
       - 'sentlog/auto-trace*.js'
+      - 'sentlog/home-layout.js'
+      - 'tests/home_layout.test.cjs'
+      - 'tests/home_layout_ui.py'
       - 'scripts/build_auto_trace.py'
       - 'tests/auto_trace.test.cjs'
       - 'tests/auto_trace_ui.py'
@@ -179,3 +182,4 @@ jobs:
       - name: Verify on generated mobile Sentlog app
         run: |
           python tests/auto_trace_ui.py
+          python tests/home_layout_ui.py
