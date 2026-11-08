@@ -28,7 +28,9 @@ function installStyle(){
  '.sl-trace-open{background:#ecfeff!important;border-color:#0891b2!important;color:#155e75!important;font-weight:800!important;width:110px!important;min-width:110px!important;flex:0 0 110px!important;height:44px!important;padding:0 7px!important;white-space:nowrap!important}',
  '.sl-trace-modal{position:fixed;inset:0;z-index:1500;display:flex;justify-content:center;align-items:center;background:rgba(15,23,42,.76);padding:8px;box-sizing:border-box}',
  '.sl-trace-dialog{display:flex;flex-direction:column;gap:9px;width:min(940px,100%);height:min(96dvh,950px);overflow:hidden;background:#fff;color:#0f172a;border-radius:13px;padding:12px;box-sizing:border-box;font:14px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}',
- '.sl-trace-header{display:flex;align-items:center;justify-content:space-between;gap:8px}',
+ '.sl-trace-header{display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:48px;flex:0 0 auto;position:relative;z-index:1}',
+ '.sl-trace-header button{display:inline-flex;justify-content:center;align-items:center;min-width:82px;min-height:48px;padding:9px 12px;flex:0 0 auto;touch-action:manipulation;white-space:nowrap;font-size:13px}',
+ '.sl-trace-header button:focus-visible{outline:3px solid #0284c7;outline-offset:2px}',
  '.sl-trace-header h2{font-size:17px;margin:0}',
  '.sl-trace-actions{display:flex;flex-wrap:wrap;gap:6px;align-items:center}',
  '.sl-trace-actions button,.sl-trace-row button{font-size:12px;min-height:36px;padding:6px 9px;border-radius:7px}',
@@ -68,7 +70,7 @@ function installStyle(){
  '.sl-trace-placepanel .sl-trace-actions button{min-height:40px}',
  '.sl-trace-placement-hit{position:absolute;inset:0;z-index:18;touch-action:none;cursor:move}',
  '.sl-trace-place-msg{font-size:12px;color:#475569;line-height:1.5}',
- '@media(max-width:520px){.sl-trace-dialog{height:98dvh;gap:7px;padding:9px}.sl-trace-header h2{font-size:15px}.sl-trace-actions button{min-height:39px}.sl-trace-set{gap:5px}.sl-trace-row{flex-basis:170px}.sl-trace-placepanel{top:75px}}'
+ '@media(max-width:520px){.sl-trace-modal{padding:calc(max(56px,var(--sl-trace-safe-top,env(safe-area-inset-top,0px))) + 6px) 8px calc(max(8px,env(safe-area-inset-bottom,0px)) + 6px);align-items:stretch}.sl-trace-dialog{height:100%;max-height:100%;min-height:0;gap:7px;padding:9px}.sl-trace-header h2{font-size:15px;line-height:1.3;min-width:0}.sl-trace-actions button{min-height:39px}.sl-trace-set{gap:5px}.sl-trace-row{flex-basis:170px}.sl-trace-placepanel{top:max(75px,calc(env(safe-area-inset-top,0px) + 14px))}}'
  ].join('');
  document.head.append(s);
 }
@@ -382,7 +384,11 @@ function openEditor(){
  installStyle();if(modal)modal.remove();
  modal=element('div','sl-trace-modal');modal.setAttribute('role','dialog');modal.setAttribute('aria-modal','true');modal.setAttribute('aria-label','自動描写を修正');
  const dialog=element('div','sl-trace-dialog');
- const header=element('div','sl-trace-header');header.append(element('h2',null,'写真から自動描写・修正'),newButton('閉じる',()=>closeModal()));
+ const header=element('div','sl-trace-header');
+ const back=newButton('← 戻る',()=>closeModal());
+ back.title='図面に戻る（未確定の候補は破棄）';
+ back.setAttribute('aria-label','写真編集を閉じて図面に戻る');
+ header.append(element('h2',null,'写真から自動描写・修正'),back);
  // Seven commands always stay on one row, including on 320px iPhones.
  // Full instructions remain available to screen readers and pointer tooltips.
  const modes=group();modes.classList.add('sl-trace-modes');
