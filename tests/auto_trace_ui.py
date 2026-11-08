@@ -94,6 +94,9 @@ try:
             assert len({round(b['top']) for b in layout})==1,(width,layout)
             assert all(b['visible'] and b['left']>=b['containerLeft']-1 and b['right']<=b['containerRight']+1 for b in layout),(width,layout)
             assert all(b['scroll']<=b['client']+2 for b in layout),(width,layout)
+            back=page.locator('.sl-trace-header button').bounding_box()
+            assert back and back['height']>=48 and back['width']>=82,(width,back)
+            assert back['y']>=56,(width,back)
         page.set_viewport_size({'width':390,'height':844})
         for mode in ('erase','add-line','add-area','ref','region','pan','edit'):
             item=page.locator('.sl-trace-modes [data-mode="'+mode+'"]')
@@ -124,8 +127,24 @@ try:
         page.locator('.sl-trace-settings summary').click()
         page.locator('.sl-trace-detect').get_by_role('button',name='全体に戻す').click()
         page.wait_for_function("document.querySelectorAll('.sl-trace-row').length>=2",timeout=15000)
-        # The user can leave at any time without writing the draft to the drawing.
-        page.get_by_role('button',name='閉じる').click()
+        # Reproduce an iPhone PWA status bar / Dynamic Island obscuring the top.
+        # The exit button must be below the occlusion, visible and finger-sized.
+        page.evaluate("""()=>{
+          document.documentElement.style.setProperty('--sl-trace-safe-top','64px');
+          const occluder=document.createElement('div');occluder.id='slStatusBarFixture';
+          occluder.style.cssText='position:fixed;top:0;left:0;right:0;height:64px;z-index:2000;background:#111;pointer-events:auto;';
+          document.body.appendChild(occluder);
+        }""")
+        back=page.locator('.sl-trace-header button')
+        bounds=back.bounding_box()
+        assert bounds and bounds['y']>=69 and bounds['height']>=48,bounds
+        assert back.get_attribute('title')=='図面に戻る（未確定の候補は破棄）'
+        back.click(timeout=5000)
+        page.evaluate("""()=>{
+          document.getElementById('slStatusBarFixture')?.remove();
+          document.documentElement.style.removeProperty('--sl-trace-safe-top');
+        }""")
+        assert page.locator('.sl-trace-modal').count()==0
         assert page.evaluate('state.shapes.length')==0
         photo_file()
         page.wait_for_function("document.querySelectorAll('.sl-trace-row').length>=2",timeout=15000)
