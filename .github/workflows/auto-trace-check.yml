@@ -6,6 +6,9 @@ on:
       - 'sentlog/home-layout.js'
       - 'tests/home_layout.test.cjs'
       - 'tests/home_layout_ui.py'
+      - 'sentlog/drawing-list-header.js'
+      - 'tests/drawing_list_header.test.cjs'
+      - 'tests/drawing_list_header_ui.py'
       - 'scripts/build_auto_trace.py'
       - 'tests/auto_trace.test.cjs'
       - 'tests/auto_trace_ui.py'
@@ -183,3 +186,4 @@ jobs:
         run: |
           python tests/auto_trace_ui.py
           python tests/home_layout_ui.py
+          python tests/drawing_list_header_ui.py
