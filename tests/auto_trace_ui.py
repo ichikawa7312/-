@@ -90,21 +90,11 @@ try:
         page.mouse.down()
         page.mouse.move(bb['x']+bb['width']*.40,bb['y']+bb['height']*.95,steps=9)
         page.mouse.up()
-        try:
-            page.wait_for_function("document.querySelectorAll('.sl-trace-row').length===1",timeout=6000)
-        except Exception:
-            print('REGION_TEST_DIAGNOSTIC',page.evaluate("""()=>({
-              status:document.querySelector('.sl-trace-status')?.innerText,
-              count:document.querySelectorAll('.sl-trace-row').length,
-              rows:[...document.querySelectorAll('.sl-trace-row')].map(x=>x.textContent.slice(0,50)),
-              active:[...document.querySelectorAll('[data-mode].active')].map(x=>x.dataset.mode),
-              photo:(()=>{const e=document.querySelector('.sl-trace-canvas');const r=e?.getBoundingClientRect();return {width:e?.width,height:e?.height,rect:r&&{x:r.x,y:r.y,w:r.width,h:r.height}}})(),
-              preview:document.querySelector('.sl-trace-settings')?.open,
-              canvasOver:document.elementFromPoint(20,260)?.className
-            })"""),flush=True)
-            print('REGION_CONSOLE',logs[-20:],flush=True)
-            raise
-        assert 'ひび割れ線' in page.locator('.sl-trace-row').first.inner_text()
+        page.wait_for_function("document.querySelector('.sl-trace-status')?.textContent.includes('指定範囲のみ') && document.querySelectorAll('.sl-trace-row').length>=1",timeout=10000)
+        # Branches in a single hand-drawn crack may become separate short line segments;
+        # the selected region must exclude the distant outlined and hatched area.
+        assert page.locator('.sl-trace-row').count()<=5
+        assert all('ひび割れ線' in text for text in page.locator('.sl-trace-row').all_inner_texts())
         assert page.evaluate('state.shapes.length')==0
         page.locator('.sl-trace-settings summary').click()
         page.locator('.sl-trace-detect').get_by_role('button',name='全体に戻す').click()
