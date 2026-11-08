@@ -12,7 +12,7 @@ file=ROOT/'sentlog/index.html'
 html=file.read_text(encoding='utf-8')
 anchor='document.open();document.write(html);document.close()'
 if html.count(anchor)!=1 or 'auto-trace-core.js' in html:raise RuntimeError('Dynamic bootstrap has changed')
-loader="""html=html.replace('</body>','<script src="./auto-trace-core.js?v=211"></'+'script><script src="./auto-trace.js?v=211"></'+'script></body>');"""
+loader="""html=html.replace('</body>','<script src="./auto-trace-core.js?v=221"></'+'script><script src="./auto-trace.js?v=221"></'+'script></body>');"""
 file.write_text(html.replace(anchor,loader+anchor,1),encoding='utf-8')
 file=ROOT/'sentlog/sw.js'
 worker=file.read_text(encoding='utf-8')
@@ -31,4 +31,4 @@ for file in (ROOT/'tests').iterdir():
 subprocess.run(['node','--check','sentlog/auto-trace-core.js'],cwd=ROOT,check=True)
 subprocess.run(['node','--check','sentlog/auto-trace.js'],cwd=ROOT,check=True)
 subprocess.run(['node','tests/auto_trace.test.cjs'],cwd=ROOT,check=True)
-print('Built offline auto-trace: chalk candidates, touch correction, calibration, normal damage registration')
+print('Built offline auto-trace: stronger chalk recognition, collapsed candidates and adjustable sensitivity/ROI')
