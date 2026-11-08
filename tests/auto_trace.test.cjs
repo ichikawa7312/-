@@ -3,6 +3,7 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('n
 const root=path.resolve(__dirname,'..');
 const Core=require('../sentlog/auto-trace-core.js');
 const ui=fs.readFileSync(path.join(root,'sentlog/auto-trace.js'),'utf8');
+const album=fs.readFileSync(path.join(root,'sentlog/auto-trace-album.js'),'utf8');
 const html=fs.readFileSync(path.join(root,'sentlog/index.html'),'utf8');
 const sw=fs.readFileSync(path.join(root,'sentlog/sw.js'),'utf8');
 function photo(w,h,base=102){
@@ -49,13 +50,19 @@ assert.deepEqual(Core.normalizeRegion({x0:50,y0:70,x1:5,y1:10},100,80),{x0:5,y0:
 assert.equal(Core.pathLength([{x:0,y:0},{x:3,y:4}]),5);
 assert.ok(Core.pointInPolygon({x:3,y:3},[{x:0,y:0},{x:8,y:0},{x:8,y:8},{x:0,y:8}]));
 assert.ok(!Core.pointInPolygon({x:10,y:3},[{x:0,y:0},{x:8,y:0},{x:8,y:8},{x:0,y:8}]));
-for(const token of ["capture','environment'","photoRatio()","pushHistory(ctx.page)","shape.lineLengthM=","assignNumbers(shape);state.shapes.push(shape)","savePhotoBlob(photoId,photo,ctx.drawingId)"]){
+for(const token of ["capture','environment'","photoRatio()","pushHistory(ctx.page)","shape.lineLengthM=","assignNumbers(shape);state.shapes.push(shape)","root.SentlogAutoTraceAlbum.capture(file"]){
  assert.ok(ui.includes(token),'missing integration: '+token);
 }
 assert.ok(!ui.includes("recordKind:'auto"),'no parallel record type');
-assert.equal((html.match(/auto-trace-core\.js\?v=221/g)||[]).length,1);
-assert.equal((html.match(/auto-trace\.js\?v=221/g)||[]).length,1);
-assert.ok(sw.includes("'auto-trace-core.js','auto-trace.js'"));
+assert.equal((html.match(/auto-trace-core\\.js\\?v=231/g)||[]).length,1);
+assert.equal((html.match(/auto-trace\\.js\\?v=231/g)||[]).length,1);
+assert.equal((html.match(/auto-trace-album\.js\?v=231/g)||[]).length,1);
+assert.ok(sw.includes("'auto-trace-core.js','auto-trace-album.js','auto-trace.js'"));
+assert.ok(album.includes('state.autoTracePhotos')&&album.includes('root.SentlogOriginalPhotos')&&album.includes('savePhotoBlob(photoId,shared,drawingId)'));
+assert.ok(!ui.includes('ctx.attach&&ctx.sourcePhoto')&&!ui.includes('撮影写真も各変状に添付'));
+assert.ok(ui.includes('sourceAutoTracePhotoId:ctx.sourceMeta?.id'));
+assert.ok(album.includes("'自動描写'")&&album.includes('renderDrawings=function()'));
+assert.ok(album.includes('selectedShape()')&&album.includes('shape.photos.push('));
 assert.ok(ui.includes('sl-trace-candidates-panel')&&ui.includes('sl-trace-settings'));
 assert.ok(ui.includes('function reanalyze()')&&ui.includes("session.mode='region'"));
 console.log('PASS auto-trace: line/hatched area/blank image and standard record integration');
