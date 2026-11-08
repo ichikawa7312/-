@@ -83,6 +83,7 @@ try:
       # Use an in-memory project fixture, not any user's records.
       page.evaluate("""()=>{
         workspace={projects:[{id:'home-top-test',name:'上田農水頭首工',drawings:[],createdAt:1,updatedAt:1}]};
+        window.SentlogRecords.setItem('surveyFieldNoteWorkspaceV1',JSON.stringify(workspace));
         renderProjects();
       }""")
       assert page.locator('#projectsGrid .manager-card').count()>=1
