@@ -94,7 +94,7 @@ try:
         # Branches in a single hand-drawn crack may become separate short line segments;
         # the selected region must exclude the distant outlined and hatched area.
         assert page.locator('.sl-trace-row').count()<=5
-        assert all('ひび割れ線' in text for text in page.locator('.sl-trace-row').all_inner_texts())
+        assert all('ひび割れ線' in text for text in page.locator('.sl-trace-row').all_text_contents())
         assert page.evaluate('state.shapes.length')==0
         page.locator('.sl-trace-settings summary').click()
         page.locator('.sl-trace-detect').get_by_role('button',name='全体に戻す').click()
