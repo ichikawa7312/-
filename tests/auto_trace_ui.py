@@ -234,17 +234,67 @@ try:
         assert page.evaluate('state.shapes.length')==0,'Next undo reverts all traced shapes.'
         assert page.evaluate('state.autoTracePhotos.length')==2,'Editing undo must not delete independently stored photos.'
 
-        # The project drawing list exposes a dedicated folder grouped by drawing number.
+        # Album is a button next to ledger/rename/delete within EVERY drawing No.,
+        # not a project-sized folder card. Sheets sharing 01 belong to the same album.
+        page.evaluate("""async()=>{
+          const p=getProject('trace-project'),first=p.drawings[0];
+          const groupId=first.groupId||first.id,groupName=first.groupName||first.name;
+          const shared=await getPhotoBlob(state.autoTracePhotos[0].id,first.id);
+          const additions=[
+            {id:'trace-other-sheet',name:'裏面図',sheetName:'裏面図',groupId,groupName,sheetOrder:2,
+             fileName:'reverse.png',sourceType:'image',pageCount:1,shapeCount:0,photoCount:0},
+            {id:'trace-group-02-sheet',name:'02_立面',sheetName:'立面',groupId:'trace-group-02',groupName:'02',sheetOrder:1,
+             fileName:'elevation.png',sourceType:'image',pageCount:1,shapeCount:0,photoCount:0}
+          ];
+          for(const d of additions){
+            const photoId='album-'+d.id,photo={id:photoId,name:d.name+'.jpg',createdAt:Date.now(),type:shared.type,size:shared.size,page:1};
+            await savePhotoBlob(photoId,shared,d.id);
+            const st={...freshDrawingState(p.name),sourceType:'image',fileName:d.fileName,autoTracePhotos:[photo]};
+            window.SentlogRecords.setItem(drawingStorageKey(d.id),JSON.stringify(st));
+            p.drawings.push({...d,createdAt:Date.now(),updatedAt:Date.now()});
+          }
+          saveWorkspace();
+        }""")
         page.evaluate("showDrawings('trace-project')")
-        card=page.locator('[data-sl-auto-album]')
-        assert card.count()==1 and '2枚' in card.inner_text()
-        card.click()
-        page.wait_for_function("document.querySelectorAll('.sl-album-photo').length===2",timeout=10000)
-        assert page.locator('.sl-album-photo img').count()==2
-        assert page.locator('.sl-album-photo button').count()==0,'No shape is selected on the project album screen.'
+        assert page.locator('[data-sl-auto-album]').count()==0,'No standalone album card at the same level as drawing No.'
+        cards=page.locator('#drawingsGrid .manager-card[data-drawing-group-id]')
+        assert cards.count()==2,'01 (two sheets) and 02 (one sheet) should be the only group cards.'
+        group01=cards.filter(has_text='壁面図')
+        group02=cards.filter(has_text='02')
+        assert group01.count()==1 and group02.count()==1
+        assert group01.locator('.drawing-group-actions [data-sl-auto-album-button]').count()==1
+        assert group02.locator('.drawing-group-actions [data-sl-auto-album-button]').count()==1
+        assert '3枚' in group01.locator('[data-sl-auto-album-button]').inner_text()
+        assert '1枚' in group02.locator('[data-sl-auto-album-button]').inner_text()
+        for card in (group01,group02):
+            actions=card.locator('.drawing-group-actions')
+            assert actions.get_by_role('button',name='写真台帳（Excel）').count()==1
+            assert actions.get_by_role('button',name='名前変更').count()==1
+            assert actions.get_by_role('button',name='削除').count()==1
+            assert actions.locator('[data-sl-auto-album-button]').is_visible()
+            assert actions.locator('[data-sl-auto-album-button]').bounding_box()['height']>=40
+
+        group01.locator('[data-sl-auto-album-button]').click()
+        page.wait_for_function("document.querySelectorAll('.sl-album-photo').length===3",timeout=10000)
+        assert page.locator('.sl-album-group').count()==1
+        assert '壁面図' in page.locator('.sl-album-group summary').inner_text()
+        assert page.locator('.sl-album-sheet').count()==2,'Both 01 sheets must be visible.'
+        assert page.evaluate('currentView')=='drawings','Album action must not open the drawing editor.'
+        assert page.locator('.sl-album-photo button').count()==0,'No automatic photo attachment when browsing project albums.'
         page.locator('.sl-album-modal').get_by_role('button',name='閉じる').click()
+
+        group02.locator('[data-sl-auto-album-button]').click()
+        page.wait_for_function("document.querySelectorAll('.sl-album-photo').length===1",timeout=10000)
+        assert page.locator('.sl-album-group').count()==1
+        assert '02' in page.locator('.sl-album-group summary').inner_text()
+        assert '立面' in page.locator('.sl-album-sheet').inner_text()
+        assert page.evaluate('currentView')=='drawings'
+        page.locator('.sl-album-modal').get_by_role('button',name='閉じる').click()
+        page.evaluate('renderDrawings()')
+        assert page.locator('[data-sl-auto-album-button]').count()==2,'Rerender must not duplicate album buttons.'
+        assert page.locator('[data-sl-auto-album]').count()==0
         assert not errors,errors
         browser.close()
-        print('PASS generated Sentlog page: standalone source album + original, no auto ledger attachment, opt-in attach, undo and folder')
+        print('PASS generated Sentlog page: group-specific photo actions, two sheets in 01, isolated 02, no standalone card, preservation and undo')
 finally:
     server.shutdown()
