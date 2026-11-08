@@ -115,16 +115,24 @@ merge_path.write_text(merge_code,encoding='utf-8')
 pc_path=ROOT/'sentlog-pc/index.html'
 pc_code=pc_path.read_text(encoding='utf-8')
 pc_start=pc_code.index('async function saveVerified(a){')
-pc_branch=pc_code.index("  if(a.kind==='drawing'){",pc_start)
-pc_else=pc_code.index("  }else{",pc_branch)
-pc_end=pc_code.index('  const name=safe(a.file_name',pc_branch)
-if not pc_branch<pc_else<pc_end or 'logicalParts' not in pc_code[pc_branch:pc_end]:
-    raise RuntimeError('Cannot safely locate PC asset folder branching')
-pc_code=pc_code[:pc_else]+"""  }else if(a.metadata?.photo_album==='auto-trace'){
-    const group=a.metadata?.drawing_group||drawing;
-    d=await subdir(d,'自動描写');d=await subdir(d,group);d=await subdir(d,drawing);
-    logicalParts.push('自動描写',safe(group),safe(drawing));
-"""+pc_code[pc_else:]
+pc_end=pc_code.index('async function deleteVerified(',pc_start)
+pc_block=pc_code[pc_start:pc_end]
+# The final PC builder may reformat this procedure while retaining these
+# structural anchors. Report generated source on mismatch rather than guessing.
+pc_name=pc_block.find('  const name=safe(a.file_name')
+if pc_name<0:
+    raise RuntimeError('PC archive filename marker changed: '+repr(pc_block[:2800]))
+pc_block=pc_block[:pc_name]+"""  if(a.kind==='photo'&&a.metadata?.photo_album==='auto-trace'){
+    // Isolate source evidence from ordinary submitted/ledger photographs.
+    const albumGroup=a.metadata?.drawing_group||drawing;
+    d=rootHandle;
+    d=await subdir(d,year);d=await subdir(d,project);
+    d=await subdir(d,'自動描写');d=await subdir(d,albumGroup);d=await subdir(d,drawing);
+    logicalParts=[rootHandle.name,year,safe(project),'自動描写',safe(albumGroup),safe(drawing)];
+  }
+"""+pc_block[pc_name:]
+pc_code=pc_code[:pc_start]+pc_block+pc_code[pc_end:]
+
 pc_path.write_text(pc_code,encoding='utf-8')
 
 for file in (ROOT/'tests').iterdir():
