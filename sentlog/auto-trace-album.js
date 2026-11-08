@@ -45,7 +45,9 @@ function countPhotos(project){return projectPhotos(project).reduce((sum,g)=>sum+
 function style(){
  if(styleAdded)return;styleAdded=true;
  const s=el('style');s.id='slAutoTraceAlbumStyle';s.textContent=[
- '.sl-album-folder{cursor:pointer;border:2px solid #99d5db!important;background:#effdfd!important}',
+ '.sl-album-actions{flex-wrap:wrap}',
+ '.sl-album-actions .sl-album-action{color:#155e75;border-color:#99d5db;background:#effdfd}',
+ '@media(max-width:520px){.sl-album-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px}.sl-album-actions button{width:100%!important;min-width:0!important;white-space:normal;padding:7px 4px}}',
  '.sl-album-backdrop{position:fixed;inset:0;z-index:1600;background:rgba(15,23,42,.8);display:flex;align-items:center;justify-content:center;padding:calc(max(12px,env(safe-area-inset-top,0px)) + 6px) 10px calc(max(12px,env(safe-area-inset-bottom,0px)) + 6px);box-sizing:border-box}',
  '.sl-album-modal{width:min(850px,100%);max-height:100%;min-height:0;display:flex;flex-direction:column;overflow:hidden;background:#fff;color:#0f172a;border-radius:12px;padding:12px;box-sizing:border-box;gap:8px;font:14px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}',
  '.sl-album-header{display:flex;justify-content:space-between;align-items:center;gap:8px;flex:0 0 auto}',
@@ -99,15 +101,20 @@ async function attachToSelected(drawingId,meta,notice){
    notice.textContent='選択中の変状へ写真を添付しました。写真台帳の対象になります。';
  }catch(e){notice.textContent='写真を添付できませんでした：'+(e?.message||e);}
 }
-async function open(projectId=activeProjectId){
+async function open(projectId=activeProjectId,targetGroupId=null){
  const p=typeof getProject==='function'?getProject(projectId):null;
  if(!p)return;
  style();close();
- const groups=projectPhotos(p);const total=groups.reduce((n,g)=>n+g.count,0);
+ // Group buttons show only the selected drawing No. (all its sheets).
+ // The inspector's optional 'choose from auto trace' action can still show the whole project.
+ const groupId=targetGroupId==null?null:String(targetGroupId);
+ const groups=projectPhotos(p).filter(g=>groupId==null||g.id===groupId);
+ const total=groups.reduce((n,g)=>n+g.count,0);
+ const groupName=groupId==null?'':(root.SentlogDrawingGroups?.groupsForProject?.(p)?.find(g=>g.id===groupId)?.name||groups[0]?.name||'図面No.');
  dialog=el('div','sl-album-backdrop');dialog.setAttribute('role','dialog');dialog.setAttribute('aria-label','自動描写の撮影写真');
  const pane=el('div','sl-album-modal');
  const top=el('div','sl-album-header');
- top.append(el('strong',null,'📁 自動描写（'+total+'枚）'),makeButton('閉じる',close));
+ top.append(el('strong',null,'📷 自動描写'+(groupId==null?'':' / '+groupName)+'（'+total+'枚）'),makeButton('閉じる',close));
  const tip=el('div','sl-album-note','撮影写真はここで保管し、変状写真や写真台帳には自動追加しません。原本は撮影端末内、同期は軽量版です。');
  const notice=el('div','sl-album-note');notice.setAttribute('role','status');
  const body=el('div','sl-album-scroll');
@@ -174,29 +181,39 @@ async function capture(file,ctx={}){
    return meta;
  }finally{captureBusy=false;}
 }
-function addFolderCard(){
+function addGroupButtons(){
  const grid=$('drawingsGrid'),p=typeof getProject==='function'?getProject():null;
  if(!grid||!p)return;
- const old=grid.querySelector('[data-sl-auto-album]');
- if(old)old.remove();
- const total=countPhotos(p),card=el('div','manager-card sl-album-folder');
- card.dataset.slAutoAlbum='1';card.tabIndex=0;card.setAttribute('role','button');
- card.setAttribute('aria-label','自動描写の撮影写真フォルダを開く');
- const icon=el('div','manager-folder','📷'),name=el('div','manager-card-title','自動描写');
- const text=el('div','manager-card-meta','図面No.ごとに撮影した元写真を保管');
- const foot=el('div','manager-card-bottom');
- foot.append(el('span','manager-badge',total+'枚の写真'));
- card.append(icon,name,text,foot);
- card.onclick=()=>open(p.id);
- card.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();card.click();}};
- grid.prepend(card);
+ // Do not create a separate project-sized card; keep every action on its group card.
+ grid.querySelectorAll('[data-sl-auto-album]').forEach(card=>card.remove());
+ const counts=new Map(projectPhotos(p).map(g=>[g.id,g.count]));
+ grid.querySelectorAll('.manager-card[data-drawing-group-id]').forEach(card=>{
+   const groupId=card.dataset.drawingGroupId,actions=card.querySelector('.drawing-group-actions');
+   if(!groupId||!actions)return;
+   actions.classList.add('sl-album-actions');
+   const count=counts.get(groupId)||0,label='📷 自動描写'+(count?'（'+count+'枚）':'');
+   let button=actions.querySelector('[data-sl-auto-album-button]');
+   if(!button){
+     button=makeButton(label,e=>{e.preventDefault();e.stopPropagation();open(p.id,groupId);},'sl-album-action');
+     button.dataset.slAutoAlbumButton='1';
+     button.addEventListener('pointerdown',e=>e.stopPropagation());
+     button.addEventListener('keydown',e=>e.stopPropagation());
+     button.addEventListener('click',e=>e.stopPropagation());
+     // Match the existing 写真台帳 / 名前変更 / 削除 controls.
+     const ledger=actions.querySelector('[data-ledger-button]');
+     if(ledger)ledger.after(button);else actions.prepend(button);
+   }
+   button.textContent=label;
+   button.title='図面No.「'+(card.querySelector('.manager-card-title')?.textContent||groupId)+'」の自動描写写真 '+count+'枚';
+   button.setAttribute('aria-label','この図面No.の自動描写写真を表示（'+count+'枚）');
+ });
 }
 function setup(){
  style();
  if(typeof renderDrawings==='function'){
    const previous=renderDrawings;
-   renderDrawings=function(){const r=previous.apply(this,arguments);addFolderCard();return r;};
-   if(currentView==='drawings')addFolderCard();
+   renderDrawings=function(){const r=previous.apply(this,arguments);addGroupButtons();return r;};
+   if(currentView==='drawings')addGroupButtons();
  }
  const actions=$('photoGrid')?.closest('.photo-panel')?.querySelector('.photo-actions');
  if(actions&&!$('slAutoAlbumPick')){
