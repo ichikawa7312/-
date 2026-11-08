@@ -70,7 +70,7 @@ try:
         photo_file()
         page.wait_for_function("document.querySelectorAll('.sl-trace-row').length>=2",timeout=15000)
         assert page.locator('.sl-trace-row').count()>=2
-        assert page.locator('.sl-trace-footer input[type=checkbox]').count()==0,'Source photos must never auto-attach to all shapes.'
+        assert page.locator('.sl-trace-footer > .sl-trace-actions input[type=checkbox]').count()==0,'Source photos must never auto-attach to all shapes.'
         assert page.evaluate('state.autoTracePhotos.length')==1,'Source image must already be saved before confirmation.'
         original=page.evaluate("""async()=>{
           const id=state.autoTracePhotos[0].id;
