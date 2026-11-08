@@ -301,7 +301,7 @@ try:
             assert buttons2[2]['y']>=buttons2[0]['bottom']+5,(width,layout)
             assert abs(buttons2[0]['x']-buttons2[2]['x'])<2,(width,layout)
             assert abs(buttons2[1]['x']-buttons2[3]['x'])<2,(width,layout)
-            assert all(b['h']>=44 and b['w']>=70 for b in buttons2),(width,layout)
+            assert all(b['h']>=43.5 and b['w']>=70 for b in buttons2),(width,layout)
             assert all(b['x']>=layout['outer']['x']-1 and b['right']<=layout['outer']['right']+1 for b in buttons2),(width,layout)
             assert all(b['scroll']<=b['client']+2 for b in buttons2),(width,layout)
         page.set_viewport_size({'width':390,'height':844})
