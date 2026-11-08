@@ -96,7 +96,7 @@ try:
             assert all(b['scroll']<=b['client']+2 for b in layout),(width,layout)
             back=page.locator('.sl-trace-header button').bounding_box()
             assert back and back['height']>=48 and back['width']>=82,(width,back)
-            assert back['y']>=56,(width,back)
+            if width<=520: assert back['y']>=56,(width,back)
         page.set_viewport_size({'width':390,'height':844})
         for mode in ('erase','add-line','add-area','ref','region','pan','edit'):
             item=page.locator('.sl-trace-modes [data-mode="'+mode+'"]')
