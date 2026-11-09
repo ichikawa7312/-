@@ -74,9 +74,15 @@ async function tryMergeProject(cp,snap,{manual=false,review=null}={}){
   if(!lp||snap?.payload?.project?.id!==lp.id)return {applied:false,reason:'案件情報を確認できません。'};
   const meta=getSyncMeta(lp.id),local=projectSnapshot(lp),remote=snap.payload;
   const expectedRecords=[[WORKSPACE_KEY,wsRaw],...lp.drawings.map(d=>[DRAWING_KEY_PREFIX+d.id,store.getItem(DRAWING_KEY_PREFIX+d.id)])];
-  if(!manual&&!meta?.base_snapshot)return {applied:false,reason:'前回の同期内容が未保存です。両方の記録を残す操作を選んでください。'};
+  // A legacy device may lack a baseline. Auto-merge only if the two complete
+  // snapshots are otherwise identical after removing movable label positions.
+  const displayOnlyWithoutBase=!meta?.base_snapshot&&api.onlyDisplayDifferences(
+    normalizeMergeSnapshot(local),normalizeMergeSnapshot(remote));
+  if(!manual&&!meta?.base_snapshot&&!displayOnlyWithoutBase)
+    return {applied:false,reason:'前回の同期内容が未保存です。両方の記録を残す操作を選んでください。'};
   const verifiedBase=meta?.base_snapshot&&await snapshotFingerprint(meta.base_snapshot)===meta.fingerprint?meta.base_snapshot:null;
-  if(!manual&&!verifiedBase)return {applied:false,reason:'前回の同期記録の照合に失敗しました。両方の記録を残す操作を選んでください。'};
+  if(!manual&&!verifiedBase&&!displayOnlyWithoutBase)
+    return {applied:false,reason:'前回の同期記録の照合に失敗しました。両方の記録を残す操作を選んでください。'};
   const localFingerprint=await snapshotFingerprint(local),remoteFingerprint=await snapshotFingerprint(remote);
   if(review&&(review.projectId!==lp.id||review.localFingerprint!==localFingerprint||review.remoteFingerprint!==remoteFingerprint))
     return {applied:false,reason:'確認中に記録が更新されました。「両方の記録を残して同期」から、最新の違いを確認してください。'};

@@ -48,7 +48,7 @@ change(p,'revision:rev,payload:projectSnapshot(localProject),updated_by_device:'
 change(p,'  const blocked=new Set();let changed=0,files=0,conflicts=0;',
        '  const blocked=new Set();let changed=0,files=0,conflicts=0;syncConflicts.clear();')
 change(p,'        blocked.add(cp.id);conflicts++;',
-       "        let result=null;\n        if(meta?.base_snapshot){try{result=await tryMergeProject(cp,snap);}catch(e){result={applied:false,reason:e.message};}}\n        if(result?.applied)changed++;\n        else {blocked.add(cp.id);if(!result?.waiting){conflicts++;syncConflicts.set(cp.client_key,cp);}}")
+       "        let result=null;\n        if(meta?.base_snapshot||window.SentlogSyncMerge?.onlyDisplayDifferences?.(normalizeMergeSnapshot(projectSnapshot(lp)),normalizeMergeSnapshot(snap.payload))){try{result=await tryMergeProject(cp,snap);}catch(e){result={applied:false,reason:e.message};}}\n        if(result?.applied)changed++;\n        else {blocked.add(cp.id);if(!result?.waiting){conflicts++;syncConflicts.set(cp.client_key,cp);}}")
 change(p,'  if(syncing||!navigator.onLine||!session||window.sentlogImporting)return;',
        '  if(syncing||mergeBusy||!navigator.onLine||!session||window.sentlogImporting)return;')
 change(p,'  }finally{syncing=false}', '  }finally{syncing=false;refreshMergePanel()}')
