@@ -12,7 +12,7 @@ file=ROOT/'sentlog/index.html'
 html=file.read_text(encoding='utf-8')
 anchor='document.open();document.write(html);document.close()'
 if html.count(anchor)!=1 or 'auto-trace-core.js' in html:raise RuntimeError('Dynamic bootstrap has changed')
-loader="""html=html.replace('</body>','<script src="./auto-trace-core.js?v=231"></'+'script><script src="./auto-trace-album.js?v=231"></'+'script><script src="./auto-trace.js?v=231"></'+'script><script src="./home-layout.js?v=232"></'+'script><script src="./drawing-list-header.js?v=233"></'+'script></body>');"""
+loader="""html=html.replace('</body>','<script src="./auto-trace-core.js?v=234"></'+'script><script src="./auto-trace-album.js?v=231"></'+'script><script src="./auto-trace.js?v=234"></'+'script><script src="./home-layout.js?v=232"></'+'script><script src="./drawing-list-header.js?v=233"></'+'script></body>');"""
 file.write_text(html.replace(anchor,loader+anchor,1),encoding='utf-8')
 file=ROOT/'sentlog/sw.js'
 worker=file.read_text(encoding='utf-8')
@@ -147,4 +147,4 @@ subprocess.run(['node','--check','sentlog/drawing-list-header.js'],cwd=ROOT,chec
 subprocess.run(['node','tests/auto_trace.test.cjs'],cwd=ROOT,check=True)
 subprocess.run(['node','tests/home_layout.test.cjs'],cwd=ROOT,check=True)
 subprocess.run(['node','tests/drawing_list_header.test.cjs'],cwd=ROOT,check=True)
-print('Built offline auto-trace, compact home, and drawing list header actions: original handlers preserved')
+print('Built offline seed-only chalk tracing (no global guesses), separate photos, and responsive editor')

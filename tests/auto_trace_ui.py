@@ -67,9 +67,30 @@ try:
               const target=document.getElementById('slAutoTraceCamera');target.files=data.files;
               target.dispatchEvent(new Event('change',{bubbles:true}));
             }""")
+        def tap_chalk(x,y):
+            picture=page.locator('.sl-trace-canvas')
+            picture.scroll_into_view_if_needed()
+            bb=picture.bounding_box()
+            assert bb and bb['width']>20 and bb['height']>20,bb
+            page.mouse.click(bb['x']+bb['width']*x/270,bb['y']+bb['height']*y/175)
         photo_file()
-        page.wait_for_function("document.querySelectorAll('.sl-trace-row').length>=2",timeout=15000)
-        assert page.locator('.sl-trace-row').count()>=2
+        page.wait_for_function("document.querySelector('.sl-trace-status')?.textContent.includes('白チョークの線を1か所タップ')",timeout=15000)
+        assert page.locator('.sl-trace-row').count()==0,'No whole-photo detection before an explicit chalk tap.'
+        assert page.locator('.sl-trace-seed-info').inner_text().startswith('0か所指定済み')
+        assert page.locator('.sl-trace-seedbar button').count()==2
+        assert page.locator('.sl-trace-seedbar button').first.get_attribute('aria-pressed')=='true'
+        tap_chalk(77,80)
+        assert page.locator('.sl-trace-row').count()==0,'Tapping blank image must not find distant lines.'
+        assert '確認できませんでした' in page.locator('.sl-trace-status').inner_text()
+        tap_chalk(20,65)
+        page.wait_for_function("document.querySelectorAll('.sl-trace-row').length>=1",timeout=10000)
+        assert all('ひび割れ線' in x for x in page.locator('.sl-trace-row').all_text_contents()),'Only the clicked crack is recognized.'
+        first_count=page.locator('.sl-trace-row').count()
+        tap_chalk(20,65)
+        assert page.locator('.sl-trace-row').count()==first_count,'Tapping the same stroke twice must not duplicate it.'
+        tap_chalk(168,28)
+        page.wait_for_function("document.querySelectorAll('.sl-trace-row').length>=2",timeout=10000)
+        assert any('囲い' in x for x in page.locator('.sl-trace-row').all_text_contents())
         assert page.locator('.sl-trace-footer > .sl-trace-actions input[type=checkbox]').count()==0,'Source photos must never auto-attach to all shapes.'
         assert page.evaluate('state.autoTracePhotos.length')==1,'Source image must already be saved before confirmation.'
         original=page.evaluate("""async()=>{
@@ -97,7 +118,10 @@ try:
         assert page.locator('.sl-trace-canvas').evaluate("e=>e.style.width")=='150%'
         page.get_by_role('button',name='写真を縮小').click()
         assert page.locator('.sl-trace-canvas').evaluate("e=>e.style.width")=='100%'
-        assert page.get_by_role('button',name='直前の編集を取り消す').is_disabled()
+        assert page.get_by_role('button',name='直前の編集を取り消す').is_enabled(),'Undo now also supports explicit chalk seeds.'
+        assert page.locator('.sl-trace-seedbar').is_visible()
+        assert page.locator('.sl-trace-seed-info').inner_text().startswith('2か所指定済み')
+        # The original seven editing modes are retained alongside the seed tool.
         # All seven photo-edit commands must remain in one row on smaller phones.
         buttons=page.locator('.sl-trace-modes [data-mode]')
         assert buttons.count()==7
@@ -180,12 +204,26 @@ try:
         assert page.evaluate('state.shapes.length')==0
         assert page.evaluate('state.autoTracePhotos.length')==1,'Closing an unconfirmed trace must preserve its photo.'
         photo_file()
-        page.wait_for_function("document.querySelectorAll('.sl-trace-row').length>=2",timeout=15000)
+        page.wait_for_function("document.querySelector('.sl-trace-status')?.textContent.includes('白チョークの線を1か所タップ')",timeout=15000)
+        assert page.locator('.sl-trace-row').count()==0,'Second image also starts with zero guesses.'
+        tap_chalk(20,65)
+        page.wait_for_function("document.querySelectorAll('.sl-trace-row').length>=1",timeout=10000)
+        tap_chalk(168,28)
+        page.wait_for_function("document.querySelectorAll('.sl-trace-row').length>=2",timeout=10000)
+        # Reset drops the unconfirmed recognition but does not discard the saved photo.
+        page.locator('.sl-trace-seedbar').get_by_role('button',name='指定を消去').click()
+        assert page.locator('.sl-trace-row').count()==0
+        assert page.locator('.sl-trace-seed-info').inner_text().startswith('0か所指定済み')
+        assert page.evaluate('state.autoTracePhotos.length')==2
+        tap_chalk(20,65)
+        page.wait_for_function("document.querySelectorAll('.sl-trace-row').length>=1",timeout=10000)
+        tap_chalk(168,28)
+        page.wait_for_function("document.querySelectorAll('.sl-trace-row').length>=2",timeout=10000)
         assert page.evaluate('state.autoTracePhotos.length')==2,'Second capture stays as another source photo.'
         assert page.locator('.sl-trace-candidates-panel').get_attribute('open') is None
         page.locator('.sl-trace-candidates-panel summary').click()
         assert page.locator('.sl-trace-row').first.is_visible()
-        page.locator('.sl-trace-row').first.locator('select').select_option('剥離')
+        page.locator('.sl-trace-row').filter(has_text='囲い').first.locator('select').select_option('剥離')
         line_row=page.locator('.sl-trace-row').filter(has_text='ひび割れ線').first
         assert line_row.count()==1
         line_row.click()
