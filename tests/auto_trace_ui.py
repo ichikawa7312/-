@@ -118,7 +118,7 @@ try:
         assert page.locator('.sl-trace-canvas').evaluate("e=>e.style.width")=='150%'
         page.get_by_role('button',name='写真を縮小').click()
         assert page.locator('.sl-trace-canvas').evaluate("e=>e.style.width")=='100%'
-        assert page.get_by_role('button',name='直前の編集を取り消す').is_disabled()
+        assert page.get_by_role('button',name='直前の編集を取り消す').is_enabled(),'Undo now also supports explicit chalk seeds.'
         assert page.locator('.sl-trace-seedbar').is_visible()
         assert page.locator('.sl-trace-seed-info').inner_text().startswith('2か所指定済み')
         # The original seven editing modes are retained alongside the seed tool.
