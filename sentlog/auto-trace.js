@@ -43,6 +43,12 @@ function installStyle(){
  '.sl-trace-modes>button{box-sizing:border-box;min-width:0!important;width:100%;min-height:44px;padding:5px 1px!important;white-space:nowrap;overflow:hidden;text-overflow:clip;font-weight:700;font-size:clamp(10px,2.8vw,12px)!important;line-height:1.15}',
  '.sl-trace-modes>button.active{outline:2px solid #0e7490;outline-offset:-2px}',
  '.sl-trace-modes>button:focus-visible{outline:3px solid #0284c7;outline-offset:2px}',
+ '.sl-trace-seedbar{display:flex;align-items:center;gap:7px;flex-wrap:wrap;border:1px solid #67e8f9;background:#ecfeff;border-radius:9px;padding:5px 7px}',
+ '.sl-trace-seedbar button{min-height:44px;padding:7px 10px;font-size:12px;touch-action:manipulation}',
+ '.sl-trace-seedbar button.active{background:#0e7490;color:#fff;border-color:#0e7490}',
+ '.sl-trace-seed-info{font-size:11px;color:#155e75;line-height:1.45;flex:1 1 100px}',
+ '.sl-trace-seed-reset{font-size:11px!important;white-space:nowrap}',
+
  '.sl-trace-scroll{flex:1;min-height:120px;overflow:auto;overscroll-behavior:contain;background:#d7d9d6;border-radius:8px;text-align:left}',
  '.sl-trace-canvas{display:block;touch-action:none;max-width:none;height:auto;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}',
  '.sl-trace-footer{display:grid;gap:7px}',
@@ -128,28 +134,27 @@ async function openFile(file){
    if(!root.SentlogAutoTraceAlbum?.capture)throw Error('自動描写の写真保管機能を読み込めませんでした');
    // Save the original BEFORE analysis, even when no trace can be detected.
    const meta=await root.SentlogAutoTraceAlbum.capture(file,{projectId:activeProjectId,drawingId:activeDrawingId,page:state.currentPage});
-   statusText('元写真を保管しました。白チョークを認識しています…');
-   const {canvas:photo,pixels}=await imageFromFile(file);
+   statusText('元写真を保管しました。画像を開いています…');
+   const {canvas:photo}=await imageFromFile(file);
    await new Promise(resolve=>requestAnimationFrame(resolve));
-   const result=Core.analyze(pixels,{sensitivity:'standard'});
-   const candidates=result.candidates.map(c=>({...c,active:true,type:chooseType(c.kind),manualM:null}));
-   session={file,photo,sourceMeta:meta,candidates,selectedId:candidates[0]?.id||null,mode:'edit',undo:[],zoom:1,reference:null,refM:null,refPicks:[],region:null,sensitivity:'standard',dirty:false,drawingId:activeDrawingId,page:state.currentPage};
+   // Deliberately start with ZERO suggestions: never scan an unmarked photo.
+   // An explicit tap is the only way to recognize a connected chalk stroke.
+   session={file,photo,sourceMeta:meta,candidates:[],seeds:[],selectedId:null,mode:'seed',undo:[],zoom:1,reference:null,refM:null,refPicks:[],region:null,sensitivity:'standard',dirty:false,drawingId:activeDrawingId,page:state.currentPage};
    if(!editor)openEditor();
    editor.canvas.width=photo.width;editor.canvas.height=photo.height;
    redraw();
-   if(candidates.length)statusText('写真は「自動描写」に保存済み。候補 '+candidates.length+' 件を修正して配置できます。');
-   else statusText('写真は「自動描写」に保存済み。線を検出できない場合は手動追加できます。');
+   statusText('写真は「自動描写」に保存済み。白チョークの線を1か所タップしてください。指定していない場所は認識しません。');
  }catch(e){errorText('認識できませんでした：'+(e?.message||e));console.error('auto trace',e);}
 }
 function remember(){
  if(!session)return;
- session.undo.push({candidates:cloneCandidates(session.candidates),selectedId:session.selectedId,reference:session.reference?cloneCandidates(session.reference):null,dirty:!!session.dirty});
+ session.undo.push({candidates:cloneCandidates(session.candidates),seeds:cloneCandidates(session.seeds||[]),selectedId:session.selectedId,reference:session.reference?cloneCandidates(session.reference):null,dirty:!!session.dirty});
  session.dirty=true;
  if(session.undo.length>40)session.undo.shift();
 }
 function revert(){
  if(!session?.undo.length)return;
- const prev=session.undo.pop();session.candidates=prev.candidates;session.selectedId=prev.selectedId;session.reference=prev.reference;session.dirty=prev.dirty;
+ const prev=session.undo.pop();session.candidates=prev.candidates;session.seeds=prev.seeds||[];session.selectedId=prev.selectedId;session.reference=prev.reference;session.dirty=prev.dirty;
  redraw();
 }
 function photoRatio(){
@@ -168,6 +173,51 @@ function estimatedLength(c){
 function sensitivityLabel(value){
  return value==='strict'?'厳しめ':value==='wide'?'広め':'標準';
 }
+function recognizeSeed(p){
+ if(!session?.photo)return;
+ if(session.seeds.length>=32){errorText('白チョークは32か所まで指定できます。');return;}
+ if(session.region&&(p.x<session.region.x0||p.x>=session.region.x1||p.y<session.region.y0||p.y>=session.region.y1)){
+   errorText('指定範囲の外です。「全体に戻す」か範囲内をタップしてください。');return;
+ }
+ try{
+   const canvas=session.photo,cx=canvas.getContext('2d',{willReadFrequently:true});
+   if(!cx)throw Error('写真を読み取れませんでした');
+   const detected=Core.analyze(cx.getImageData(0,0,canvas.width,canvas.height),{
+     seeds:[p],sensitivity:session.sensitivity||'standard',region:session.region||undefined
+   });
+   if(!detected.candidates.length){
+     errorText('この位置から白チョークの線を確認できませんでした。チョークの白い部分をタップするか、認識感度を変更してください。');
+     return;
+   }
+   // Do not duplicate a connected stroke already selected from another point,
+   // even if the operator has manually edited its candidate geometry.
+   const known=new Set(session.candidates.map(c=>c.sourceComponent).filter(Boolean));
+   const added=detected.candidates.filter(c=>!known.has(c.sourceComponent));
+   if(!added.length){
+     statusText('この線はすでに候補に含まれています。別の白チョークをタップしてください。');return;
+   }
+   const manualDirty=session.dirty;
+   remember();
+   session.seeds.push({x:p.x,y:p.y});
+   const candidates=added.map(c=>({...c,id:uidSafe(),active:true,type:chooseType(c.kind),manualM:null}));
+   session.candidates.push(...candidates);
+   session.selectedId=candidates[0].id;
+   // Selecting another chalk stroke is an additive change, not an edit that
+   // should prompt before each sensitivity re-analysis.
+   session.dirty=manualDirty;
+   redraw();
+   statusText('指定した白チョークから'+candidates.length+'件の候補を追加しました。ほかの線もタップできます。');
+ }catch(e){errorText('指定したチョークを認識できませんでした：'+(e.message||e));}
+}
+function clearSeeds(){
+ if(!session)return;
+ if(session.dirty&&!confirm('チョークの指定と未確定の候補を消去しますか？\n手動で修正した候補も消えます。図面に登録済みの記録は変更しません。'))return;
+ remember();
+ session.seeds=[];session.candidates=[];session.selectedId=null;session.refPicks=[];
+ if(session.reference?.kind==='candidate')session.reference=null;
+ session.dirty=false;session.mode='seed';redraw();
+ statusText('指定を消去しました。白チョークをタップすると、その線だけを認識します。');
+}
 function reanalyze(){
  if(!session?.photo)return false;
  if(session.dirty&&!confirm('手動で修正した候補を再認識の結果に置き換えますか？\n図面に確定済みの変状には影響しません。'))return false;
@@ -175,7 +225,7 @@ function reanalyze(){
    const c=session.photo,cx=c.getContext('2d',{willReadFrequently:true});
    if(!cx)throw Error('写真を読み取れませんでした');
    const result=Core.analyze(cx.getImageData(0,0,c.width,c.height),{
-     sensitivity:session.sensitivity||'standard',region:session.region||undefined
+     seeds:session.seeds||[],sensitivity:session.sensitivity||'standard',region:session.region||undefined
    });
    remember();
    session.candidates=result.candidates.map(c=>({...c,active:true,type:chooseType(c.kind),manualM:null}));
@@ -183,10 +233,10 @@ function reanalyze(){
    // A user-drawn pair of reference points remains valid for this same photo,
    // but a reference candidate may not exist after re-analysis.
    if(session.reference?.kind==='candidate')session.reference=null;
-   session.refPicks=[];session.mode='edit';session.dirty=false;
+   session.refPicks=[];session.mode='seed';session.dirty=false;
    redraw();
-   statusText('再認識：'+result.candidates.length+'件（'+sensitivityLabel(session.sensitivity)+'）'
-     +(session.region?'・指定範囲のみ':'・写真全体')+'。図面へは未確定です。');
+   statusText('指定した白チョークから再認識：'+result.candidates.length+'件（'+sensitivityLabel(session.sensitivity)+'）'
+     +(session.region?'・指定範囲のみ':'・写真全体')+'。指定していない部分は対象外です。');
    return true;
  }catch(e){errorText('再認識に失敗しました：'+(e?.message||e));return false;}
 }
@@ -201,6 +251,10 @@ function renderStatus(){
  const ratio=photoRatio();
  editor.referenceText.textContent=ratio?'基準設定済み：1 px ≒ '+(ratio*1000).toFixed(2)+' mm（撮影面が平面である前提）':'基準未設定：線を選ぶか、写真上の2点を指定してください。';
  editor.undo.disabled=!session.undo.length;
+ editor.seedButton.classList.toggle('active',session.mode==='seed');
+ editor.seedButton.setAttribute('aria-pressed',String(session.mode==='seed'));
+ editor.seedInfo.textContent=session.seeds.length+'か所指定済み / 白チョークの部分をタップして追加';
+ editor.seedReset.disabled=!session.seeds.length&&!session.candidates.length;
  for(const b of editor.modes.querySelectorAll('[data-mode]')){const active=b.dataset.mode===session.mode;b.classList.toggle('active',active);b.setAttribute('aria-pressed',String(active));}
  editor.settingsSummary.textContent='白チョーク認識調整（'+sensitivityLabel(session.sensitivity)+'）';
  editor.sensitivity.value=session.sensitivity||'standard';
@@ -211,14 +265,14 @@ function renderStatus(){
 function renderCandidates(){
  const host=editor.rows;host.replaceChildren();
  editor.candidatesSummary.textContent='認識候補 '+session.candidates.length+'件（選択 '+selectedCandidates().length+'件）';
- if(!session.candidates.length){host.append(element('span','sl-trace-help','候補なし：線を描き足す／囲いを追加から描けます。'));return;}
- for(const c of session.candidates){
+ if(!session.candidates.length){host.append(element('span','sl-trace-help','候補0件：白チョークをタップして指定してください。必要なら「＋線」「＋囲い」でも追加できます。'));return;}
+ for(const [index,c] of session.candidates.entries()){
    const row=element('div','sl-trace-row'+(c.id===session.selectedId?' selected':''));
    row.onclick=()=>{session.selectedId=c.id;redraw();};
    const top=element('div','sl-trace-rowline');
    const tick=element('input');tick.type='checkbox';tick.checked=c.active!==false;tick.setAttribute('aria-label','この候補を配置する');
    tick.onchange=e=>{e.stopPropagation();c.active=tick.checked;session.dirty=true;redraw();};
-   const title=element('b',null,(c.kind==='area'?'範囲':'線')+' '+c.id.replace(/[^0-9]/g,''));
+   const title=element('b',null,(c.kind==='area'?'範囲':'線')+' '+(index+1));
    top.append(tick,title,element('span','sl-trace-help',c.kind==='area'?'囲い':'ひび割れ線'));row.append(top);
    const select=element('select');for(const type of TYPES){const option=element('option',null,type);option.value=type;select.append(option);}
    select.value=c.type;select.onchange=e=>{e.stopPropagation();c.type=select.value;session.dirty=true;};select.onclick=e=>e.stopPropagation();row.append(select);
@@ -288,6 +342,13 @@ function paint(){
    cx.save();cx.setLineDash([7,4]);cx.strokeStyle='#0284c7';cx.lineWidth=2.5;
    cx.fillStyle='rgba(2,132,199,.07)';cx.fillRect(x,y,w,h);cx.strokeRect(x,y,w,h);cx.restore();
  }
+ // Bright magenta seed dots distinguish operator-chosen chalk from green
+ // auto-traced lines and are never exported as defects.
+ if(session.seeds?.length){
+   cx.save();cx.lineWidth=2;cx.strokeStyle='#fff';cx.fillStyle='#be185d';
+   for(const p of session.seeds){cx.beginPath();cx.arc(p.x,p.y,5.5,0,Math.PI*2);cx.fill();cx.stroke();}
+   cx.restore();
+ }
  if(session.refPicks?.length){cx.fillStyle='#0ea5e9';for(const p of session.refPicks){cx.beginPath();cx.arc(p.x,p.y,5,0,Math.PI*2);cx.fill();}}
  if(editor.gesture?.kind==='draw'&&editor.gesture.points.length){
    cx.beginPath();const pts=editor.gesture.points;cx.moveTo(pts[0].x,pts[0].y);for(let i=1;i<pts.length;i++)cx.lineTo(pts[i].x,pts[i].y);
@@ -319,6 +380,7 @@ function pointerDown(e){
  if(!session||session.mode==='pan')return;
  if(e.pointerType==='mouse'&&e.button!==0)return;
  e.preventDefault();const p=photoPoint(e);
+ if(session.mode==='seed'){recognizeSeed(p);return;}
  if(session.mode==='ref'){
    session.refPicks.push(p);if(session.refPicks.length>=2){
      const px=Core.pathLength(session.refPicks);if(px>5){session.reference={kind:'points',px};statusText('基準2点を指定しました。実測長さを入力してください。');}
@@ -428,11 +490,20 @@ function openEditor(){
    b.dataset.mode=id;b.title=description;b.setAttribute('aria-label',description);
    modes.append(b);
  }
+ const seedBar=element('div','sl-trace-seedbar');
+ const seedButton=newButton('◎ 白チョーク指定',()=>{
+   if(!session)return;session.mode='seed';session.refPicks=[];redraw();
+   statusText('認識したい白チョークの線を写真上でタップしてください。離れた場所は勝手に認識しません。');
+ });
+ seedButton.setAttribute('aria-label','白チョークをタップして指定する');
+ const seedInfo=element('span','sl-trace-seed-info','写真の白チョークをタップして開始');
+ const seedReset=newButton('指定を消去',clearSeeds,'sl-trace-seed-reset');
+ seedBar.append(seedButton,seedInfo,seedReset);
  const scroll=element('div','sl-trace-scroll'),canvas=element('canvas','sl-trace-canvas');scroll.append(canvas);
  canvas.addEventListener('pointerdown',pointerDown);canvas.addEventListener('pointermove',pointerMove);canvas.addEventListener('pointerup',pointerUp);
  canvas.addEventListener('pointercancel',()=>{if(editor)editor.gesture=null;redraw();});
  const footer=element('div','sl-trace-footer');
- const helper=element('span','sl-trace-help','緑：線　黄：囲い／斜線は図面に登録しません。誤認識は削除でき、実測長さも修正できます。');
+ const helper=element('span','sl-trace-help','白チョークをタップした場所だけ追跡します。緑：線　黄：囲い。誤認識は消去し、実測長さも修正できます。');
  const settingsPanel=element('details','sl-trace-settings');
  const settingsSummary=element('summary',null,'白チョーク認識調整（標準）');
  const detect=element('div','sl-trace-detect');
@@ -477,10 +548,10 @@ function openEditor(){
  const buttonNext=newButton('図面に仮配置 →',beginPlacement,'sl-trace-primary');
  actions.append(newButton('撮り直す',()=>photoInput?.click()),buttonNext);
  footer.append(helper,settingsPanel,candidatesPanel,calibration,actions,status);
- dialog.append(header,modes,scroll,footer);modal.append(dialog);document.body.append(modal);
- editor={canvas,rows,modes,refInput,referenceText,status,undo:undoEdit,gesture:null,settingsPanel,settingsSummary,sensitivity,regionText,candidatesPanel,candidatesSummary};
+ dialog.append(header,seedBar,modes,scroll,footer);modal.append(dialog);document.body.append(modal);
+ editor={canvas,rows,modes,seedButton,seedInfo,seedReset,refInput,referenceText,status,undo:undoEdit,gesture:null,settingsPanel,settingsSummary,sensitivity,regionText,candidatesPanel,candidatesSummary};
  if(session){canvas.width=session.photo.width;canvas.height=session.photo.height;redraw();}
- else statusText('カメラで撮影すると自動描写を開始します。');
+ else statusText('写真を撮影すると、白チョークをタップして認識を開始できます。');
 }
 function mergedBox(candidates){
  const all=candidates.flatMap(c=>c.points);return coordinateBox(all);
