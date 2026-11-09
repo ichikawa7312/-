@@ -26,6 +26,40 @@
     }));
   }
   const recordChoiceKey=(drawingId,recordId)=>JSON.stringify([drawingId,recordId]);
+  // Text drag changes the leader endpoint, not the survey point or dimensions.
+  const displayBody=s=>s===undefined?undefined:omit(s,['photos',...numbered,'labelPos','labelPosEditedAt']);
+  const editTime=v=>Number.isSafeInteger(v)&&v>0?v:0;
+  function validLabelPos(p){
+    return p==null||(object(p)&&Number.isFinite(p.x)&&Number.isFinite(p.y)&&
+      (p.anchor===undefined||['start','middle','end'].includes(p.anchor))&&
+      Object.keys(p).every(k=>['x','y','anchor'].includes(k)));
+  }
+  function displayWinner(l,r,localMeta,remoteMeta){
+    const a=editTime(l?.labelPosEditedAt),b=editTime(r?.labelPosEditedAt);
+    if(a&&b&&a!==b)return a>b?'local':'remote';
+    // For older records without label-level timestamps, use drawing edit time
+    // only as a fallback. Cloud upload time is deliberately never used.
+    const lm=editTime(Number(localMeta?.updatedAt)),rm=editTime(Number(remoteMeta?.updatedAt));
+    if(lm!==rm)return lm>rm?'local':'remote';
+    if(a!==b)return a>b?'local':'remote';
+    return 'remote';
+  }
+  function onlyDisplayDifferences(local,remote){
+    try{
+      if(!local?.project||!remote?.project||!Array.isArray(local.drawings)||!Array.isArray(remote.drawings))return false;
+      const strip=p=>({
+        project:{...omit(p.project,['updatedAt','drawings']),drawings:(p.project.drawings||[]).map(metaValue)},
+        drawings:p.drawings.map(d=>({
+          meta:metaValue(d.meta),
+          state:{...stateValue(d.state),shapes:(d.state.shapes||[]).map(s=>omit(shapeValue(s),['labelPos','labelPosEditedAt']))}
+        }))
+      });
+      for(const p of [local,remote])for(const d of p.drawings){
+        if(!Array.isArray(d?.state?.shapes)||d.state.shapes.some(s=>!validLabelPos(s.labelPos)))return false;
+      }
+      return equal(strip(local),strip(remote));
+    }catch{return false;}
+  }
   const recordName=s=>s?.recordKind==='drawing-memo'?'図面メモ（'+({rect:'四角',ellipse:'丸',line:'線',freehand:'フリーハンド',text:'文字',dimension:'寸法'}[s.memoType]||'記入')+'）':null;
   function merge(local,remote,options={}){
     const conflicts=[],preserve=options.preserve===true,base=options.base;
@@ -84,14 +118,33 @@
       return out;
     }
     function photo(l,r,b,path){return properties(l,r,b,path);}
-    function shape(l,r,b,path,drawingId){
-      const body=s=>s===undefined?undefined:omit(s,['photos',...numbered]);
-      const picked=choose(body(l),body(r),body(b),path);
+    function shape(l,r,b,path,drawingId,localMeta,remoteMeta){
+      // Keep geometry, measurements, and text as one protected record body.
+      // Merge only the independent text/leader placement field.
+      const core=choose(displayBody(l),displayBody(r),displayBody(b),path);
+      const placement=choose(l.labelPos,r.labelPos,b?.labelPos,path+' / 文字位置');
       const choice=preserve?options.recordChoices?.[recordChoiceKey(drawingId,l.id)]:null;
-      if(!picked.done&&choice!=='local'&&choice!=='remote'){
-        conflicts.push({path,reason:'同じ記録の位置・寸法・説明が変更されています',kind:'record',drawingId,recordId:l.id,local:copy(l),remote:copy(r)});return;
+      let out;
+      if(choice==='local'||choice==='remote')out=copy(omit(choice==='local'?l:r,['photos',...numbered]));
+      else if(!core.done||(!placement.done&&(!validLabelPos(l.labelPos)||!validLabelPos(r.labelPos)))){
+        conflicts.push({path,reason:'同じ記録の位置・寸法・説明が変更されています',kind:'record',
+          drawingId,recordId:l.id,local:copy(l),remote:copy(r)});
+        return;
+      }else{
+        out=core.value;
+        const preferred=placement.done?placement.value:
+          copy(displayWinner(l,r,localMeta,remoteMeta)==='local'?l.labelPos:r.labelPos);
+        if(preferred!==undefined)out.labelPos=preferred;
+        // Preserve metadata associated with the winning label position.
+        if(equal(preferred,l.labelPos)&&equal(preferred,r.labelPos)){
+          const time=Math.max(editTime(l.labelPosEditedAt),editTime(r.labelPosEditedAt));
+          if(time)out.labelPosEditedAt=time;
+        }else{
+          const source=equal(preferred,l.labelPos)?l:r;
+          const time=editTime(source.labelPosEditedAt);
+          if(time)out.labelPosEditedAt=time;
+        }
       }
-      const out=picked.done?picked.value:copy(body(choice==='local'?l:r));
       out.photos=entities(l.photos||[],r.photos||[],b?.photos||[],path+' / 写真',x=>x,photo);
       for(const k of numbered)if(r[k]!==undefined)out[k]=copy(r[k]);
       return out;
@@ -104,7 +157,7 @@
         if(!equal(l.state[key],r.state[key])){clash(path,label+'が異なります');return;}
       }
       const st=properties(l.state,r.state,b?.state,path+' / 用紙・縮尺',['shapes',...viewKeys]);
-      st.shapes=entities(l.state.shapes||[],r.state.shapes||[],b?.state?.shapes||[],path,shapeValue,(a,z,ancestor,label)=>shape(a,z,ancestor,label,l.meta.id));
+      st.shapes=entities(l.state.shapes||[],r.state.shapes||[],b?.state?.shapes||[],path,shapeValue,(a,z,ancestor,label)=>shape(a,z,ancestor,label,l.meta.id,l.meta,r.meta));
       for(const k of viewKeys)if(l.state[k]!==undefined)st[k]=copy(l.state[k]);
       meta.updatedAt=Math.max(Number(l.meta.updatedAt)||0,Number(r.meta.updatedAt)||0);
       return {id:l.id,meta,state:st};
@@ -126,7 +179,7 @@
     }
     const ls=validate(local,'この端末'),rs=validate(remote,'共有データ'),bs=base?validate(base,'前回同期'):[];
     if(!local?.project?.id||local.project.id!==remote?.project?.id||(base&&base.project?.id!==local.project.id))clash('案件','別の案件です');
-    if(!preserve&&!base)clash('前回同期','共通の同期記録がありません。「両方の記録を残して同期」を選んでください');
+    if(!preserve&&!base&&!onlyDisplayDifferences(local,remote))clash('前回同期','共通の同期記録がありません。「両方の記録を残して同期」を選んでください');
     if(conflicts.length)return {ok:false,conflicts};
     // Missing entries and explicit 0 degrees render identically in the editor.
     // Never coerce malformed values or treat a genuine quarter-turn as equal.
@@ -165,7 +218,7 @@
     project.updatedAt=Math.max(Number(local.project.updatedAt)||0,Number(remote.project.updatedAt)||0,Number(options.now)||Date.now())+1;
     return {ok:true,payload:{project,drawings:ds.map(({meta,state})=>({meta,state}))},conflicts:[]};
   }
-  const api={merge,equal,canonical,recordChoiceKey};
+  const api={merge,equal,canonical,recordChoiceKey,onlyDisplayDifferences};
   if(typeof module!=='undefined'&&module.exports)module.exports=api;
   else root.SentlogSyncMerge=api;
 })(typeof window!=='undefined'?window:globalThis);
