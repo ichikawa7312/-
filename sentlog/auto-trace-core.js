@@ -294,22 +294,28 @@ function analyze(image,opts={}){
   const comps=components(mask,w,h),areas=[],lines=[];
   const maxCandidates=Math.max(1,Math.min(80,opts.maxCandidates||45));
   let matched=0;
-  // On touch screens the finger may cover a 5px chalk stroke. Snap the
-  // user's explicit seed to an actual chalk-mask pixel within 8 source px.
-  // Only the connected mask component containing that stroke may be traced.
-  // Nearby unrelated components cannot be pulled in by a broad bounding box.
-  function seededComponent(comp){
-    if(!seeded)return true;
-    const eligible=seeds.filter(p=>p.x>=comp.minX-8&&p.x<=comp.maxX+8&&
-      p.y>=comp.minY-8&&p.y<=comp.maxY+8);
-    if(!eligible.length)return false;
-    return comp.pixels.some(i=>{
-      const x=i%w,y=(i/w)|0;
-      return eligible.some(p=>(x-p.x)*(x-p.x)+(y-p.y)*(y-p.y)<=64);
-    });
+  // Index components once. Each tap chooses only its ONE nearest genuinely
+  // masked chalk component (within 8 image px), never all nearby objects.
+  // This matters on a dashboard/texture image with many bright boundaries.
+  let relevant=null;
+  if(seeded){
+    const owners=new Int32Array(w*h);
+    for(let ci=0;ci<comps.length;ci++)for(const pixel of comps[ci].pixels)owners[pixel]=ci+1;
+    relevant=new Set();
+    for(const p of seeds){
+      let winner=-1,best=65;
+      const x0=Math.max(0,Math.ceil(p.x-8)),x1=Math.min(w-1,Math.floor(p.x+8));
+      const y0=Math.max(0,Math.ceil(p.y-8)),y1=Math.min(h-1,Math.floor(p.y+8));
+      for(let y=y0;y<=y1;y++)for(let x=x0;x<=x1;x++){
+        const owner=owners[y*w+x];if(!owner)continue;
+        const d=(x-p.x)**2+(y-p.y)**2;
+        if(d<best){best=d;winner=owner-1;}
+      }
+      if(winner>=0)relevant.add(winner);
+    }
   }
-  for(const comp of (seeded?comps:comps.slice(0,90))){
-    if(!seededComponent(comp))continue;
+  for(const [ci,comp] of comps.entries()){
+    if(seeded?!relevant.has(ci):ci>=90)continue;
     matched++;
     const sourceComponent='chalk:'+comp.minX+','+comp.minY+','+comp.maxX+','+comp.maxY;
     const cw=comp.maxX-comp.minX+1,ch=comp.maxY-comp.minY+1;
