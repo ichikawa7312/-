@@ -75,8 +75,8 @@ for(const token of ["capture','environment'","photoRatio()","pushHistory(ctx.pag
  assert.ok(ui.includes(token),'missing integration: '+token);
 }
 assert.ok(!ui.includes("recordKind:'auto"),'no parallel record type');
-assert.equal((html.match(/auto-trace-core\.js\?v=231/g)||[]).length,1);
-assert.equal((html.match(/auto-trace\.js\?v=231/g)||[]).length,1);
+assert.equal((html.match(/auto-trace-core\.js\?v=234/g)||[]).length,1);
+assert.equal((html.match(/auto-trace\.js\?v=234/g)||[]).length,1);
 assert.equal((html.match(/auto-trace-album\.js\?v=231/g)||[]).length,1);
 assert.ok(sw.includes("'auto-trace-core.js','auto-trace-album.js','auto-trace.js'"));
 assert.ok(album.includes('state.autoTracePhotos')&&album.includes('root.SentlogOriginalPhotos')&&album.includes('savePhotoBlob(photoId,shared,drawingId)'));
