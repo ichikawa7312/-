@@ -27,6 +27,24 @@ assert.ok(out.candidates.filter(x=>x.kind==='area').some(x=>Math.abs(Core.signed
 assert.ok(out.candidates.filter(x=>x.kind==='line').every(x=>x.points.every(p=>p.x<110)),'internal hatch must not become another crack');
 assert.equal(Core.analyze(photo(100,70)).candidates.length,0,'uniform background must not create candidates');
 
+// New user-facing mode: NO chalk candidate is allowed before an explicit tap,
+// even on an image where the old whole-image algorithm finds bright outlines.
+assert.equal(Core.analyze(image,{seeds:[]}).candidates.length,0,'No tap means zero suggestions');
+assert.equal(Core.analyze(image,{seeds:[{x:70,y:80}]}).candidates.length,0,'Tapping blank background must not search elsewhere for lines');
+const chalkTap=Core.analyze(image,{seeds:[{x:20,y:65}]});
+assert.ok(chalkTap.candidates.some(x=>x.kind==='line'),'Selected chalk line must be traced');
+assert.ok(chalkTap.candidates.every(x=>x.points.every(p=>p.x<110)),'Only tapped connected stroke is recognized, never remote outlined areas');
+const areaTap=Core.analyze(image,{seeds:[{x:168,y:28}]});
+assert.ok(areaTap.candidates.some(x=>x.kind==='area'),'An explicit tap on enclosed chalk should trace the area');
+assert.ok(areaTap.candidates.every(x=>x.kind==='area'),'Tap on outlined area must not trace disconnected crack');
+const both=Core.analyze(image,{seeds:[{x:20,y:65},{x:168,y:28}]});
+assert.ok(both.candidates.some(x=>x.kind==='line')&&both.candidates.some(x=>x.kind==='area'),'Two taps should recognize both disconnected marks');
+assert.ok(both.candidates.every(c=>!!c.sourceComponent),'Each suggestion should preserve its origin component for duplicate prevention');
+assert.equal(Core.analyze(image,{seeds:[{x:-50,y:70}]}).candidates.length,0,'Out-of-bounds taps must be ignored');
+assert.equal(Core.analyze(image,{seeds:[{x:20,y:65}],region:{x0:110,y0:0,x1:240,y1:175}}).candidates.length,0,'Taps outside ROI must not trigger unrelated lines');
+assert.ok(Core.analyze(image,{seeds:[{x:20,y:65}],region:{x0:0,y0:0,x1:110,y1:175}}).candidates.some(c=>c.kind==='line'),'Taps inside ROI still work');
+
+
 const illuminated=photo(280,180,110);
 for(let y=0;y<180;y++)for(let x=150;x<280;x++){
  const k=(y*280+x)*4;
@@ -35,6 +53,9 @@ for(let y=0;y<180;y++)for(let x=150;x<280;x++){
 for(let y=12;y<165;y++)illuminated.dot(36+13*Math.sin(y/17),y);
 const filtered=Core.analyze(illuminated,{sensitivity:'standard'});
 assert.equal(filtered.candidates.filter(c=>c.kind==='line').length,1,'A bright concrete/shadow boundary must not be treated as chalk');
+assert.equal(Core.analyze(illuminated,{seeds:[]}).candidates.length,0,'Uniform bright panels and dark boundaries must remain empty until tapped');
+assert.equal(Core.analyze(illuminated,{seeds:[{x:185,y:90}]}).candidates.length,0,'Tapping a uniformly bright panel must not trace its remote edges');
+
 assert.ok(filtered.candidates.some(c=>c.kind==='line'&&c.points.every(p=>p.x<80)),'The chalk curve should be traced');
 const roi=Core.analyze(illuminated,{sensitivity:'standard',region:{x0:0,y0:0,x1:115,y1:180}});
 assert.ok(roi.candidates.length>=1,'The limited detection region should keep the chalk inside it');
@@ -74,6 +95,11 @@ assert.ok(album.includes("min-height:44px!important"),'Card actions must remain 
 assert.ok(album.includes('selectedShape()')&&album.includes('shape.photos.push('));
 assert.ok(ui.includes('sl-trace-candidates-panel')&&ui.includes('sl-trace-settings'));
 assert.ok(ui.includes('function reanalyze()')&&ui.includes("session.mode='region'"));
+assert.ok(ui.includes("mode:'seed'")&&ui.includes('function recognizeSeed(p)'), 'Editor must require an operator-provided chalk start point');
+assert.ok(ui.includes("seeds:session.seeds||[]"),'Reanalysis must never fall back to the entire image');
+assert.ok(ui.includes('sourceComponent'),'Touching the same stroke again must not duplicate it');
+assert.ok(ui.includes('指定を消去')&&ui.includes('白チョーク指定'),'Chalk tap and reset controls should be available on iPhone');
+assert.ok(!ui.includes("Core.analyze(pixels,{sensitivity:'standard'})"),'Initial image upload must not auto-detect arbitrary edges');
 const cloud=fs.readFileSync(path.join(root,'sentlog/cloud-sync.js'),'utf8');
 const pc=fs.readFileSync(path.join(root,'sentlog-pc/index.html'),'utf8');
 const recovery=fs.readFileSync(path.join(root,'sentlog/photo-recovery.js'),'utf8');
