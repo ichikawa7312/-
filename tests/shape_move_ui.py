@@ -132,6 +132,9 @@ try:
    labelonly=getshape(page)
    assert labelonly['points']==saved['points'],'label-only must not move damage geometry'
    assert labelonly['labelPos']!=saved['labelPos'],'label drag must still move title'
+   assert labelonly.get('labelPosEditedAt',0)>0,'a real label drag should record its edit time'
+   page.locator('#undoBtn').click()
+   assert getshape(page)==saved,'undoing a label drag must restore the exact previous metadata'
    (ROOT/'test-results').mkdir(exist_ok=True)
    page.screenshot(path=str(ROOT/f'test-results/shape-move-{kind}.png'),full_page=True)
    # External requests can be aborted when logged out; never touch live account.
