@@ -30,16 +30,6 @@
   const oldPersist=persist;
   persist=function(){
     const before=activeDrawingId?read(activeDrawingId):null;
-    // Time the committed text drag, not the later sync/upload operation.
-    // This applies to damage labels as well as survey and photo labels.
-    if(before?.shapes&&Array.isArray(state.shapes)){
-      const previous=new Map(before.shapes.map(s=>[s.id,s]));
-      for(const s of state.shapes){
-        const old=previous.get(s.id);
-        if(old&&!same(old.labelPos,s.labelPos))
-          s.labelPosEditedAt=Math.max(Date.now(),Number(old.labelPosEditedAt)||0,Number(s.labelPosEditedAt)||0)+1;
-      }
-    }
     const p=getProject(),d=getDrawingMeta();
     const unchanged=before && same(content(before),content(state));
     const pt=p?.updatedAt,dt=d?.updatedAt;

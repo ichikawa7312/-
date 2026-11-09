@@ -558,7 +558,13 @@ function finishPointer(e,cancelled=false){
     return;
   }
   if(labelDrag && e.pointerId===labelDrag.pointerId){
-    if(labelDrag.historyPushed)persist();
+    if(labelDrag.historyPushed){
+      const s=state.shapes.find(x=>x.id===labelDrag.id);
+      // Only an actual label drag creates a label edit timestamp. Undo, redo,
+      // or movement of the whole shape must restore snapshots exactly.
+      if(s&&!cancelled)s.labelPosEditedAt=Math.max(Date.now(),Number(s.labelPosEditedAt)||0)+1;
+      persist();
+    }
     labelDrag=null;
     try{$('stageWrap').releasePointerCapture(e.pointerId)}catch{}
     return;

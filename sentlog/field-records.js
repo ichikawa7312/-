@@ -331,6 +331,9 @@
       if(m.previous)s.labelPos={...m.previous};else delete s.labelPos;
     }else{
       const h=historyFor(m.page);h.undo.push(m.before);if(h.undo.length>80)h.undo.shift();h.redo=[];
+      // The field survey/photo label uses the same per-label edit clock.
+      // An undo restores m.before without minting a new edit timestamp.
+      s.labelPosEditedAt=Math.max(Date.now(),Number(s.labelPosEditedAt)||0)+1;
       updateHistoryButtons();persist();
     }
     render();
