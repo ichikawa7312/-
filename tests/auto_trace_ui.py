@@ -223,7 +223,7 @@ try:
         assert page.locator('.sl-trace-candidates-panel').get_attribute('open') is None
         page.locator('.sl-trace-candidates-panel summary').click()
         assert page.locator('.sl-trace-row').first.is_visible()
-        page.locator('.sl-trace-row').first.locator('select').select_option('剥離')
+        page.locator('.sl-trace-row').filter(has_text='囲い').first.locator('select').select_option('剥離')
         line_row=page.locator('.sl-trace-row').filter(has_text='ひび割れ線').first
         assert line_row.count()==1
         line_row.click()
