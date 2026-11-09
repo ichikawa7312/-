@@ -277,6 +277,14 @@ function analyze(image,opts={}){
   const w=image.width|0,h=image.height|0;
   if(w*h>900000)throw Error('認識画像を縮小してください（最大90万画素）');
   const cfg=settingsFor(opts),region=normalizeRegion(opts.region,w,h);
+  // Explicit seeds are an opt-in tracing boundary. An empty list means
+  // absolutely NO recognition; never fall back to scanning the whole image.
+  // Untouched callers may continue to use the legacy automatic analysis.
+  const seeded=Array.isArray(opts.seeds);
+  const seeds=seeded?opts.seeds.slice(0,32).filter(p=>p&&
+    Number.isFinite(p.x)&&Number.isFinite(p.y)&&p.x>=0&&p.x<w&&p.y>=0&&p.y<h&&
+    (!region||(p.x>=region.x0&&p.x<region.x1&&p.y>=region.y0&&p.y<region.y1))):[];
+  if(seeded&&!seeds.length)return {width:w,height:h,candidates:[],stats:{components:0,areas:0,lines:0,seeded:true,matched:0}};
   const mask=erode(dilate(chalkMask(image,{...opts,region}),w,h),w,h);
   // Morphology must never add pixels beyond the selected inspection area.
   if(region){
@@ -285,7 +293,25 @@ function analyze(image,opts={}){
   }
   const comps=components(mask,w,h),areas=[],lines=[];
   const maxCandidates=Math.max(1,Math.min(80,opts.maxCandidates||45));
-  for(const comp of comps.slice(0,90)){
+  let matched=0;
+  // On touch screens the finger may cover a 5px chalk stroke. Snap the
+  // user's explicit seed to an actual chalk-mask pixel within 8 source px.
+  // Only the connected mask component containing that stroke may be traced.
+  // Nearby unrelated components cannot be pulled in by a broad bounding box.
+  function seededComponent(comp){
+    if(!seeded)return true;
+    const eligible=seeds.filter(p=>p.x>=comp.minX-8&&p.x<=comp.maxX+8&&
+      p.y>=comp.minY-8&&p.y<=comp.maxY+8);
+    if(!eligible.length)return false;
+    return comp.pixels.some(i=>{
+      const x=i%w,y=(i/w)|0;
+      return eligible.some(p=>(x-p.x)*(x-p.x)+(y-p.y)*(y-p.y)<=64);
+    });
+  }
+  for(const comp of (seeded?comps:comps.slice(0,90))){
+    if(!seededComponent(comp))continue;
+    matched++;
+    const sourceComponent='chalk:'+comp.minX+','+comp.minY+','+comp.maxX+','+comp.maxY;
     const cw=comp.maxX-comp.minX+1,ch=comp.maxY-comp.minY+1;
     if(cw<6&&ch<6)continue;
     if(comp.pixels.length>w*h*.3)continue;
@@ -294,11 +320,11 @@ function analyze(image,opts={}){
       const pts=outerContour(local);
       if(pts.length>=3&&Math.abs(signedArea(pts))>100&&
          ridgeSupport(image,pts,true,cfg.ridgeContrast)>=cfg.ridgeFraction*.68)
-         areas.push({kind:'area',points:pts,source:'chalking'});
+         areas.push({kind:'area',points:pts,source:'chalking',sourceComponent});
     }else if(comp.pixels.length>=28){
       for(const pts of traceSkeleton(local)){
         if(pts.length>=2&&ridgeSupport(image,pts,false,cfg.ridgeContrast)>=cfg.ridgeFraction)
-          lines.push({kind:'line',points:pts,source:'chalking'});
+          lines.push({kind:'line',points:pts,source:'chalking',sourceComponent});
       }
     }
     if(areas.length+lines.length>maxCandidates*3)break;
@@ -308,7 +334,7 @@ function analyze(image,opts={}){
     return !areas.some(area=>samples.filter(p=>pointInPolygon(p,area.points)).length>=samples.length*.7);
   });
   const all=[...areas,...survivors].sort((a,b)=>pathLength(b.points,b.kind==='area')-pathLength(a.points,a.kind==='area')).slice(0,maxCandidates);
-  return {width:w,height:h,candidates:all.map((c,i)=>({...c,id:'trace-'+(i+1)})),stats:{components:comps.length,areas:areas.length,lines:survivors.length}};
+  return {width:w,height:h,candidates:all.map((c,i)=>({...c,id:'trace-'+(i+1)})),stats:{components:comps.length,areas:areas.length,lines:survivors.length,seeded,matched}};
 }
 
 return {chalkMask,analyze,pathLength,signedArea,simplify,pointInPolygon,settingsFor,normalizeRegion,ridgeSupport};
