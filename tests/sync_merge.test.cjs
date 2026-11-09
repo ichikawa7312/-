@@ -73,3 +73,45 @@ const outside=clone(pdfLocal);outside.drawings[0].state.shapes[1].page=8;assert(
 assert(!M.merge(pdfLocal,pdfRemote,{preserve:true,verifiedPdfPageCounts:{d:0}}).ok);
 const pdfBase=pdfPack(base,1);assert(M.merge(pdfLocal,pdfRemote,{base:pdfBase,verifiedPdfPageCounts:{d:7}}).ok);
 console.log('PASS verified PDF count: stale 1/7 reconciled, page-7 records retained, genuine rotation/scale and out-of-range pages blocked');
+
+
+{
+ const b=make([shape('label')]),l=clone(b),r=clone(b);
+ l.drawings[0].state.shapes[0].labelPos={x:694,y:837,anchor:'middle'};
+ r.drawings[0].state.shapes[0].labelPos={x:753,y:1064,anchor:'middle'};
+ l.drawings[0].state.shapes[0].labelPosEditedAt=100;
+ r.drawings[0].state.shapes[0].labelPosEditedAt=200;
+ const before=JSON.stringify([b,l,r]);
+ assert(M.onlyDisplayDifferences(l,r));
+ for(const options of [{base:b},{}]){
+   const result=M.merge(l,r,options);assert(result.ok);
+   assert.equal(result.payload.drawings[0].state.shapes[0].labelPos.x,753);
+   assert.equal(result.payload.drawings[0].state.shapes[0].labelPosEditedAt,200);
+ }
+ assert.equal(JSON.stringify([b,l,r]),before,'no input mutation');
+ const older=clone(r);older.drawings[0].state.shapes[0].labelPosEditedAt=50;
+ const newer=M.merge(l,older,{base:b});assert(newer.ok);
+ assert.equal(newer.payload.drawings[0].state.shapes[0].labelPos.x,694);
+ const memo=clone(b),position=clone(b);
+ memo.drawings[0].state.shapes[0].memo='調査内容の追記';
+ position.drawings[0].state.shapes[0].labelPos={x:20,y:40};
+ const joined=M.merge(position,memo,{base:b});assert(joined.ok);
+ assert.equal(joined.payload.drawings[0].state.shapes[0].labelPos.x,20);
+ assert.equal(joined.payload.drawings[0].state.shapes[0].memo,'調査内容の追記');
+ assert(!M.onlyDisplayDifferences(position,memo));
+ assert(!M.merge(position,memo).ok,'critical text changes require a verified baseline');
+ const wrong=clone(l);wrong.drawings[0].state.shapes[0].labelPos={x:'invalid',y:3};
+ assert(!M.onlyDisplayDifferences(wrong,r));assert(!M.merge(wrong,r).ok);
+ const photos=clone(r);photos.drawings[0].state.shapes[0].photos.push({id:'photo-2',name:'test.jpg'});
+ assert(!M.onlyDisplayDifferences(l,photos));assert(!M.merge(l,photos).ok);
+ const legacyL=clone(l),legacyR=clone(r);
+ delete legacyL.drawings[0].state.shapes[0].labelPosEditedAt;
+ delete legacyR.drawings[0].state.shapes[0].labelPosEditedAt;
+ legacyL.drawings[0].meta.updatedAt=1000;legacyL.project.drawings[0].updatedAt=1000;
+ legacyR.drawings[0].meta.updatedAt=2000;legacyR.project.drawings[0].updatedAt=2000;
+ const legacy=M.merge(legacyL,legacyR,{base:b});assert(legacy.ok);
+ assert.equal(legacy.payload.drawings[0].state.shapes[0].labelPos.x,753);
+ const deletion=clone(r);deletion.drawings[0].state.shapes=[];
+ assert(!M.onlyDisplayDifferences(l,deletion));assert(!M.merge(l,deletion).ok);
+ console.log('PASS auto labelPos: last edit, legacy, independent memo, important conflicts kept safe');
+}
