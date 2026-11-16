@@ -4,6 +4,8 @@ const L=require('../sentlog/photo-ledger.js');
 const builder=fs.readFileSync(require('node:path').join(__dirname,'../scripts/build_photo_ledger.py'),'utf8');
 assert.ok(builder.includes('html=html.replace'), 'feature module is loaded as separate script');
 assert.ok(!builder.includes("const deps=[['photo-ledger.js"), 'optional feature must not block app startup');
+const ledgerSource=fs.readFileSync(require('node:path').join(__dirname,'../sentlog/photo-ledger.js'),'utf8');
+assert.ok(ledgerSource.includes("download(file,safeName(current.project.name)+'_'+safeName(current.group.name)+'_写真台帳.xlsx')"), 'all four formats download without format name suffix');
 
 const group={id:'group-1',name:'調査⑫',sheets:[
   {id:'sheet1',sheetName:'PDF 1',groupId:'group-1'},
