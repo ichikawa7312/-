@@ -147,6 +147,10 @@ jobs:
           node tests/drawing_list_actions.test.cjs
           node tests/editor_drawing_add.test.cjs
           node tests/drawing_groups.test.cjs
+          node tests/drawing_sheet_trash.test.cjs
+          node --check sentlog/drawing-list-header.js
+          node --check sentlog/drawing-export.js
+          node --check sentlog/record-transfer.js
           node tests/drawing_order.test.cjs
           node tests/group_sync_migration.test.cjs
           node tests/dimension_lines.test.cjs
