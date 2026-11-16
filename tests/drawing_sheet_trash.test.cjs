@@ -27,15 +27,15 @@ assert.equal(sheet(renamed,'s2').fileName,'drawing-2.pdf');
 assert.equal(sheet(renamed,'s2').photoCount,5);
 assert.equal(sheet(renamed,'s2').shapeCount,3);
 assert.equal(sheet(renamed,'s1').name,'平面図');
-assert.deepEqual(groups.groupsForProject(renamed).find(g=>g.id==='g1').sheets.map(d=>d.id),['s1','s2']);
+assert.deepEqual(groups.groupsForProject(renamed.projects[0]).find(g=>g.id==='g1').sheets.map(d=>d.id),['s1','s2']);
 assert.throws(()=>groups.renameSheetInWorkspace(initial,'p1','s1','   '),/シート名/);
 assert.throws(()=>groups.renameSheetInWorkspace(initial,'p1','s1','a'.repeat(101)),/100/);
 assert.throws(()=>groups.renameSheetInWorkspace(initial,'p1','missing','A'),/見つかりません/);
 
 const trashed=groups.trashSheetInWorkspace(renamed,'p1','s2',200);
 assert.equal(sheet(trashed,'s2').deletedAt,200);
-assert.deepEqual(groups.groupsForProject(trashed).find(g=>g.id==='g1').sheets.map(d=>d.id),['s1']);
-assert.deepEqual(groups.trashedSheetsForProject(trashed).map(d=>d.id),['s2']);
+assert.deepEqual(groups.groupsForProject(trashed.projects[0]).find(g=>g.id==='g1').sheets.map(d=>d.id),['s1']);
+assert.deepEqual(groups.trashedSheetsForProject(trashed.projects[0]).map(d=>d.id),['s2']);
 assert.deepEqual(trashed.projects[0].drawings.map(d=>d.id),['s1','s2','s3'],'trash keeps metadata for synchronization');
 assert.equal(sheet(trashed,'s2').fileName,'drawing-2.pdf','PDF reference retained');
 assert.equal(sheet(trashed,'s2').photoCount,5,'photo references retained');
@@ -48,20 +48,20 @@ const restored=groups.restoreSheetInWorkspace(trashed,'p1','s2',300);
 assert.equal(sheet(restored,'s2').deletedAt,undefined);
 assert.equal(sheet(restored,'s2').id,'s2','restore keeps original ID for photos/records');
 assert.equal(sheet(restored,'s2').name,'下流側 断面図');
-assert.deepEqual(groups.groupsForProject(restored).find(g=>g.id==='g1').sheets.map(d=>d.id),['s1','s2']);
-assert.equal(groups.trashedSheetsForProject(restored).length,0);
+assert.deepEqual(groups.groupsForProject(restored.projects[0]).find(g=>g.id==='g1').sheets.map(d=>d.id),['s1','s2']);
+assert.equal(groups.trashedSheetsForProject(restored.projects[0]).length,0);
 assert.throws(()=>groups.restoreSheetInWorkspace(restored,'p1','s2',301),/ありません/);
 
 // A whole drawing number is reversible; other groups are unmodified.
 const groupTrash=groups.trashGroupInWorkspace(restored,'p1','g1',400);
-assert.deepEqual(groups.groupsForProject(groupTrash).map(g=>g.id),['g2']);
-assert.deepEqual(groups.trashedSheetsForProject(groupTrash).map(d=>d.id),['s1','s2']);
+assert.deepEqual(groups.groupsForProject(groupTrash.projects[0]).map(g=>g.id),['g2']);
+assert.deepEqual(groups.trashedSheetsForProject(groupTrash.projects[0]).map(d=>d.id),['s1','s2']);
 assert.equal(sheet(groupTrash,'s3').deletedAt,undefined);
 assert.equal(sheet(groupTrash,'s3').name,'立面図');
 assert.throws(()=>groups.trashGroupInWorkspace(groupTrash,'p1','g1',401),/見つかりません/);
 const back=groups.restoreSheetInWorkspace(groupTrash,'p1','s1',500);
-assert.deepEqual(groups.groupsForProject(back).map(g=>g.id),['g1','g2']);
-assert.deepEqual(groups.groupsForProject(back).find(g=>g.id==='g1').sheets.map(d=>d.id),['s1']);
+assert.deepEqual(groups.groupsForProject(back.projects[0]).map(g=>g.id),['g1','g2']);
+assert.deepEqual(groups.groupsForProject(back.projects[0]).find(g=>g.id==='g1').sheets.map(d=>d.id),['s1']);
 assert.equal(sheet(back,'s2').deletedAt,400);
 
 // The existing order control must work while sheets/groups are in trash.
