@@ -65,7 +65,7 @@
       .replace(/firstPageNumber="\d+"/,'firstPageNumber="1"');
     if(pages>1){
       const breaks=Array.from({length:pages-1},(_,i)=>'<brk id="'+(period*(i+1))+'" max="35" man="1"/>').join('');
-      out=out.replace('<pageMargins','<rowBreaks count="'+(pages-1)+'" manualBreakCount="'+(pages-1)+'">'+breaks+'</rowBreaks><pageMargins');
+      out=out.replace('</worksheet>','<rowBreaks count="'+(pages-1)+'" manualBreakCount="'+(pages-1)+'">'+breaks+'</rowBreaks></worksheet>');
     }
     return out.replace('</worksheet>','<drawing r:id="rId2"/></worksheet>');
   }
