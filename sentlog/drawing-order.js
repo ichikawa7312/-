@@ -17,16 +17,16 @@ function verifyOrder(existing,ids){
 function reorderGroups(input,pid,ids,now=Date.now()){
  const ws=copy(input),p=ws.projects?.find(x=>x.id===pid);
  if(!p)throw Error('案件が見つかりません。');
- const existing=[...new Set((p.drawings||[]).map(gid))];verifyOrder(existing,ids);
+ const existing=[...new Set((p.drawings||[]).filter(d=>!(Number(d.deletedAt)>0)).map(gid))];verifyOrder(existing,ids);
  const ranks=new Map(ids.map((id,i)=>[id,i+1]));
- for(const d of p.drawings)d.groupOrder=ranks.get(gid(d));
+ for(const d of p.drawings)if(ranks.has(gid(d))&&!(Number(d.deletedAt)>0))d.groupOrder=ranks.get(gid(d));
  p.updatedAt=Math.max(Number(p.updatedAt)||0,Number(now)||0)+1;
  return ws;
 }
 function reorderSheets(input,pid,groupId,ids,now=Date.now()){
  const ws=copy(input),p=ws.projects?.find(x=>x.id===pid);
  if(!p)throw Error('案件が見つかりません。');
- const sheets=p.drawings.filter(d=>gid(d)===groupId);
+ const sheets=p.drawings.filter(d=>gid(d)===groupId&&!(Number(d.deletedAt)>0));
  verifyOrder(sheets.map(d=>d.id),ids);
  const ranks=new Map(ids.map((id,i)=>[id,i+1]));
  sheets.forEach(d=>{d.sheetOrder=ranks.get(d.id);});
