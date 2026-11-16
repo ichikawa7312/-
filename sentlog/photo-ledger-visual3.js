@@ -6,6 +6,7 @@
   'use strict';
   const TEMPLATE_PATH='./visual3-ledger-template.b64';
   const period=34,positions=[2,13,24];
+  const NUMBERED_TEMPLATE_COUNT=400;
   const ns='http://schemas.openxmlformats.org/officeDocument/2006/relationships';
   const enc=new TextEncoder(),dec=new TextDecoder();
   const xml=s=>String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&apos;').replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g,'');
@@ -131,10 +132,16 @@
     }
     const raw=await damage.unzip(templateBytes);
     const read=key=>{const v=raw.get(key);if(!v)throw Error('目視3連テンプレートの部品がありません：'+key);return dec.decode(v);};
-    const names=base.excelSheetNames(active.map(g=>g.name)),files=[],add=(path,value)=>files.push([path,value]);
+    // Append ONE visible 134-page worksheet, numbered 1–400. All photo,
+    // location and remark fields remain empty and editable in Excel.
+    // Do not mix these placeholders into selected photos or the original data.
+    const blankValues={managementNo:'',facility:'',structure:'',purpose:'',notes:''};
+    const numberedOnly=Array.from({length:NUMBERED_TEMPLATE_COUNT},()=>({visual3:blankValues}));
+    const outputGroups=[...active,{name:'連番ひな形（1～400）',photos:numberedOnly,blankOnly:true}];
+    const names=base.excelSheetNames(outputGroups.map(g=>g.name)),files=[],add=(path,value)=>files.push([path,value]);
     for(const path of ['_rels/.rels','xl/theme/theme1.xml','xl/styles.xml','xl/sharedStrings.xml','docProps/core.xml'])add(path,raw.get(path)||enc.encode(''));
     add('docProps/app.xml',appXml(read('docProps/app.xml'),names));
-    add('xl/workbook.xml',workbookXml(read('xl/workbook.xml'),names,active));
+    add('xl/workbook.xml',workbookXml(read('xl/workbook.xml'),names,outputGroups));
     const relStart='<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">';
     add('xl/_rels/workbook.xml.rels',relStart+names.map((_,i)=>'<Relationship Id="rId'+(i+1)+'" Type="'+ns+'/worksheet" Target="worksheets/sheet'+(i+1)+'.xml"/>').join('')+
       '<Relationship Id="rId'+(names.length+1)+'" Type="'+ns+'/styles" Target="styles.xml"/>'+
@@ -143,9 +150,9 @@
     const original=read('xl/worksheets/sheet1.xml');
     const printer=raw.get('xl/printerSettings/printerSettings1.bin');
     let serial=1;
-    for(let i=0;i<active.length;i++){
-      const id=i+1,g=active[i],images=drawingData(g.photos,id);
-      add('xl/worksheets/sheet'+id+'.xml',worksheetXml(original,g.photos,groupName,serial));
+    for(let i=0;i<outputGroups.length;i++){
+      const id=i+1,g=outputGroups[i],images=drawingData(g.blankOnly?[]:g.photos,id);
+      add('xl/worksheets/sheet'+id+'.xml',worksheetXml(original,g.photos,groupName,g.blankOnly?1:serial));
       add('xl/drawings/drawing'+id+'.xml',images.drawing);
       add('xl/drawings/_rels/drawing'+id+'.xml.rels',images.rels);
       add('xl/worksheets/_rels/sheet'+id+'.xml.rels',relStart+
@@ -153,7 +160,7 @@
         '<Relationship Id="rId2" Type="'+ns+'/drawing" Target="../drawings/drawing'+id+'.xml"/></Relationships>');
       if(printer)add('xl/printerSettings/printerSettings'+id+'.bin',printer);
       for(const item of images.images)add(item.name,item.data);
-      serial+=g.photos.length;
+      if(!g.blankOnly)serial+=g.photos.length;
     }
     let types=read('[Content_Types].xml');
     types=types.replace(/<Override PartName="\/xl\/worksheets\/sheet1.xml"[^>]*\/>/,'');
@@ -163,7 +170,7 @@
     add('[Content_Types].xml',types);
     return base.zipStored(files);
   }
-  const api={TEMPLATE_PATH,positions,period,defaults,details,worksheetXml,drawingData,workbookXml,buildXlsx};
+  const api={TEMPLATE_PATH,positions,period,NUMBERED_TEMPLATE_COUNT,defaults,details,worksheetXml,drawingData,workbookXml,buildXlsx};
   if(typeof module!=='undefined'&&module.exports){module.exports=api;return;}
   root.SentlogVisual3Ledger=api;
 })(typeof globalThis!=='undefined'?globalThis:this);
