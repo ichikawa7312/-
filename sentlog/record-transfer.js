@@ -199,7 +199,7 @@
       const nextWorkspace=copy(workspace),np=nextWorkspace.projects.find(x=>x.id===projectId);
       if(!np)throw Error('案件情報が更新されています。');
       const now=Date.now(),sourceMeta=np.drawings.find(d=>d.id===sourceDrawingId),destMeta=np.drawings.find(d=>d.id===targetDrawingId);
-      if(!sourceMeta||!destMeta)throw Error('図面情報が更新されています。');
+      if(!sourceMeta||!destMeta||Number(sourceMeta.deletedAt)>0||Number(destMeta.deletedAt)>0)throw Error('対象の図面が削除済みです。復元してから操作してください。');
       const sc=counts(plan.sourceState),tc=counts(plan.targetState);
       Object.assign(sourceMeta,sc,{updatedAt:now});
       Object.assign(destMeta,tc,{updatedAt:now});
@@ -267,8 +267,8 @@
     const drawingLabel=document.createElement('label');drawingLabel.textContent='移動先の図面';
     const drawing=document.createElement('select');
     const project=getProject();
-    for(const d of project.drawings||[]){const o=document.createElement('option');o.value=d.id;o.textContent=d.name+(d.id===activeDrawingId?'（現在の図面）':'');drawing.append(o);}
-    drawing.value=(project.drawings||[]).find(d=>d.id!==activeDrawingId)?.id||activeDrawingId;drawingLabel.append(drawing);
+    for(const d of (project.drawings||[]).filter(x=>!(Number(x.deletedAt)>0))){const o=document.createElement('option');o.value=d.id;o.textContent=d.name+(d.id===activeDrawingId?'（現在の図面）':'');drawing.append(o);}
+    drawing.value=(project.drawings||[]).find(d=>!(Number(d.deletedAt)>0)&&d.id!==activeDrawingId)?.id||activeDrawingId;drawingLabel.append(drawing);
 
     const pageLabel=document.createElement('label');pageLabel.textContent='移動先ページ';
     const page=document.createElement('select');pageLabel.append(page);

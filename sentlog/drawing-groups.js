@@ -13,6 +13,7 @@
   function groupId(d){return String(d?.groupId||d?.id||'');}
   function groupName(d){return String(d?.groupName||d?.name||'図面');}
   function sheetName(d){return String(d?.sheetName||d?.name||d?.fileName||'図面');}
+  const isTrashed=d=>Number(d?.deletedAt)>0;
   function sortSheets(items){
     return [...(items||[])].sort((a,b)=>(Number(a.sheetOrder)||999999)-(Number(b.sheetOrder)||999999)||
       (Number(a.createdAt)||0)-(Number(b.createdAt)||0)||String(a.id).localeCompare(String(b.id)));
@@ -20,6 +21,7 @@
   function groupsForProject(project){
     const map=new Map();
     for(const d of project?.drawings||[]){
+      if(isTrashed(d))continue;
       const id=groupId(d);if(!id)continue;
       let g=map.get(id);
       if(!g){g={id,name:groupName(d),sheets:[],updatedAt:0};map.set(id,g);}
@@ -90,6 +92,53 @@
       .reduce((m,d)=>Math.max(m,Number(d.sheetOrder)||0),0);
     return n+1;
   }
+
+  function trashedSheetsForProject(project){
+    return (project?.drawings||[]).filter(isTrashed)
+      .slice().sort((a,b)=>Number(b.deletedAt)-Number(a.deletedAt)||String(a.id).localeCompare(String(b.id)));
+  }
+  function mutateSheetInWorkspace(input,projectId,drawingId,edit,now=Date.now()){
+    const {workspace:ws}=normalizeWorkspace(input),p=(ws.projects||[]).find(x=>x.id===projectId);
+    if(!p)throw Error('案件が見つかりません。');
+    const d=(p.drawings||[]).find(x=>x.id===drawingId);
+    if(!d)throw Error('シートが見つかりません。');
+    const stamp=Math.max(Number(now)||Date.now(),(Number(p.updatedAt)||0)+1,(Number(d.updatedAt)||0)+1);
+    edit(d,stamp);
+    d.updatedAt=stamp;p.updatedAt=stamp;
+    return ws;
+  }
+  function renameSheetInWorkspace(input,projectId,drawingId,newName,now=Date.now()){
+    const name=String(newName??'').trim().replace(/\s+/g,' ');
+    if(!name)throw Error('シート名を入力してください。');
+    if(name.length>100)throw Error('シート名は100文字以内にしてください。');
+    return mutateSheetInWorkspace(input,projectId,drawingId,d=>{
+      if(isTrashed(d))throw Error('ごみ箱内のシートは復元してから名前を変更してください。');
+      d.sheetName=name;d.name=name;
+    },now);
+  }
+  function trashSheetInWorkspace(input,projectId,drawingId,now=Date.now()){
+    return mutateSheetInWorkspace(input,projectId,drawingId,(d,stamp)=>{
+      if(isTrashed(d))throw Error('このシートは既にごみ箱にあります。');
+      d.deletedAt=stamp;
+    },now);
+  }
+  function restoreSheetInWorkspace(input,projectId,drawingId,now=Date.now()){
+    return mutateSheetInWorkspace(input,projectId,drawingId,d=>{
+      if(!isTrashed(d))throw Error('このシートはごみ箱にありません。');
+      delete d.deletedAt;
+    },now);
+  }
+  function trashGroupInWorkspace(input,projectId,targetGroupId,now=Date.now()){
+    const {workspace:ws}=normalizeWorkspace(input),p=(ws.projects||[]).find(x=>x.id===projectId);
+    if(!p)throw Error('案件が見つかりません。');
+    const sheets=(p.drawings||[]).filter(d=>groupId(d)===targetGroupId&&!isTrashed(d));
+    if(!sheets.length)throw Error('削除対象の図面No.が見つかりません。');
+    const stamp=Math.max(Number(now)||Date.now(),(Number(p.updatedAt)||0)+1,
+      ...sheets.map(d=>(Number(d.updatedAt)||0)+1));
+    for(const d of sheets){d.deletedAt=stamp;d.updatedAt=stamp;}
+    p.updatedAt=stamp;return ws;
+  }
+
   function filesForDrawingIds(files,ids){
     const set=new Set(ids||[]);
     return (files||[]).filter(f=>{
@@ -102,7 +151,8 @@
   }
 
   const pure={GROUP_VERSION,groupId,groupName,sheetName,sortSheets,groupsForProject,normalizeWorkspace,normalizeSnapshotPayload,
-    renameGroupInWorkspace,removeGroupFromWorkspace,nextSheetOrder,filesForDrawingIds};
+    renameGroupInWorkspace,removeGroupFromWorkspace,nextSheetOrder,filesForDrawingIds,
+    isTrashed,trashedSheetsForProject,renameSheetInWorkspace,trashSheetInWorkspace,restoreSheetInWorkspace,trashGroupInWorkspace};
   if(typeof module!=='undefined'&&module.exports){module.exports=pure;return;}
   if(!root.document||root.SentlogDrawingGroups)return;
 
@@ -147,7 +197,8 @@
     const host=document.createElement('div');host.id='sentlogSheetNav';host.className='sheet-nav';
     host.innerHTML='<div class="sheet-nav-head"><strong data-role="group"></strong><span data-role="count"></span></div>'+
       '<label>図面No.内のシート<select data-role="select"></select></label>'+
-      '<div class="sheet-nav-row"><button type="button" data-role="prev">◀ 前</button><button type="button" data-role="next">次 ▶</button></div>';
+      '<div class="sheet-nav-row"><button type="button" data-role="prev">◀ 前</button><button type="button" data-role="next">次 ▶</button></div>'+ 
+      '<div class="sheet-nav-row sheet-nav-edit"><button type="button" data-role="rename">名前変更</button><button type="button" data-role="trash">削除</button></div>';
     const anchor=$('editorDrawingAddBtn')||$('fileInput')?.previousElementSibling;
     if(anchor&&anchor.parentElement===stack)stack.insertBefore(host,anchor);else stack.prepend(host);
     const select=host.querySelector('[data-role=select]'),prev=host.querySelector('[data-role=prev]'),next=host.querySelector('[data-role=next]');
@@ -155,8 +206,11 @@
     select.onchange=()=>go(select.value);
     prev.onclick=()=>{const g=currentGroup();if(!g)return;const i=g.sheets.findIndex(d=>d.id===activeDrawingId);if(i>0)go(g.sheets[i-1].id);};
     next.onclick=()=>{const g=currentGroup();if(!g)return;const i=g.sheets.findIndex(d=>d.id===activeDrawingId);if(i>=0&&i<g.sheets.length-1)go(g.sheets[i+1].id);};
+    host.querySelector('[data-role=rename]').onclick=()=>renameSheet(activeProjectId,activeDrawingId).catch(showActionError);
+    host.querySelector('[data-role=trash]').onclick=()=>trashSheet(activeProjectId,activeDrawingId).catch(showActionError);
     const style=document.createElement('style');style.id='sentlogDrawingGroupsStyle';
     style.textContent='.sheet-nav{border:1px solid #d1d5db;border-radius:10px;padding:9px;background:#f8fafc;display:grid;gap:7px}.sheet-nav-head{display:flex;justify-content:space-between;gap:8px;align-items:center;font-size:12px}.sheet-nav-head strong{font-size:13px}.sheet-nav-head span{color:#6b7280}.sheet-nav label{margin:0}.sheet-nav select{margin-top:4px}.sheet-nav-row{display:grid;grid-template-columns:1fr 1fr;gap:7px}.sheet-nav-row button{min-height:40px;padding:7px}.drawing-group-sheets{font-size:12px;color:#6b7280;line-height:1.5}.drawing-group-actions{display:flex;gap:7px;justify-content:flex-end;margin-top:8px;padding-top:8px;border-top:1px solid #e5e7eb}.drawing-group-actions button{width:auto!important;min-width:76px;min-height:40px;padding:7px 11px;border-radius:8px;font-size:12px}.drawing-group-actions .delete{color:#b91c1c;border-color:#fecaca;background:#fff}@media(max-width:480px){.sheet-nav-row button{min-height:44px}.drawing-group-actions button{min-height:44px;flex:1;min-width:0}.drawing-group-actions{gap:8px}}';
+    style.textContent+='.sheet-nav-edit button:last-child{color:#b91c1c;border-color:#fecaca;background:#fff}.sl-sheet-trash-trigger{margin-left:auto;white-space:nowrap;min-height:40px;border:1px solid #cbd5e1;background:#fff;color:#374151}';
     document.head.appendChild(style);
     sheetUi={host,select,prev,next,group:host.querySelector('[data-role=group]'),count:host.querySelector('[data-role=count]')};
     return sheetUi;
@@ -176,6 +230,120 @@
     if(replace?.getAttribute('for')==='fileInput')replace.textContent='このシートを差し替え';
   }
 
+
+  function showActionError(err){
+    console.error('Sheet management',err);
+    alert(err?.message||String(err));
+  }
+  async function saveSheetChange(transform){
+    if(typeof S.archiveAtomic!=='function')throw Error('安全な保存機能を読み込めません。画面を更新してください。');
+    await S.settled();S.assertSafe();
+    const raw=S.getItem(WORKSPACE_KEY);
+    if(typeof raw!=='string')throw Error('案件一覧の保存記録を確認できません。');
+    const old=JSON.parse(raw),next=transform(old);
+    // Only metadata is written. Original PDFs, damage records and photo Blobs are untouched.
+    await S.archiveAtomic({writes:[[WORKSPACE_KEY,JSON.stringify(next)]],deleteFiles:[],expectedWorkspace:raw});
+    workspace=next;
+    return next;
+  }
+  function sheetStats(id){
+    try{
+      const st=JSON.parse(S.getItem(drawingStorageKey(id))||'null');
+      const records=st?.shapes||[];
+      return {records:records.length,photos:records.reduce((n,s)=>n+(s.photos?.length||0),0)};
+    }catch{return {records:0,photos:0};}
+  }
+  async function renameSheet(projectId,drawingId){
+    if(!projectId||!drawingId)return;
+    const p=getProject(projectId),d=p?.drawings?.find(x=>x.id===drawingId);
+    if(!d||isTrashed(d))throw Error('シートが見つかりません。');
+    const value=prompt('この図面No.内のシート名を変更してください。',sheetName(d));
+    if(value===null)return;
+    const clean=String(value).trim().replace(/\s+/g,' ');
+    if(clean===sheetName(d))return;
+    if(currentView==='editor'&&activeDrawingId===drawingId)persist();
+    await saveSheetChange(ws=>renameSheetInWorkspace(ws,projectId,drawingId,clean));
+    if(currentView==='editor'&&activeDrawingId===drawingId)updateSheetUi();
+    else if(currentView==='drawings')renderDrawings();
+  }
+  async function trashSheet(projectId,drawingId){
+    if(!projectId||!drawingId)return;
+    const p=getProject(projectId),d=p?.drawings?.find(x=>x.id===drawingId);
+    if(!d||isTrashed(d))throw Error('シートが見つかりません。');
+    const s=sheetStats(drawingId);
+    const msg='シート「'+sheetName(d)+'」を削除しますか？\n\n'+
+      'このシートだけ図面一覧から外します。\n'+
+      '変状・調査記録 '+s.records+'件 / 写真 '+s.photos+'枚\n\n'+
+      'PDF・写真・記録の実データは消去しません。\n図面一覧の「ごみ箱」から復元できます。\n'+
+      '削除状態も他端末への同期対象です。';
+    if(!confirm(msg))return;
+    if(currentView==='editor'&&activeDrawingId===drawingId)persist();
+    await saveSheetChange(ws=>trashSheetInWorkspace(ws,projectId,drawingId));
+    if(currentView==='editor'&&activeDrawingId===drawingId){
+      // Avoid showDrawings() persisting the now-trashed editor a second time.
+      activeDrawingId=null;showDrawings(projectId);
+      $('sidebar')?.classList.remove('open');
+    }else if(currentView==='drawings')renderDrawings();
+  }
+  async function restoreSheet(projectId,drawingId){
+    await saveSheetChange(ws=>restoreSheetInWorkspace(ws,projectId,drawingId));
+    if(currentView==='drawings'&&activeProjectId===projectId)renderDrawings();
+    refreshTrashModal();
+  }
+  let trashModal=null;
+  function closeTrashModal(){trashModal?.remove();trashModal=null;}
+  function refreshTrashModal(){
+    if(!trashModal)return;
+    const list=trashModal.querySelector('.sl-sheet-trash-list'),p=getProject();
+    const items=trashedSheetsForProject(p);
+    list.replaceChildren();
+    if(!items.length){
+      const empty=document.createElement('p');empty.textContent='ごみ箱は空です。';list.append(empty);
+    }
+    for(const d of items){
+      const row=document.createElement('div');row.className='sl-sheet-trash-row';
+      const info=document.createElement('div'),title=document.createElement('strong'),detail=document.createElement('span');
+      title.textContent=sheetName(d);
+      detail.textContent=groupName(d)+' / 削除 '+nowText(d.deletedAt)+' / 記録 '+(d.shapeCount||0)+'件・写真 '+(d.photoCount||0)+'枚';
+      info.append(title,detail);
+      const btn=document.createElement('button');btn.type='button';btn.textContent='復元';btn.onclick=async()=>{
+        btn.disabled=true;try{await restoreSheet(p.id,d.id);}catch(e){showActionError(e);btn.disabled=false;}
+      };
+      row.append(info,btn);list.append(row);
+    }
+    installTrashButton();
+  }
+  function openTrashModal(){
+    closeTrashModal();
+    trashModal=document.createElement('div');trashModal.className='modal-backdrop open sl-sheet-trash-modal';
+    trashModal.setAttribute('role','dialog');trashModal.setAttribute('aria-modal','true');
+    const card=document.createElement('div');card.className='modal-card';
+    const heading=document.createElement('div');heading.className='modal-title';
+    const title=document.createElement('h2');title.textContent='図面・シートのごみ箱';
+    const close=document.createElement('button');close.type='button';close.textContent='閉じる';close.onclick=closeTrashModal;
+    heading.append(title,close);
+    const note=document.createElement('p');note.className='meta';
+    note.textContent='PDF、記録、写真は削除されず、元の図面IDのまま復元されます。';
+    const list=document.createElement('div');list.className='sl-sheet-trash-list';
+    card.append(heading,note,list);trashModal.append(card);
+    trashModal.onclick=e=>{if(e.target===trashModal)closeTrashModal();};
+    if(!$('slSheetTrashStyle')){
+      const style=document.createElement('style');style.id='slSheetTrashStyle';
+      style.textContent='.sl-sheet-trash-modal{z-index:75}.sl-sheet-trash-list{display:grid;gap:8px;margin-top:10px;max-height:60vh;overflow:auto}.sl-sheet-trash-row{display:flex;gap:8px;align-items:center;justify-content:space-between;padding:10px;border:1px solid #e5e7eb;border-radius:9px}.sl-sheet-trash-row>div{min-width:0;display:grid;gap:4px}.sl-sheet-trash-row strong{font-size:13px;overflow-wrap:anywhere}.sl-sheet-trash-row span{font-size:11px;color:#6b7280;line-height:1.5}.sl-sheet-trash-row button{flex:0 0 auto;min-height:42px}';
+      document.head.append(style);
+    }
+    document.body.append(trashModal);refreshTrashModal();
+  }
+  function installTrashButton(){
+    const bar=$('drawingsView')?.querySelector('.manager-subbar'),p=getProject();
+    if(!bar||!p)return;
+    let btn=$('sentlogSheetTrashOpen');
+    if(!btn){btn=document.createElement('button');btn.id='sentlogSheetTrashOpen';btn.type='button';
+      btn.className='small sl-sheet-trash-trigger';btn.onclick=openTrashModal;bar.append(btn);}
+    const count=trashedSheetsForProject(p).length;
+    btn.textContent='ごみ箱'+(count?' ('+count+')':'');
+  }
+
   async function renameGroup(projectId,targetGroupId){
     const raw=S.getItem(WORKSPACE_KEY),ws=JSON.parse(raw||'{"projects":[]}'),p=ws.projects.find(x=>x.id===projectId);
     const g=groupsForProject(p).find(x=>x.id===targetGroupId);if(!g)throw Error('図面No.が見つかりません。');
@@ -187,27 +355,13 @@
   }
 
   async function deleteGroup(projectId,targetGroupId){
-    const raw=S.getItem(WORKSPACE_KEY),ws=JSON.parse(raw||'{"projects":[]}'),p=ws.projects.find(x=>x.id===projectId);
-    const g=groupsForProject(p).find(x=>x.id===targetGroupId);if(!g)throw Error('図面No.が見つかりません。');
-    const ids=g.sheets.map(d=>d.id),originals=await originalStats(ids);
-    let msg='「'+g.name+'」を図面No.ごと削除しますか？\n\n対象：'+g.sheets.length+'シート\n'+
-      '各シートのPDF/画像、変状・調査記録、共有用写真を削除します。';
-    if(originals.count){
-      msg+='\n\n原本写真 '+originals.count+'枚は削除せず残します。';
-      if(originals.unexportedCount)msg+='\n未書き出し '+originals.unexportedCount+'枚は設定の「原本写真」から後で書き出せます。';
-    }
-    msg+='\n\nこの操作は元に戻せません。';
-    if(!confirm(msg))return;
-    const allFiles=typeof getAllDBFiles==='function'?await getAllDBFiles():[],deleteFiles=filesForDrawingIds(allFiles,ids);
-    const next=removeGroupFromWorkspace(ws,projectId,targetGroupId,Date.now());
-    const writes=[[WORKSPACE_KEY,JSON.stringify(next)],...ids.map(id=>[drawingStorageKey(id),null])];
-    if(typeof S.archiveAtomic!=='function')throw Error('安全な削除機能を読み込めません。');
-    await S.archiveAtomic({writes,deleteFiles,expectedWorkspace:raw});
-    workspace=next;if(ids.includes(activeDrawingId))activeDrawingId=null;
-    renderDrawings();root.SentlogOriginalPhotos?.refreshUI?.();
-    alert('図面No.「'+g.name+'」を削除しました。\n'+g.sheets.length+'シート'+
-      (deleteFiles.length?' / '+deleteFiles.length+'ファイル（約'+bytes(deleteFiles.reduce((n,f)=>n+f.size,0))+'）':'')+
-      (originals.count?'\n原本写真 '+originals.count+'枚は残しています。':''));
+    const p=getProject(projectId),g=groupsForProject(p).find(x=>x.id===targetGroupId);
+    if(!g)throw Error('図面No.が見つかりません。');
+    const count=g.sheets.length;
+    if(!confirm('図面No.「'+g.name+'」の '+count+'シートを削除しますか？\n\n'+
+      'PDF・損傷記録・写真は消去しません。\n図面一覧の「ごみ箱」から1シートずつ復元できます。'))return;
+    await saveSheetChange(ws=>trashGroupInWorkspace(ws,projectId,targetGroupId));
+    renderDrawings();
   }
 
   function actionButton(text,kind,fn){
@@ -222,8 +376,9 @@
     const p=getProject();if(!p){showProjects();return;}
     const groups=groupsForProject(p).sort((a,b)=>b.updatedAt-a.updatedAt);
     $('drawingProjectTitle').textContent=p.name;
-    $('drawingProjectSummary').textContent=p.name+'　図面No. '+groups.length+'件 / シート '+(p.drawings?.length||0)+'枚';
+    $('drawingProjectSummary').textContent=p.name+'　図面No. '+groups.length+'件 / シート '+groups.reduce((n,g)=>n+g.sheets.length,0)+'枚';
     const grid=$('drawingsGrid');grid.innerHTML='';$('drawingsEmpty').classList.toggle('hidden',groups.length>0);
+    installTrashButton();
     for(const g of groups){
       const sheets=g.sheets,first=sheets[0];
       const card=document.createElement('div');card.className='manager-card';card.tabIndex=0;card.dataset.drawingGroupId=g.id;
@@ -251,7 +406,7 @@
     cards.forEach((card,i)=>{
       const p=items[i],meta=card.querySelector('.manager-card-meta');if(!p||!meta)return;
       const groups=groupsForProject(p);
-      meta.textContent='図面No. '+groups.length+'件 / シート '+(p.drawings?.length||0)+'枚'+(p.updatedAt?' / 更新 '+nowText(p.updatedAt):'');
+      meta.textContent='図面No. '+groups.length+'件 / シート '+groups.reduce((n,g)=>n+g.sheets.length,0)+'枚'+(p.updatedAt?' / 更新 '+nowText(p.updatedAt):'');
     });
   }
 
@@ -306,5 +461,5 @@
   const ready=Promise.resolve(root.sentlogAppReady).catch(()=>{});
   ready.then(()=>{const changed=normalized();installAddBehavior();installSheetUi();if(currentView==='drawings')renderDrawings();else if(currentView==='projects'){renderProjects();}else if(currentView==='editor')updateSheetUi();if(changed)root.SentlogOriginalPhotos?.refreshUI?.();});
 
-  root.SentlogDrawingGroups={...pure,render:renderGroupedDrawings,updateSheetUi,renameGroup,deleteGroup};
+  root.SentlogDrawingGroups={...pure,render:renderGroupedDrawings,updateSheetUi,renameGroup,deleteGroup,renameSheet,trashSheet,restoreSheet,openTrashModal};
 })(typeof globalThis!=='undefined'?globalThis:this);

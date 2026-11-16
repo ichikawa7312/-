@@ -68,7 +68,7 @@
     if(active){
       if(busy())return {applied:false,reason:'editing'};
       // Replacing the viewed PDF/rotating its coordinate frame should wait until it is closed.
-      if(!incoming || (incoming.pageCount||1)<state.currentPage || !(remote.drawings||[]).some(d=>d.id===activeDrawingId))return {applied:false,reason:'close-drawing'};
+      if(!incoming || (incoming.pageCount||1)<state.currentPage || !(remote.drawings||[]).some(d=>d.id===activeDrawingId&&!Number(d.deletedAt)))return {applied:false,reason:'close-drawing'};
       if(incoming.sourceType!==state.sourceType || incoming.fileName!==state.fileName ||
         (incoming.pageRotations?.[String(state.currentPage)]||0)!==(state.pageRotations?.[String(state.currentPage)]||0))
         return {applied:false,reason:'close-drawing'};
