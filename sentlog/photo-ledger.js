@@ -511,7 +511,7 @@
         if(typeof builder!=='function')throw Error('写真台帳の書式が読み込まれていません。アプリを更新してください。');
         file=await builder(current.project.name,current.group.name,categories);
       }
-      download(file,safeName(current.project.name)+'_'+safeName(current.group.name)+'_写真台帳'+(useTensile?'_引張試験用':useDamage?'_損傷用':useVisual3?'_目視3連':'')+'.xlsx');
+      download(file,safeName(current.project.name)+'_'+safeName(current.group.name)+'_写真台帳.xlsx');
       status('Excelを出力しました（'+entries.length+'枚）。元の記録は変更していません。');
     }catch(e){console.error('Photo ledger export',e);status('出力できませんでした：'+(e?.message||e),true);}
     finally{for(const e of entries)delete e.jpeg;current.exporting=false;btn.disabled=false;updateSelectionControls();}
