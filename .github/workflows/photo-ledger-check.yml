@@ -4,6 +4,9 @@ on:
     paths:
       - 'sentlog/photo-ledger.js'
       - 'sentlog/photo-ledger-tensile.js'
+      - 'sentlog/photo-ledger-visual3.js'
+      - 'scripts/assets/visual3-template-*.b64'
+      - 'tests/photo_ledger_visual3.test.cjs'
       - 'sentlog/tensile-ledger-template.b64'
       - 'tests/photo_ledger_tensile.test.cjs'
       - 'sentlog/photo-ledger-damage.js'
@@ -95,9 +98,11 @@ jobs:
           node tests/photo_ledger.test.cjs
           node tests/photo_ledger_damage.test.cjs
           node tests/photo_ledger_tensile.test.cjs
+          node tests/photo_ledger_visual3.test.cjs
           node --check sentlog/photo-ledger.js
           node --check sentlog/photo-ledger-damage.js
           node --check sentlog/photo-ledger-tensile.js
+          node --check sentlog/photo-ledger-visual3.js
           node tests/drawing_export.test.cjs
           node tests/peer_photos.test.cjs
           node tests/sync_review.test.cjs
