@@ -75,7 +75,7 @@ tensile_asset=(ROOT / 'sentlog' / 'tensile-ledger-template.b64').read_text(encod
 tensile_bytes=base64.b64decode(''.join(tensile_asset.split()),validate=True)
 assert hashlib.sha256(tensile_bytes).hexdigest() == '3b9b4334e0fa2e369aaf305cbd51447003823028a582affd24cb2fd515fdfac1', 'Tensile Excel template integrity mismatch'
 assert (ROOT / 'sentlog' / 'photo-ledger-tensile.js').is_file(), 'tensile photo ledger module missing'
-visual3_parts = [(ASSETS / f'visual3-template-{i}.b64').read_text(encoding='ascii').strip() for i in range(1, 5)]
+visual3_parts = [(ASSETS / f'visual3-template-{i}.b64').read_text(encoding='ascii').strip() for i in range(1, 8)]
 visual3_encoded = ''.join(visual3_parts)
 visual3_bytes = base64.b64decode(visual3_encoded, validate=True)
 assert hashlib.sha256(visual3_bytes).hexdigest() == 'd2d4ea224ab1a35bab4b502480ad15780599bb8a6a5aeea23b25bf3dfc0f1ee5', 'Visual3 original workbook template integrity mismatch'
