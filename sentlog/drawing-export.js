@@ -17,7 +17,7 @@ async function libs(){
 }
 function inputSnapshot(projectId,ids,includeMemos){
  const project=getProject(projectId);if(!project)throw Error('案件を確認できません。');
- const selected=project.drawings.filter(d=>ids.includes(d.id));if(!selected.length)throw Error('出力する図面を選んでください。');
+ const selected=project.drawings.filter(d=>!(Number(d.deletedAt)>0)&&ids.includes(d.id));if(!selected.length)throw Error('出力する図面を選んでください。');
  const preferences={};for(const key of ['sentlogDamageDisplayV1']){const value=localStorage.getItem(key);if(value!==null)preferences[key]=value;}
  return selected.map(d=>{const raw=SentlogRecords.getItem(drawingStorageKey(d.id));if(!raw)throw Error(d.name+'：図面の記録がこの端末にありません。同期または復旧してください。');
   const state=JSON.parse(raw);if(!Array.isArray(state.shapes))throw Error(d.name+'：記録を読み取れません。');
@@ -89,7 +89,7 @@ function open(){
  const projectId=project.id;dialog=element('dialog');dialog.className='sl-drawing-export';
  dialog.append(element('h2','記録図面を一括出力'),element('p','変状・寸法・写真番号・撮影方向を含め、図面ごとに全ページをPDFにします。添付写真の画像は含みません。'));
  const toolbar=element('div'),list=element('div');list.className='sl-export-list';const boxes=[];
- for(const d of project.drawings){const label=element('label'),box=element('input');box.type='checkbox';box.value=d.id;box.checked=true;label.append(box,document.createTextNode(d.name+'（'+(d.pageCount||1)+'ページ）'));list.append(label);boxes.push(box);}
+ for(const d of project.drawings.filter(d=>!(Number(d.deletedAt)>0))){const label=element('label'),box=element('input');box.type='checkbox';box.value=d.id;box.checked=true;label.append(box,document.createTextNode(d.name+'（'+(d.pageCount||1)+'ページ）'));list.append(label);boxes.push(box);}
  toolbar.append(button('全選択',()=>boxes.forEach(b=>b.checked=true)),button('選択解除',()=>boxes.forEach(b=>b.checked=false)));
  const label=element('label'),memos=element('input');memos.type='checkbox';memos.checked=true;label.append(memos,document.createTextNode('図面メモを含める'));
  const status=element('p');status.className='sl-export-status';status.setAttribute('role','status');
