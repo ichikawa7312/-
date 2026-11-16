@@ -358,8 +358,8 @@
     const p=getProject(projectId),g=groupsForProject(p).find(x=>x.id===targetGroupId);
     if(!g)throw Error('図面No.が見つかりません。');
     const count=g.sheets.length;
-    if(!confirm('図面No.「'+g.name+'」の '+count+'シートを削除しますか？\\n\\n'+
-      'PDF・損傷記録・写真は消去しません。\\n図面一覧の「ごみ箱」から1シートずつ復元できます。'))return;
+    if(!confirm('図面No.「'+g.name+'」の '+count+'シートを削除しますか？\n\n'+
+      'PDF・損傷記録・写真は消去しません。\n図面一覧の「ごみ箱」から1シートずつ復元できます。'))return;
     await saveSheetChange(ws=>trashGroupInWorkspace(ws,projectId,targetGroupId));
     renderDrawings();
   }
