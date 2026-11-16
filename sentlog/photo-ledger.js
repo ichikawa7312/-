@@ -243,7 +243,7 @@
     let saved=null;try{saved=JSON.parse(localStorage.getItem(draftKey(c))||'null');}catch(_){return;}
     if(saved?.version!==1)return;
     const byKey=new Map((saved.photos||[]).map((x,i)=>[x.key,{...x,sort:i}]));
-    for(const e of c.entries){const x=byKey.get(e.key);if(!x)continue;e.included=x.included!==false;e.description=String(x.description??e.description);if(['overview','close','reserve'].includes(x.damageRole))e.damageRole=x.damageRole;}
+    for(const e of c.entries){const x=byKey.get(e.key);if(!x)continue;e.included=x.included!==false;e.description=String(x.description??e.description);if(['overview','close','reserve'].includes(x.damageRole))e.damageRole=x.damageRole;if(x.visual3&&typeof x.visual3==='object'&&!Array.isArray(x.visual3))e.visual3={...x.visual3};}
     c.entries.sort((a,b)=>{const x=byKey.get(a.key),y=byKey.get(b.key);return x&&y?x.sort-y.sort:x?-1:y?1:0;});
     if(Array.isArray(saved.groupOrder)){c.groupOrder=saved.groupOrder.filter(x=>typeof x==='string');}
     if(saved.tensileDetails&&typeof saved.tensileDetails==='object'&&!Array.isArray(saved.tensileDetails))c.tensileDetails={...saved.tensileDetails};
@@ -251,7 +251,7 @@
   function saveDraft(){
     if(!current)return;
     try{
-      localStorage.setItem(draftKey(current),JSON.stringify({version:1,at:Date.now(),groupOrder:current.groupOrder,tensileDetails:current.tensileDetails,photos:current.entries.map(e=>({key:e.key,included:e.included,description:e.description,damageRole:e.damageRole}))}));
+      localStorage.setItem(draftKey(current),JSON.stringify({version:1,at:Date.now(),groupOrder:current.groupOrder,tensileDetails:current.tensileDetails,photos:current.entries.map(e=>({key:e.key,included:e.included,description:e.description,damageRole:e.damageRole,visual3:e.visual3}))}));
       current.changed=false;status('この端末に下書きを保存しました。写真・図面・同期データには変更していません。');
     }catch(e){status('下書きを保存できませんでした：'+(e?.message||e),true);}
   }
@@ -351,7 +351,7 @@
     if(!modal||!current)return;cleanPreview();const host=modal.querySelector('[data-ledger=list]');host.replaceChildren();
     if(current.format==='tensile')renderTensileFields(host);
     const note=modal.querySelector('.ledger-note');
-    if(note)note.textContent=current.format==='tensile'?'引張試験用：1箇所につき写真4枚（試験前・0点・試験結果・試験後）の書式です。元の写真や記録は変更しません。':current.format==='damage'?'損傷用：各変状で「提出：全景」「提出：近接」の2枚を選択。予備写真は同じExcelシートの印刷範囲外（右側）に保存します。元の写真や記録は変更しません。':'変状名称ごとにExcelシートを分けます。元の写真・変状・同期情報は変更しません。';
+    if(note)note.textContent=current.format==='tensile'?'引張試験用：1箇所につき写真4枚（試験前・0点・試験結果・試験後）の書式です。元の写真や記録は変更しません。':current.format==='damage'?'損傷用：各変状で「提出：全景」「提出：近接」の2枚を選択。予備写真は同じExcelシートの印刷範囲外（右側）に保存します。元の写真や記録は変更しません。':current.format==='visual3'?'目視3連：添付書式を維持してA4縦1ページ3枚。整理番号・施設名称・構造・写真内容・備考を写真ごとに編集できます。':'変状名称ごとにExcelシートを分けます。元の写真・変状・同期情報は変更しません。';
     const types=groupOrder(current);for(const type of types){const items=current.entries.filter(e=>e.type===type),active=items.filter(e=>e.included);
       const section=element('section','ledger-section'),header=element('div','ledger-section-head'),title=element('strong','',type+'　'+active.length+'/'+items.length+'枚');
       header.append(title,button('↑',()=>moveGroup(type,-1),'ledger-small'),button('↓',()=>moveGroup(type,1),'ledger-small'));section.append(header);
@@ -359,6 +359,23 @@
         const img=element('img','ledger-thumb');img.alt=e.photoName||e.damage;img.loading='lazy';const detail=element('div','ledger-detail');
         detail.append(element('b','',e.damage),element('small','',e.sheetName+' / '+e.page+'頁　'+(e.member||'部位未入力')));
         const desc=element('textarea');desc.rows=2;desc.value=e.description;desc.placeholder='備考・説明（台帳専用）';desc.setAttribute('aria-label',e.damage+'の台帳備考');desc.oninput=()=>{e.description=desc.value;current.changed=true;};detail.append(desc);
+        if(current.format==='visual3'){
+          const meta=e.visual3||(e.visual3={});
+          const defaults=root.SentlogVisual3Ledger?.defaults?.(e,current.group.name)||
+            {managementNo:current.group.name,facility:e.member||current.group.name,structure:'',purpose:e.damage,notes:e.description};
+          const panel=element('details','ledger-visual3-fields'),summary=element('summary','','目視3連の記載内容を編集');
+          panel.append(summary);
+          for(const [key,title] of [['managementNo','整理番号'],['facility','施設名称'],['structure','構造'],['purpose','写真内容'],['notes','備考']]){
+            const wrap=element('label','ledger-visual3-field'),caption=element('span','',title);
+            const input=element(key==='notes'?'textarea':'input');
+            input.setAttribute('aria-label',e.damage+' '+title);
+            if(key==='notes')input.rows=2;
+            input.value=Object.prototype.hasOwnProperty.call(meta,key)?String(meta[key]):String(defaults[key]||'');
+            input.oninput=()=>{meta[key]=input.value;current.changed=true;};
+            wrap.append(caption,input);panel.append(wrap);
+          }
+          detail.append(panel);
+        }
         if(current.format==='damage'){
           const roleLabel=element('label','ledger-damage-role-wrap'),roleTitle=element('span','','Excelの配置'),roleSelect=element('select','ledger-damage-role');
           roleSelect.setAttribute('aria-label',e.damage+' '+(e.photoName||e.photoId||'写真')+'の配置');
@@ -378,12 +395,12 @@
     }
     const included=current.entries.filter(x=>x.included),chosen=included.length;
     const byType=groupsFor(current.entries,current.groupOrder);
-    const damaged=current.format==='damage',tensile=current.format==='tensile';
+    const damaged=current.format==='damage',tensile=current.format==='tensile',visual3=current.format==='visual3';
     const builder=root.SentlogDamageLedger;
     const pages=tensile?(root.SentlogTensileLedger?.recordsFor?.(included,current.tensileDetails)?.length||new Set(included.map(x=>x.drawingId+':'+x.shapeId)).size):
       byType.reduce((n,g)=>n+Math.ceil((damaged&&builder?.recordsFor?builder.recordsFor(g.photos).length:g.photos.length)/3),0);
     const sheets=tensile?pages:byType.length;
-    modal.querySelector('[data-ledger=count]').textContent=`${chosen}枚 / ${pages}ページ / ${sheets}シート（A4縦・${tensile?'4枚/アンカー':damaged?'3変状/ページ・提出2枚＋枠外に予備':'3枚/ページ'}）`;
+    modal.querySelector('[data-ledger=count]').textContent=`${chosen}枚 / ${pages}ページ / ${sheets}シート（A4縦・${tensile?'4枚/アンカー':damaged?'3変状/ページ・提出2枚＋枠外に予備':visual3?'目視3連・3枚/ページ':'3枚/ページ'}）`;
     renderSelectionTypes();
   }
   async function preparePhotos(entries){
@@ -482,7 +499,7 @@
       await S.settled();S.assertSafe();
       const {missing}=await preparePhotos(entries);
       if(missing.length){status('写真を'+missing.length+'枚取得・変換できません。Excel出力を停止しました：'+missing.slice(0,5).map(x=>x.damage+' / '+x.sheetName).join('、')+(missing.length>5?' ほか':''),true);return;}
-      const useDamage=current.format==='damage',useTensile=current.format==='tensile';
+      const useDamage=current.format==='damage',useTensile=current.format==='tensile',useVisual3=current.format==='visual3';
       let file;
       if(useTensile){
         const builder=root.SentlogTensileLedger?.buildXlsx;
@@ -490,11 +507,11 @@
         file=await builder(current.project.name,current.group.name,entries,current.tensileDetails);
       }else{
         const categories=groupsFor(current.entries,current.groupOrder);
-        const builder=useDamage?root.SentlogDamageLedger?.buildXlsx:buildXlsx;
+        const builder=useDamage?root.SentlogDamageLedger?.buildXlsx:useVisual3?root.SentlogVisual3Ledger?.buildXlsx:buildXlsx;
         if(typeof builder!=='function')throw Error('写真台帳の書式が読み込まれていません。アプリを更新してください。');
         file=await builder(current.project.name,current.group.name,categories);
       }
-      download(file,safeName(current.project.name)+'_'+safeName(current.group.name)+'_写真台帳'+(useTensile?'_引張試験用':useDamage?'_損傷用':'')+'.xlsx');
+      download(file,safeName(current.project.name)+'_'+safeName(current.group.name)+'_写真台帳'+(useTensile?'_引張試験用':useDamage?'_損傷用':useVisual3?'_目視3連':'')+'.xlsx');
       status('Excelを出力しました（'+entries.length+'枚）。元の記録は変更していません。');
     }catch(e){console.error('Photo ledger export',e);status('出力できませんでした：'+(e?.message||e),true);}
     finally{for(const e of entries)delete e.jpeg;current.exporting=false;btn.disabled=false;updateSelectionControls();}
@@ -550,7 +567,7 @@
     const note=element('p','ledger-note','変状名称ごとにExcelシートを分けます。元の写真・変状・同期情報は変更しません。');
     const formats=element('label','ledger-format'),formatTitle=element('strong','','出力書式');
     const formatSelect=element('select');formatSelect.dataset.ledger='format';formatSelect.setAttribute('aria-label','写真台帳の出力書式');
-    for(const [value,label] of [['standard','標準'],['damage','損傷用'],['tensile','引張試験用']]){const option=element('option','',label);option.value=value;formatSelect.append(option);}
+    for(const [value,label] of [['standard','標準'],['damage','損傷用'],['tensile','引張試験用'],['visual3','目視3連']]){const option=element('option','',label);option.value=value;formatSelect.append(option);}
     formatSelect.value=c.format;formatSelect.onchange=()=>{c.format=formatSelect.value;try{localStorage.setItem(FORMAT_KEY,c.format);}catch(_){}renderEntries();};
     formats.append(formatTitle,formatSelect);
     const picker=element('section','ledger-selection-picker');
@@ -580,7 +597,7 @@
       const {entries,errors}=collect(group,states);
       if(errors.length)throw Error('写真台帳を作れません：'+errors.join(' / '));
       if(!entries.length)throw Error('この図面No.には登録写真がありません。');
-      let selectedFormat='standard';try{const saved=localStorage.getItem(FORMAT_KEY);selectedFormat=['damage','tensile'].includes(saved)?saved:'standard';}catch(_){}
+      let selectedFormat='standard';try{const saved=localStorage.getItem(FORMAT_KEY);selectedFormat=['damage','tensile','visual3'].includes(saved)?saved:'standard';}catch(_){}
       const c={project,group,entries,format:selectedFormat,tensileDetails:{},groupOrder:[...new Set(entries.map(x=>x.type))],changed:false,exporting:false};
       for(const e of entries)e.groupName=group.name;
       loadDraft(c);initDamageRoles(c);showModal(c);
@@ -597,6 +614,7 @@
     .ledger-section-head{display:flex;align-items:center;gap:6px;background:#f3f4f6;padding:8px}.ledger-section-head strong{flex:1;font-size:14px}
     .ledger-item{display:flex;align-items:center;gap:10px;padding:9px;border-top:1px solid #e5e7eb}.ledger-item input[type=checkbox]{width:20px;height:20px;flex:none}.ledger-thumb,.ledger-missing{width:100px;height:75px;flex:none;object-fit:contain;background:#f1f5f9;border-radius:5px}.ledger-missing{display:grid;place-items:center;font-size:11px;color:#b91c1c}
     .ledger-detail{display:flex;flex:1;min-width:0;flex-direction:column;gap:3px}.ledger-detail b{font-size:13px}.ledger-detail small{font-size:11px;color:#4b5563}.ledger-detail textarea{width:100%;min-height:45px;resize:vertical;border:1px solid #d1d5db;border-radius:5px;padding:5px;font-size:12px}
+    .ledger-visual3-fields{border:1px solid #d1d5db;border-radius:7px;margin-top:7px;background:#f8fafc}.ledger-visual3-fields summary{font-size:12px;font-weight:700;padding:8px;cursor:pointer}.ledger-visual3-field{display:flex;flex-direction:column;gap:3px;padding:5px 8px;font-size:11px;font-weight:600;color:#374151}.ledger-visual3-field input,.ledger-visual3-field textarea{box-sizing:border-box;width:100%;min-height:34px;padding:5px 7px;border:1px solid #9ca3af;border-radius:5px;font:inherit;font-size:12px;font-weight:400;color:#111827;background:white}
     .ledger-order{display:flex;flex-direction:column;gap:3px}.ledger-order button,.ledger-small{padding:4px 8px;font-size:12px}
     .ledger-damage-role-wrap{display:flex;flex-wrap:wrap;align-items:center;gap:7px;font-size:11px;color:#475569}.ledger-damage-role{padding:5px 8px;border:1px solid #9ca3af;background:white;border-radius:6px;font-size:12px;max-width:190px;min-height:36px}.ledger-damage-role:disabled{opacity:.5}
     .ledger-footer{border-top:1px solid #d1d5db;padding:10px 16px}.ledger-status{min-height:22px;font-size:12px;word-break:break-word}.ledger-controls{display:flex;justify-content:flex-end;gap:8px;margin-top:8px}.ledger-export{background:#176a43;color:white;border-color:#176a43}.ledger-download-ready{display:inline-flex;align-items:center;justify-content:center;border:1px solid #176a43;background:#eaf7ef;color:#155d3b;text-decoration:none;border-radius:7px;padding:9px 12px;font-size:12px;font-weight:700;min-height:40px}

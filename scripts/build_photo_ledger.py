@@ -39,6 +39,9 @@ if "photo-ledger.js?v=216" not in s:
 if "photo-ledger-damage.js?v=219" not in s:
     inject = "html=html.replace('</body>','<script src=\\\"./photo-ledger-damage.js?v=219\\\"><\\/script></body>');"
     s = s.replace(anchor, inject + anchor, 1)
+if "photo-ledger-visual3.js?v=220" not in s:
+    inject = "html=html.replace('</body>','<script src=\\\"./photo-ledger-visual3.js?v=220\\\"><\\/script></body>');"
+    s = s.replace(anchor, inject + anchor, 1)
 if "photo-ledger-tensile.js?v=213" not in s:
     inject = "html=html.replace('</body>','<script src=\\\"./photo-ledger-tensile.js?v=213\\\"><\\/script></body>');"
     s = s.replace(anchor, inject + anchor, 1)
@@ -47,7 +50,7 @@ index.write_text(s, encoding='utf-8')
 sw = ROOT / 'sentlog' / 'sw.js'
 w = sw.read_text(encoding='utf-8')
 missing = [
-    name for name in ['photo-ledger.js', 'photo-ledger-damage.js', 'damage-ledger-template.xlsx', 'photo-ledger-tensile.js', 'tensile-ledger-template.b64']
+    name for name in ['photo-ledger.js', 'photo-ledger-damage.js', 'damage-ledger-template.xlsx', 'photo-ledger-tensile.js', 'tensile-ledger-template.b64', 'photo-ledger-visual3.js', 'visual3-ledger-template.b64']
     if f"'{name}'" not in w
 ]
 if missing:
@@ -72,4 +75,10 @@ tensile_asset=(ROOT / 'sentlog' / 'tensile-ledger-template.b64').read_text(encod
 tensile_bytes=base64.b64decode(''.join(tensile_asset.split()),validate=True)
 assert hashlib.sha256(tensile_bytes).hexdigest() == '3b9b4334e0fa2e369aaf305cbd51447003823028a582affd24cb2fd515fdfac1', 'Tensile Excel template integrity mismatch'
 assert (ROOT / 'sentlog' / 'photo-ledger-tensile.js').is_file(), 'tensile photo ledger module missing'
-print('Photo ledger integrated: 標準 / 損傷用 / 引張試験用 (A4 portrait original Excel layout)')
+visual3_parts = [(ASSETS / f'visual3-template-{i}.b64').read_text(encoding='ascii').strip() for i in range(1, 8)]
+visual3_encoded = ''.join(visual3_parts)
+visual3_bytes = base64.b64decode(visual3_encoded, validate=True)
+assert hashlib.sha256(visual3_bytes).hexdigest() == 'd2d4ea224ab1a35bab4b502480ad15780599bb8a6a5aeea23b25bf3dfc0f1ee5', 'Visual3 original workbook template integrity mismatch'
+assert (ROOT / 'sentlog' / 'photo-ledger-visual3.js').is_file(), 'Visual3 photo ledger module missing'
+(ROOT / 'sentlog' / 'visual3-ledger-template.b64').write_text(visual3_encoded, encoding='ascii')
+print('Photo ledger integrated: 標準 / 損傷用 / 引張試験用 / 目視3連 (A4 portrait original Excel layout)')
