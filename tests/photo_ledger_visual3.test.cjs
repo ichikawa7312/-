@@ -35,7 +35,7 @@ function zipParts(buffer){
   const snapshot=groups.map(g=>g.photos.map(p=>({damage:p.damage,description:p.description,visual3:p.visual3})));
   const file=await Visual.buildXlsx('依田川農水頭首工','11 魚道工',groups,new Uint8Array(template));
   const out=zipParts(Buffer.from(await file.arrayBuffer()));
-  assert.equal(out.size,19,'all workbook, drawing, printer and six JPEG parts written');
+  assert.equal(out.size,25,'all workbook, drawing, printer and six JPEG parts written');
   assert.deepEqual(out.get('xl/styles.xml'),styles,'original workbook styles are byte-identical');
   const book=out.get('xl/workbook.xml').toString();
   assert.match(book,/\$A\$1:\$AJ\$68/,'two page print area');
@@ -57,7 +57,7 @@ function zipParts(buffer){
   for(const value of ['整理A','魚道工','鉄筋コンクリート','上流から撮影']){
     assert.ok(sheet1.includes(value),'correct visual3 metadata '+value);
   }
-  assert.match(sheet1,/r="AB35"[^>]*><is><t xml:space="preserve">4<\/t>/,'numbers increment across page break');
+  assert.match(sheet1,/r="AB36"[^>]*><is><t xml:space="preserve">4<\/t>/,'numbers increment across page break');
   assert.deepEqual(groups.map(g=>g.photos.map(p=>({damage:p.damage,description:p.description,visual3:p.visual3}))),snapshot,'source entries unchanged');
   await assert.rejects(()=>Visual.buildXlsx('x','y',[{name:'a',photos:[{jpeg:null}]}],new Uint8Array(template)),/未取得/);
   console.log('PASS visual 3-up ledger: true original template, no source writes, multi-page, all six photos, complete workbook image references');
