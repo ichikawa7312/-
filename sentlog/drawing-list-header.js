@@ -25,7 +25,7 @@ function installStyle(){
  'html.sl-home-layout.sl-drawings-view #slDrawingHeaderMiddle::-webkit-scrollbar-thumb{background:#64748b;border-radius:10px}',
  'html.sl-home-layout.sl-drawings-view #slDrawingHeaderMiddle>*{flex:0 0 auto;min-width:0}',
  'html.sl-home-layout.sl-drawings-view #slDrawingHeaderCounts{display:inline-flex;align-items:center;min-height:44px;padding:0 5px;color:#cbd5e1;font-size:11px;font-weight:600;font-variant-numeric:tabular-nums}',
- 'html.sl-home-layout.sl-drawings-view #slDrawingExportBtn,html.sl-home-layout.sl-drawings-view #slDrawingHeaderAdd{display:inline-flex!important;align-items:center;justify-content:center;box-sizing:border-box;min-height:44px!important;height:44px!important;width:auto!important;min-width:90px!important;max-width:none!important;flex:0 0 auto!important;margin:0!important;padding:6px 12px!important;border:1px solid #475569!important;border-radius:9px!important;color:#111827!important;background:#f8fafc!important;font-size:12px!important;font-weight:700!important;cursor:pointer!important;white-space:nowrap!important;text-align:center}',
+ 'html.sl-home-layout.sl-drawings-view #slDrawingExportBtn,html.sl-home-layout.sl-drawings-view #slDrawingHeaderAdd,html.sl-home-layout.sl-drawings-view #sentlogSheetTrashOpen{display:inline-flex!important;align-items:center;justify-content:center;box-sizing:border-box;min-height:44px!important;height:44px!important;width:auto!important;min-width:90px!important;max-width:none!important;flex:0 0 auto!important;margin:0!important;padding:6px 12px!important;border:1px solid #475569!important;border-radius:9px!important;color:#111827!important;background:#f8fafc!important;font-size:12px!important;font-weight:700!important;cursor:pointer!important;white-space:nowrap!important;text-align:center}',
  'html.sl-home-layout.sl-drawings-view #slDrawingHeaderAdd{background:#e0f2fe!important;color:#075985!important;border-color:#7dd3fc!important}',
  'html.sl-home-layout.sl-drawings-view #slDrawingOrderToolbar{display:flex!important;align-items:center;flex:0 0 auto!important;flex-wrap:nowrap!important;gap:6px!important;min-height:44px;margin:0!important;padding:0!important;border:none!important;border-radius:0!important;background:transparent!important}',
  'html.sl-home-layout.sl-drawings-view #slDrawingOrderToolbar[hidden],html.sl-home-layout.sl-drawings-view #slDrawingOrderToolbar [hidden]{display:none!important}',
@@ -45,7 +45,7 @@ function installStyle(){
 }
 function groupCounts(){
  const project=typeof getProject==='function'?getProject():null;
- const sheets=project?.drawings||[];
+ const sheets=(project?.drawings||[]).filter(d=>!(Number(d.deletedAt)>0));
  const groups=root.SentlogDrawingGroups?.groupsForProject?.(project)?.length ??
    new Set(sheets.map(d=>String(d.groupId||d.id))).size;
  return {groups,sheets:sheets.length};
@@ -96,6 +96,8 @@ function moveExistingControls(){
    }
    if(add.parentElement!==center)center.append(add);
  }
+ const trash=$('sentlogSheetTrashOpen');
+ if(trash&&trash.parentElement!==center)center.append(trash);
  const sort=$('slDrawingOrderToolbar');
  if(sort&&sort.parentElement!==center)center.append(sort);
  updateCounts();
