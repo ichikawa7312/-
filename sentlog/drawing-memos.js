@@ -273,7 +273,8 @@ render=function(){
   state.shapes=all.filter(s=>!isMemo(s));try{result=originalRender.apply(this,arguments);}finally{state.shapes=all;}
   if(mode==='memo')for(const child of svg.querySelectorAll('*'))child.style.pointerEvents='none';
   if(chosen&&!source(chosen))chosen=null;
-  if(visible)for(const s of notes)if((s.page||1)===state.currentPage&&s.id!==gesture?.original?.id)drawOne(s,svg,tool==='pan');
+  // Damage mode only displays memo artwork: no hit targets or resize handles.
+  if(visible)for(const s of notes)if((s.page||1)===state.currentPage&&s.id!==gesture?.original?.id)drawOne(s,svg,mode==='memo'&&tool==='pan');
   if(gesture?.preview)drawOne(gesture.preview,svg,false,true);
   updateUI();return result;
 };
@@ -281,17 +282,24 @@ function withoutMemos(fn,self,args){const all=state.shapes;state.shapes=all.filt
 const originalRebuild=rebuildNumberingState;rebuildNumberingState=function(){return withoutMemos(originalRebuild,this,arguments);};
 const originalAssign=assignNumbers;assignNumbers=function(){return withoutMemos(originalAssign,this,arguments);};
 const originalMeta=updateActiveMeta;updateActiveMeta=function(){return withoutMemos(originalMeta,this,arguments);};
-const originalSelect=selectShape;selectShape=function(id){if(source(id)){setMode('memo');chosen=id;selected=null;render();return;}chosen=null;return originalSelect.apply(this,arguments);};
+const originalSelect=selectShape;selectShape=function(id){
+  if(source(id)){
+    // A memo must never change the active recording mode by being touched.
+    if(mode!=='memo')return;
+    chosen=id;selected=null;render();return;
+  }
+  chosen=null;return originalSelect.apply(this,arguments);
+};
 const originalClear=clearSelection;clearSelection=function(){chosen=null;closePanel();return originalClear.apply(this,arguments);};
 const originalCancel=cancelPointerDraft;cancelPointerDraft=function(){gesture=null;return originalCancel.apply(this,arguments);};
 const originalRotate=rotateShapeGeometry;rotateShapeGeometry=function(s,w,h,dir){const r=originalRotate.apply(this,arguments);if(isMemo(s)&&memoType(s)==='text')s.rotation=finite(s.rotation)+(dir>0?90:-90);return r;};
 function boundedPoint(e){const p=point(e);return {x:Math.max(0,Math.min(state.width,p.x)),y:Math.max(0,Math.min(state.height,p.y))};}
 function take(e){if(e.cancelable)e.preventDefault();e.stopImmediatePropagation();}
 wrap.addEventListener('pointerdown',e=>{
-  if(!state.sourceType||exporting||gestureLock||activeTouches.size>1||e.pointerType==='mouse'&&e.button!==0)return;
+  if(mode!=='memo'||!state.sourceType||exporting||gestureLock||activeTouches.size>1||e.pointerType==='mouse'&&e.button!==0)return;
   const id=e.target.closest?.('[data-memo-id]')?.dataset.memoId,p=boundedPoint(e),s=source(id);
   if(tool==='pan'&&s&&visible){
-    take(e);if(mode!=='memo')setMode('memo');closePanel();chosen=s.id;selected=null;panStart=null;
+    take(e);closePanel();chosen=s.id;selected=null;panStart=null;
     gesture={pointerId:e.pointerId,scope:pageScope(),start:p,original:clone(s),preview:clone(s),role:e.target.dataset.memoHandle||'move',moved:false};
   }else if(mode==='memo'&&tool.startsWith('memo-')){
     take(e);closePanel();chosen=null;selected=null;panStart=null;
