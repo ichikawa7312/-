@@ -97,6 +97,7 @@ jobs:
           python3 scripts/build_drawing_order.py
           python3 scripts/build_dxf_transparency.py
           python3 scripts/build_auto_trace.py
+          python3 scripts/build_live_sync.py
           node tests/photo_ledger.test.cjs
           node tests/photo_ledger_damage.test.cjs
           node tests/photo_ledger_tensile.test.cjs
