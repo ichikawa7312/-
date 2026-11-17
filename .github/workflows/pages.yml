@@ -97,6 +97,7 @@ jobs:
           python3 scripts/build_drawing_order.py
           python3 scripts/build_dxf_transparency.py
           python3 scripts/build_auto_trace.py
+          python3 scripts/build_live_sync.py
           node tests/photo_ledger.test.cjs
           node tests/photo_ledger_damage.test.cjs
           node tests/photo_ledger_tensile.test.cjs
@@ -117,6 +118,8 @@ jobs:
           node --check sentlog/line-lengths.js
           node tests/line_lengths.test.cjs
           node tests/sync_merge.test.cjs
+          node tests/sync_live_editor.test.cjs
+          node --check sentlog/sync-view.js
           node tests/sync_device_label.test.cjs
           node --check sentlog/dxf.js
           node --check sentlog/dxf-core.js
