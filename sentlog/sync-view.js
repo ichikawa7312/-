@@ -41,12 +41,7 @@
     if(document.hidden || localOperation || drawing || panStart || labelDrag || activeTouches.size || window.SentlogShapeMove?.isEditing?.() || window.SentlogPolygonDimensions?.isEditing?.())return true;
     if(loading.style.display==='grid')return true;
     const focus=document.activeElement;
-    // A focused inspector input is not necessarily being edited. The value
-    // checks below protect unfinished field edits without blocking sync forever.
-    if(focus && focus.matches('input,select,textarea,[contenteditable="true"]')){
-      const persistedInspectorFields=['damageType','damageNo','member','memo','lineWidth','globalNo','typeNo'];
-      if(focus.isContentEditable || !persistedInspectorFields.includes(focus.id))return true;
-    }
+    if(focus && focus.matches('input,select,textarea,[contenteditable="true"]'))return true;
     if(document.querySelector('.modal-backdrop.open,.photo-viewer.open'))return true;
     const s=state.shapes.find(x=>x.id===selected);
     if(s){
