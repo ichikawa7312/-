@@ -62,7 +62,7 @@ function fixture(){
   context.SentlogPolygonDimensions={isEditing:()=>false};
   const instrumented=code.replace('  function localView(incoming,old){',`  window.__syncLiveBusyDebug=()=>({focus:document.activeElement?.id,selected,
     selectedRecord:state.shapes.find(x=>x.id===selected),formDamageNo:$('damageNo')?.value,
-    busy:busy()});
+    busy:busy(),busyBody:busy.toString()});
   function localView(incoming,old){`);
   vm.runInNewContext(instrumented,context);
   const incoming=(active=copy(localActive),other=copy(localOther))=>({
