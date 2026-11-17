@@ -19,7 +19,18 @@ change(p,'Number(oldMeta.revision)!==revision||memory.get(WS)!==expectedWorkspac
 p='sentlog/sync-view.js'
 change(p,'async function commit(cloudProject,snapshot,expectedLocal){','async function commit(cloudProject,snapshot,expectedLocal,mergeOptions=null){')
 change(p,'    const active=currentView===\'editor\' && activeProjectId===id;',
-       "    if(mergeOptions && currentView==='editor')return {applied:false,reason:'close-drawing'};\n    const active=currentView==='editor' && activeProjectId===id;")
+       """    if(mergeOptions && currentView==='editor' && activeProjectId===id){
+      // Merge only when the editor is settled; never overwrite an in-progress edit.
+      if(busy())return {applied:false,reason:'editing'};
+      const candidate=(snapshot?.payload?.drawings||[]).find(d=>(d.meta?.id||d.state?.id)===activeDrawingId);
+      if(!candidate?.state)return {applied:false,reason:'close-drawing'};
+      // A record actively selected in the inspector must remain unchanged.
+      if(selected){
+        const oldRecord=state.shapes?.find(s=>s.id===selected),newRecord=candidate.state.shapes?.find(s=>s.id===selected);
+        if(!same(oldRecord,newRecord))return {applied:false,reason:'close-drawing'};
+      }
+    }
+    const active=currentView==='editor' && activeProjectId===id;""")
 change(p,'    window.SentlogRecords.batch(writes);',
        "    if(mergeOptions){\n      for(const [k,v] of mergeOptions.extraWrites)writes.set(k,v);\n      await window.SentlogRecords.archiveAtomic({writes,deleteFiles:[],expectedWorkspace:mergeOptions.expectedRecords[0][1],expectedRecords:mergeOptions.expectedRecords});\n    }else window.SentlogRecords.batch(writes);")
 change(p,'  window.sentlogSyncView={snapshotText,commit,groupFingerprintSchema:2,',
