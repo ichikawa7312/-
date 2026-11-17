@@ -60,7 +60,11 @@ function fixture(){
   context.window=context;
   context.SentlogShapeMove={isEditing:()=>false};
   context.SentlogPolygonDimensions={isEditing:()=>false};
-  vm.runInNewContext(code,context);
+  const instrumented=code.replace('  function localView(incoming,old){',`  window.__syncLiveBusyDebug=()=>({focus:document.activeElement?.id,selected,
+    selectedRecord:state.shapes.find(x=>x.id===selected),formDamageNo:$('damageNo')?.value,
+    busy:busy()});
+  function localView(incoming,old){`);
+  vm.runInNewContext(instrumented,context);
   const incoming=(active=copy(localActive),other=copy(localOther))=>({
     payload:{project:copy(project),drawings:[{meta:copy(activeMeta),state:active},{meta:copy(otherMeta),state:other}]}
   });
@@ -90,7 +94,7 @@ function fixture(){
     const f=fixture();
     f.setValue('damageNo','まだ反映していない入力');
     const result=await f.commit(f.incoming());
-    assert.equal(result.applied,false,'an unsaved inspector field blocks merge');
+    assert.equal(result.applied,false,'an unsaved inspector field blocks merge: '+JSON.stringify(f.context.__syncLiveBusyDebug()));
     assert.equal(f.commits,0);
     assert.equal(f.context.state.shapes[0].no,'');
   }
