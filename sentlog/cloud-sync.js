@@ -423,7 +423,8 @@ async function syncNow(){
     await window.SentlogRecords.settled();window.SentlogRecords.assertSafe();
     if(drawingErrors.length)syncStatus.finish(statusCycle,{level:'error',label:'PDF要確認',message:drawingErrors.join(' / ')});
     else if(pulled.conflicts)syncStatus.finish(statusCycle,{level:'error',label:'変更を要確認',message:'同じ案件がこの端末と別の端末で変更されています。どちらも自動では上書きしていません。'});
-    else if(pulled.blocked.size)syncStatus.finish(statusCycle,{level:'pending',label:'作業後に反映',message:'操作中の変更は保留しています。入力・描画を終えると次の同期で反映します。PDFの差し替えや削除は図面を閉じた後に反映します。'});
+    else if(pulled.blocked.size)syncStatus.finish(statusCycle,{level:'pending',label:'一部反映待ち',
+      message:'安全確認のため '+pulled.blocked.size+' 件の案件が反映待ちです。保留対象以外の案件は引き続き同期します。編集中の端末内記録は消去せず、操作が落ち着いたら再確認します。別端末との同一記録の競合は確認が必要です。'});
     else syncStatus.finish(statusCycle,{level:'ok',message:(remoteChanged||pulled.files||uploaded?'変更の送受信が終了しました。':'変更の確認が終了しました。')+' PDFの保存・再取得状況は、PDF確認欄に表示します。'});
   }catch(e){
     console.warn('Sentlog cloud sync',e);
