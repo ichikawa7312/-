@@ -20,7 +20,7 @@ function fixture(){
     setItem:(key,value)=>store.set(key,value),
     batch:map=>{for(const [k,v] of map)store.set(k,v)},
     async archiveAtomic({writes,deleteFiles,expectedWorkspace,expectedRecords}){
-      assert.deepEqual(deleteFiles,[]);
+      assert.equal(deleteFiles.length,0,'merge never deletes photos or PDF files');
       assert.equal(store.get(WS),expectedWorkspace,'workspace revision is protected');
       for(const [k,v] of expectedRecords)assert.equal(store.get(k)??null,v,'saved record revision is protected');
       for(const [k,v] of writes)store.set(k,v);
