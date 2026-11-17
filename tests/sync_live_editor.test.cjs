@@ -34,7 +34,7 @@ function fixture(){
   for(const [id,value] of Object.entries(formValues))elements[id]={value};
   const context={
     console,JSON,Map,Set,Date,Number,
-    document:{hidden:false,activeElement:{id:'damageNo',matches:()=>true,isContentEditable:false},querySelector:()=>null},
+    document:{hidden:false,activeElement:{id:'memo',matches:()=>true,isContentEditable:false},querySelector:()=>null},
     SentlogRecords:records,
     drawingStorageKey:DRAW,
     WORKSPACE_KEY:WS,
@@ -61,7 +61,7 @@ function fixture(){
   context.SentlogShapeMove={isEditing:()=>false};
   context.SentlogPolygonDimensions={isEditing:()=>false};
   const instrumented=code.replace('  function localView(incoming,old){',`  window.__syncLiveBusyDebug=()=>({focus:document.activeElement?.id,selected,
-    selectedRecord:state.shapes.find(x=>x.id===selected),formDamageNo:$('damageNo')?.value,
+    selectedRecord:state.shapes.find(x=>x.id===selected),formMemo:$('memo')?.value,
     busy:busy(),busyBody:busy.toString()});
   function localView(incoming,old){`);
   vm.runInNewContext(instrumented,context);
@@ -92,7 +92,7 @@ function fixture(){
   }
   {
     const f=fixture();
-    f.setValue('damageNo','まだ反映していない入力');
+    f.setValue('memo','まだ反映していない入力');
     const result=await f.commit(f.incoming());
     assert.equal(result.applied,false,'an unsaved inspector field blocks merge: '+JSON.stringify(f.context.__syncLiveBusyDebug()));
     assert.equal(f.commits,0);
