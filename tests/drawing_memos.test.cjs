@@ -31,4 +31,10 @@ const offsets=str.slice(xref).split('\n').slice(3,8).map(x=>Number(x.slice(0,10)
 offsets.forEach((at,i)=>assert.equal(str.slice(at,at+7),`${i+1} 0 obj`));
 const index=fs.readFileSync(path.join(root,'sentlog/index.html'),'utf8'),sw=fs.readFileSync(path.join(root,'sentlog/sw.js'),'utf8'),sync=fs.readFileSync(path.join(root,'sentlog/sync-view.js'),'utf8');
 assert.match(index,/drawing-memos\.js\?v=177/);assert.match(index,/phone-runtime\.js\?v=177/);assert.match(sw,/sentlog-pwa-v188/);assert.match(sw,/'drawing-memos.js'/);assert.match(sync,/SentlogDrawingMemos\?\.isEditing/);
+// Mode boundaries also gate all SVG hits and memo gestures.
+const memoSource=fs.readFileSync(path.join(root,'sentlog/drawing-memos.js'),'utf8');
+assert.match(memoSource,/drawOne\(s,svg,mode==='memo'&&tool==='pan'\)/);
+assert.match(memoSource,/if\(mode!=='memo'\|\|!state\.sourceType/);
+assert.match(memoSource,/if\(source\(id\)\)\{\s*\/\/ A memo must never change/);
+assert.doesNotMatch(memoSource,/if\(mode!=='memo'\)setMode\('memo'\)/);
 console.log('PASS drawing memos: six tools, legacy dimensions, non-mutating transforms, invalid geometry, multiline text, manual dimensions, bounded freehand simplification, PDF byte offsets and offline/sync integration');
