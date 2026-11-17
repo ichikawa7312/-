@@ -40,9 +40,10 @@ arrow_metrics="""()=>[...svg.querySelectorAll('g[data-memo-id^="dim-"]')].map(g=
  const lines=[...g.querySelectorAll('line[pointer-events="none"]')];
  return {arrows,strokes:lines.map(e=>Number(e.getAttribute('stroke-width'))*scale),wantStroke:s.strokeWidth??1,
   overshoot:Math.hypot(Number(lines[0].getAttribute('x2'))-a.x-nx*offset,Number(lines[0].getAttribute('y2'))-a.y-ny*offset)*scale,
-  dash:lines[0].getAttribute('stroke-dasharray').split(' ').map(Number).map(n=>n*scale),hit:Number(g.querySelector('line[pointer-events="stroke"]').getAttribute('stroke-width'))*scale};
+  dash:lines[0].getAttribute('stroke-dasharray').split(' ').map(Number).map(n=>n*scale),
+  hit:g.querySelector('line[pointer-events="stroke"]') ? Number(g.querySelector('line[pointer-events="stroke"]').getAttribute('stroke-width'))*scale : null};
 })"""
-def check_arrows(rows):
+def check_arrows(rows,interactive=False):
  assert len(rows)==3,rows
  for row in rows:
   assert len(row['arrows'])==2,row
@@ -50,7 +51,9 @@ def check_arrows(rows):
    assert abs(arrow['length']-8)<.001 and abs(arrow['width']-7.68)<.001,arrow
    assert arrow['tipError']<.001,arrow
   assert all(abs(s-row['wantStroke'])<.001 for s in row['strokes']),row
-  assert abs(row['overshoot']-4)<.001 and row['hit']>=27.99,row
+  assert abs(row['overshoot']-4)<.001,row
+  if interactive: assert row['hit'] is not None and row['hit']>=27.99,row
+  else: assert row['hit'] is None,'damage mode must not expose a memo drag target: '+str(row)
   assert all(abs(a-b)<.001 for a,b in zip(row['dash'],[7,5])),row
 try:
  with tempfile.TemporaryDirectory(prefix='sentlog-font-ui-') as profile,sync_playwright() as pw:
@@ -100,6 +103,11 @@ try:
      }""")
      assert plain==[20,5],'plain memo arrow formatting must remain unchanged'
      assert page.evaluate('JSON.stringify(state.shapes)')==before,'rendering must not rewrite measurements or geometry'
+   # Memo hit targets are strictly mode-specific; damage mode has none.
+   page.evaluate("SentlogDrawingMemos.setMode('memo')")
+   check_arrows(page.evaluate(arrow_metrics),interactive=True)
+   page.evaluate("SentlogDrawingMemos.setMode('damage')")
+   check_arrows(page.evaluate(arrow_metrics),interactive=False)
    # Draft and final dimensions have the same size; long-press targets stay large.
    result=page.evaluate("""()=>{
     state.labelSize='normal';scale=1;applyTransform();selected=null;tool='polygon';
