@@ -117,6 +117,8 @@ jobs:
           node --check sentlog/line-lengths.js
           node tests/line_lengths.test.cjs
           node tests/sync_merge.test.cjs
+          node tests/sync_live_editor.test.cjs
+          node --check sentlog/sync-view.js
           node tests/sync_device_label.test.cjs
           node --check sentlog/dxf.js
           node --check sentlog/dxf-core.js
