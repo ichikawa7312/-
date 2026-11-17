@@ -22,7 +22,7 @@ replace('sentlog/sync-view.js',
     """    // Focus by itself is not a pending edit. Check the saved inspector fields
     // below, but retain the guard for unknown inputs and contenteditable.
     if(focus && focus.matches('input,select,textarea,[contenteditable="true"]')){
-      const safeFields=['damageType','damageNo','member','memo','lineWidth','globalNo','typeNo'];
+      const safeFields=['damageType','member','memo','lineWidth','globalNo','typeNo'];
       if(focus.isContentEditable||!safeFields.includes(focus.id))return true;
     }""")
 
