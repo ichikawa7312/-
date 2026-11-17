@@ -52,7 +52,7 @@ assert(memoArt,'memo artwork should remain visible in damage mode');
 assert.equal(memoArt.querySelectorAll('[pointer-events=stroke]').length,0,'memo has no wide touch target in damage mode');
 assert.equal(memoArt.querySelectorAll('[data-memo-handle]').length,0,'memo has no resize handles in damage mode');
 const passiveLine=memoArt.querySelector('polyline');assert(passiveLine);
-evt('pointerdown',150,130,passiveLine);evt('pointermove',190,160,passiveLine);evt('pointerup',190,160,passiveLine);
+evt('pointerdown',150,130,passiveLine);evt('pointermove',190,160,wrap);evt('pointerup',190,160,wrap);
 assert.equal(api.mode,'damage','memo touch must not auto-switch modes');
 assert.equal(api.selectedId,null,'memo remains unselected in damage mode');
 assert.equal(run('JSON.stringify(state.shapes)'),beforeTouch,'memo touch must not change drawing coordinates');
@@ -66,7 +66,7 @@ let hit=document.querySelector('[data-memo-id="'+notes()[0].id+'"] polyline[poin
 evt('pointerdown',150,130,hit);evt('pointerup',150,130);assert.equal(api.selectedId,notes()[0].id);assert.equal(run('selected'),null);assert(!document.getElementById('inspector').classList.contains('open'));
 // The same memo remains editable and movable when the user EXPLICITLY enters memo mode.
 const memoBeforeMove=notes()[0],activeHit=document.querySelector('[data-memo-id="'+memoId+'"] polyline[pointer-events=stroke]');assert(activeHit);
-evt('pointerdown',150,130,activeHit);evt('pointermove',180,155,activeHit);evt('pointerup',180,155,activeHit);
+evt('pointerdown',150,130,activeHit);evt('pointermove',180,155,wrap);evt('pointerup',180,155,wrap);
 assert.equal(api.mode,'memo');assert.equal(notes()[0].points[0].x,memoBeforeMove.points[0].x+30);
 assert.equal(notes()[0].points[0].y,memoBeforeMove.points[0].y+25);
 document.getElementById('memoEditBtn').onclick();const dup=[...document.querySelectorAll('.sl-memo-panel button')].find(b=>b.textContent==='複製');assert(dup);dup.onclick();assert.equal(notes().length,7);
