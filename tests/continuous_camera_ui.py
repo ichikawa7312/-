@@ -26,8 +26,14 @@ CAMERA_MOCK = r"""encoded=>{
   const mock=window.cameraMock={calls:0,photos:0,canvasPhotos:0,stopped:0,deny:false,tracks:[],constraints:[]};
   const image=new Image();image.src='data:image/png;base64,'+encoded;mock.imageReady=image.decode();
   const active=new WeakMap();
-  const originalSrc=Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype,'srcObject');
-  Object.defineProperty(HTMLMediaElement.prototype,'srcObject',{
+  // WebKit may expose media members on HTMLVideoElement itself. Override the
+  // concrete prototype so an own native member cannot shadow the fixture.
+  let mediaPrototype=HTMLVideoElement.prototype,originalSrc;
+  while(mediaPrototype&&!originalSrc){
+    originalSrc=Object.getOwnPropertyDescriptor(mediaPrototype,'srcObject');
+    mediaPrototype=Object.getPrototypeOf(mediaPrototype);
+  }
+  Object.defineProperty(HTMLVideoElement.prototype,'srcObject',{
     configurable:true,get(){return active.has(this)?active.get(this):originalSrc.get.call(this);},
     set(value){
       if(value?.sentlogCameraFixture){
@@ -46,12 +52,12 @@ CAMERA_MOCK = r"""encoded=>{
       }
     }
   });
-  const play=HTMLMediaElement.prototype.play,pause=HTMLMediaElement.prototype.pause;
-  HTMLMediaElement.prototype.play=function(){
+  const play=HTMLVideoElement.prototype.play,pause=HTMLVideoElement.prototype.pause;
+  HTMLVideoElement.prototype.play=function(){
     if(active.has(this)){this.dispatchEvent(new Event('playing'));return Promise.resolve();}
     return play.apply(this,arguments);
   };
-  HTMLMediaElement.prototype.pause=function(){if(!active.has(this))return pause.apply(this,arguments);};
+  HTMLVideoElement.prototype.pause=function(){if(!active.has(this))return pause.apply(this,arguments);};
   const drawImage=CanvasRenderingContext2D.prototype.drawImage;
   CanvasRenderingContext2D.prototype.drawImage=function(source,...args){
     if(active.has(source)){mock.canvasPhotos++;return drawImage.call(this,image,...args);}
@@ -118,7 +124,7 @@ def run(page, engine, screenshot_dir=None):
     def screenshot(name):
         if screenshot_dir:
             screenshot_dir.mkdir(parents=True, exist_ok=True)
-            page.screenshot(path=str(screenshot_dir / (engine+'-'+name+'.png')), full_page=False)
+            page.screenshot(path=str(screenshot_dir / ('sentlog-continuous-camera-'+engine+'-'+name+'.png')), full_page=False)
 
     if engine == 'webkit':
         page.evaluate(WEBKIT_TRANSPORT)
@@ -262,6 +268,30 @@ def run(page, engine, screenshot_dir=None):
     wait_photos(page, 'memo-plan-b', 2)
     camera_count(page, 1)
     assert page.evaluate('cameraMock.canvasPhotos') == 1
+    page.locator('#slCameraCount').click()
+    expect(page.locator('#slCameraReview')).to_be_visible()
+    row = page.locator('#slCameraReviewList [data-camera-photo-id]').first
+    removed_photo_id = row.get_attribute('data-camera-photo-id')
+    page.evaluate("""()=>{
+      cameraMock.originalRefresh=window.sentlogCollabRefresh;
+      window.sentlogCollabRefresh=async()=>({fresh:true});
+    }""")
+    try:
+        row.locator('[data-camera-remove]').click()
+        dialog = page.locator('.sl-collab-dialog')
+        expect(dialog).to_be_visible()
+        dialog.get_by_role('button', name='写真を外す', exact=True).click()
+        expect(dialog).to_be_hidden()
+        wait_photos(page, 'memo-plan-b', 1)
+        camera_count(page, 0)
+        expect(row.locator('.sl-camera-photo-name')).to_have_text('記録から外した写真')
+        expect(row.locator('[data-camera-remove]')).to_have_count(0)
+        assert removed_photo_id not in saved_photo_ids(page, 'memo-plan-b')
+        assert page.evaluate("""async id=>!!(await SentlogOriginalPhotos.getOriginal('memo-plan-b',id))""", removed_photo_id)
+        screenshot('photo-removed-original-retained')
+    finally:
+        page.evaluate('window.sentlogCollabRefresh=cameraMock.originalRefresh')
+    page.locator('#slCameraReviewClose').click()
     page.locator('#slCameraDone').click()
     page.wait_for_function('!SentlogContinuousCamera.isOpen()')
     assert all(row == 'ended' for row in page.evaluate('cameraMock.tracks.map(track=>track.readyState)'))
@@ -301,6 +331,8 @@ def main():
     parser.add_argument('--built-root', type=Path, default=ROOT)
     parser.add_argument('--screenshot-dir', type=Path)
     args = parser.parse_args()
+    if args.screenshot_dir is None and os.environ.get('CI', '').lower() == 'true':
+        args.screenshot_dir = Path('/tmp')
 
     class Handler(SimpleHTTPRequestHandler):
         def log_message(self, *args):
@@ -336,6 +368,18 @@ def main():
                 page.wait_for_function('window.sentlogAppReady&&window.SentlogContinuousCamera&&window.SentlogCollaborationPhotos', timeout=45000)
                 run(page, args.engine, args.screenshot_dir)
                 assert not errors, errors
+            except Exception:
+                if args.screenshot_dir:
+                    args.screenshot_dir.mkdir(parents=True, exist_ok=True)
+                    page.screenshot(path=str(args.screenshot_dir / ('sentlog-continuous-camera-'+args.engine+'-failure.png')))
+                print('Camera UI at failure:', page.evaluate("""()=>({
+                  open:window.SentlogContinuousCamera?.isOpen(),
+                  status:document.getElementById('slCameraStatus')?.textContent,
+                  count:document.getElementById('slCameraCount')?.textContent,
+                  mock:window.cameraMock?{calls:cameraMock.calls,photos:cameraMock.photos,
+                    canvasPhotos:cameraMock.canvasPhotos,tracks:cameraMock.tracks.map(t=>t.readyState)}:null
+                })"""))
+                raise
             finally:
                 browser.close()
     finally:

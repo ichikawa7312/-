@@ -136,8 +136,8 @@
     const style=document.createElement('style');style.textContent=`
 #sentlogContinuousCamera[hidden],#sentlogContinuousCamera [hidden]{display:none!important}
 #sentlogContinuousCamera{position:fixed;inset:0;z-index:2300;background:#080b10;color:#fff;display:flex;flex-direction:column;height:100dvh;max-height:100dvh;box-sizing:border-box;overscroll-behavior:contain;font:16px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
-#sentlogContinuousCamera *{box-sizing:border-box}#sentlogContinuousCamera button{font:inherit;color:inherit;touch-action:manipulation;cursor:pointer;min-height:44px;width:auto;margin:0;border:1px solid #536171;border-radius:10px;background:#202a36;padding:8px 12px}#sentlogContinuousCamera button:disabled{opacity:.45;cursor:default}
-#sentlogContinuousCamera .sl-camera-top{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:calc(8px + env(safe-area-inset-top)) max(12px,env(safe-area-inset-right)) 8px max(12px,env(safe-area-inset-left));flex-shrink:0}
+#sentlogContinuousCamera *{box-sizing:border-box}#sentlogContinuousCamera button{font:inherit;color:inherit;touch-action:manipulation;cursor:pointer;min-height:44px;width:auto;max-width:100%;white-space:normal;margin:0;border:1px solid #536171;border-radius:10px;background:#202a36;padding:8px 12px}#sentlogContinuousCamera button:disabled{opacity:.45;cursor:default}
+#sentlogContinuousCamera .sl-camera-top{position:relative;z-index:0;height:auto;min-height:0;display:flex;flex-wrap:nowrap;align-content:normal;align-items:center;justify-content:space-between;gap:10px;padding:calc(8px + env(safe-area-inset-top)) max(12px,env(safe-area-inset-right)) 8px max(12px,env(safe-area-inset-left));flex-shrink:0}
 #slCameraTarget{font-size:15px;line-height:1.4;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;min-width:0}#slCameraNative{font-size:13px!important;flex-shrink:0}
 #sentlogContinuousCamera .sl-camera-stage{position:relative;flex:1;min-height:0;display:flex;justify-content:center;align-items:center;overflow:hidden;background:#000}
 #slCameraVideo{width:100%;height:100%;object-fit:contain;background:#000}#slCameraResume{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);background:#263647!important}
@@ -147,7 +147,7 @@
 #sentlogContinuousCamera .sl-camera-controls{display:grid;grid-template-columns:1fr 88px 1fr;align-items:center;gap:12px}#slCameraCount{justify-self:start;font-size:15px!important}#slCameraDone{justify-self:end}#slCameraShutter{justify-self:center;width:70px!important;height:70px;min-height:70px!important;border:4px solid #fff!important;border-radius:50%!important;background:#fff!important;box-shadow:inset 0 0 0 4px #121b26;padding:0!important}#slCameraShutter:active{background:#b3c9d8!important}
 #sentlogContinuousCamera .sl-camera-errors{display:flex;justify-content:center;gap:8px;flex-wrap:wrap}#sentlogContinuousCamera .sl-camera-errors button{font-size:13px;margin-top:7px}
 #slCameraReview{position:absolute;inset:0;background:#101720;display:flex;flex-direction:column;padding:env(safe-area-inset-top) max(12px,env(safe-area-inset-right)) env(safe-area-inset-bottom) max(12px,env(safe-area-inset-left));z-index:2}
-#slCameraReview header{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 0}#slCameraReview h2{margin:0;font-size:18px;color:#fff}#slCameraReview p{font-size:13px;color:#d9e4ed;margin:4px 0 12px}
+#slCameraReview header{position:relative;z-index:0;height:auto;min-height:0;display:flex;flex-wrap:nowrap;align-content:normal;align-items:center;justify-content:space-between;gap:12px;padding:12px 0;flex-shrink:0}#slCameraReview h2{margin:0;font-size:18px;color:#fff}#slCameraReview p{font-size:13px;color:#d9e4ed;margin:4px 0 12px}
 #slCameraReviewList{overflow:auto;min-height:0;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;padding-bottom:12px;align-content:start;flex:1}#slCameraReviewList article{min-width:0;background:#202b38;border-radius:12px;padding:8px}#slCameraReviewList img{display:block;width:100%;height:150px;object-fit:contain;background:#000;border-radius:6px}#slCameraReviewList .sl-camera-image-button{display:block;width:100%;padding:0;border:0;background:none}#slCameraReviewList .sl-camera-photo-name{overflow-wrap:anywhere;font-size:13px;margin:7px 0}#slCameraReviewList [data-camera-remove]{font-size:13px;width:100%}
 #slCameraLarge{position:absolute;inset:0;background:#080b10;z-index:3;display:flex;flex-direction:column;padding:calc(10px + env(safe-area-inset-top)) 12px calc(10px + env(safe-area-inset-bottom))}#slCameraLarge button{align-self:flex-end;flex-shrink:0}#slCameraLarge img{flex:1;min-height:0;width:100%;object-fit:contain;touch-action:pinch-zoom}
 @media(min-width:700px){#slCameraReviewList{grid-template-columns:repeat(3,minmax(0,1fr))}#slCameraReviewList img{height:220px}.sl-camera-controls{max-width:520px;margin:auto}}
@@ -264,7 +264,12 @@
       ui.modal.hidden=false;ui.review.hidden=true;ui.large.hidden=true;ui.done.focus();render();
       unsubscribe=root.SentlogRecords?.subscribe?.(()=>{
         if(!isOpen()||!session)return;
-        for(const entry of session.snapshot().entries)if(entry.status==='attached')session.markRemoved(entry.photoId,!currentPhoto(entry));
+        for(const entry of session.snapshot().entries)if(entry.status==='attached'){
+          const removed=!currentPhoto(entry);session.markRemoved(entry.photoId,removed);
+          const item=[...ui.list.children].find(node=>node.dataset.cameraPhotoId===entry.photoId);
+          if(item){item.querySelector('.sl-camera-photo-name').textContent=removed?'記録から外した写真':'保存済み';
+            const button=item.querySelector('[data-camera-remove]');if(button)button.hidden=removed;}
+        }
       });
       await startCamera();
     }catch(e){const target=document.getElementById('photoStatus');if(target)target.textContent=message(e);if(isOpen())showError(e);}
