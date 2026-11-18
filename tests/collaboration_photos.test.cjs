@@ -23,7 +23,7 @@ function fixture(previous){
       shapes:[{id:'same-record',kind:'field-record',recordKind:'field-record',recordType:'survey',point:{x:10,y:20},
         photos:[],memo:'Memo '+id,autoLabel:'Record '+id}]}));
   }
-  const control={failOriginal:false,failShared:false,failConvert:false,exclusive:false,makeGate:null,
+  const control={failOriginal:false,failShared:false,failConvert:false,failJournal:false,exclusive:false,makeGate:null,
     makeEntered:null,decodes:0,maxDecodes:0,conversions:0,originalWrites:0,attachmentEvents:0,history:[]};
   const listeners=new Set(),inputs={},windowListeners={};let serial=0;
   for(const id of ['cameraInput','photoInput'])inputs[id]={id,files:[],value:'',listeners:{},
@@ -79,7 +79,10 @@ function fixture(previous){
     setTimeout,clearTimeout,queueMicrotask,crypto:{subtle:require('node:crypto').webcrypto.subtle,randomUUID:()=>`capture-test-${++serial}-${Date.now()}`},
     document:{getElementById:id=>id==='photoStatus'?status:inputs[id]||null,querySelector:()=>null},
     navigator:{userAgent:'Synthetic iPhone'},
-    localStorage:{getItem:key=>data.storage.get(key)||null,setItem:(key,value)=>data.storage.set(key,value)},
+    localStorage:{getItem:key=>data.storage.get(key)||null,setItem:(key,value)=>{
+      if(control.failJournal&&key==='sentlogPhotoCaptureIntentV1')throw Error('Synthetic journal quota failure');
+      data.storage.set(key,value);
+    }},
     SentlogOriginalPhotos:originals,SentlogRecords:store,SentlogRecordCollaboration:model,
     SentlogArchive:{byLocal:()=>control.archived?{status:'archived'}:{status:'active'}},
     SentlogCollaboration:{actor:()=>({deviceId:'synthetic-device',deviceName:'iPhone'}),recordHistory:(a,b)=>control.history.push([clone(a),clone(b)])},
@@ -247,6 +250,90 @@ async function test(name,fn){await fn();passed++;console.log('PASS '+name);}
     f.control.exclusive=true;gate.resolve();await tick();
     const newer=f.saved();newer.shapes[0].memo='Saved during the transaction';f.replace('a',newer);f.releaseExclusive();
     await pending;assert.equal(f.saved().shapes[0].memo,'Saved during the transaction');assert.equal(f.saved().shapes[0].photos.length,1);
+  });
+
+  await test('continuous shutters keep a fixed target, distinct IDs and photos received during conversion',async()=>{
+    const f=fixture();await tick();const target=f.api.captureTarget(),gate=deferred(),entered=deferred();
+    f.control.makeGate=gate;f.control.makeEntered=entered;
+    const first=f.api.prepareCapture(target),firstSave=f.api.register([file('capture.png','first')],first);
+    await entered.promise;f.select('b');
+    const second=f.api.prepareCapture(target),secondSave=f.api.register([file('capture.png','second')],second);
+    assert.notEqual(first.operationId,second.operationId);
+    assert.equal(second.target.drawingId,'drawing-a','The shutter must use its camera session target');
+    const remote=f.saved('a');
+    remote.shapes[0]=model.addPhoto(remote.shapes[0],{id:'peer-between-shots',name:'peer.jpg'},
+      {revisionId:'peer-between-shots-rev',actor:{deviceId:'ipad',deviceName:'iPad'},at:900});
+    f.replace('a',remote);gate.resolve();
+    const [a,b]=await Promise.all([firstSave,secondSave]);
+    assert.equal(a[0].originalSaved,true);assert.equal(b[0].originalSaved,true);
+    assert.equal(a[0].status,'attached');assert.equal(b[0].status,'attached');
+    assert.notEqual(a[0].photoId,b[0].photoId);
+    assert.deepEqual(new Set(f.saved('a').shapes[0].photos.map(p=>p.id)),new Set([a[0].photoId,b[0].photoId,'peer-between-shots']));
+    assert.equal(f.saved('b').shapes[0].photos.length,0);assert.equal(f.context.activeDrawingId,'drawing-b');
+    assert.equal(f.control.maxDecodes,1);assert.equal(f.data.originals.size,2);
+    const retried=await f.api.register([file('capture.png','a duplicate callback must not replace the original')],first);
+    assert.equal(retried[0].photoId,a[0].photoId);assert.equal(retried[0].originalSaved,true);
+    assert.equal(f.saved('a').shapes[0].photos.length,3);
+    assert.equal(await f.data.originals.get('drawing-a:'+a[0].photoId).text(),'first');
+  });
+
+  await test('continuous capture preparation requires a durable intent and rechecks target availability',async()=>{
+    const f=fixture();await tick();const target=f.api.captureTarget();
+    f.control.failJournal=true;
+    assert.throws(()=>f.api.prepareCapture(target),error=>error.code==='INTENT_SAVE_FAILED');
+    f.control.failJournal=false;assert.equal(f.data.originals.size,0);
+    f.control.archived=true;
+    assert.throws(()=>f.api.prepareCapture(target),error=>error.code==='TARGET_ARCHIVED');
+    f.control.archived=false;
+    f.data.storage.set('sentlogCloudSessionV1',JSON.stringify({user:{id:'another-owner'}}));
+    assert.throws(()=>f.api.prepareCapture(target),error=>error.code==='ACCOUNT_CHANGED');
+    f.data.storage.delete('sentlogCloudSessionV1');
+    const removed=f.saved();removed.shapes=[];f.replace('a',removed);
+    assert.throws(()=>f.api.prepareCapture(target),error=>error.code==='TARGET_DELETED');
+  });
+
+  await test('cancelCapture discards only empty intents and cannot cancel submitted or saved photos',async()=>{
+    const f=fixture();await tick();const target=f.api.captureTarget();
+    const empty=f.api.prepareCapture(target);
+    assert.equal(f.api.cancelCapture(empty),true);assert.equal(f.api.cancelCapture(empty),false);
+    assert.equal(f.api.cancelCapture(null),false);assert.equal(f.api.cancelCapture({operationId:'__proto__'}),false);
+    await assert.rejects(f.api.register([file()],empty),error=>error.code==='INTENT_MISSING');
+    assert.equal(f.data.originals.size,0);
+    const active=f.api.prepareCapture(target),save=f.api.register([file()],active);
+    assert.equal(f.api.cancelCapture(active),false,'A submitted file is protected even before ID allocation');
+    const result=await save;
+    assert.equal(f.api.cancelCapture(active),false);assert.equal(result[0].originalSaved,true);
+    assert.equal(f.saved().shapes[0].photos.length,1);assert.equal(f.data.originals.size,1);
+  });
+
+  await test('pending continuous captures report durable originals and cancellation leaves retry identity intact',async()=>{
+    const f=fixture();await tick();f.control.failShared=true;
+    const intent=f.api.prepareCapture(f.api.captureTarget()),first=await f.api.register([file('pending.png','keep exact source')],intent);
+    assert.equal(first[0].status,'pending');assert.equal(first[0].originalSaved,true);
+    assert.equal(f.api.cancelCapture(intent),false);assert.equal(f.data.originals.size,1);
+    f.control.failShared=false;const next=await f.api.retryPending(first[0].photoId);
+    assert.equal(next[0].photoId,first[0].photoId);assert.equal(next[0].status,'attached');assert.equal(next[0].originalSaved,true);
+    assert.equal(f.saved().shapes[0].photos.length,1);
+    assert.equal(await f.data.originals.get('drawing-a:'+first[0].photoId).text(),'keep exact source');
+  });
+
+  await test('continuous save failures never report an unsaved original as saved',async()=>{
+    const f=fixture();await tick();f.control.failOriginal=true;
+    const intent=f.api.prepareCapture(f.api.captureTarget()),first=await f.api.register([file()],intent);
+    assert.equal(first[0].status,'pending');assert.equal(first[0].originalSaved,false);
+    assert.equal(f.api.cancelCapture(intent),false,'An unsaved pending source remains available for retry');
+    f.control.failOriginal=false;const retry=await f.api.retryPending(first[0].photoId);
+    assert.equal(retry[0].photoId,first[0].photoId);assert.equal(retry[0].originalSaved,true);
+    assert.equal(f.data.originals.size,1);assert.equal(f.saved().shapes[0].photos.length,1);
+  });
+
+  await test('pending originalSaved reflects persisted bytes instead of a stale journal flag',async()=>{
+    const f=fixture();await tick();const gate=deferred(),entered=deferred();f.control.makeGate=gate;f.control.makeEntered=entered;
+    const pending=f.api.register([file()],f.api.prepareCapture(f.api.captureTarget()));await entered.promise;
+    assert.equal(f.data.meta.size,1);f.data.originals.clear();f.control.failConvert=true;gate.resolve();
+    const result=await pending;
+    assert.equal(result[0].status,'pending');assert.equal(result[0].originalSaved,false);
+    assert.equal(f.saved().shapes[0].photos.length,0);
   });
 
   console.log(`PASS ${passed} safe-capture scenarios using the production module and record model`);

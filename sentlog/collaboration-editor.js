@@ -424,6 +424,15 @@
     if(changed){render();renderSelectedPhotos();refresh();}
   }
   root.SentlogCollaboration={actor,flushDraft,refresh,recordHistory,afterStoredNormalization,
+    requestPhotoRemoval(capture,photoId){
+      const c={accountId:capture?.ownerId||'',projectId:capture?.projectId,drawingId:capture?.drawingId,recordId:capture?.recordId};
+      if(!sameDrawing(c))throw Error('撮影先の図面を開いてから写真を外してください。');
+      const control=root.SentlogArchive?.byLocal?.(c.projectId);
+      if(control&&(control.status!=='active'||control.checking))throw Error('保管中・確認中の案件は変更できません。写真の原本は残っています。');
+      const record=currentTarget(c),photo=record&&M.view(record).photos.find(p=>p.id===photoId);
+      if(!photo||photo.deleted)throw Error('この写真は既に記録から外されています。原本は残っています。');
+      showDecision({...c,kind:'photo-remove',photoId,photoName:photo.metadata?.name||'',headIds:photo.headIds});
+    },
     hasPendingDraft:()=>composing||finishingComposition||!!draft?.compositionPending||!!draft&&(draft.text!==draft.savedText)&&(!!draft.text.trim()||!!draft.headIds?.length),
     isCapturedFieldDraft(element,record){
       const field={damageType:'type',member:'member'}[element?.id],c=context();

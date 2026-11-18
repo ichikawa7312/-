@@ -65,7 +65,7 @@ def run(page, engine):
     # A real chooser click fixes the destination before a same-ID drawing switch.
     page.evaluate(HOLD_CONVERSION)
     with page.expect_file_chooser() as chooser:
-        page.locator('#cameraBtn').click()
+        page.locator('#cameraInput').evaluate('input=>input.click()')
     page.evaluate("""async()=>{
       await openDrawing(memoFixture.pid,'memo-plan-b');SentlogFieldRecords.selectRecord('survey-a');
       $('inspector').classList.add('open');

@@ -1,7 +1,16 @@
 name: Sentlog shared record collaboration checks
 on:
   push:
-    branches: ['feat/collaborative-records-*']
+    branches: ['feat/collaborative-records-*', 'feat/continuous-camera-*']
+  pull_request:
+    paths:
+      - '.github/workflows/pages.yml'
+      - '.github/workflows/collaboration-check.yml'
+      - 'scripts/build_continuous_camera.py'
+      - 'sentlog/continuous-camera.js'
+      - 'sentlog/collaboration-photos.js'
+      - 'tests/continuous_camera*'
+      - 'tests/collaboration_photos*'
   workflow_dispatch:
 permissions:
   contents: read
@@ -67,6 +76,12 @@ jobs:
       - name: Recoverable camera capture in WebKit
         if: ${{ always() && steps.build.outcome == 'success' && steps.browser_runtime.outcome == 'success' }}
         run: python tests/collaboration_photos_ui.py --engine webkit --built-root .
+      - name: Continuous camera in Chromium
+        if: ${{ always() && steps.build.outcome == 'success' && steps.browser_runtime.outcome == 'success' }}
+        run: python tests/continuous_camera_ui.py --engine chromium --built-root .
+      - name: Continuous camera in WebKit
+        if: ${{ always() && steps.build.outcome == 'success' && steps.browser_runtime.outcome == 'success' }}
+        run: python tests/continuous_camera_ui.py --engine webkit --built-root .
       - name: Photo zoom and release in Chromium
         if: ${{ always() && steps.build.outcome == 'success' && steps.browser_runtime.outcome == 'success' }}
         run: python tests/photo_viewer_ui.py --engine chromium --built-root .
@@ -77,5 +92,7 @@ jobs:
         if: always()
         with:
           name: collaboration-ui-evidence
-          path: /tmp/sentlog-collaboration-*.png
+          path: |
+            /tmp/sentlog-collaboration-*.png
+            /tmp/sentlog-continuous-camera-*.png
           if-no-files-found: ignore

@@ -47,7 +47,7 @@
     let journal;try{journal=options.loadJournal();}catch(_){}
     if(journal?.version!==VERSION)journal={version:VERSION,inputs:{},operations:{},entries:{}};
     journal.inputs=journal.inputs||{};journal.operations=journal.operations||{};journal.entries=journal.entries||{};
-    const files=new Map(),flights=new Map();let queue=Promise.resolve();
+    const files=new Map(),flights=new Map(),registrations=new Map();let queue=Promise.resolve();
     const changed=()=>options.onChange?.();
     function saveJournal(){
       try{options.saveJournal(clone(journal));return true;}
@@ -81,6 +81,18 @@
       const id=journal.inputs[inputId],intent=journal.operations[id];delete journal.inputs[inputId];
       if(intent&&!intent.photoIds.length)delete journal.operations[id];saveJournal();
     }
+    function cancelCapture(intent){
+      const id=intent?.operationId;
+      if(typeof id!=='string'||!Object.prototype.hasOwnProperty.call(journal.operations,id))return false;
+      const operation=journal.operations[id];
+      // register() may be reading names before it allocates photo IDs. Once a
+      // file has been submitted, only its normal save/retry path may own it.
+      if(!operation||operation.photoIds.length||registrations.has(id)||
+         Object.values(journal.entries).some(entry=>entry.operationId===id))return false;
+      delete journal.operations[id];
+      for(const inputId of Object.keys(journal.inputs))if(journal.inputs[inputId]===id)delete journal.inputs[inputId];
+      saveJournal();return true;
+    }
     const association=entry=>({...clone(entry),version:VERSION});
     function originalMetadata(entry){
       const t=entry.target||{};
@@ -93,6 +105,17 @@
       const entry=meta?.photoAssociation;
       return entry?.version===VERSION&&entry.photoId===meta.photoId?
         {...clone(entry),storageDrawingId:meta.drawingId,originalSaved:true}:null;
+    }
+    async function hasSavedOriginal(entry){
+      try{
+        const [blob,metadata]=await Promise.all([
+          originals.getOriginal(entry.storageDrawingId,entry.photoId),originals.listMeta()]);
+        const meta=metadata.find(row=>row.drawingId===entry.storageDrawingId&&row.photoId===entry.photoId);
+        const saved=fromMeta(meta);
+        return blob instanceof Blob&&saved?.operationId===entry.operationId&&
+          blob.size===Number(meta.size)&&blob.size===Number(entry.sourceSize)&&
+          (blob.type||'')===(entry.sourceType||'');
+      }catch(_){return false;}
     }
     async function refreshEntries(){
       const pending=new Map(Object.values(journal.entries).map(e=>[e.photoId,clone(e)]));
@@ -126,7 +149,7 @@
           if(!(file instanceof Blob))throw error('ORIGINAL_NOT_SAVED','元写真の保存が完了していません。元の写真を選び直してください。');
           current=await stage(current,file);
         }
-        if(current.status==='attached'){forget(current.photoId);return {status:'attached',photoId:current.photoId};}
+        if(current.status==='attached'){forget(current.photoId);return {status:'attached',photoId:current.photoId,originalSaved:true};}
         if(!validTarget(current.target))throw error('TARGET_UNKNOWN','写真の追加先が未確認です。記録を選んで関連付けてください。');
         await records.checkTarget(current.target);
         let blob=await shared.get(current.photoId,current.target.drawingId);
@@ -157,11 +180,12 @@
         // The adapter reads latest records here, after every file/decode await.
         await records.attach(current.target,photo,current);
         current=await update(current,{status:'attached',attachedAt:now(),lastError:null,errorCode:null});
-        forget(current.photoId);return {status:'attached',photoId:current.photoId};
+        forget(current.photoId);return {status:'attached',photoId:current.photoId,originalSaved:true};
       }catch(e){
-        const pending={...current,status:'pending',updatedAt:now(),lastError:e?.message||String(e),errorCode:e?.code||'SAVE_FAILED'};
+        const originalSaved=await hasSavedOriginal(current);
+        const pending={...current,status:'pending',originalSaved,updatedAt:now(),lastError:e?.message||String(e),errorCode:e?.code||'SAVE_FAILED'};
         if(pending.originalSaved){try{await originals.updatePhotoAssociation(pending.storageDrawingId,pending.photoId,association(pending));}catch(_){} }
-        remember(pending);return {status:'pending',photoId:pending.photoId,error:pending.lastError};
+        remember(pending);return {status:'pending',photoId:pending.photoId,originalSaved,error:pending.lastError};
       }
     }
     function enqueue(entry){
@@ -172,13 +196,13 @@
       queue=task.catch(()=>{});flights.set(entry.photoId,task);
       task.finally(()=>flights.delete(entry.photoId));return task;
     }
-    async function register(fileList,intent){
+    async function registerFiles(fileList,intent){
       const incoming=Array.from(fileList||[]);if(!incoming.length)return [];
       if(!intent?.operationId)throw error('INTENT_REQUIRED','撮影操作が指定されていません');
       let op=journal.operations[intent.operationId];
       if(!op){
         const stored=(await originals.listMeta()).map(fromMeta).filter(e=>e?.operationId===intent.operationId).sort((a,b)=>a.index-b.index);
-        if(stored.length===incoming.length&&stored.every(e=>e.status==='attached'))return stored.map(e=>({status:'attached',photoId:e.photoId}));
+        if(stored.length===incoming.length&&stored.every(e=>e.status==='attached'))return stored.map(e=>({status:'attached',photoId:e.photoId,originalSaved:true}));
         if(!stored.length)throw error('INTENT_MISSING','撮影操作の保存記録が見つかりません');
         op={...clone(intent),photoIds:stored.map(e=>e.photoId)};journal.operations[op.operationId]=op;
         for(const entry of stored)journal.entries[entry.photoId]=entry;
@@ -224,6 +248,13 @@
       }
       return Promise.all(staged.map(enqueue));
     }
+    async function register(fileList,intent){
+      const id=intent?.operationId;
+      if(id)registrations.set(id,(registrations.get(id)||0)+1);
+      try{return await registerFiles(fileList,intent);}
+      finally{if(id){const remaining=registrations.get(id)-1;
+        if(remaining)registrations.set(id,remaining);else registrations.delete(id);}}
+    }
     async function retryPending(photoId){
       const entries=(await refreshEntries()).filter(e=>!photoId||e.photoId===photoId);
       return Promise.all(entries.map(enqueue));
@@ -247,7 +278,7 @@
       if(!entry||entry.originalSaved)throw error('ORIGINAL_PRESENT','原本が保存済みの写真は置き換えません');
       files.set(photoId,file);return enqueue(entry);
     }
-    return {prepare,consume,cancel,register,retryPending,listPending:refreshEntries,reassign,supplyOriginal,
+    return {prepare,consume,cancel,cancelCapture,register,retryPending,listPending:refreshEntries,reassign,supplyOriginal,
       get pendingCount(){return Object.keys(journal.entries).length;}};
   }
 
@@ -345,6 +376,12 @@
     const target=captureTarget();if(!target)throw error('TARGET_REQUIRED','写真を追加する記録を選んでください');
     return service.prepare(target,{inputId});
   }
+  function prepareCapture(target){
+    // The camera session supplies its original target, never today's selection.
+    // Recheck its ownership and current availability before every shutter.
+    readTarget(target);
+    return service.prepare(target,{inputId:'continuousCamera',requireDurable:true});
+  }
   async function register(files,intent){
     if(!files?.length)return [];
     const prepared=intent?.operationId?intent:service.prepare(intent||captureTarget(),{requireDurable:false});
@@ -421,7 +458,7 @@
     }catch(e){status('保存待ちの写真を確認できません：'+(e.message||e));}
     finally{rendering=false;}
   }
-  root.SentlogCollaborationPhotos={...pure,prepareInput,captureTarget,register,
+  root.SentlogCollaborationPhotos={...pure,prepareInput,prepareCapture,cancelCapture:intent=>service.cancelCapture(intent),captureTarget,register,
     retryPending:photoId=>service.retryPending(photoId),listPending:()=>service.listPending(),
     reassign:(photoId,target)=>service.reassign(photoId,target),refresh,afterIncoming:queueRender,
     isCommitting:()=>committing>0,get ready(){return !!root.SentlogRecords?.ready;}};

@@ -211,6 +211,21 @@ await test('two pending photo removals keep separate identities and both remain 
   assert.equal(f.current.photos.length,0);assert.equal(Object.keys(f.current.collab.photos).length,2);
 });
 
+await test('continuous-camera review targets its bound record and uses existing revision-bound removal',async()=>{
+  const initial=C.addPhoto(shape('s1'),{id:'camera-photo',name:'今回の写真.jpg'},remoteOpts('Initial'));
+  const f=fixture({shapes:[initial,shape('s2')]}),capture={ownerId:'account-a',projectId:'p1',drawingId:'d1',recordId:'s1'};
+  f.ctx.selectShape('s2');f.api.requestPhotoRemoval(capture,'camera-photo');
+  assert.equal(f.ctx.state.shapes[0].photos.length,1);
+  assert.equal(f.ctx.selected,'s2','requesting removal must not select a different record');
+  await f.click('写真を外す',f.document.querySelector('.sl-collab-dialog'));
+  assert.equal(f.ctx.state.shapes[0].photos.length,0);assert.equal(f.ctx.selected,'s2');
+  assert(C.view(f.ctx.state.shapes[0]).photos.find(p=>p.id==='camera-photo').deleted);
+  const other=fixture({shapes:[initial]});other.ctx.SentlogArchive={byLocal:()=>({status:'archived'})};
+  assert.throws(()=>other.api.requestPhotoRemoval(capture,'camera-photo'),/保管中/);
+  other.ctx.SentlogArchive={byLocal:()=>({status:'active'})};other.setAccount('another-account');
+  assert.throws(()=>other.api.requestPhotoRemoval(capture,'camera-photo'),/撮影先/);assert.equal(other.writes,0);
+});
+
 await test('a changed photo head requires review again and an account change cancels the pending unlink',async()=>{
   const initial=C.addPhoto(shape(),{id:'photo-a',name:'最初の名前.jpg'},remoteOpts('Initial')),f=fixture({shapes:[initial]});await f.ctx.removeSelectedPhoto('photo-a');f.drain();let pulls=0;
   f.ctx.sentlogCollabRefresh=async projectId=>{if(++pulls===1){const row=C.view(f.current).photos.find(p=>p.id==='photo-a');f.receive(C.restorePhoto(f.current,'photo-a',{...remoteOpts('Peer'),expectedHeads:row.headIds,metadata:{...row.metadata,name:'更新された名前.jpg'}}));}return {fresh:true,projectId};};
