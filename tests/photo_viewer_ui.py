@@ -11,6 +11,7 @@ import functools
 import io
 import json
 import os
+import tempfile
 import threading
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -324,7 +325,7 @@ def fixture_regression(browser, encoded, mobile, engine):
     print('PASS photo viewer '+engine+' '+('mobile' if mobile else 'desktop')+': guarded gestures, stable editor/original, bounded reusable canvas, release/cancel, errors and async races')
 
 
-def built_regression(browser, built_root, encoded, engine):
+def built_regression(browser, built_root, encoded, engine, browser_type):
     class Handler(SimpleHTTPRequestHandler):
         def log_message(self, *args):
             pass
@@ -332,9 +333,14 @@ def built_regression(browser, built_root, encoded, engine):
     server = ThreadingHTTPServer(('127.0.0.1', 0), functools.partial(Handler, directory=str(built_root)))
     threading.Thread(target=server.serve_forever, daemon=True).start()
     origin = f'http://127.0.0.1:{server.server_port}'
+    profile = tempfile.TemporaryDirectory(prefix='sentlog-photo-webkit-') if engine == 'webkit' else None
+    context = None
     try:
-        context = browser.new_context(viewport={'width': 390, 'height': 844}, is_mobile=True, has_touch=True,
-                                      device_scale_factor=3, service_workers='block')
+        options = dict(viewport={'width': 390, 'height': 844}, is_mobile=True, has_touch=True,
+                       device_scale_factor=3, service_workers='block')
+        # This exercises real IndexedDB Blob/File storage, so WebKit needs a
+        # normal persistent test profile rather than an ephemeral/private one.
+        context = browser_type.launch_persistent_context(profile.name, headless=True, **options) if profile else browser.new_context(**options)
         # Other app renderers have their own budgets, so only audit photo memory
         # in the isolated fixture above. Here test assembled-app integration.
 
@@ -381,10 +387,13 @@ def built_regression(browser, built_root, encoded, engine):
         assert page.evaluate('photoBuiltSnapshot()') == before
         assert page.locator('#editorView').is_visible()
         assert not errors, errors
-        context.close()
         print('PASS built app '+engine+': pinch/release remains in photo viewer; close returns to unchanged drawing and records')
     finally:
+        if context:
+            context.close()
         server.shutdown()
+        if profile:
+            profile.cleanup()
 
 
 def main():
@@ -402,7 +411,7 @@ def main():
             fixture_regression(browser, encoded, mobile=True, engine=args.engine)
             fixture_regression(browser, encoded, mobile=False, engine=args.engine)
             if args.built_root:
-                built_regression(browser, args.built_root.resolve(), encoded, engine=args.engine)
+                built_regression(browser, args.built_root.resolve(), encoded, engine=args.engine, browser_type=getattr(playwright, args.engine))
         finally:
             browser.close()
 
