@@ -337,7 +337,6 @@ def built_regression(browser, built_root, encoded, engine):
                                       device_scale_factor=3, service_workers='block')
         # Other app renderers have their own budgets, so only audit photo memory
         # in the isolated fixture above. Here test assembled-app integration.
-        context.add_init_script("window.photoAudit={created:0,urls:0,maxPixels:0,oversize:0,liveUrls:new Set(),events:[]};for(const phase of ['pointerdown','pointerup','pointercancel'])document.addEventListener(phase,e=>photoAudit.events.push({id:e.pointerId,type:e.pointerType,phase}),true)")
 
         def route(request):
             if request.request.url.startswith(origin + '/'):
@@ -353,6 +352,10 @@ def built_regression(browser, built_root, encoded, engine):
         page.on('pageerror', lambda error: errors.append(str(error)))
         page.goto(origin + '/sentlog/', wait_until='domcontentloaded')
         page.wait_for_function("window.sentlogAppReady&&!!document.getElementById('photoViewerCanvas')", timeout=30000)
+        # The production loader replaces its bootstrap document with
+        # document.open/write. Observe the finished document, not discarded
+        # bootstrap listeners, so the real finger-release assertion is valid.
+        page.evaluate("window.photoAudit={created:0,urls:0,maxPixels:0,oversize:0,liveUrls:new Set(),events:[]};for(const phase of ['pointerdown','pointerup','pointercancel'])document.addEventListener(phase,e=>photoAudit.events.push({id:e.pointerId,type:e.pointerType,phase}),true)")
         before = page.evaluate("""async encoded=>{
           await window.sentlogAppReady;
           const id='photo-test-drawing',pid='photo-test-project',meta={id,name:'Synthetic drawing',sourceType:'image',fileName:'drawing.svg',pageCount:1};
