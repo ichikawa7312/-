@@ -98,6 +98,8 @@ jobs:
           python3 scripts/build_dxf_transparency.py
           python3 scripts/build_auto_trace.py
           python3 scripts/build_live_sync.py
+          python3 scripts/build_photo_viewer.py
+          node --check sentlog/photo-viewer.js
           node tests/photo_ledger.test.cjs
           node tests/photo_ledger_damage.test.cjs
           node tests/photo_ledger_tensile.test.cjs

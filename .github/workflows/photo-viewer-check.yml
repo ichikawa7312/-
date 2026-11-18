@@ -1,0 +1,61 @@
+name: Sentlog photo pinch release checks
+on:
+  push:
+    branches: ['fix/photo-viewer-*']
+  pull_request:
+    paths:
+      - '.github/workflows/pages.yml'
+      - '.github/workflows/photo-viewer-check.yml'
+      - 'scripts/build_photo_viewer.py'
+      - 'sentlog/photo-viewer.js'
+      - 'sentlog/part*.txt'
+      - 'tests/photo_viewer_ui.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build and check the exact production app
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import subprocess
+          lines=Path('.github/workflows/pages.yml').read_text().splitlines()
+          marker='      - name: Build archive, management and capacity integration'
+          assert lines.count(marker)==1
+          start=lines.index(marker)+1
+          assert lines[start].strip()=='run: |'
+          commands=[]
+          for line in lines[start+1:]:
+              if line.startswith('          '):
+                  commands.append(line[10:])
+              else:
+                  break
+          assert any('build_photo_viewer.py' in c for c in commands)
+          assert len(commands)>90
+          subprocess.run(['bash','-e','-o','pipefail','-c','\n'.join(commands)],check=True)
+          PY
+      - name: Install browser test engines
+        run: |
+          python -m pip install playwright==1.57.0 pillow==11.3.0
+          python -m playwright install --with-deps chromium webkit
+      - name: Test actual touch input and built-app photo flow
+        run: python tests/photo_viewer_ui.py --engine chromium --built-root .
+      - name: Check WebKit gesture isolation and release behavior
+        run: python tests/photo_viewer_ui.py --engine webkit --built-root .
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: photo-viewer-browser-results
+          path: test-results/photo-viewer-*
+          if-no-files-found: ignore
