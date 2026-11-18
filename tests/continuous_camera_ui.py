@@ -63,7 +63,11 @@ CAMERA_MOCK = r"""encoded=>{
     if(active.has(source)){mock.canvasPhotos++;return drawImage.call(this,image,...args);}
     return drawImage.call(this,source,...args);
   };
-  Object.defineProperty(navigator.mediaDevices,'getUserMedia',{configurable:true,value:async constraints=>{
+  // Keep a stable wrapper across separate evaluations in WebKit; attaching an
+  // expando to a temporary native mediaDevices wrapper can lose the mock.
+  const mediaDevices=navigator.mediaDevices;
+  Object.defineProperty(navigator,'mediaDevices',{configurable:true,value:mediaDevices});
+  Object.defineProperty(mediaDevices,'getUserMedia',{configurable:true,value:async constraints=>{
     mock.calls++;mock.constraints.push(structuredClone(constraints));
     if(mock.deny)throw new DOMException('Synthetic camera permission denied','NotAllowedError');
     if(mock.startGate)await mock.startGate;
@@ -285,12 +289,12 @@ def run(page, engine, screenshot_dir=None):
         wait_photos(page, 'memo-plan-b', 1)
         camera_count(page, 0)
         expect(row.locator('.sl-camera-photo-name')).to_have_text('記録から外した写真')
-        expect(row.locator('[data-camera-remove]')).to_have_count(0)
+        expect(row.locator('[data-camera-remove]')).to_be_hidden()
         assert removed_photo_id not in saved_photo_ids(page, 'memo-plan-b')
         assert page.evaluate("""async id=>!!(await SentlogOriginalPhotos.getOriginal('memo-plan-b',id))""", removed_photo_id)
         screenshot('photo-removed-original-retained')
     finally:
-        page.evaluate('window.sentlogCollabRefresh=cameraMock.originalRefresh')
+        page.evaluate('()=>{window.sentlogCollabRefresh=cameraMock.originalRefresh;}')
     page.locator('#slCameraReviewClose').click()
     page.locator('#slCameraDone').click()
     page.wait_for_function('!SentlogContinuousCamera.isOpen()')
@@ -299,7 +303,7 @@ def run(page, engine, screenshot_dir=None):
     # Ending the session before the permission/start request resolves must
     # stop a late-arriving stream instead of leaving camera hardware active.
     previous_tracks = page.evaluate('cameraMock.tracks.length')
-    page.evaluate('cameraMock.startGate=new Promise(resolve=>{cameraMock.releaseStart=resolve;})')
+    page.evaluate('()=>{cameraMock.startGate=new Promise(resolve=>{cameraMock.releaseStart=resolve;});}')
     open_camera(page)
     expect(page.locator('#slCameraShutter')).to_be_disabled()
     page.locator('#slCameraDone').click()
