@@ -122,6 +122,22 @@ await test('IME composition never saves a partial value and stays bound to the o
   f.type('別の記録');f.tick(650);assert(f.current.memo.includes('別の記録'));
 });
 
+await test('a delayed composition end cannot enter the same record ID in another drawing and the original draft remains recoverable',async()=>{
+  const f=fixture(),first=f.state(),second={...copy(first),shapes:[C.appendComment(shape(),'別図面の文章',remoteOpts('Second'))]};
+  f.input.dispatch('compositionstart');f.type('元の図面で変換ちゅう',{isComposing:true});
+  f.records.set('draw:d2',JSON.stringify(second));f.ctx.activeDrawingId='d2';f.ctx.state=copy(second);f.ctx.render();
+  assert.equal(f.input.value,'元の図面で変換ちゅう');
+  f.input.value='元の図面に確定した文章';f.input.dispatch('compositionend');f.drain();f.tick(1000);
+  assert.equal(f.writes,0,'a late completion must not save into the newly selected drawing');
+  assert.deepEqual(JSON.parse(f.records.get('draw:d1')),first);
+  assert.deepEqual(JSON.parse(f.records.get('draw:d2')),second);
+  assert.equal(f.input.value,'','the new drawing has its own independent composer');
+  f.ctx.activeDrawingId='d1';f.ctx.state=JSON.parse(f.records.get('draw:d1'));f.ctx.render();
+  assert.equal(f.input.value,'元の図面に確定した文章');f.tick(250);
+  assert.equal(C.view(f.current).comments.filter(c=>c.text==='元の図面に確定した文章').length,1);
+  assert.deepEqual(JSON.parse(f.records.get('draw:d2')),second);
+});
+
 await test('incoming peer comments preserve the exact unsaved local text and both save independently',async()=>{
   const f=fixture();f.type('入力途中');const peer=C.appendComment(f.current,'相手の記録',remoteOpts('Peer'));f.receive(peer);
   assert.equal(f.input.value,'入力途中');assert(f.current.memo.includes('相手の記録'));assert.equal(f.api.flushDraft(),true);

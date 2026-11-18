@@ -40,7 +40,7 @@ jobs:
                   commands.append(line[10:])
               else:
                   break
-          assert any('build_edit_sync.py' in c for c in commands)
+          assert any('build_collaboration_editor.py' in c for c in commands)
           assert len(commands)>90
           subprocess.run(['bash','-e','-o','pipefail','-c','\n'.join(commands)],check=True)
           PY
@@ -52,12 +52,20 @@ jobs:
         run: |
           python tests/sync_traffic_ui.py
           python tests/drawing_order_ui.py
-      - name: Verify automatic two-device editing in Chromium
+      - name: Verify shared record editing in Chromium
         if: ${{ !cancelled() && steps.production.outcome == 'success' && steps.browsers.outcome == 'success' }}
-        run: python tests/edit_sync_ui.py --engine chromium --built-root .
-      - name: Verify automatic two-device editing in WebKit
+        run: python tests/collaboration_ui.py --engine chromium --built-root .
+      - name: Verify shared record editing in WebKit
         if: ${{ !cancelled() && steps.production.outcome == 'success' && steps.browsers.outcome == 'success' }}
-        run: python tests/edit_sync_ui.py --engine webkit --built-root .
-      - name: Verify existing comment and composition protections
+        run: python tests/collaboration_ui.py --engine webkit --built-root .
+      - name: Verify comment drafts and editor merge protection
         if: ${{ !cancelled() && steps.production.outcome == 'success' && steps.browsers.outcome == 'success' }}
-        run: python tests/field_record_memo_ui.py --engine chromium --built-root .
+        run: |
+          node tests/collaboration_editor.test.cjs
+          node tests/sync_live_editor.test.cjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sync-traffic-ui-evidence
+          path: /tmp/sentlog-collaboration-*.png
+          if-no-files-found: ignore

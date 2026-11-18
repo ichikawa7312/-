@@ -298,6 +298,28 @@ def capture(page, name='IMG_0001.png'):
     page.locator('#cameraInput').set_input_files(dict(name=name, mimeType='image/png', buffer=base.photo_png()))
 
 
+def preserved_records(page, expected=None):
+    value = page.evaluate("""async()=>{
+      await SentlogRecords.settled();SentlogRecords.assertSafe();
+      const saved=JSON.parse(SentlogRecords.getItem(drawingStorageKey(activeDrawingId)));
+      const keep=shapes=>Object.fromEntries(shapes.filter(s=>['survey-b','drawing-note'].includes(s.id)).map(s=>[s.id,s]));
+      return {view:currentView,drawing:activeDrawingId,
+        ids:state.shapes.map(s=>s.id).sort(),savedIds:saved.shapes.map(s=>s.id).sort(),
+        live:keep(state.shapes),saved:keep(saved.shapes)};
+    }""")
+    assert value['view'] == 'editor' and value['drawing'] == base.DRAWING, value
+    assert value['ids'] == value['savedIds'] == ['crack-a', 'drawing-note', 'survey-a', 'survey-b'], value
+    assert value['live'] == value['saved'], value
+    if expected is not None:
+        assert value['live'] == expected, value
+    return value['live']
+
+
+def draft_selection(page):
+    return page.locator('#slCollabDraft').evaluate("""el=>({value:el.value,focused:document.activeElement===el,
+      start:el.selectionStart,end:el.selectionEnd,record:selected,drawing:activeDrawingId})""")
+
+
 def run(browser, cloud, engine):
     ca, a, ea = make_page(browser, cloud, A, 820)
     cb, b, eb = make_page(browser, cloud, B, 390)
@@ -329,6 +351,8 @@ def run(browser, cloud, engine):
         page.evaluate('async()=>{sentlogImporting=false;await sentlogArchiveSync();await sentlogCloudIdle();}')
     wait(cloud, a, lambda: all(p.evaluate("SentlogRecordCollaboration.view(state.shapes.find(s=>s.id==='survey-a')).comments.length") == 1 for p in (a, b)), 'initial record not ready')
     quiet = copy.deepcopy(cloud.snapshots[base.CLOUD_QUIET])
+    protected = preserved_records(a)
+    preserved_records(b, protected)
 
     # Both clients post from the same baseline; the losing CAS must rebase all entries.
     cloud.hold_device = A
@@ -341,13 +365,37 @@ def run(browser, cloud, engine):
 
     # Remote input must not replace the focused Japanese composition draft.
     a.get_by_role('button', name='次のコメント', exact=True).click()
-    a.locator('#slCollabDraft').evaluate("el=>{el.focus();el.dispatchEvent(new CompositionEvent('compositionstart',{bubbles:true}));el.value='へんかんちゅう';el.dispatchEvent(new InputEvent('input',{bubbles:true,isComposing:true}));}")
+    a.locator('#slCollabDraft').evaluate("""el=>{
+      el.focus();el.dispatchEvent(new CompositionEvent('compositionstart',{bubbles:true}));
+      el.value='へんかんちゅう';el.dispatchEvent(new InputEvent('input',{bubbles:true,isComposing:true}));
+      el.setSelectionRange(2,5);render();render();
+    }""")
+    preedit_selection = dict(value='へんかんちゅう', focused=True, start=2, end=5,
+                            record='survey-a', drawing=base.DRAWING)
+    assert draft_selection(a) == preedit_selection
     add_comment(b, '変換中に届く追記')
     wait(cloud, a, lambda: '変換中に届く追記' in texts(a), 'IME blocked another comment')
-    assert a.locator('#slCollabDraft').input_value() == 'へんかんちゅう'
+    assert draft_selection(a) == preedit_selection, 'Remote render reset the IME focus or selection'
     assert 'へんかんちゅう' not in texts(a)
-    a.locator('#slCollabDraft').evaluate("el=>{el.value='変換後のコメント';el.dispatchEvent(new CompositionEvent('compositionend',{bubbles:true,data:el.value}));}")
+
+    # Drawing-memo renderers temporarily filter the shape list. Changing modes
+    # during IME must preserve all records and retain the original draft.
+    a.evaluate('async()=>{selected=null;render();await Promise.resolve();await SentlogRecords.settled();}')
+    preserved_records(a, protected)
+    assert a.evaluate('SentlogCollaboration.hasPendingDraft()')
+    assert 'へんかんちゅう' not in texts(a)
+    a.evaluate("SentlogFieldRecords.selectRecord('survey-a');$('inspector').classList.add('open');$('slCollabDraft').focus()")
+    assert draft_selection(a) == preedit_selection
+    a.locator('#slCollabDraft').evaluate("""el=>{
+      el.value='変換後のコメント';el.dispatchEvent(new CompositionEvent('compositionend',{bubbles:true,data:el.value}));
+      el.dispatchEvent(new InputEvent('input',{bubbles:true,isComposing:false,inputType:'insertText'}));
+      el.setSelectionRange(3,6);render();SentlogFieldRecords.selectRecord('survey-a');
+    }""")
     wait(cloud, b, lambda: '変換後のコメント' in texts(b), 'composition did not commit')
+    assert draft_selection(a) == dict(value='変換後のコメント', focused=True, start=3, end=6,
+                                      record='survey-a', drawing=base.DRAWING)
+    for page in (a, b):
+        preserved_records(page, protected)
 
     # Keep an actual Storage upload in flight. Other metadata must still travel.
     cloud.hold_upload = A
@@ -389,16 +437,32 @@ def run(browser, cloud, engine):
     a.locator('.sl-collab-dialog').get_by_role('button', name='変更する', exact=True).click()
     wait(cloud, b, lambda: b.evaluate("state.shapes.find(s=>s.id==='crack-a').crackWidthMm") == 0.3, 'fresh measurement confirmation not shared')
 
-    # Undo one's movement after a remote append; the remote append survives.
+    # A real long press and drag keeps its preview local until pointer release.
+    # Undo that movement after a remote append; the remote append survives.
     for page in (a, b):
         page.evaluate("selectShape('survey-a')")
-    original_x = a.evaluate("state.shapes.find(s=>s.id==='survey-a').point.x")
-    a.evaluate("()=>{const s=state.shapes.find(s=>s.id==='survey-a');pushHistory();s.point.x+=25;s.points=s.points.map(p=>({...p,x:p.x+25}));persist();render();}")
-    wait(cloud, b, lambda: b.evaluate("state.shapes.find(s=>s.id==='survey-a').point.x") == original_x + 25, 'move not shared')
+    original_point = a.evaluate("state.shapes.find(s=>s.id==='survey-a').point")
+    a.evaluate("document.activeElement?.blur();$('inspector').classList.remove('open');tool='pan';render()")
+    hit = a.locator('[data-field-record-id="survey-a"]').first.bounding_box()
+    assert hit, 'The record must have a real pointer target'
+    x, y = hit['x'] + hit['width'] / 2, hit['y'] + hit['height'] / 2
+    a.mouse.move(x, y)
+    a.mouse.down()
+    a.wait_for_timeout(650)
+    a.mouse.move(x + 24, y + 18, steps=5)
+    a.wait_for_timeout(950)
+    assert a.evaluate("state.shapes.find(s=>s.id==='survey-a').point") != original_point, 'Long press did not start a drag preview'
+    assert a.evaluate("JSON.parse(SentlogRecords.getItem(drawingStorageKey(activeDrawingId))).shapes.find(s=>s.id==='survey-a').point") == original_point, 'Drag preview was saved before release'
+    assert next(s for s in cloud.snapshots[base.CLOUD_PROJECT]['payload']['drawings'][0]['state']['shapes'] if s['id'] == 'survey-a')['point'] == original_point, 'Drag preview reached the server before release'
+    a.mouse.up()
+    moved_point = a.evaluate("state.shapes.find(s=>s.id==='survey-a').point")
+    assert moved_point != original_point
+    a.evaluate("$('inspector').classList.add('open')")
+    wait(cloud, b, lambda: b.evaluate("state.shapes.find(s=>s.id==='survey-a').point") == moved_point, 'Released move not shared')
     add_comment(b, '移動の後に届くコメント')
     wait(cloud, a, lambda: '移動の後に届くコメント' in texts(a), 'remote append before undo missing')
     a.locator('#undoBtn').click()
-    wait(cloud, b, lambda: b.evaluate("state.shapes.find(s=>s.id==='survey-a').point.x") == original_x, 'scoped undo did not return point')
+    wait(cloud, b, lambda: b.evaluate("state.shapes.find(s=>s.id==='survey-a').point") == original_point, 'scoped undo did not return point')
     assert '移動の後に届くコメント' in texts(a) and '移動の後に届くコメント' in texts(b)
     assert a.evaluate("state.shapes.find(s=>s.id==='survey-a').photos.length") == 3
 
@@ -457,12 +521,14 @@ def run(browser, cloud, engine):
          'photo undo lost another capture or failed to restore its own photo')
     expected_photo_ids = list(after_ids - {'retained-photo'})
     wait(cloud, b, lambda: received_all(a, expected_photo_ids) and received_all(b, expected_photo_ids), 'restored photo bytes or peer bytes missing', timeout=25)
+    for page in (a, b):
+        preserved_records(page, protected)
     assert quiet == cloud.snapshots[base.CLOUD_QUIET], 'unrelated project was rewritten'
     assert not cloud.unexpected, cloud.unexpected
     assert not ea and not eb, (ea, eb)
     a.screenshot(path=f'/tmp/sentlog-collaboration-{engine}-ipad.png', full_page=True)
     b.screenshot(path=f'/tmp/sentlog-collaboration-{engine}-iphone.png', full_page=True)
-    print(f'PASS {engine}: two writers, CAS collision, IME, comments during held Storage upload ({metadata_seconds:.2f}s), photo bytes, stale confirmation, scoped undo, offline/lost-ack recovery, photo removal/undo during peer capture; {len(cloud.writes)} snapshots')
+    print(f'PASS {engine}: two writers, CAS collision, IME focus/caret and mode switch, retained drawing memo/record IDs, comments during held Storage upload ({metadata_seconds:.2f}s), photo bytes, stale confirmation, real drag release and scoped undo, offline/lost-ack recovery, photo removal/undo during peer capture; {len(cloud.writes)} snapshots')
     ca.close();cb.close()
 
 
