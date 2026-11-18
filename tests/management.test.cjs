@@ -6,9 +6,14 @@ assert.equal(C.maySync(retired,null),false);assert.equal(C.maySync(retired,'reti
 console.log('PASS retired projects excluded from automatic and manual sync');
 async function registration(path,end,active=true,networkError=false){
   const source=fs.readFileSync(path,'utf8');
-  const code=source.slice(source.indexOf('async function ensureDevice(){'),source.indexOf(end,source.indexOf('async function ensureDevice(){')));
+  let code=source.slice(source.indexOf('async function ensureDevice(){'),source.indexOf(end,source.indexOf('async function ensureDevice(){')));
+  if(source.includes('collaboration-sync-v1')){
+    const start=source.indexOf('function collaborationAssertOwner('),finish=source.indexOf('function collaborationNormalizeRecord(',start);
+    assert(start>=0&&finish>start,'compiled device cache helpers are available');
+    code='let collaborationDeviceCache=null;const collaborationDeviceSeen=new Map();'+source.slice(start,finish)+code;
+  }
   const events=[],writes=[];
-  const ctx=vm.createContext({Date,Array,String,JSON,navigator:{platform:'test'},DEVICE_KEY:'key',enc:encodeURIComponent,
+  const ctx=vm.createContext({Date,Array,String,JSON,window:{},session:{user:{id:'owner'}},navigator:{platform:'test'},DEVICE_KEY:'key',enc:encodeURIComponent,
     localStorage:{getItem:()=> 'existing-registration',setItem:(k,v)=>writes.push([k,v])},ensureSession:async()=>{},deviceName:()=> 'test',deviceType:()=> 'browser',
     rest:async(path,opts={})=>{events.push([path,opts.method||'GET']);if(networkError)throw Error('synthetic offline');if(path.includes('register_device'))throw Error('Must not silently create another registration');return [{id:'existing-registration',active}];}});
   vm.runInContext(code,ctx);

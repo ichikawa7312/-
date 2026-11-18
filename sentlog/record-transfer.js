@@ -6,6 +6,7 @@
   const WS_KEY='surveyFieldNoteWorkspaceV1';
   const DRAW_KEY=id=>'surveyFieldNoteDrawingV1:'+id;
   const copy=x=>JSON.parse(JSON.stringify(x));
+  const collaboration=()=>root.SentlogRecordCollaboration||(typeof require==='function'?require('./record-collaboration.js'):null);
 
   function point(value,sx,sy){
     if(!value||typeof value!=='object')return value;
@@ -14,10 +15,13 @@
   }
   function transformShape(shape,{sx=1,sy=1,page=1,id,photoIds=[]}={}){
     const out=copy(shape);
+    // A transformed raw body cannot retain the source's old projection. The
+    // collaborative transfer path below creates its new revisions explicitly.
+    delete out.collab;
     out.id=id||out.id;
     out.page=Number(page)||1;
     if(Array.isArray(out.points))out.points=out.points.map(p=>point(p,sx,sy));
-    for(const key of ['labelPos','center','start','end','anchor','textPos','leaderPos','arrowStart','arrowEnd']){
+    for(const key of ['point','labelPos','center','start','end','anchor','textPos','leaderPos','arrowStart','arrowEnd']){
       if(out[key]&&typeof out[key]==='object')out[key]=point(out[key],sx,sy);
     }
     if(Number.isFinite(Number(out.x)))out.x=Number(out.x)*sx;
@@ -41,6 +45,9 @@
     const originals=(sourceState?.shapes||[]).filter(s=>wanted.has(s.id));
     if(!originals.length)throw Error('移動する記録が選択されていません。');
     if(originals.length!==wanted.size)throw Error('選択した記録をすべて確認できません。');
+    const collaborative=options.collaborative===true||originals.some(s=>s.collab),M=collaborative?collaboration():null;
+    if(collaborative&&!M)throw Error('共同編集の記録を読み込めません。再読み込みして確認してください。');
+    const revisionOptions={actor:options.actor,at:options.at===undefined?Date.now():options.at,idFactory:options.revisionIdFactory||idFactory};
 
     const src=copy(sourceState),dst=sameDrawing?src:copy(targetState);
     if(!Array.isArray(src.shapes))src.shapes=[];
@@ -48,10 +55,35 @@
     if(operation==='move')src.shapes=src.shapes.filter(s=>!wanted.has(s.id));
 
     const photoJobs=[],newIds=[];
-    for(const original of originals){
+    const occupiedPhotos=new Set([src,dst].flatMap(st=>[...(st.shapes||[]),...(st.collabDeletedRecords||[])].flatMap(s=>[...(s.photos||[]).map(p=>p.id),...Object.keys(s.collab?.photos||{})])));
+    for(const raw of originals){for(const photo of raw.photos||[])occupiedPhotos.add(photo.id);for(const id of Object.keys(raw.collab?.photos||{}))occupiedPhotos.add(id);}
+    for(const raw of originals){
+      const upgraded=M?M.upgrade(raw):raw;
+      const original=M&&raw.collab&&!M.isDeleted(upgraded)?M.applyLocalEdit(upgraded,raw,{deterministic:true,recordId:raw.id,actor:{deviceId:null,deviceName:'不明'},at:0}):upgraded;
+      if(M&&(M.view(original).conflicts.length||M.isDeleted(original)))throw Error('共同編集の確認待ち、または削除済みの記録があります。内容を確認してからコピー／移動してください。');
       const newId=idFactory(),newPhotoIds=(original.photos||[]).map(()=>photoIdFactory());
-      const moved=transformShape(original,{sx,sy,page:targetPage,id:newId,photoIds:newPhotoIds});
-      moved.transferOrigin={drawingId:sourceId,page:Number(original.page)||1,recordId:original.id,operation};
+      if(!newId||newIds.includes(newId)||originals.some(s=>s.id===newId)||src.shapes.some(s=>s.id===newId)||dst.shapes.some(s=>s.id===newId)||(src.collabDeletedRecords||[]).some(s=>s.id===newId)||(dst.collabDeletedRecords||[]).some(s=>s.id===newId))throw Error('新しい記録IDが重複しています。再試行してください。');
+      for(const photoId of newPhotoIds){if(!photoId||occupiedPhotos.has(photoId))throw Error('新しい写真IDが重複しています。再試行してください。');occupiedPhotos.add(photoId);}
+      let moved=transformShape(original,{sx,sy,page:targetPage,id:newId,photoIds:newPhotoIds});
+      moved.transferOrigin={drawingId:sourceId,page:Number(original.page)||1,recordId:original.id,operation,
+        ...(M?{sourceRevision:M.revisionToken(original),actor:copy(revisionOptions.actor||{deviceId:null,deviceName:'不明'}),at:revisionOptions.at}:{})};
+      if(M){
+        // Copy source-authored comment and field history without changing any
+        // payload. Photographs get distinct identities at the destination;
+        // their complete former history stays with the source record.
+        const fresh=M.upgrade({id:newId,memo:'',photos:[]});
+        const template={...copy(original),id:newId,photos:[],collab:{...copy(original.collab),photos:{},deletion:fresh.collab.deletion}};
+        const baseline=M.upgrade(template),photos=moved.photos||[];
+        moved=M.applyLocalEdit(baseline,{...moved,photos:[],collab:baseline.collab},revisionOptions);
+        for(let i=0;i<photos.length;i++){
+          const value={...photos[i],transferSource:{drawingId:sourceId,recordId:original.id,photoId:original.photos[i].id}};
+          moved=M.addPhoto(moved,value,revisionOptions);
+        }
+        if(operation==='move'){
+          const tombstone=M.markDeleted(original,{...revisionOptions,expectedToken:M.revisionToken(original)});
+          src.collabDeletedRecords=[...(src.collabDeletedRecords||[]).filter(s=>s.id!==original.id),tombstone];
+        }
+      }
       dst.shapes.push(moved);newIds.push(newId);
       (original.photos||[]).forEach((photo,i)=>photoJobs.push({
         sourceDrawingId:sourceId,targetDrawingId:targetId,
@@ -156,19 +188,38 @@
   }
   async function execute({ids,operation,targetDrawingId,targetPage}){
     if(busy)return;
+    root.SentlogCollaboration?.flushDraft();
+    if(root.SentlogCollaboration?.hasPendingDraft?.())throw Error('入力中のコメントを保存してからコピー／移動してください。下書きは残しています。');
     const projectId=activeProjectId,sourceDrawingId=activeDrawingId,sourcePage=Number(state.currentPage)||1;
+    const account=()=>typeof root.sentlogCollaborationAccountId==='function'?root.sentlogCollaborationAccountId():'';
+    const owner=account();
     if(!projectId||!sourceDrawingId)throw Error('移動元の図面を確認できません。');
     if(sourceDrawingId===targetDrawingId&&sourcePage===targetPage)throw Error('同じページにはコピー／移動できません。');
-
-    const p=getProject(projectId),targetMeta=p?.drawings?.find(d=>d.id===targetDrawingId);
+    const beforeWorkspaceRaw=root.SentlogRecords.getItem(WS_KEY),beforeLiveWorkspace=JSON.stringify(workspace),beforeLiveState=JSON.stringify(state);
+    const authoritative=parse(beforeWorkspaceRaw,null),p=authoritative?.projects?.find(p=>p.id===projectId),targetMeta=p?.drawings?.find(d=>d.id===targetDrawingId);
     if(!p||!targetMeta)throw Error('移動先の図面を確認できません。');
     const sourceLoaded=loadState(sourceDrawingId),targetLoaded=sourceDrawingId===targetDrawingId?sourceLoaded:loadState(targetDrawingId);
+    const sharedState=value=>{
+      const out=copy(value);for(const k of ['currentPage','width','height','pdfPageInfo','labelSize','nextGlobalNo','typeCounters'])delete out[k];
+      for(const field of ['shapes','collabDeletedRecords'])out[field]=(out[field]||[]).map(s=>{
+        for(const k of ['globalNo','typeNo','autoLabel','recordNo','labelPosEditedAt'])delete s[k];for(const p of s.photos||[]){delete p.data;delete p.localBlob;}return s;
+      });return out;
+    };
+    const same=root.SentlogRecordCollaboration?.equal||((a,b)=>JSON.stringify(a)===JSON.stringify(b));
+    if(!same(sharedState(state),sharedState(sourceLoaded.state))||!same(workspace,authoritative))throw Error('保存待ちの変更があります。操作を確定してからコピー／移動してください。');
     if(!visiblePages(targetLoaded.state).includes(Number(targetPage)))throw Error('非表示ページには移動できません。ページ管理で表示してから再試行してください。');
-
     const chosen=sourceLoaded.state.shapes.filter(s=>ids.includes(s.id));
-    if(chosen.length!==ids.length)throw Error('選択した記録が変更されています。画面を開き直して再選択してください。');
+    if(chosen.length!==ids.length||chosen.some(s=>(Number(s.page)||1)!==sourcePage))throw Error('選択した記録が変更されています。画面を開き直して再選択してください。');
+    const assertUnchanged=()=>{
+      if(account()!==owner||activeProjectId!==projectId||activeDrawingId!==sourceDrawingId||Number(state.currentPage)!==sourcePage||
+        JSON.stringify(workspace)!==beforeLiveWorkspace||JSON.stringify(state)!==beforeLiveState||
+        root.SentlogRecords.getItem(WS_KEY)!==beforeWorkspaceRaw||root.SentlogRecords.getItem(DRAW_KEY(sourceDrawingId))!==sourceLoaded.raw||
+        root.SentlogRecords.getItem(DRAW_KEY(targetDrawingId))!==targetLoaded.raw)
+        throw Object.assign(Error('準備中に記録や図面が更新されました。新しい内容を確認して、記録を選び直してください。元の記録は変更していません。'),{code:'TRANSFER_CHANGED'});
+    };
     const sourceFile=await getBackgroundFile(sourceDrawingId),targetFile=sourceDrawingId===targetDrawingId?sourceFile:await getBackgroundFile(targetDrawingId);
     const sourceFrame=await frame(sourceFile,sourcePage,sourceLoaded.state),targetFrame=await frame(targetFile,targetPage,targetLoaded.state);
+    assertUnchanged();
     const sx=targetFrame.width/sourceFrame.width,sy=targetFrame.height/sourceFrame.height;
     const aspectDiff=Math.abs(targetFrame.ratio-sourceFrame.ratio)/Math.max(.0001,sourceFrame.ratio);
     const scaleDiff=!sameSetting(pageSetting(sourceLoaded.state,sourcePage),pageSetting(targetLoaded.state,targetPage));
@@ -180,65 +231,53 @@
       stat.records+'件の記録'+(stat.photos?'（写真 '+stat.photos+'枚を含む）':'')+'を\n'+
       '「'+targetMeta.name+'」 '+targetPage+'ページ目へ'+verb+'します。\n\n'+
       (warnings.length?warnings.join('\n')+'\n\n':'')+
-      (operation==='move'?'移動先への写真保存を確認してから、元ページの記録を削除します。':'元ページの記録はそのまま残します。')+
+      (operation==='move'?'移動先への写真保存を確認してから、元ページの記録を履歴に残して移動します。':'元ページの記録はそのまま残します。')+
       '\n\n実行しますか？'
     ))return;
 
     busy=true;let committed=false;
-    const beforeWorkspaceRaw=root.SentlogRecords.getItem(WS_KEY);
-    const beforeSourceRaw=sourceLoaded.raw,beforeTargetRaw=targetLoaded.raw;
     try{
-      await waitForIdle();
+      await waitForIdle();assertUnchanged();
       const plan=makeTransferPlan(sourceLoaded.state,targetLoaded.state,ids,{
         operation,targetPage,sameDrawing:sourceDrawingId===targetDrawingId,sx,sy,
-        sourceDrawingId,targetDrawingId,idFactory:newId,photoIdFactory:newId
+        sourceDrawingId,targetDrawingId,idFactory:newId,photoIdFactory:newId,
+        collaborative:!!root.SentlogRecordCollaboration,actor:root.SentlogCollaboration?.actor?.(),at:Date.now()
       });
       await copyPhotos(plan.photoJobs);
       renumber(plan.targetState);if(!plan.sameDrawing)renumber(plan.sourceState);
-
-      const nextWorkspace=copy(workspace),np=nextWorkspace.projects.find(x=>x.id===projectId);
+      const nextWorkspace=copy(authoritative),np=nextWorkspace.projects.find(x=>x.id===projectId);
       if(!np)throw Error('案件情報が更新されています。');
       const now=Date.now(),sourceMeta=np.drawings.find(d=>d.id===sourceDrawingId),destMeta=np.drawings.find(d=>d.id===targetDrawingId);
       if(!sourceMeta||!destMeta||Number(sourceMeta.deletedAt)>0||Number(destMeta.deletedAt)>0)throw Error('対象の図面が削除済みです。復元してから操作してください。');
-      const sc=counts(plan.sourceState),tc=counts(plan.targetState);
-      Object.assign(sourceMeta,sc,{updatedAt:now});
-      Object.assign(destMeta,tc,{updatedAt:now});
-      np.updatedAt=now;
-
+      Object.assign(sourceMeta,counts(plan.sourceState),{updatedAt:now});Object.assign(destMeta,counts(plan.targetState),{updatedAt:now});np.updatedAt=now;
+      if(root.SentlogRecordCollaboration)np.collaborationVersion=1;
       const writes=new Map();
       writes.set(DRAW_KEY(targetDrawingId),JSON.stringify(plan.targetState));
       if(!plan.sameDrawing)writes.set(DRAW_KEY(sourceDrawingId),JSON.stringify(plan.sourceState));
       writes.set(WS_KEY,JSON.stringify(nextWorkspace));
-      root.SentlogRecords.batch(writes);await root.SentlogRecords.flush();committed=true;
-      workspace=nextWorkspace;
-
+      // No awaited work can interleave between the final comparison and this
+      // one atomic metadata batch. Original photo files are never removed.
+      assertUnchanged();root.SentlogRecords.batch(writes);committed=true;
+      workspace=nextWorkspace;state=copy(plan.sourceState);
+      if(selected&&!state.shapes.some(s=>s.id===selected))selected=null;
+      root.SentlogCollaboration?.onRemote?.();
+      await root.SentlogRecords.flush();
       const savedTarget=loadState(targetDrawingId).state;
       if(!plan.newIds.every(id=>savedTarget.shapes.some(s=>s.id===id)))throw Error('移動先の記録保存を確認できません。');
-      if(operation==='move'){
-        const savedSource=loadState(sourceDrawingId).state;
-        if(ids.some(id=>savedSource.shapes.some(s=>s.id===id)))throw Error('移動元の記録削除を確認できません。');
-      }
-
-      close();
-      root.sentlogImporting=false;
+      if(operation==='move'&&ids.some(id=>loadState(sourceDrawingId).state.shapes.some(s=>s.id===id)))throw Error('元の記録に追加の変更が届いています。移動元と移動先の両方を確認してください。');
+      close();root.sentlogImporting=false;
+      if(account()!==owner||activeProjectId!==projectId||activeDrawingId!==sourceDrawingId)return true;
       await openDrawing(projectId,targetDrawingId);
       if(state.sourceType==='pdf'&&Number(state.currentPage)!==Number(targetPage))await renderPdfPage(Number(targetPage));
       alert(verb+'しました。\n移動先を開いています。位置を確認し、必要に応じて通常の移動操作で調整してください。');
       return true;
     }catch(e){
       console.error('record transfer',e);
-      if(committed){
-        try{
-          const restore=new Map([[WS_KEY,beforeWorkspaceRaw],[DRAW_KEY(sourceDrawingId),beforeSourceRaw]]);
-          if(sourceDrawingId!==targetDrawingId)restore.set(DRAW_KEY(targetDrawingId),beforeTargetRaw);
-          root.SentlogRecords.batch(restore);await root.SentlogRecords.flush();
-          workspace=parse(beforeWorkspaceRaw,{projects:[]});
-        }catch(re){console.error('record transfer rollback',re);}
-      }
+      // A committed batch may already have received later peer/local edits.
+      // Rolling complete old drawings back here would erase those changes.
+      if(committed)e.message='コピー／移動の記録は残しています。'+e.message;
       throw e;
-    }finally{
-      root.sentlogImporting=false;busy=false;
-    }
+    }finally{root.sentlogImporting=false;busy=false;}
   }
 
   function open(){
@@ -311,6 +350,6 @@
     document.head.append(style);
   }
 
-  root.SentlogRecordTransfer={...pure,open};
+  root.SentlogRecordTransfer={...pure,open,execute};
   Promise.resolve(root.sentlogAppReady).then(install).catch(e=>console.error('record transfer install',e));
 })(typeof globalThis!=='undefined'?globalThis:this);

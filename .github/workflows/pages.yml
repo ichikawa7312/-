@@ -101,6 +101,20 @@ jobs:
           python3 scripts/build_photo_viewer.py
           python3 scripts/build_field_memo.py
           python3 scripts/build_edit_sync.py
+          python3 scripts/build_collaboration_merge.py
+          python3 scripts/build_collaboration_photos.py
+          python3 scripts/build_collaboration_ledger.py
+          python3 scripts/build_collaboration_sync.py
+          python3 scripts/build_collaboration_editor.py
+          python3 scripts/build_collaboration_transfer.py
+          node tests/record_collaboration.test.cjs
+          node tests/collaboration_merge.test.cjs
+          node tests/collaboration_photos.test.cjs
+          node tests/collaboration_ledger.test.cjs
+          node tests/collaboration_channel.test.cjs
+          node tests/collaboration_sync.test.cjs
+          node tests/collaboration_editor.test.cjs
+          node tests/collaboration_transfer.test.cjs
           node tests/edit_sync.test.cjs
           node tests/edit_sync_cloud.test.cjs
           node tests/edit_sync_integration.test.cjs

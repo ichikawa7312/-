@@ -64,6 +64,24 @@
   function merge(local,remote,options={}){
     const conflicts=[],preserve=options.preserve===true,base=options.base;
     const clash=(path,reason='内容が異なります')=>{conflicts.push({path,reason});return undefined;};
+    const collaborative=options.collaborative===true||[local,remote,base].some(p=>p?.project?.collaborationVersion===1);
+    const recordModel=()=>root.SentlogRecordCollaboration||(typeof require==='function'?require('./record-collaboration.js'):null);
+    function collaborativeDrawing(...drawings){
+      return collaborative||drawings.some(d=>d?.state?.collabDeletedRecords!==undefined||(d?.state?.shapes||[]).some(s=>s.collab));
+    }
+    function collaborativeRecords(l,r,b,path){
+      const C=recordModel();if(!C){clash(path,'共同編集の処理を読み込めません');return {shapes:[],collabDeletedRecords:[]};}
+      const all=s=>[...(s?.shapes||[]),...(s?.collabDeletedRecords||[])];
+      const lm=map(all(l),path),rm=map(all(r),path),bm=map(all(b),path),out={shapes:[],collabDeletedRecords:[]};
+      for(const id of new Set([...rm.keys(),...lm.keys(),...bm.keys()])){
+        const result=C.mergeRecords(lm.get(id),rm.get(id),{base:bm.get(id)});
+        if(!result.ok){clash(path+' / '+id,result.reason);continue;}
+        // Unresolved alternatives remain in immutable history and are shared.
+        // A missing snapshot entry is never itself a record deletion operation.
+        out[C.isDeleted(result.record)?'collabDeletedRecords':'shapes'].push(result.record);
+      }
+      return out;
+    }
     function choose(l,r,b,path,clean=x=>x){
       if(equal(clean(l),clean(r)))return {done:true,value:copy(r)};
       if(base){
@@ -75,7 +93,7 @@
     function properties(l,r,b,path,excluded=[]){
       const out={},keys=new Set([...Object.keys(l||{}),...Object.keys(r||{}),...Object.keys(b||{})]);
       for(const k of keys){
-        if(excluded.includes(k))continue;
+        if(excluded.includes(k)||k==='collabDeletedRecords')continue;
         const picked=choose(l?.[k],r?.[k],b?.[k],path+' / '+k);
         let v;
         if(picked.done)v=picked.value;
@@ -103,7 +121,11 @@
         let value;
         // Manual preservation must recurse even for one-sided edits so that
         // annotations and photos deleted on only one side are still retained.
-        if(preserve){
+        if(combine===drawing&&collaborativeDrawing(a,z,ancestor)){
+          const present=a||z||ancestor;
+          if(present)value=drawing(a||present,z||present,ancestor,label);
+        }
+        else if(preserve){
           if(a===undefined||z===undefined)value=copy(a||z);
           else if(equal(clean(a),clean(z)))value=copy(z);
           else value=combine(a,z,ancestor,label);
@@ -157,7 +179,8 @@
         if(!equal(l.state[key],r.state[key])){clash(path,label+'が異なります');return;}
       }
       const st=properties(l.state,r.state,b?.state,path+' / 用紙・縮尺',['shapes',...viewKeys]);
-      st.shapes=entities(l.state.shapes||[],r.state.shapes||[],b?.state?.shapes||[],path,shapeValue,(a,z,ancestor,label)=>shape(a,z,ancestor,label,l.meta.id,l.meta,r.meta));
+      if(collaborativeDrawing(l,r,b))Object.assign(st,collaborativeRecords(l.state,r.state,b?.state,path));
+      else st.shapes=entities(l.state.shapes||[],r.state.shapes||[],b?.state?.shapes||[],path,shapeValue,(a,z,ancestor,label)=>shape(a,z,ancestor,label,l.meta.id,l.meta,r.meta));
       for(const k of viewKeys)if(l.state[k]!==undefined)st[k]=copy(l.state[k]);
       meta.updatedAt=Math.max(Number(l.meta.updatedAt)||0,Number(r.meta.updatedAt)||0);
       return {id:l.id,meta,state:st};
@@ -173,13 +196,21 @@
         seen.add(id);out.push({id,...copy(d)});
         map(d.state.shapes,label+' / '+(d.meta.name||id));
         for(const s of d.state.shapes)map(s.photos||[],label+' / 写真');
+        if(d.state.collabDeletedRecords!==undefined){
+          map(d.state.collabDeletedRecords,label+' / 削除履歴');
+          if(Array.isArray(d.state.collabDeletedRecords)){
+            map([...d.state.shapes,...d.state.collabDeletedRecords],label+' / 記録と削除履歴');
+            for(const s of d.state.collabDeletedRecords)map(s.photos||[],label+' / 写真履歴');
+          }
+        }
       }
       if(seen.size!==metas.size)clash(label,'不足した図面記録があります');
       return out;
     }
     const ls=validate(local,'この端末'),rs=validate(remote,'共有データ'),bs=base?validate(base,'前回同期'):[];
     if(!local?.project?.id||local.project.id!==remote?.project?.id||(base&&base.project?.id!==local.project.id))clash('案件','別の案件です');
-    if(!preserve&&!base&&!onlyDisplayDifferences(local,remote))clash('前回同期','共通の同期記録がありません。「両方の記録を残して同期」を選んでください');
+    const hasCollaborativeRecords=collaborative||[...ls,...rs,...bs].some(d=>collaborativeDrawing(d));
+    if(!preserve&&!base&&!hasCollaborativeRecords&&!onlyDisplayDifferences(local,remote))clash('前回同期','共通の同期記録がありません。「両方の記録を残して同期」を選んでください');
     if(conflicts.length)return {ok:false,conflicts};
     // Missing entries and explicit 0 degrees render identically in the editor.
     // Never coerce malformed values or treat a genuine quarter-turn as equal.
@@ -209,7 +240,8 @@
       const counters=Object.create(null);let number=0;
       for(const s of d.state.shapes){
         if(s.recordKind==='drawing-memo'||s.recordKind==='dimension-line'||s.kind==='dimension')continue;
-        s.type=s.type||'腐食';s.globalNo=++number;s.typeNo=counters[s.type]=(counters[s.type]||0)+1;s.autoLabel=s.type+'-'+s.typeNo;
+        if(!s.collab)s.type=s.type||'腐食';
+        const type=s.type||'腐食';s.globalNo=++number;s.typeNo=counters[type]=(counters[type]||0)+1;s.autoLabel=type+'-'+s.typeNo;
       }
       d.state.nextGlobalNo=number+1;d.state.typeCounters={...counters};
       d.meta.shapeCount=number;d.meta.photoCount=d.state.shapes.reduce((n,s)=>n+(s.photos?.length||0),0);

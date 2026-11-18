@@ -1,0 +1,81 @@
+name: Sentlog shared record collaboration checks
+on:
+  push:
+    branches: ['feat/collaborative-records-*']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: collaboration-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  realtime:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Check managed Realtime initialization without user data
+        run: node tests/collaboration_realtime_probe.cjs
+  browser:
+    runs-on: ubuntu-24.04
+    container:
+      image: mcr.microsoft.com/playwright/python:v1.57.0-noble@sha256:8331696befd3ee8b5baefca428446345f548e415a2408fe1d3d1224e9d919682
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build and check the exact production app
+        id: build
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import subprocess
+          lines=Path('.github/workflows/pages.yml').read_text().splitlines()
+          marker='      - name: Build archive, management and capacity integration'
+          assert lines.count(marker)==1
+          start=lines.index(marker)+1
+          assert lines[start].strip()=='run: |'
+          commands=[]
+          for line in lines[start+1:]:
+              if line.startswith('          '):
+                  commands.append(line[10:])
+              else:
+                  break
+          assert any('build_collaboration_editor.py' in c for c in commands)
+          subprocess.run(['bash','-e','-o','pipefail','-c','\n'.join(commands)],check=True)
+          PY
+      - name: Install matching test package for bundled browsers
+        id: browser_runtime
+        run: python -m pip install playwright==1.57.0 pillow==11.3.0
+      - name: Shared records in Chromium
+        if: ${{ always() && steps.build.outcome == 'success' && steps.browser_runtime.outcome == 'success' }}
+        run: python tests/collaboration_ui.py --engine chromium --built-root .
+      - name: Shared records in WebKit
+        if: ${{ always() && steps.build.outcome == 'success' && steps.browser_runtime.outcome == 'success' }}
+        run: python tests/collaboration_ui.py --engine webkit --built-root .
+      - name: Recoverable camera capture in Chromium
+        if: ${{ always() && steps.build.outcome == 'success' && steps.browser_runtime.outcome == 'success' }}
+        run: python tests/collaboration_photos_ui.py --engine chromium --built-root .
+      - name: Recoverable camera capture in WebKit
+        if: ${{ always() && steps.build.outcome == 'success' && steps.browser_runtime.outcome == 'success' }}
+        run: python tests/collaboration_photos_ui.py --engine webkit --built-root .
+      - name: Photo zoom and release in Chromium
+        if: ${{ always() && steps.build.outcome == 'success' && steps.browser_runtime.outcome == 'success' }}
+        run: python tests/photo_viewer_ui.py --engine chromium --built-root .
+      - name: Photo zoom and release in WebKit
+        if: ${{ always() && steps.build.outcome == 'success' && steps.browser_runtime.outcome == 'success' }}
+        run: python tests/photo_viewer_ui.py --engine webkit --built-root .
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: collaboration-ui-evidence
+          path: /tmp/sentlog-collaboration-*.png
+          if-no-files-found: ignore

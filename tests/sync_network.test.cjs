@@ -24,7 +24,7 @@ const ok=()=>({status:200,text:async()=>'[]'});
   const fn=code.slice(code.indexOf('async function uploadAsset('),code.indexOf('async function uploadPhoto('));
   let lookups=0;const blob=new Blob(['exact original']),hash=createHash('sha256').update('exact original').digest('hex');
   const existing={kind:'photo',sha256:hash,byte_size:blob.size,status:'storage_deleted'};
-  const upload=vm.runInNewContext(fn+';uploadAsset',{Blob,sha256Hex:async()=>hash,existingAsset:async()=>{lookups++;return existing}});
+  const upload=vm.runInNewContext(fn+';uploadAsset',{Blob,session:{user:{id:'owner'}},collaborationAssetOwner:'owner',collaborationAssertOwner:id=>assert.equal(id,'owner'),sha256Hex:async()=>hash,existingAsset:async()=>{lookups++;return existing}});
   const knownAssets=new Map(Array.from({length:1339},(_,n)=>['photo:'+n,{...existing}]));
   for(const [clientKey] of knownAssets)assert.equal((await upload({blob,kind:'photo',clientKey,knownAssets})).status,'exists');
   assert.equal(lookups,0);

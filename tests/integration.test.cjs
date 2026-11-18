@@ -3,6 +3,15 @@ const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/st
 const s=fs.readFileSync('sentlog/cloud-sync.js','utf8');
 const code=s.slice(s.indexOf('async function pullRemoteProjects('),s.indexOf('\nfunction modalHtml()'));
 async function run(manualProject=null,checking=false,fail=false){
+  if(s.includes('collaboration-sync-v1')){
+    const {fixture}=require('./edit_sync_integration.test.cjs'),f=fixture();
+    f.controls[0].checking=checking;f.controls[1].status='archived';f.failures.archive=fail;f.context.archive.ready=false;
+    await f.api.syncNow(manualProject?{force:true,manualProject:'cloud-c'}:{force:true});
+    const events=f.events.filter(e=>['download','snapshot','uploadPDF','uploadPhoto','status'].includes(e[0]))
+      .map(e=>[e[0],e[1]==='cloud-a'?'active':e[1]==='cloud-c'?'archived':e[1],...e.slice(2)]);
+    f.stop();return events;
+  }
+
   const controls=[{id:'active',client_key:'a',status:'active',checking},{id:'archived',client_key:'b',status:'archived'}];
   const projects=[{id:'a',drawings:[{id:'da'}]},{id:'b',drawings:[{id:'db'}]}];const events=[];
   const archive={refresh:async()=>{if(fail)throw Error('offline');},canSync:(cp,m)=>C.maySync(controls.find(c=>c.id===cp.id),m),includeLocal:(id,m)=>C.maySync(controls.find(c=>c.client_key===id),m)};
@@ -27,7 +36,7 @@ async function run(manualProject=null,checking=false,fail=false){
   console.log('PASS integrated cloud loop: manual archived request only reads selected project, never publishes empty state');
   e=await run(null,true);assert(!e.some(x=>x[0]==='download'||x[0]==='snapshot'||x[0].startsWith('upload')));
   console.log('PASS integrated cloud loop: archive verification pauses transfers');
-  e=await run(null,false,true);assert.deepEqual(e,[['status','error']]);
+  e=await run(null,false,true);assert(e.length&&e.every(x=>x[0]==='status'&&x[1]==='error'),'unavailable archive controls must stop before any transfer');
   console.log('PASS integrated cloud loop: unavailable archive controls fail closed before transfer');
   const pdf=fs.readFileSync('sentlog/pdf-recovery.js','utf8');
   assert(pdf.includes('allowed(a.project_id)&&a.metadata?.drawing_id'));

@@ -1,0 +1,454 @@
+/* collaboration-sync-v1: metadata and original-file transfers have separate queues. */
+function createCollaborationWorker({run,enabled,owner,now=()=>Date.now(),setTimer=setTimeout,clearTimer=clearTimeout,
+  retryMs=30000,deferMs=800,onError=()=>{}}){
+  let account=owner(),generation=0,flight=null,timer=null,retryAt=0,due=0,stopped=false,lastError=null;
+  const pending=new Set(),forced=new Set();let waiters=[];
+  const failure=(code,message)=>Object.assign(Error(message),{code});
+  const add=ids=>{for(const id of ids||[])if(typeof id==='string'&&id)pending.add(id);if(pending.has('*')){pending.clear();pending.add('*');}};
+  function reset(){
+    generation++;account=owner();pending.clear();forced.clear();retryAt=0;due=0;lastError=null;
+    if(timer!==null)clearTimer(timer);timer=null;
+    const error=failure('COLLAB_ACCOUNT_CHANGED','ログインが変更されました。新しいログインで再確認してください。');
+    for(const w of waiters)w.reject(error);waiters=[];
+  }
+  function checkOwner(){if(account!==owner())reset();}
+  function arm(){
+    if(stopped||flight||timer!==null||!pending.size||!enabled()||(!forced.size&&!Number.isFinite(retryAt)))return;
+    timer=setTimer(()=>{timer=null;void drain();},forced.size?0:Math.max(0,due-now(),retryAt-now()));
+  }
+  function request(ids,{delay=0,force=false}={}){
+    if(stopped)return false;checkOwner();add(ids);if(!pending.size)return false;
+    const requested=now()+Math.max(0,delay);due=due?Math.min(due,requested):requested;
+    if(force)for(const id of ids||[])if(typeof id==='string'&&id)forced.add(id);
+    if(timer!==null){clearTimer(timer);timer=null;}arm();return true;
+  }
+  function wait(ids,options={}){
+    if(stopped)return Promise.reject(failure('COLLAB_STOPPED','同期処理を終了しました。'));
+    checkOwner();
+    if(!Number.isFinite(retryAt)&&!options.force)return Promise.reject(lastError||Error('同期内容の確認が必要です。'));
+    return new Promise((resolve,reject)=>{waiters.push({resolve,reject,ids:[...ids]});request(ids,options);});
+  }
+  async function drain(){
+    checkOwner();if(stopped||flight||!pending.size||!enabled())return;
+    if(!forced.size&&(now()<retryAt||now()<due)){arm();return;}
+    const forceRound=forced.size>0,previousRetry=retryAt,ids=forceRound&&!forced.has('*')?[...forced]:[...pending],epoch=generation,user=account;
+    const covers=w=>ids.includes('*')||w.ids.every(id=>ids.includes(id));
+    const listeners=waiters.filter(covers);waiters=waiters.filter(w=>!covers(w));
+    if(ids.includes('*')){pending.clear();forced.clear();}else for(const id of ids){pending.delete(id);forced.delete(id);}due=0;
+    const retainedRetry=forceRound&&pending.size?previousRetry:0;
+    const current=()=>!stopped&&epoch===generation&&user===owner();
+    const assertCurrent=()=>{if(!current())throw failure('COLLAB_ACCOUNT_CHANGED','ログインが変更されました。新しいログインで再確認してください。');};
+    let task;
+    task=(async()=>{
+      try{
+        const result=await run(ids,{owner:user,current,assertCurrent});assertCurrent();
+        const deferred=result?.deferredIds||[];
+        if(deferred.length){add(deferred);retryAt=Math.max(retainedRetry,Number(result.retryAt)||0,now()+deferMs);}
+        else {retryAt=retainedRetry;if(!retryAt)lastError=null;}
+        for(const w of listeners)w.resolve(result);
+      }catch(error){
+        if(current()){
+          add(ids);lastError=error;retryAt=error?.retryable===false?Infinity:Math.max(retainedRetry,now()+(error?.code==='COLLAB_PAUSED'?deferMs:retryMs));
+          if(error?.code!=='COLLAB_PAUSED')try{onError(error,{ids,retryAt});}catch(_){}
+        }
+        for(const w of listeners)w.reject(error);
+      }finally{
+        if(flight===task)flight=null;
+        if(!current())checkOwner();arm();
+      }
+    })();flight=task;return task;
+  }
+  function wake(){checkOwner();if(timer!==null){clearTimer(timer);timer=null;}arm();}
+  function releaseWaiters(){const error=failure('COLLAB_PAUSED','保存内容の切替が終わってから同期を再開します。');for(const w of waiters)w.reject(error);waiters=[];}
+  return {request,wait,wake,reset,releaseWaiters,stop(){stopped=true;reset();},get running(){return !!flight;},get pending(){return [...pending];},get retryAt(){return retryAt;}};
+}
+function collaborationStable(value){
+  if(Array.isArray(value))return '['+value.map(collaborationStable).join(',')+']';
+  if(value&&typeof value==='object')return '{'+Object.keys(value).sort().map(k=>JSON.stringify(k)+':'+collaborationStable(value[k])).join(',')+'}';
+  return JSON.stringify(value);
+}
+// A verified common baseline proves unchanged references. New independent photo
+// IDs do not need an old-file scan; a changed/shared new ID keeps the full guard.
+function collaborationCanSkipFileCheck(local,remote,base){
+  if(!base)return false;
+  const drawings=p=>new Map((p?.drawings||[]).map(d=>[d.meta?.id||d.state?.id,d]));
+  const l=drawings(local),r=drawings(remote),b=drawings(base);
+  const frame=d=>{const s=d?.state||{};return collaborationStable({sourceType:s.sourceType||'',fileName:s.fileName||'',
+    pageCount:s.pageCount||1,metaPageCount:d?.meta?.pageCount||1,pageReplacements:s.pageReplacements||null,
+    pageRotations:s.pageRotations||null,dxf:s.dxf||null});};
+  const photos=d=>new Map([...(d?.state?.autoTracePhotos||[]),...(d?.state?.shapes||[]).flatMap(s=>s.photos||[])].map(p=>{
+    const value={...p};delete value.localBlob;delete value.data;return [p.id,collaborationStable(value)];
+  }));
+  for(const [id,ld] of l){
+    const rd=r.get(id);if(!rd)continue;const bd=b.get(id);
+    if(!bd||frame(ld)!==frame(bd)||frame(rd)!==frame(bd))return false;
+    const lp=photos(ld),rp=photos(rd),bp=photos(bd);
+    for(const [key,value] of lp)if(bp.has(key)&&bp.get(key)!==value)return false;
+    for(const [key,value] of rp)if(bp.has(key)&&bp.get(key)!==value)return false;
+    for(const key of lp.keys())if(rp.has(key)&&!bp.has(key))return false;
+  }
+  return true;
+}
+
+// Browser integration. No original-photo/PDF reads occur in an ordinary metadata round.
+let collaborationDeviceCache=null,collaborationArchiveAt=0,collaborationProjectsAt=0,collaborationAssetOwner='';
+const collaborationDeviceSeen=new Map(),collaborationManualProjects=new Map(),collaborationFileFailures=new Map();
+const collaborationFilePreparation=new Set(),collaborationForcedProjects=new Set();
+function collaborationAssertOwner(owner){
+  if(!owner||owner!==session?.user?.id)throw Object.assign(Error('ログインが変更されました。新しいログインで再確認してください。'),{code:'COLLAB_ACCOUNT_CHANGED'});
+}
+function collaborationAvailable(){return !!session?.user?.id&&navigator.onLine&&!document.hidden&&!window.sentlogImporting&&!mergeBusy;}
+async function collaborationEnsureDevice(){
+  await ensureSession();const owner=session?.user?.id;collaborationAssertOwner(owner);
+  let id=localStorage.getItem(DEVICE_KEY);
+  if(collaborationDeviceCache?.owner===owner&&collaborationDeviceCache.id===id&&Date.now()<collaborationDeviceCache.until)return id;
+  let row=id?(await rest('/rest/v1/sentlog_devices?id=eq.'+enc(id)+'&select=id,active,device_name'))?.[0]:null;
+  collaborationAssertOwner(owner);
+  if(row&&row.active!==true)throw Error('この端末登録は停止中です。「設定 → 登録端末」で再開してください。');
+  if(!row){
+    id=await rest('/rest/v1/rpc/sentlog_register_device',{method:'POST',body:JSON.stringify({p_device_name:deviceName(),p_device_type:deviceType()})});
+    collaborationAssertOwner(owner);if(typeof id==='string')id=id.replace(/^"|"$/g,'');
+    if(typeof id!=='string'||!id)throw Error('端末登録の結果を確認できません。');
+    localStorage.setItem(DEVICE_KEY,id);
+    row=(await rest('/rest/v1/sentlog_devices?id=eq.'+enc(id)+'&select=id,active,device_name'))?.[0];collaborationAssertOwner(owner);
+    if(!row||row.active!==true)throw Error('有効な端末登録を確認できません。');
+  }
+  const key=owner+':'+id;
+  if(Date.now()-(collaborationDeviceSeen.get(key)||0)>=60000||!collaborationDeviceSeen.has(key)){
+    await rest('/rest/v1/sentlog_devices?id=eq.'+enc(id),{method:'PATCH',headers:{Prefer:'return=minimal'},body:JSON.stringify({last_seen_at:new Date().toISOString()})});
+    collaborationAssertOwner(owner);collaborationDeviceSeen.set(key,Date.now());
+  }
+  collaborationDeviceCache={owner,id,until:Date.now()+30000};
+  window.SentlogCollaborationDevice={id,name:String(row.device_name||'')};return id;
+}
+function collaborationNormalizeRecord(record,base){
+  const model=window.SentlogRecordCollaboration;
+  const raw=typeof structuredClone==='function'?structuredClone(record):JSON.parse(JSON.stringify(record));
+  for(const photo of raw.photos||[]){delete photo.localBlob;delete photo.data;}
+  if(!raw.collab)return model.upgrade(raw,{base});
+  const upgraded=model.upgrade(raw);
+  if(model.isDeleted(upgraded)){
+    const left={...raw},right={...upgraded};delete left.collab;delete right.collab;
+    if(!model.equal(left,right))throw Object.assign(Error('削除済みの記録に旧版で入力した変更が残っています。内容を保持して確認を待っています。'),{code:'COLLAB_RECORD_DELETED',retryable:false});
+    return upgraded;
+  }
+  return model.applyLocalEdit(upgraded,raw,{deterministic:true,recordId:raw.id,actor:{deviceId:null,deviceName:'不明'},at:0});
+}
+function collaborationNormalizeStored(ids,context){
+  const store=window.SentlogRecords,wsRaw=store.getItem(WORKSPACE_KEY),ws=JSON.parse(wsRaw||'{"projects":[]}'),writes=[],beforeRecords=[];
+  let changed=false;
+  for(const lp of ws.projects||[]){
+    if(!ids.includes('*')&&!ids.includes(lp.id))continue;
+    if(!archive.includeLocal(lp.id,collaborationManualProjects.get(lp.id)||null))continue;
+    const base=getSyncMeta(lp.id)?.base_snapshot;
+    for(const d of lp.drawings||[]){
+      const key=DRAWING_KEY_PREFIX+d.id,text=store.getItem(key);if(!text)continue;const st=JSON.parse(text);
+      const previous=(base?.drawings||[]).find(x=>(x.meta?.id||x.state?.id)===d.id)?.state;
+      const before=new Map([...(previous?.shapes||[]),...(previous?.collabDeletedRecords||[])].map(r=>[r.id,r]));
+      for(const field of ['shapes','collabDeletedRecords'])st[field]=(st[field]||[]).map(r=>{
+        const out=collaborationNormalizeRecord(r,before.get(r.id));
+        // These are local cache fields, excluded from every network snapshot.
+        const original=new Map((r.photos||[]).map(p=>[p.id,p]));
+        for(const p of out.photos||[])for(const cache of ['localBlob','data'])if(Object.prototype.hasOwnProperty.call(original.get(p.id)||{},cache))p[cache]=original.get(p.id)[cache];
+        return out;
+      });
+      const next=JSON.stringify(st);if(next!==text){writes.push([key,next]);beforeRecords.push([key,text]);}
+    }
+    if(lp.collaborationVersion!==1){lp.collaborationVersion=1;changed=true;}
+  }
+  if(changed){writes.push([WORKSPACE_KEY,JSON.stringify(ws)]);beforeRecords.push([WORKSPACE_KEY,wsRaw]);}
+  context.assertCurrent();if(writes.length){store.batch(writes,{origin:'device'});window.SentlogCollaboration?.afterStoredNormalization?.(writes,beforeRecords);}
+}
+function collaborationProjectSnapshot(localProject){
+  const model=window.SentlogRecordCollaboration;if(!model)throw Error('共同編集の保存機能を読み込めません。再読み込みして確認してください。');
+  const base=getSyncMeta(localProject.id)?.base_snapshot;
+  const drawings=(localProject.drawings||[]).map(d=>{
+    const st=drawingState(d.id);if(!st)return {meta:d,state:null};
+    const safe=typeof structuredClone==='function'?structuredClone(st):JSON.parse(JSON.stringify(st));delete safe.labelSize;
+    const previous=(base?.drawings||[]).find(x=>(x.meta?.id||x.state?.id)===d.id)?.state;
+    const before=new Map([...(previous?.shapes||[]),...(previous?.collabDeletedRecords||[])].map(r=>[r.id,r]));
+    for(const key of ['shapes','collabDeletedRecords'])safe[key]=(safe[key]||[]).map(record=>{
+      (record.photos||[]).forEach(p=>{delete p.localBlob;delete p.data;});
+      return collaborationNormalizeRecord(record,before.get(record.id));
+    });
+    return {meta:d,state:safe};
+  });
+  return {project:{...localProject,collaborationVersion:1},drawings};
+}
+function collaborationCanonicalIncoming(payload){
+  const result=typeof structuredClone==='function'?structuredClone(payload):JSON.parse(JSON.stringify(payload));
+  result.project.collaborationVersion=1;
+  for(const d of result.drawings||[]){
+    if(!d.state)continue;delete d.state.labelSize;
+    for(const key of ['shapes','collabDeletedRecords'])d.state[key]=(d.state[key]||[]).map(r=>collaborationNormalizeRecord(r));
+  }
+  return result;
+}
+async function collaborationRefreshArchive(context,force=false){
+  if(force||!archive.ready||Date.now()-collaborationArchiveAt>=10000){await archive.refresh();context.assertCurrent();collaborationArchiveAt=Date.now();}
+}
+async function collaborationProjects(ids,context,force=false){
+  const knownLocal=new Set([...knownCloudProjects.values()].map(p=>p.client_key));
+  if(force||ids.includes('*')||!collaborationProjectsAt||Date.now()-collaborationProjectsAt>=30000||ids.some(id=>!knownLocal.has(id))){
+    const rows=[];
+    for(let offset=0;;offset+=400){
+      const page=await rest('/rest/v1/sentlog_projects?select=id,name,status,client_key,updated_at&order=id.asc&limit=400&offset='+offset);context.assertCurrent();
+      if(!Array.isArray(page))throw Error('案件の一覧を確認できません。');rows.push(...page);if(page.length<400)break;
+    }
+    knownCloudProjects.clear();for(const cp of rows)knownCloudProjects.set(cp.id,cp);collaborationProjectsAt=Date.now();
+  }
+  return [...knownCloudProjects.values()].filter(cp=>ids.includes('*')||ids.includes(cp.client_key));
+}
+async function collaborationEnsureProject(lp,context){
+  let cp=[...knownCloudProjects.values()].find(p=>p.client_key===lp.id);
+  if(!cp){
+    const rows=await rest('/rest/v1/sentlog_projects?client_key=eq.'+enc(lp.id)+'&select=id,name,status,client_key');context.assertCurrent();cp=rows?.[0];
+    if(!cp){
+      const rows=await rest('/rest/v1/sentlog_projects',{method:'POST',headers:{Prefer:'return=representation'},body:JSON.stringify({owner_id:context.owner,client_key:lp.id,name:lp.name||'案件',status:'active'})});context.assertCurrent();cp=rows?.[0];
+    }
+    if(!cp?.id)throw Error('共有先の案件を確認できません。');knownCloudProjects.set(cp.id,cp);
+  }
+  return cp;
+}
+function collaborationExpectedRecords(lp){
+  const store=window.SentlogRecords;
+  return [[WORKSPACE_KEY,store.getItem(WORKSPACE_KEY)],...(lp?.drawings||[]).map(d=>[DRAWING_KEY_PREFIX+d.id,store.getItem(DRAWING_KEY_PREFIX+d.id)])];
+}
+function collaborationRecordsUnchanged(expected){return expected.every(([key,value])=>window.SentlogRecords.getItem(key)===value);}
+function collaborationMetaWrite(id,meta,baseline){return [SYNC_META_PREFIX+id,JSON.stringify({...meta,fingerprint_schema:SYNC_FINGERPRINT_SCHEMA,base_snapshot:baseline})];}
+async function collaborationPullProject(cp,context){
+  const before=getSyncMeta(cp.client_key),existing=workspace().projects.find(p=>p.id===cp.client_key);
+  const needsLocalFiles=projectFilesChanged(existing,before?.base_snapshot);
+  const heads=await rest('/rest/v1/sentlog_project_snapshots?project_id=eq.'+enc(cp.id)+'&select=revision,updated_at');context.assertCurrent();
+  const head=heads?.[0],revision=Number(head?.revision||0);
+  if(!head)return {revision:0,changed:0,needsFiles:needsLocalFiles};
+  if(existing&&before?.base_snapshot&&!before.restored_backup&&before.fingerprint&&Number(before.fingerprint_schema||0)>=SYNC_FINGERPRINT_SCHEMA&&revision===Number(before.revision))
+    return {revision,changed:0,needsFiles:needsLocalFiles};
+  const snaps=await rest('/rest/v1/sentlog_project_snapshots?project_id=eq.'+enc(cp.id)+'&select=revision,payload,updated_at');context.assertCurrent();
+  const snap=snaps?.[0];if(!snap?.payload?.project||snap.payload.project.id!==cp.client_key)throw Error('共有記録の案件情報を確認できません。上書きせず保持しています。');
+  const lp=workspace().projects.find(p=>p.id===cp.client_key),expectedLocal=JSON.stringify(lp||null),expected=collaborationExpectedRecords(lp),meta=getSyncMeta(cp.client_key);
+  const remoteRevision=Number(snap.revision||0),incomingFingerprint=await snapshotFingerprint(snap.payload);context.assertCurrent();
+  const local=lp?projectSnapshot(lp):null,localFingerprint=local?await snapshotFingerprint(local):null;context.assertCurrent();
+  const result={revision:remoteRevision,changed:0,needsFiles:needsLocalFiles||sharedFileText(meta?.base_snapshot)!==sharedFileText(snap.payload)};
+  if(!collaborationRecordsUnchanged(expected))return {...result,deferred:true,reason:'入力中の内容を保存した後に反映します。'};
+  const currentFingerprint=Number(meta?.fingerprint_schema||0)>=SYNC_FINGERPRINT_SCHEMA;
+  const localChanged=lp&&(!meta||meta.restored_backup||(meta.fingerprint&&currentFingerprint?localFingerprint!==meta.fingerprint:Number(lp.updatedAt||0)!==Number(meta.local_updated_at||0)));
+  if(localChanged&&currentFingerprint&&incomingFingerprint===meta?.fingerprint){
+    setSyncMeta(cp.client_key,{...meta,revision:remoteRevision,remote_updated_at:snap.updated_at},snap.payload);return result;
+  }
+  if(localChanged&&localFingerprint!==incomingFingerprint&&!meta?.base_snapshot){
+    // A first upgraded client may have no old sync anchor even though its saved
+    // plaintext records exactly match the server. Compare their pure upgrades;
+    // keep the original server fingerprint/base so the next write is a CAS upgrade.
+    const canonicalFingerprint=await snapshotFingerprint(collaborationCanonicalIncoming(snap.payload));context.assertCurrent();
+    if(!collaborationRecordsUnchanged(expected))return {...result,deferred:true,reason:'入力中の内容を保存した後に反映します。'};
+    if(localFingerprint===canonicalFingerprint){
+      setSyncMeta(cp.client_key,{revision:remoteRevision,local_updated_at:Number(lp.updatedAt||0),remote_updated_at:snap.updated_at,fingerprint:incomingFingerprint},snap.payload);
+      return result;
+    }
+  }
+  if(localChanged&&localFingerprint!==incomingFingerprint){
+    let merged=null;
+    if(meta?.base_snapshot||window.SentlogSyncMerge?.onlyDisplayDifferences?.(normalizeMergeSnapshot(local),normalizeMergeSnapshot(snap.payload)))
+      merged=await tryMergeProject(cp,snap);context.assertCurrent();
+    if(merged?.applied){result.changed++;syncConflicts.delete(cp.client_key);return result;}
+    if(!merged?.waiting)syncConflicts.set(cp.client_key,cp);
+    return {...result,deferred:true,reason:merged?.reason||'変更内容の確認が必要です。'};
+  }
+  const next={revision:remoteRevision,local_updated_at:Number((lp||snap.payload.project).updatedAt||0),remote_updated_at:snap.updated_at,fingerprint:incomingFingerprint};
+  if(localFingerprint===incomingFingerprint){setSyncMeta(cp.client_key,next,snap.payload);return result;}
+  const applied=await window.sentlogSyncView?.commit(cp,snap,expectedLocal,{expectedRecords:expected,extraWrites:[collaborationMetaWrite(cp.client_key,next,snap.payload)]});context.assertCurrent();
+  if(!applied?.applied)return {...result,deferred:true,reason:'操作が落ち着いたら受信した記録を反映します。'};
+  result.changed++;syncConflicts.delete(cp.client_key);return result;
+}
+function collaborationCasConflict(error){return String(error?.message||error).includes('別端末の変更があります。同期を再確認してください。');}
+async function collaborationUpsert(cp,lp,deviceId,revision,context){
+  lp=workspace().projects.find(p=>p.id===lp.id);if(!lp)return {skipped:true,revision};
+  const captured=projectSnapshot(lp),fingerprint=await snapshotFingerprint(captured);context.assertCurrent();
+  const meta=getSyncMeta(lp.id);
+  if(meta?.fingerprint===fingerprint&&Number(meta.fingerprint_schema||0)>=SYNC_FINGERPRINT_SCHEMA)return {skipped:true,revision};
+  if(Number(meta?.revision||0)!==revision)return {pending:true,revision};
+  const rev=revision+1,updatedAt=new Date().toISOString();
+  try{
+    const made=await rest('/rest/v1/sentlog_project_snapshots?on_conflict=project_id',{method:'POST',headers:{Prefer:'resolution=merge-duplicates,return=representation'},body:JSON.stringify({
+      project_id:cp.id,owner_id:context.owner,revision:rev,payload:captured,updated_by_device:deviceId,updated_at:updatedAt})});context.assertCurrent();
+    setSyncMeta(lp.id,{revision:rev,local_updated_at:Number(lp.updatedAt||0),remote_updated_at:made?.[0]?.updated_at||updatedAt,fingerprint},captured);
+    return {skipped:false,revision:rev};
+  }catch(error){
+    context.assertCurrent();
+    if(collaborationCasConflict(error))return {pending:true,revision};
+    if(String(error?.message||'').includes('COLLAB_DEVICE_REQUIRED:'))collaborationDeviceCache=null;
+    if(/^COLLAB_(UPGRADE|HISTORY)_REQUIRED:/.test(String(error?.message||'')))error.retryable=false;
+    throw error;
+  }
+}
+function collaborationFilesOutstanding(){return syncing||collaborationFileWorker.running||collaborationFileWorker.pending.length>0||collaborationFileFailures.size>0;}
+async function collaborationMetadataRound(ids,context){
+  const cycle=!syncing?syncStatus.begin():null;
+  await window.sentlogAppReady;await window.SentlogRecords.settled();window.SentlogRecords.assertSafe();context.assertCurrent();
+  await ensureSession();context.assertCurrent();const deviceId=await ensureDevice();context.assertCurrent();
+  await collaborationRefreshArchive(context);collaborationNormalizeStored(ids,context);const cps=await collaborationProjects(ids,context);
+  const pulled=new Map(),blocked=new Set(),deferred=new Set(),needsFiles=new Set();let changed=0,uploaded=0;
+  for(const cp of cps){
+    const manual=collaborationManualProjects.get(cp.client_key)||null;
+    if(!cp.client_key||!archive.canSync(cp,manual))continue;
+    const result=await collaborationPullProject(cp,context);context.assertCurrent();pulled.set(cp.id,result);changed+=result.changed;
+    if(result.needsFiles)needsFiles.add(cp.client_key);
+    if(result.deferred){blocked.add(cp.id);deferred.add(cp.client_key);}
+  }
+  for(const lp of workspace().projects||[]){
+    if(!ids.includes('*')&&!ids.includes(lp.id))continue;
+    const manual=collaborationManualProjects.get(lp.id)||null;if(!archive.includeLocal(lp.id,manual))continue;
+    const cp=await collaborationEnsureProject(lp,context);context.assertCurrent();if(!archive.canSync(cp,manual)||cp.status==='archived')continue;
+    if(blocked.has(cp.id))continue;
+    let read=pulled.get(cp.id);
+    if(!read){read=await collaborationPullProject(cp,context);context.assertCurrent();pulled.set(cp.id,read);if(read.needsFiles)needsFiles.add(lp.id);if(read.deferred){blocked.add(cp.id);deferred.add(lp.id);continue;}}
+    const pushed=await collaborationUpsert(cp,lp,deviceId,read.revision,context);context.assertCurrent();read.revision=pushed.revision;
+    if(pushed.pending){blocked.add(cp.id);deferred.add(lp.id);continue;}
+    if(!pushed.skipped)uploaded++;
+    const latest=workspace().projects.find(p=>p.id===lp.id);
+    if(latest&&cp.name!==(latest.name||'案件')){
+      const name=latest.name||'案件';await rest('/rest/v1/sentlog_projects?id=eq.'+enc(cp.id),{method:'PATCH',headers:{Prefer:'return=minimal'},body:JSON.stringify({name})});context.assertCurrent();
+      cp.name=name;knownCloudProjects.set(cp.id,cp);
+    }
+  }
+  for(const id of needsFiles)if(!collaborationFilePreparation.has('*')&&!collaborationFilePreparation.has(id))collaborationFileWorker.request([id]);
+  const revisions=Object.fromEntries([...pulled].map(([id,r])=>[knownCloudProjects.get(id)?.client_key,r.revision]));
+  if(cycle!==null&&!syncing){
+    const pending=deferred.size||collaborationFilesOutstanding();
+    syncStatus.finish(cycle,pending?{level:'pending',label:deferred.size?'記録の反映待ち':'ファイル同期待ち',message:deferred.size?'編集中の内容を保護し、受信した記録を再確認しています。':'記録の更新を確認しました。図面・写真の送受信は続いています。'}:
+      {level:'ok',message:changed||uploaded?'記録の更新を確認しました。':'共有記録に新しい変更はありません。'});
+  }
+  refreshMergePanel();return {changed,uploaded,deviceId,blocked,revisions,deferredIds:[...deferred]};
+}
+function collaborationCollectPhotos(localProject){
+  const out=collectPhotos(localProject),byKey=new Map(out.map(item=>[item.drawingId+':'+item.photo.id,item])),versions=new Map();
+  const observe=(drawing,record,photo)=>{
+    if(!photo?.id)return;const key=drawing.id+':'+photo.id,list=versions.get(key)||[];list.push(photo);versions.set(key,list);
+    if(!byKey.has(key)){
+      const item={drawingId:drawing.id,drawingName:drawing.name||'',shapeId:record.id,shapeType:record.type||'',shapeLabel:record.autoLabel||'',photo,historyOnly:true};
+      byKey.set(key,item);out.push(item);
+    }
+  };
+  for(const item of out)versions.set(item.drawingId+':'+item.photo.id,[item.photo]);
+  for(const drawing of localProject.drawings||[]){
+    const state=drawingState(drawing.id);if(!state)continue;
+    for(const record of [...(state.shapes||[]),...(state.collabDeletedRecords||[])]){
+      for(const photo of record.photos||[])observe(drawing,record,photo);
+      for(const entry of Object.values(record.collab?.photos||{}))for(const revision of entry.revisions||[])observe(drawing,record,revision.value);
+    }
+  }
+  for(const [key,values] of versions){
+    const hashes=new Set(values.map(p=>String(p.sha256||'').toLowerCase()).filter(Boolean));
+    const sizes=new Set(values.map(p=>Number(p.size||p.byte_size||0)).filter(n=>n>0));
+    if(hashes.size>1||sizes.size>1)throw Error('同じ写真IDに異なる原本情報があります。写真を保持して確認を待っています：'+key);
+  }
+  return out;
+}
+async function collaborationUploadPhoto(cp,deviceId,item,knownAssets){
+  const key='photo:'+item.drawingId+':'+item.photo.id,existing=knownAssets.get(key);
+  // Historical bytes are immutable even when this device originally uploaded
+  // the asset. A later delete/restore must never replace its earlier original.
+  if(item.historyOnly&&existing){
+    const owner=collaborationAssetOwner||session?.user?.id,blob=await dbGet(key);collaborationAssertOwner(owner);
+    if(blob instanceof Blob){
+      const hash=await sha256Hex(blob);collaborationAssertOwner(owner);
+      if(blob.size!==Number(existing.byte_size)||hash.toLowerCase()!==String(existing.sha256).toLowerCase())
+        throw Error('履歴に残る同じ写真IDの原本が異なります。上書きせず保持しました。');
+      return {status:'exists',asset:existing};
+    }
+  }
+  return uploadPhoto(cp,deviceId,item,knownAssets);
+}
+async function collaborationFileRound(ids,context){
+  for(const id of ids)collaborationFilePreparation.add(id);
+  let metadata;
+  try{metadata=await collaborationMetadataWorker.wait(ids,{force:collaborationForcedProjects.has('*')||ids.some(id=>collaborationForcedProjects.has(id))});context.assertCurrent();}
+  finally{for(const id of ids)collaborationFilePreparation.delete(id);}
+  const deferred=new Set(metadata.deferredIds||[]),cycle=syncStatus.begin();let files=0,uploaded=0;
+  syncing=true;collaborationAssetOwner=context.owner;drawingUploadBlocks.clear();
+  try{
+    for(const cp of [...knownCloudProjects.values()]){
+      const id=cp.client_key,manual=collaborationManualProjects.get(id)||null;
+      if(!id||(!ids.includes('*')&&!ids.includes(id))||!archive.canSync(cp,manual)||!archive.includeLocal(id,manual))continue;
+      if(metadata.blocked.has(cp.id)){deferred.add(id);continue;}
+      const lp=workspace().projects.find(p=>p.id===id);if(!lp)continue;
+      try{
+        context.assertCurrent();const cycleAssets=new Map();files+=await pullProjectAssets(cp,metadata.deviceId,cycleAssets);context.assertCurrent();
+        if(cp.status==='archived'){collaborationFileFailures.delete(id);continue;}
+        const knownAssets=new Map((cycleAssets.get(cp.id)||[]).map(a=>[a.client_key,a]));
+        const latest=workspace().projects.find(p=>p.id===id);if(!latest)continue;
+        for(const item of collectDrawings(latest)){
+          context.assertCurrent();const r=await uploadDrawing(cp,metadata.deviceId,item,knownAssets);context.assertCurrent();if(r.status==='uploaded')uploaded++;
+        }
+        for(const item of collaborationCollectPhotos(latest)){
+          context.assertCurrent();const r=await collaborationUploadPhoto(cp,metadata.deviceId,item,knownAssets);context.assertCurrent();if(r.status==='uploaded')uploaded++;
+        }
+        uploaded+=await window.SentlogDxfRaster?.cloudSyncProject?.({project:latest,cloudProject:cp,deviceId:metadata.deviceId,knownAssets,
+          ops:{dbGet,dbPut,sha256Hex,uploadAsset,downloadPrivateAsset,readProjectAssets}})||0;context.assertCurrent();
+        if((latest.drawings||[]).some(d=>drawingUploadBlocks.has(d.id)))deferred.add(id);
+        else collaborationFileFailures.delete(id);
+      }catch(error){
+        context.assertCurrent();deferred.add(id);collaborationFileFailures.set(id,{message:error?.message||String(error),retryAt:Date.now()+30000});
+      }
+    }
+    await window.SentlogRecords.settled();window.SentlogRecords.assertSafe();context.assertCurrent();
+    if(ids.includes('*')&&!deferred.size)collaborationFileFailures.delete('*');
+    syncErrorNotBefore=Math.max(0,...[...collaborationFileFailures.values()].map(e=>e.retryAt));
+    if(collaborationFileFailures.size)syncStatus.finish(cycle,{level:'error',label:'ファイル要確認',message:'図面・写真の同期は完了していません。'+[...collaborationFileFailures.values()].map(e=>e.message).slice(0,3).join(' / ')});
+    else if(deferred.size||collaborationMetadataWorker.pending.length||collaborationFileWorker.pending.length)syncStatus.finish(cycle,{level:'pending',label:'一部反映待ち',message:'記録を保持して再確認しています。図面・写真の送受信が残っています。'});
+    else syncStatus.finish(cycle,{level:'ok',message:files||uploaded?'記録と図面・写真の送受信を確認しました。':'記録と図面・写真に新しい変更はありません。'});
+    return {deferredIds:[...deferred],retryAt:syncErrorNotBefore,files,uploaded};
+  }finally{syncing=false;collaborationAssetOwner='';refreshMergePanel();editSync.wake();}
+}
+const collaborationMetadataWorker=createCollaborationWorker({run:collaborationMetadataRound,enabled:collaborationAvailable,owner:()=>session?.user?.id||'',
+  onError:error=>{if(syncing)return;const cycle=syncStatus.begin();syncStatus.finish(cycle,{level:'error',label:'記録を要確認',message:'記録の同期は完了していません。'+(error?.message||error)});}});
+const collaborationFileWorker=createCollaborationWorker({run:collaborationFileRound,enabled:collaborationAvailable,owner:()=>session?.user?.id||'',deferMs:3000,
+  onError:(error,{ids,retryAt})=>{syncErrorNotBefore=retryAt;for(const id of ids)collaborationFileFailures.set(id,{message:error?.message||String(error),retryAt});const cycle=syncStatus.begin();syncStatus.finish(cycle,{level:'error',label:'ファイル要確認',message:'図面・写真の同期は完了していません。'+(error?.message||error)});}});
+async function collaborationSyncNow(options={}){
+  if(!collaborationAvailable())return {started:false};
+  collaborationChannel?.wake();
+  const ids=Array.isArray(options.projectIds)&&options.projectIds.length?[...options.projectIds]:['*'];
+  if(options.eventDriven){collaborationMetadataWorker.request(ids);return {started:true};}
+  if(!options.force&&(collaborationFileWorker.running||Date.now()<syncNotBefore||Date.now()<collaborationFileWorker.retryAt))return {started:false,retryAt:Math.max(syncNotBefore,collaborationFileWorker.retryAt)};
+  let manualId=null;
+  if(options.manualProject){
+    const owner=session.user.id,context={owner,assertCurrent:()=>collaborationAssertOwner(owner)};
+    await collaborationRefreshArchive(context,true);await collaborationProjects(['*'],context,true);
+    const cp=knownCloudProjects.get(options.manualProject);if(!cp?.client_key)return {started:false};
+    manualId=cp.client_key;ids.splice(0,ids.length,manualId);collaborationManualProjects.set(manualId,options.manualProject);
+  }
+  syncNotBefore=Date.now()+10000;
+  if(options.force)for(const id of ids)collaborationForcedProjects.add(id);
+  try{
+    const result=await collaborationFileWorker.wait(ids,{force:!!options.force});
+    return {started:true,...(result?.deferredIds?.length?{retryAt:Math.max(result.retryAt||0,Date.now()+3000)}:{})};
+  }catch(_){return {started:true,retryAt:collaborationFileWorker.retryAt||Date.now()+30000};}
+  finally{if(manualId)collaborationManualProjects.delete(manualId);if(options.force)for(const id of ids)collaborationForcedProjects.delete(id);}
+}
+function collaborationSessionChanged(){
+  collaborationDeviceCache=null;collaborationArchiveAt=0;collaborationProjectsAt=0;collaborationDeviceSeen.clear();
+  collaborationManualProjects.clear();collaborationFileFailures.clear();collaborationFilePreparation.clear();collaborationForcedProjects.clear();syncErrorNotBefore=0;syncNotBefore=0;
+  delete window.SentlogCollaborationDevice;collaborationMetadataWorker.reset();collaborationFileWorker.reset();collaborationChannel?.wake();
+}
+function collaborationWake(){collaborationMetadataWorker.wake();collaborationFileWorker.wake();collaborationChannel?.wake();}
+const collaborationChannel=window.SentlogCollaborationChannel?.create({url:SUPABASE_URL,key:SUPABASE_KEY,session:()=>session,enabled:collaborationAvailable,
+  onReady:()=>{collaborationMetadataWorker.request(['*']);collaborationFileWorker.request(['*']);},
+  onChange:event=>{
+    const cp=knownCloudProjects.get(event.projectId),id=cp?.client_key||'*';
+    if(event.kind==='asset'){collaborationFileWorker.request([id]);return;}
+    if(!cp||Number(event.revision)>Number(getSyncMeta(id)?.revision||0))collaborationMetadataWorker.request([id]);
+  }});
+window.sentlogCollaborationNormalizeRecord=collaborationNormalizeRecord;
+window.sentlogCollaborationAccountId=()=>session?.user?.id||'';
+window.sentlogCollabRefresh=async projectId=>{
+  if(!collaborationAvailable())throw Error('オンラインで操作が落ち着いてから最新の記録を確認してください。');
+  const owner=session.user.id,cp=knownCloudProjects.get(projectId),id=cp?.client_key||projectId;
+  if(typeof id!=='string'||!id)throw Error('確認する案件が見つかりません。');
+  const result=await collaborationMetadataWorker.wait([id]);collaborationAssertOwner(owner);
+  if(!Object.prototype.hasOwnProperty.call(result.revisions,id))throw Error('この案件は現在の同期対象ではありません。');
+  if(result.deferredIds.includes(id))throw Error('別の変更を受信しています。最新の内容が反映されてから、もう一度確認してください。');
+  return {fresh:true,projectId:id,revision:Number(result.revisions[id]||getSyncMeta(id)?.revision||0)};
+};
+window.addEventListener('offline',()=>collaborationChannel?.wake());
+document.addEventListener('visibilitychange',()=>collaborationWake());

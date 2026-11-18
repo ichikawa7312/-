@@ -20,13 +20,16 @@ const sourceRecord=clone(iphone.drawings[0].state);
 // Existing local file retains its own font-size choice. A cloud snapshot does
 // not include that preference even when the local record does.
 const cloud=fs.readFileSync(__dirname+'/../sentlog/cloud-sync.js','utf8');
-const a=cloud.indexOf('function projectSnapshot(');
-const b=cloud.indexOf('async function upsertSnapshot(',a);
-assert(a>0&&b>a,'real snapshot function is available');
-const makeSnapshot=record=>vm.runInNewContext(cloud.slice(a,b)+';projectSnapshot',{
-  structuredClone,JSON,
-  drawingState:id=>id==='drawing-1'?record:null
-});
+let snapshotSource,snapshotName,snapshotContext={structuredClone,JSON,drawingState:id=>id==='drawing-1'?sourceRecord:null};
+if(cloud.includes('collaboration-sync-v1')){
+  const start=cloud.indexOf('function collaborationNormalizeRecord('),end=cloud.indexOf('async function collaborationRefreshArchive(',start);
+  assert(start>0&&end>start,'real collaboration snapshot helpers are available');snapshotSource=cloud.slice(start,end);snapshotName='collaborationProjectSnapshot';
+  Object.assign(snapshotContext,{window:{SentlogRecordCollaboration:require('../sentlog/record-collaboration.js')},getSyncMeta:()=>null});
+}else{
+  const start=cloud.indexOf('function projectSnapshot('),end=cloud.indexOf('async function upsertSnapshot(',start);
+  assert(start>0&&end>start,'real snapshot function is available');snapshotSource=cloud.slice(start,end);snapshotName='projectSnapshot';
+}
+const makeSnapshot=record=>vm.runInNewContext(snapshotSource+';'+snapshotName,{...snapshotContext,drawingState:id=>id==='drawing-1'?record:null});
 const localSnapshot=makeSnapshot(sourceRecord)(iphone.project);
 assert(!Object.hasOwn(localSnapshot.drawings[0].state,'labelSize'),'shared payload must omit local font size');
 assert.equal(sourceRecord.labelSize,'small','source file is never modified');

@@ -56,8 +56,8 @@ async function receiverTests({saveBroken=false,different=false}={}){
  const send=async()=>{calls.ack++;return {received:true};};
  const win={SentlogSyncTraffic:traffic,SentlogRecords:{ready:true,writeFile:write},sentlogSyncView:{photoReceived(){}}};
  const cloud=fs.readFileSync('sentlog/cloud-sync.js','utf8');
- const source=cloud.slice(cloud.indexOf('async function ackAsset('),cloud.indexOf('async function pullRemoteProjects('));
- const cloudApi=vm.runInNewContext(source+';({pullProjectAssets})',{
+ const source=cloud.slice(cloud.indexOf('async function ackAsset('),cloud.indexOf(cloud.includes('collaboration-sync-v1')?'async function syncNow(':'async function pullRemoteProjects('));
+ const cloudApi=vm.runInNewContext(source+';({pullProjectAssets})',{collaborationAssetOwner:'',
   Blob,Map,Set,console:{warn(){}},window:win,workspace:()=>({projects:[{id:'local-project',drawings:[{id:'drawing'}]}]}),readProjectAssets:async()=>[asset],dbGet:read,dbPut:write,sha256Hex:digest,downloadPrivateAsset:download,rest:send
  });
  const photos=fs.readFileSync('sentlog/photo-recovery.js','utf8');
@@ -78,7 +78,7 @@ async function receiverTests({saveBroken=false,different=false}={}){
   local.clear();await photoApi.receive('device');assert.equal(calls.ack,2,'lost local copy must be re-confirmed after verified recovery');
  }
 }
-async function snapshotTests(){
+async function legacySnapshotTests(){
  const cloud=fs.readFileSync('sentlog/cloud-sync.js','utf8');
  const source=cloud.slice(cloud.indexOf('async function pullRemoteProjects('),cloud.indexOf('async function syncNow('));
  const cp={id:'project',client_key:'local',status:'active'},lp={id:'local',drawings:[]},payload={project:lp,drawings:[]};
@@ -97,7 +97,7 @@ async function snapshotTests(){
  revision=2;await api.pullRemoteProjects('device');assert.equal(payloadGets,1);
  revision=1;delete meta.base_snapshot;await api.pullRemoteProjects('device');assert.equal(payloadGets,2,'missing baseline forces a full snapshot');
 }
-async function manualSyncTests(){
+async function legacyManualSyncTests(){
  const cloud=fs.readFileSync('sentlog/cloud-sync.js','utf8');
  const source=cloud.slice(cloud.indexOf('async function syncNow('),cloud.indexOf('// Integrated in the cloud module'));
  const alias=cloud.match(/^window\.sentlogArchiveSync=.*;$/m)[0];
@@ -128,12 +128,48 @@ async function manualSyncTests(){
  assert(cloud.includes('if(done)await syncNow({force:true});'));
  console.log('PASS explicit synchronization: immediate retry and archived-project scope, automatic debounce/backoff, import and single-flight guards');
 }
+async function snapshotTests(){
+ if(!fs.readFileSync('sentlog/cloud-sync.js','utf8').includes('collaboration-sync-v1'))return legacySnapshotTests();
+ const {fixture}=require('./edit_sync_integration.test.cjs'),f=fixture();
+ const payloadGets=()=>f.events.filter(e=>e[0]==='payload').length;
+ await f.api.syncNow({eventDriven:true,projectIds:['a']});await f.api.syncNow({eventDriven:true,projectIds:['a']});
+ assert.equal(payloadGets(),0);assert.equal(f.assets().length,0,'unchanged metadata probes do not read original files');
+ await f.api.syncNow({force:true});assert(f.assets().some(e=>e[0]==='download'&&e[1]==='cloud-a'),'full rounds still check file delivery when metadata is unchanged');
+ f.incoming('a',p=>p.drawings[0].state.shapes[0].memo='remote');await f.api.syncNow({eventDriven:true,projectIds:['a']});assert.equal(payloadGets(),1);
+ const key='sentlogCloudProjectSyncV2:a',meta=JSON.parse(f.data.get(key));delete meta.base_snapshot;f.data.set(key,JSON.stringify(meta));
+ await f.api.syncNow({eventDriven:true,projectIds:['a']});assert.equal(payloadGets(),2,'missing baseline forces a full snapshot');f.stop();
+}
+async function manualSyncTests(){
+ if(!fs.readFileSync('sentlog/cloud-sync.js','utf8').includes('collaboration-sync-v1'))return legacyManualSyncTests();
+ const cloud=fs.readFileSync('sentlog/cloud-sync.js','utf8'),{fixture}=require('./edit_sync_integration.test.cjs'),f=fixture();
+ const rounds=()=>f.events.filter(e=>e[0]==='download').length;
+ await f.api.syncNow();const first=rounds();await f.api.syncNow();assert.equal(rounds(),first,'automatic cycles respect debounce');
+ f.failures.archive=true;f.context.archive.ready=false;await f.api.syncNow({force:true});assert.equal(f.events.filter(e=>e[0]==='status').at(-1)[1],'error');
+ f.failures.archive=false;await f.api.syncNow();assert.equal(rounds(),first,'automatic retries respect error backoff');
+ await f.api.syncNow({force:true,manualProject:'cloud-c'});assert(f.events.some(e=>e[0]==='download'&&e[1]==='cloud-c'),'explicit scope still permits read-only archived delivery');
+ assert(f.context.syncErrorNotBefore>f.now,'another project cannot clear a failed full-file pass');
+ await f.api.syncNow({force:true});assert.equal(f.context.syncErrorNotBefore,0,'explicit all-project retry can complete the outstanding pass');
+ const before=rounds();f.context.window.sentlogImporting=true;await f.api.syncNow({force:true});assert.equal(rounds(),before,'manual operation retains import safety guard');f.context.window.sentlogImporting=false;
+ let release;const hold=new Promise(r=>{release=r;}),original=f.context.pullProjectAssets;
+ f.context.pullProjectAssets=async(...args)=>{const n=await original(...args);await hold;return n;};
+ const active=f.context.syncNow({force:true});await f.advance(0);const inFlight=rounds();
+ const queued=f.context.syncNow({force:true});await f.advance(0);assert.equal(rounds(),inFlight,'file requests remain physically single-flight');
+ release();await f.advance(0);await active;await f.advance(0);await queued;
+ assert(cloud.includes('if(done)await syncNow({force:true});'));f.stop();
+ console.log('PASS explicit synchronization: immediate scoped retry, archived read-only delivery, independent backoffs, import and file single-flight guards');
+}
+const watchdog=setTimeout(()=>{console.error('FAIL traffic fixture promise did not settle');process.exit(1);},15000);
 (async()=>{
  await manualSyncTests();await ledgerTests();await receiverTests();await receiverTests({saveBroken:true});await receiverTests({different:true});await snapshotTests();
  const index=fs.readFileSync('sentlog/index.html','utf8'),pc=fs.readFileSync('sentlog-pc/index.html','utf8'),sw=fs.readFileSync('sentlog/sw.js','utf8'),cloud=fs.readFileSync('sentlog/cloud-sync.js','utf8');
  assert(index.includes("['sync-traffic.js?v=190','SentlogSyncTraffic"));assert(index.includes('src="./sync-traffic.js?v=190"'));assert(pc.includes('src="../sentlog/sync-traffic.js?v=190"'));assert(sw.includes("'sync-traffic.js'"));assert(sw.includes('sentlog-pwa-v201'));
- assert(cloud.includes('cycleAssets.get(cp.id)||await readProjectAssets'));
- assert(cloud.includes('edit-sync-v20261118')?cloud.includes('if(!options?.force&&!quick&&Date.now()<syncNotBefore)return {started:false,retryAt:syncNotBefore};'):cloud.includes('if(!options?.force&&Date.now()<syncNotBefore)return;'));
+ if(cloud.includes('collaboration-sync-v1')){
+  assert(cloud.includes('cycleAssets.get(cp.id)||[]'),'the file round reuses its verified delivery asset list');
+  assert(cloud.includes('Date.now()<syncNotBefore||Date.now()<collaborationFileWorker.retryAt'),'file throttle and retained error deadline stay independent of metadata');
+ }else{
+  assert(cloud.includes('cycleAssets.get(cp.id)||await readProjectAssets'));
+  assert(cloud.includes('edit-sync-v20261118')?cloud.includes('if(!options?.force&&!quick&&Date.now()<syncNotBefore)return {started:false,retryAt:syncNotBefore};'):cloud.includes('if(!options?.force&&Date.now()<syncNotBefore)return;'));
+ }
  assert(cloud.includes('syncTimer=setInterval(()=>{if(session&&navigator.onLine&&!document.hidden)syncNow()},15000);'));
  console.log('PASS built receivers: one download and ACK across both paths, corrupt/missing save guards, lost-file recovery, revision-only unchanged fetch, versioned boot');
-})().catch(e=>{console.error(e);process.exitCode=1;});
+})().catch(e=>{console.error(e);process.exitCode=1;}).finally(()=>clearTimeout(watchdog));

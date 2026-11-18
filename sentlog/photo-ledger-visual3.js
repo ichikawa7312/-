@@ -7,10 +7,13 @@
   const TEMPLATE_PATH='./visual3-ledger-template.b64';
   const period=34,positions=[2,13,24];
   const NUMBERED_TEMPLATE_COUNT=400;
+  const MAX_FIELD_LENGTH=300;
   const ns='http://schemas.openxmlformats.org/officeDocument/2006/relationships';
   const enc=new TextEncoder(),dec=new TextDecoder();
   const xml=s=>String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&apos;').replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g,'');
-  const safe=s=>String(s??'').trim().slice(0,300);
+  // Keep complete draft values. The fixed form has a documented export limit;
+  // exceeding it is an actionable validation error, never a truncated caption.
+  const safe=s=>String(s??'');
   function defaults(entry,groupName){
     return {managementNo:safe(groupName),facility:safe(entry.member||groupName),
       structure:'',purpose:safe(entry.damage||'写真'),notes:safe(entry.description)};
@@ -19,6 +22,22 @@
     const values=defaults(entry,groupName),extra=entry.visual3||{};
     for(const key of Object.keys(values))if(Object.prototype.hasOwnProperty.call(extra,key))values[key]=safe(extra[key]);
     return values;
+  }
+  function validateEntry(entry,groupName,index=0){
+    const values=details(entry,groupName);
+    const labels={managementNo:'整理番号',facility:'施設名称',structure:'構造',purpose:'写真内容',notes:'備考'};
+    for(const [key,label] of Object.entries(labels)){
+      const length=Array.from(values[key]).length;
+      if(length<=MAX_FIELD_LENGTH)continue;
+      const location=[entry.damage||'写真'+(index+1),entry.photoName].filter(Boolean).join(' / ');
+      const error=Error(location+'：'+label+'が'+length+'文字あります。目視3連は各項目'+MAX_FIELD_LENGTH+'文字以内です。「目視3連の記載内容を編集」で台帳用の文章を調整してください。元の記録は変更されません。');
+      error.code='LEDGER_TEXT_TOO_LONG';error.ledgerEntryKey=entry.key;error.ledgerField=key;
+      throw error;
+    }
+    return values;
+  }
+  function validateEntries(entries,groupName){
+    entries.forEach((entry,index)=>validateEntry(entry,groupName,index));return true;
   }
   function setCell(row,ref,value){
     const re=new RegExp('(<c\\s+r="'+ref+'"[^>]*)(?:\\/>|>[\\s\\S]*?<\\/c>)');
@@ -48,7 +67,7 @@
       const delta=p*period,local=new Map(source.map(x=>[Number(x[1]),x[0]]));
       for(let s=0;s<3;s++){
         const first=positions[s],entry=photos[p*3+s];
-        const value=entry?details(entry,groupName):{managementNo:'',facility:'',structure:'',purpose:'',notes:''};
+        const value=entry?validateEntry(entry,groupName,p*3+s):{managementNo:'',facility:'',structure:'',purpose:'',notes:''};
         const info=[
           ['B',first,''],['AB',first,entry?String(startNumber+p*3+s):''],
           ['AD',first+1,value.managementNo],['AD',first+2,value.facility],
@@ -120,6 +139,7 @@
     if(!base?.zipStored||!base?.excelSheetNames||!damage?.unzip)throw Error('写真台帳の共通処理が読み込まれていません。');
     const photos=active.flatMap(g=>g.photos);
     if(photos.length>base.MAX_PHOTOS)throw Error('写真が600枚を超えています。図面No.を分けて出力してください。');
+    validateEntries(photos,groupName);
     if(photos.some(p=>!(p.jpeg instanceof Uint8Array)||!p.jpeg.length))throw Error('未取得の写真があります。');
     if(!templateBytes){
       if(typeof fetch!=='function')throw Error('目視3連のテンプレートを指定してください。');
@@ -170,7 +190,7 @@
     add('[Content_Types].xml',types);
     return base.zipStored(files);
   }
-  const api={TEMPLATE_PATH,positions,period,NUMBERED_TEMPLATE_COUNT,defaults,details,worksheetXml,drawingData,workbookXml,buildXlsx};
+  const api={TEMPLATE_PATH,positions,period,NUMBERED_TEMPLATE_COUNT,MAX_FIELD_LENGTH,defaults,details,validateEntries,worksheetXml,drawingData,workbookXml,buildXlsx};
   if(typeof module!=='undefined'&&module.exports){module.exports=api;return;}
   root.SentlogVisual3Ledger=api;
 })(typeof globalThis!=='undefined'?globalThis:this);

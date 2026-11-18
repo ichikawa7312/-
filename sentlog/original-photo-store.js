@@ -82,6 +82,55 @@
   async function getOriginal(drawingId,photoId){
     const db=await openDb(),key=keyFor(drawingId,photoId);return new Promise((resolve,reject)=>{const q=db.transaction(PHOTOS,'readonly').objectStore(PHOTOS).get(key);q.onsuccess=()=>resolve(q.result||null);q.onerror=()=>reject(q.error);});
   }
+  // A capture may be retried after the page closes. Its original and pending
+  // association share one transaction; an existing original is never replaced.
+  async function stageOriginal(drawingId,photoId,file,meta){
+    if(!(file instanceof Blob))throw Error('原本写真を読み取れません');
+    const db=await openDb(),key=keyFor(drawingId,photoId),tx=db.transaction([PHOTOS,META],'readwrite'),done=txDone(tx);
+    let row,blob,remaining=2,result,error;
+    function finish(){
+      if(--remaining)return;
+      if(row||blob){
+        if(!row||!(blob instanceof Blob)||row.photoAssociation?.operationId!==meta?.photoAssociation?.operationId){error=Error('保存済みの原本と撮影操作が一致しません。上書きせず保持しました。');tx.abort();return;}
+        result=row;return;
+      }
+      result={...meta,key,drawingId,photoId,size:file.size,type:file.type||'application/octet-stream',originalName:file.name||meta?.originalName||'photo',lastModified:Number(file.lastModified)||null,storedAt:Date.now(),exportedAt:null,packageName:null};
+      tx.objectStore(PHOTOS).put(file,key);tx.objectStore(META).put(result);
+    }
+    const qr=tx.objectStore(META).get(key),qb=tx.objectStore(PHOTOS).get(key);
+    qr.onsuccess=()=>{row=qr.result;finish();};qb.onsuccess=()=>{blob=qb.result;finish();};
+    try{await done;}catch(e){throw error||e;}return result;
+  }
+  async function updatePhotoAssociation(drawingId,photoId,association){
+    const db=await openDb(),key=keyFor(drawingId,photoId),tx=db.transaction(META,'readwrite'),done=txDone(tx),store=tx.objectStore(META);
+    let result,error;const q=store.get(key);
+    q.onsuccess=()=>{
+      const row=q.result;
+      if(!row||row.photoAssociation?.operationId!==association?.operationId){error=Error('撮影操作の保存記録を確認できません');tx.abort();return;}
+      result={...row,photoAssociation:association};store.put(result);
+    };
+    try{await done;}catch(e){throw error||e;}return result;
+  }
+  // Only an explicitly reassigned, still-pending capture can change its key.
+  // Moving bytes and metadata together keeps normal drawing/photo keys compatible.
+  async function rebindPendingOriginal(fromDrawingId,toDrawingId,photoId,meta){
+    const db=await openDb(),oldKey=keyFor(fromDrawingId,photoId),newKey=keyFor(toDrawingId,photoId);
+    const tx=db.transaction([PHOTOS,META],'readwrite'),done=txDone(tx),photos=tx.objectStore(PHOTOS),metas=tx.objectStore(META);
+    let oldRow,blob,existing,existingBlob,remaining=4,result,error;
+    function finish(){
+      if(--remaining)return;
+      if(!oldRow||!(blob instanceof Blob)||oldRow.photoAssociation?.status==='attached'||oldRow.photoAssociation?.operationId!==meta?.photoAssociation?.operationId||
+         (oldKey!==newKey&&(existing||existingBlob))){
+        error=Error('保存待ちの原本を確認できません。元の写真は保持しています。');tx.abort();return;
+      }
+      result={...oldRow,...meta,key:newKey,drawingId:toDrawingId,photoId,size:oldRow.size,type:oldRow.type,originalName:oldRow.originalName,lastModified:oldRow.lastModified,storedAt:oldRow.storedAt,exportedAt:oldRow.exportedAt,packageName:oldRow.packageName};
+      photos.put(blob,newKey);metas.put(result);
+      if(oldKey!==newKey){photos.delete(oldKey);metas.delete(oldKey);}
+    }
+    const qr=metas.get(oldKey),qb=photos.get(oldKey),qn=metas.get(newKey),qnb=photos.get(newKey);
+    qr.onsuccess=()=>{oldRow=qr.result;finish();};qb.onsuccess=()=>{blob=qb.result;finish();};qn.onsuccess=()=>{existing=qn.result;finish();};qnb.onsuccess=()=>{existingBlob=qnb.result;finish();};
+    try{await done;}catch(e){throw error||e;}return result;
+  }
   async function listMeta(){
     const db=await openDb();return new Promise((resolve,reject)=>{const q=db.transaction(META,'readonly').objectStore(META).getAll();q.onsuccess=()=>resolve(q.result||[]);q.onerror=()=>reject(q.error);});
   }
@@ -106,7 +155,7 @@
     await done;
   }
   async function deleteExported(){
-    const rows=await listMeta(),targets=rows.filter(m=>m.exportedAt);if(!targets.length)return {count:0,bytes:0};
+    const rows=await listMeta(),targets=rows.filter(m=>m.exportedAt&&(!m.photoAssociation||m.photoAssociation.status==='attached'));if(!targets.length)return {count:0,bytes:0};
     const db=await openDb(),tx=db.transaction([PHOTOS,META],'readwrite'),done=txDone(tx),p=tx.objectStore(PHOTOS),m=tx.objectStore(META);let bytes=0;
     for(const row of targets){p.delete(row.key);m.delete(row.key);bytes+=Number(row.size)||0;}await done;return {count:targets.length,bytes};
   }
@@ -210,7 +259,7 @@
     if(typeof persist==='function')persist();if(status&&added)status.textContent=`${added}枚保存しました（原本はこの端末・共有は軽量版）`;setTimeout(()=>{if(status&&/保存しました/.test(status.textContent))status.textContent='';},1800);if(typeof selected!=='undefined'&&selected===targetId&&typeof renderSelectedPhotos==='function')renderSelectedPhotos();refreshUI();
   }
 
-  const api={...pure,saveOriginal,getOriginal,listMeta,stats,drawingStats,renameDrawing,markExported,deleteExported,makeSharedPhoto,makeZip,refreshUI,exportNext};
+  const api={...pure,saveOriginal,getOriginal,stageOriginal,updatePhotoAssociation,rebindPendingOriginal,listMeta,stats,drawingStats,renameDrawing,markExported,deleteExported,makeSharedPhoto,makeZip,refreshUI,exportNext};
   root.SentlogOriginalPhotos=api;
   try{if(typeof addPhotosToSelected==='function')addPhotosToSelected=registerPhotos;}catch(e){console.warn('Sentlog original photo hook',e);}
   setTimeout(installUI,0);

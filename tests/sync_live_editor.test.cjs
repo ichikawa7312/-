@@ -18,7 +18,7 @@ function fixture({record={},savePhotos=async()=>{}}={}){
   const records={
     getItem:key=>store.get(key)??null,
     setItem:(key,value)=>store.set(key,value),
-    batch:map=>{for(const [k,v] of map)store.set(k,v)},
+    batch:(map,options)=>{assert.equal(options?.origin,'remote','incoming metadata uses remote origin');for(const [k,v] of map)store.set(k,v);commits++;},
     async archiveAtomic({writes,deleteFiles,expectedWorkspace,expectedRecords}){
       assert.equal(deleteFiles.length,0,'merge never deletes photos or PDF files');
       assert.equal(store.get(WS),expectedWorkspace,'workspace revision is protected');
@@ -33,7 +33,7 @@ function fixture({record={},savePhotos=async()=>{}}={}){
   const formValues={damageType:'腐食',damageNo:'',member:'',memo:'',lineWidth:'1.2',frRecordMemo:shape.memo};
   const inspector={classList:{contains:()=>false,toggle:()=>{}}};
   const elements={inspector,headerTitle:{textContent:''},projectNameView:{textContent:''},drawingNameView:{textContent:''}};
-  for(const [id,value] of Object.entries(formValues))elements[id]={value};
+  for(const [id,value] of Object.entries(formValues))elements[id]={id,value,readOnly:false};
   const context={
     console,JSON,Map,Set,Date,Number,
     document:{hidden:false,activeElement:{id:shape.recordKind==='field-record'?'frRecordMemo':'memo',matches:()=>true,isContentEditable:false},querySelector:()=>null},
@@ -79,7 +79,7 @@ function fixture({record={},savePhotos=async()=>{}}={}){
   }
   return {copy,context,store,records,localActive,localOther,shape,incoming,commit,DRAW,
     receive:pack=>commit(pack,false),
-    setValue:(id,v)=>{elements[id].value=v},
+    setValue:(id,v)=>{elements[id].value=v},setReadOnly:(id,value)=>{elements[id].readOnly=value},getValue:id=>elements[id].value,
     get commits(){return commits},
     get renders(){return renders}};
 }
@@ -126,6 +126,52 @@ function fixture({record={},savePhotos=async()=>{}}={}){
     f.context.document.activeElement={id:'customDraft',matches:()=>true,isContentEditable:false};
     const result=await f.commit(f.incoming());
     assert.equal(result.applied,false,'unknown or unsaved input control remains protected');
+  }
+  if(code.includes('These are metadata-only writes.')){
+    const f=fixture(),ws='surveyFieldNoteWorkspaceV1';
+    const expectedLocal=JSON.stringify(JSON.parse(f.store.get(ws)).projects[0]);
+    const expectedRecords=[[ws,f.store.get(ws)],[f.DRAW('d1'),f.store.get(f.DRAW('d1'))],[f.DRAW('d2'),f.store.get(f.DRAW('d2'))]];
+    const newer=f.copy(f.localOther);newer.shapes.push({id:'newer-local',photos:[]});
+    f.store.set(f.DRAW('d2'),JSON.stringify(newer));
+    const result=await f.context.sentlogSyncView.mergeCommit({client_key:'p'},f.incoming(),expectedLocal,{expectedRecords,extraWrites:[['checkpoint','stale']]});
+    assert.equal(result.applied,false,'metadata commit rechecks every record immediately before its synchronous batch');
+    assert.equal(result.reason,'local-edit');
+    assert.equal(f.commits,0,'neither records nor checkpoint is partially committed');
+    assert.equal(f.store.has('checkpoint'),false);
+    assert.equal(JSON.parse(f.store.get(f.DRAW('d2'))).shapes[0].id,'newer-local');
+  }
+  if(code.includes('isCapturedFieldDraft')){
+    const enable=(f,pending={})=>{
+      f.context.SentlogCollaboration={onRemote(){},isDraftElement:()=>false,
+        isCapturedFieldDraft:(field,record)=>record.id==='s1'&&Object.hasOwn(pending,field.id)&&pending[field.id]===field.value,
+        captureEditor:()=>Object.fromEntries(['member','damageType'].map(id=>[id,f.getValue(id)])),
+        restoreEditor:values=>{for(const [id,value] of Object.entries(values||{}))f.setValue(id,value);}};
+    };
+    {
+      const f=fixture({record:{memo:'保存済みの変状コメント'}});enable(f);f.setReadOnly('memo',true);
+      const active=f.copy(f.localActive);active.shapes[0].memo+='\n\n他端末の追記';
+      assert.equal(f.context.__syncLiveBusyDebug().busy,false,'stale readonly damage memo is a mirror after collaboration editor installs');
+      assert.equal((await f.commit(f.incoming(active))).applied,true,'normal damage comments receive in place while hidden legacy memo remains stale');
+      assert.match(f.context.state.shapes[0].memo,/他端末の追記/);assert.equal(f.getValue('memo'),'');assert.equal(f.context.__syncLiveBusyDebug().busy,false);
+    }
+    {
+      const f=fixture();enable(f);f.setValue('memo','実際に編集中の旧メモ');
+      assert.equal((await f.commit(f.incoming())).applied,false,'an editable legacy memo is still protected even with collaboration installed');
+    }
+    for(const id of ['member','damageType']){
+      const value=id==='member'?'主桁':'ひび割れ',f=fixture(),pending={[id]:value};enable(f,pending);f.setReadOnly('memo',true);f.setValue(id,value);
+      const active=f.copy(f.localActive);active.shapes[0].memo='確認ダイアログを開いている間の受信';
+      assert.equal((await f.commit(f.incoming(active))).applied,true,'a durably captured '+id+' decision permits incoming comments');
+      assert.equal(f.getValue(id),value,'captured decision proposal survives the state update');
+      assert.equal(f.context.state.shapes[0][id==='member'?'member':'type'],id==='member'?'':'腐食','unconfirmed scalar value is not applied by receipt');
+      f.setValue(id,value+'・未保存の追加');
+      assert.equal((await f.commit(f.incoming(active))).applied,false,'new uncaptured '+id+' input remains protected');
+    }
+    {
+      const f=fixture();enable(f);f.setValue('member','未確定の部材');
+      assert.equal((await f.commit(f.incoming())).applied,false,'a proposal without a durable captured decision still blocks receipt');
+    }
+    console.log('PASS collaboration inspector guards: stale readonly memo, captured member/type decisions, preserved proposals and protected uncaptured input');
   }
   const survey={kind:'field-record',recordKind:'field-record',recordType:'survey',type:'調査',memo:'iPadで入力済みのコメント',surveyItems:[]};
   const photo={id:'iphone-photo',name:'近接.jpg',createdAt:1794978000000};
