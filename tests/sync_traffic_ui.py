@@ -1,9 +1,12 @@
 """Actual browser IndexedDB/Web Locks test. Synthetic receipts only; no cloud calls."""
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
-import functools, os, threading
+import functools, os, re, threading
 from playwright.sync_api import sync_playwright
 ROOT=Path(__file__).resolve().parents[1]
+# The application version and this helper's version are independent. Production
+# builders update app-version labels in tests, so compare the actual helper tag.
+VERSION=re.search(r"version:'([^']+)'",(ROOT/'sentlog/sync-traffic.js').read_text()).group(1)
 class Quiet(SimpleHTTPRequestHandler):
  def log_message(self,*args):pass
 server=ThreadingHTTPServer(('127.0.0.1',0),functools.partial(Quiet,directory=str(ROOT)))
@@ -25,7 +28,7 @@ try:
     for(let cycle=0;cycle<4;cycle++)await Promise.all(Array.from({length:25},()=>SentlogSyncTraffic.ack('photo',asset,'synthetic-device',send)));
     return {calls,version:SentlogSyncTraffic.version,webLocks:!!navigator.locks};
    }''')
-  first=run();assert first=={'calls':1,'version':'v1.90','webLocks':True},first
+  first=run();assert first=={'calls':1,'version':VERSION,'webLocks':True},first
   page.reload();second=run();assert second['calls']==0,second
   # A new delivery needs a fresh ACK, even with identical content.
   changed=page.evaluate('''async()=>{

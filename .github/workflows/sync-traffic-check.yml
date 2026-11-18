@@ -24,6 +24,7 @@ jobs:
         with:
           python-version: '3.12'
       - name: Build and check the exact production app
+        id: production
         run: |
           python - <<'PY'
           from pathlib import Path
@@ -44,14 +45,19 @@ jobs:
           subprocess.run(['bash','-e','-o','pipefail','-c','\n'.join(commands)],check=True)
           PY
       - name: Install matching test package for the bundled browsers
+        id: browsers
         run: python -m pip install playwright==1.57.0 pillow==11.3.0
       - name: Verify receipt persistence and drawing order
+        if: ${{ !cancelled() && steps.production.outcome == 'success' && steps.browsers.outcome == 'success' }}
         run: |
           python tests/sync_traffic_ui.py
           python tests/drawing_order_ui.py
       - name: Verify automatic two-device editing in Chromium
+        if: ${{ !cancelled() && steps.production.outcome == 'success' && steps.browsers.outcome == 'success' }}
         run: python tests/edit_sync_ui.py --engine chromium --built-root .
       - name: Verify automatic two-device editing in WebKit
+        if: ${{ !cancelled() && steps.production.outcome == 'success' && steps.browsers.outcome == 'success' }}
         run: python tests/edit_sync_ui.py --engine webkit --built-root .
       - name: Verify existing comment and composition protections
+        if: ${{ !cancelled() && steps.production.outcome == 'success' && steps.browsers.outcome == 'success' }}
         run: python tests/field_record_memo_ui.py --engine chromium --built-root .
