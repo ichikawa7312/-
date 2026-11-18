@@ -185,7 +185,10 @@ def real_pinch(page, session, sequential=True, cancel=False, lose_capture=False)
     assert len(downs) == 2, downs
     for distance in (45, 65, 90):
         dispatch('touchMove', [touch_point(11, cx-distance, cy), touch_point(12, cx+distance, cy)])
-    page.wait_for_function("old=>Number(document.getElementById('photoViewerCanvas').dataset.zoom)>old*1.5", arg=previous)
+    # The surface publishes its zoom on requestAnimationFrame. Wait for the
+    # final 180px / 70px pinch, not an earlier intermediate move's painted zoom.
+    expected_zoom = min(8, previous * 180 / 70)
+    page.wait_for_function("expected=>Math.abs(Number(document.getElementById('photoViewerCanvas').dataset.zoom)-expected)<.001", arg=expected_zoom)
     zoomed = assert_ready(page)
     if lose_capture:
         page.evaluate("""()=>{
@@ -204,7 +207,8 @@ def real_pinch(page, session, sequential=True, cancel=False, lose_capture=False)
         dispatch('touchEnd', [])
     else:
         dispatch('touchEnd', [])
-    page.wait_for_function("document.getElementById('photoViewer').dataset.photoState==='ready'")
+    # Let any release-triggered draw finish before checking the retained view.
+    page.evaluate("()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))")
     final = assert_ready(page)
     assert abs(final['zoom'] - zoomed['zoom']) < .02, (zoomed, final)
     assert abs(final['pageScale'] - 1) < .01, final
