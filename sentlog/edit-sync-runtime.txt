@@ -1,0 +1,104 @@
+/* edit-sync-v20261118: change-driven sends and small revision-only receive checks. */
+function createSyncHeadWatcher({read,project,revision,include,request,enabled,owner,
+  now=()=>Date.now(),setTimer=setTimeout,clearTimer=clearTimeout,interval=3000,retryMs=30000}){
+  let account=owner(),generation=0,timer=null,flight=null,retryAt=0,stopped=false;
+  const notified=new Map();
+  function arm(delay=interval){
+    if(stopped||timer!==null)return;
+    timer=setTimer(()=>{timer=null;void poll();},Math.max(delay,retryAt-now(),0));
+  }
+  function reset(){
+    generation++;account=owner();notified.clear();retryAt=0;
+    if(timer!==null)clearTimer(timer);timer=null;
+    // Keep a previous account's request single-flight, but discard its result.
+    if(!flight)arm(0);
+  }
+  async function poll(){
+    if(stopped)return;
+    if(owner()!==account)reset();
+    if(flight)return flight;
+    if(!enabled()||now()<retryAt){arm();return;}
+    if(timer!==null)clearTimer(timer);timer=null;
+    const epoch=generation,user=account;
+    const current=()=>!stopped&&epoch===generation&&user===owner();
+    let task;
+    task=(async()=>{
+      try{
+        const rows=await read();
+        if(!current()||!enabled())return;
+        // A capped/invalid response must never be treated as a complete record list.
+        // The existing full synchronization remains the recovery path.
+        if(!Array.isArray(rows)||rows.length>=1000||rows.some(r=>!r||typeof r.project_id!=='string'||!r.project_id||!Number.isSafeInteger(Number(r.revision))||Number(r.revision)<0))
+          throw Error('更新番号を確認できませんでした');
+        const ids=new Set(),changes=[];
+        for(const row of rows){
+          const rev=Number(row.revision),cp=project(row.project_id);
+          if(cp&&(!include(cp)||rev<=Number(revision(cp.client_key)||0)))continue;
+          if(rev<=Number(notified.get(row.project_id)||0))continue;
+          ids.add(cp?.client_key||'*');changes.push([row.project_id,rev]);
+        }
+        if(ids.size){
+          // request() retains its queue across an active cycle, offline periods,
+          // editing guards and errors. Observation never advances getSyncMeta().
+          request(ids.has('*')?['*']:[...ids]);
+          for(const [id,rev] of changes)notified.set(id,rev);
+        }
+        retryAt=0;
+      }catch(_){if(current())retryAt=now()+retryMs;}
+      finally{
+        if(flight===task)flight=null;
+        if(!stopped)arm(current()?interval:0);
+      }
+    })();
+    flight=task;return task;
+  }
+  function wake(){if(timer!==null)clearTimer(timer);timer=null;if(!flight)arm(0);}
+  function stop(){stopped=true;generation++;if(timer!==null)clearTimer(timer);timer=null;}
+  return {poll,wake,reset,stop,get retryAt(){return retryAt;},get running(){return !!flight;}};
+}
+
+// Only attachment references require the asset pipeline. Text and point moves
+// can travel without repeatedly reading and hashing every unchanged photograph.
+function sharedFileText(payload){
+  if(!payload)return null;
+  return JSON.stringify((payload.drawings||[]).map(d=>{
+    const s=d.state||{};
+    const photos=[...(s.autoTracePhotos||[]),...(s.shapes||[]).flatMap(x=>x.photos||[])];
+    return {id:d.meta?.id||s.id,sourceType:s.sourceType||'',fileName:s.fileName||'',pageCount:s.pageCount||1,
+      pageReplacements:s.pageReplacements||null,dxf:s.dxf||null,
+      photos:photos.map(p=>({id:p.id,sha256:p.sha256||'',size:p.size||p.byte_size||0})).sort((a,b)=>String(a.id).localeCompare(String(b.id)))};
+  }).sort((a,b)=>String(a.id).localeCompare(String(b.id))));
+}
+function projectFilesChanged(localProject,baseline){
+  return !localProject||!baseline||sharedFileText(projectSnapshot(localProject))!==sharedFileText(baseline);
+}
+
+// Browser integration. All data mutations still use the existing sync path.
+const knownCloudProjects=new Map();
+let editSyncOwner='';
+function editSyncAvailable(){
+  return !!session?.user?.id&&navigator.onLine&&!document.hidden&&!window.sentlogImporting&&!syncing&&!mergeBusy;
+}
+const editSync=window.SentlogEditSync.createScheduler({
+  canRun:()=>editSyncAvailable()&&!window.sentlogSyncView?.isBusy?.(),
+  run:ids=>syncNow({eventDriven:true,projectIds:ids.includes('*')?null:ids})
+});
+const syncHeads=createSyncHeadWatcher({
+  read:()=>rest('/rest/v1/sentlog_project_snapshots?select=project_id,revision&limit=1001'),
+  project:id=>knownCloudProjects.get(id),revision:id=>getSyncMeta(id)?.revision,
+  include:cp=>!!cp.client_key&&archive.canSync(cp,null),
+  request:ids=>editSync.request(ids,{delay:200}),enabled:editSyncAvailable,
+  owner:()=>session?.user?.id||''
+});
+function editSyncSessionChanged(){
+  const owner=session?.user?.id||'';
+  if(owner===editSyncOwner)return;
+  editSyncOwner=owner;knownCloudProjects.clear();editSync.reset();syncHeads.reset();
+  if(owner)editSync.request(['*'],{delay:800});
+}
+function wakeEditSync(){editSync.wake();syncHeads.wake();}
+window.sentlogAppReady.then(()=>{
+  window.SentlogEditSync.watchRecords(window.SentlogRecords,{onChange:ids=>editSync.request(ids)});
+}).catch(error=>console.warn('Sentlog edit synchronization setup',error));
+window.sentlogEditSync=editSync;
+setTimeout(()=>syncHeads.wake(),3000);

@@ -84,7 +84,7 @@ async function snapshotTests(){
  const cp={id:'project',client_key:'local',status:'active'},lp={id:'local',drawings:[]},payload={project:lp,drawings:[]};
  let revision=1,payloadGets=0,fileChecks=0;const meta={revision:1,base_snapshot:payload,fingerprint:'same',fingerprint_schema:2};
  const api=vm.runInNewContext(source+';({pullRemoteProjects})',{
-  Map,Set,Number,JSON,SYNC_FINGERPRINT_SCHEMA:2,enc:encodeURIComponent,archive:{canSync:()=>true},syncConflicts:new Map(),getSyncMeta:()=>meta,workspace:()=>({projects:[lp]}),snapshotFingerprint:async()=> 'same',projectSnapshot:()=>payload,setSyncMeta(){},pullProjectAssets:async()=>{fileChecks++;return 0;},
+  Map,Set,Number,JSON,knownCloudProjects:new Map(),SYNC_FINGERPRINT_SCHEMA:2,enc:encodeURIComponent,archive:{canSync:()=>true},syncConflicts:new Map(),getSyncMeta:()=>meta,workspace:()=>({projects:[lp]}),snapshotFingerprint:async()=> 'same',projectSnapshot:()=>payload,setSyncMeta(){},pullProjectAssets:async()=>{fileChecks++;return 0;},
   rest:async path=>{
    if(path.startsWith('/rest/v1/sentlog_projects?'))return [cp];
    if(path.endsWith('&select=revision,updated_at'))return [{revision,updated_at:'date'}];
@@ -102,7 +102,7 @@ async function manualSyncTests(){
  const source=cloud.slice(cloud.indexOf('async function syncNow('),cloud.indexOf('// Integrated in the cloud module'));
  const alias=cloud.match(/^window\.sentlogArchiveSync=.*;$/m)[0];
  let timestamp=100000,attempts=0,fail=false;const scopes=[],statuses=[];
- const c=vm.createContext({Date:{now:()=>timestamp},Map,Set,Number,JSON,console:{warn(){}},session:{},syncing:false,mergeBusy:false,syncNotBefore:0,
+ const c=vm.createContext({Date:{now:()=>timestamp},Map,Set,Number,JSON,console:{warn(){}},session:{},syncing:false,mergeBusy:false,syncNotBefore:0,syncErrorNotBefore:0,drawingUploadBlocks:new Set(),editSync:{wake(){}},
   document:{hidden:false},navigator:{onLine:true},msg(){},refreshMergePanel(){},
   syncStatus:{begin:()=>1,finish:(_,s)=>statuses.push(s.level)},
   archive:{refresh:async()=>{attempts++;if(fail)throw Error('network');}},
@@ -119,15 +119,21 @@ async function manualSyncTests(){
  c.window.sentlogImporting=true;await c.window.sentlogArchiveSync();assert.equal(attempts,4,'manual operation retains import safety guard');
  c.window.sentlogImporting=false;c.syncing=true;await c.window.sentlogArchiveSync();assert.equal(attempts,4,'manual operation retains single-flight guard');
  c.syncing=false;timestamp+=31000;await c.syncNow();assert.equal(attempts,5);
+ if(cloud.includes('edit-sync-v20261118')){
+  await c.syncNow({eventDriven:true,projectIds:['local']});assert.equal(attempts,6,'saved edits bypass the ordinary polling interval');
+  fail=true;await c.syncNow({eventDriven:true});assert.equal(attempts,7);
+  fail=false;const queued=await c.syncNow({eventDriven:true});assert.equal(attempts,7,'edit-driven sends retain error backoff');assert.equal(queued.started,false);
+  timestamp+=30001;const resumed=await c.syncNow({eventDriven:true});assert.equal(attempts,8);assert.equal(resumed.started,true);
+ }
  assert(cloud.includes('if(done)await syncNow({force:true});'));
  console.log('PASS explicit synchronization: immediate retry and archived-project scope, automatic debounce/backoff, import and single-flight guards');
 }
 (async()=>{
  await manualSyncTests();await ledgerTests();await receiverTests();await receiverTests({saveBroken:true});await receiverTests({different:true});await snapshotTests();
  const index=fs.readFileSync('sentlog/index.html','utf8'),pc=fs.readFileSync('sentlog-pc/index.html','utf8'),sw=fs.readFileSync('sentlog/sw.js','utf8'),cloud=fs.readFileSync('sentlog/cloud-sync.js','utf8');
- assert(index.includes("['sync-traffic.js?v=190','SentlogSyncTraffic v1.90']"));assert(index.includes('src="./sync-traffic.js?v=190"'));assert(pc.includes('src="../sentlog/sync-traffic.js?v=190"'));assert(sw.includes("'sync-traffic.js'"));assert(sw.includes('sentlog-pwa-v201'));
+ assert(index.includes("['sync-traffic.js?v=190','SentlogSyncTraffic"));assert(index.includes('src="./sync-traffic.js?v=190"'));assert(pc.includes('src="../sentlog/sync-traffic.js?v=190"'));assert(sw.includes("'sync-traffic.js'"));assert(sw.includes('sentlog-pwa-v201'));
  assert(cloud.includes('cycleAssets.get(cp.id)||await readProjectAssets'));
- assert(cloud.includes('if(!options?.force&&Date.now()<syncNotBefore)return;'));
+ assert(cloud.includes('edit-sync-v20261118')?cloud.includes('if(!options?.force&&!quick&&Date.now()<syncNotBefore)return {started:false,retryAt:syncNotBefore};'):cloud.includes('if(!options?.force&&Date.now()<syncNotBefore)return;'));
  assert(cloud.includes('syncTimer=setInterval(()=>{if(session&&navigator.onLine&&!document.hidden)syncNow()},15000);'));
  console.log('PASS built receivers: one download and ACK across both paths, corrupt/missing save guards, lost-file recovery, revision-only unchanged fetch, versioned boot');
 })().catch(e=>{console.error(e);process.exitCode=1;});

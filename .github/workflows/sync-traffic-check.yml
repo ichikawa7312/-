@@ -1,21 +1,57 @@
 name: Sentlog sync traffic browser check
 on:
   push:
-    branches: [main]
+    branches: ['main', 'fix/edit-sync-*']
   pull_request:
+  workflow_dispatch:
 permissions:
   contents: read
+concurrency:
+  group: sync-traffic-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   browser:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    container:
+      image: mcr.microsoft.com/playwright/python:v1.57.0-noble@sha256:8331696befd3ee8b5baefca428446345f548e415a2408fe1d3d1224e9d919682
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: python -m pip install playwright==1.56.0
-      - run: python -m playwright install --with-deps chromium
-      - name: Verify real receipt persistence and Web Locks
+      - name: Build and check the exact production app
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import subprocess
+          lines=Path('.github/workflows/pages.yml').read_text().splitlines()
+          marker='      - name: Build archive, management and capacity integration'
+          assert lines.count(marker)==1
+          start=lines.index(marker)+1
+          assert lines[start].strip()=='run: |'
+          commands=[]
+          for line in lines[start+1:]:
+              if line.startswith('          '):
+                  commands.append(line[10:])
+              else:
+                  break
+          assert any('build_edit_sync.py' in c for c in commands)
+          assert len(commands)>90
+          subprocess.run(['bash','-e','-o','pipefail','-c','\n'.join(commands)],check=True)
+          PY
+      - name: Install matching test package for the bundled browsers
+        run: python -m pip install playwright==1.57.0 pillow==11.3.0
+      - name: Verify receipt persistence and drawing order
         run: |
           python tests/sync_traffic_ui.py
           python tests/drawing_order_ui.py
+      - name: Verify automatic two-device editing in Chromium
+        run: python tests/edit_sync_ui.py --engine chromium --built-root .
+      - name: Verify automatic two-device editing in WebKit
+        run: python tests/edit_sync_ui.py --engine webkit --built-root .
+      - name: Verify existing comment and composition protections
+        run: python tests/field_record_memo_ui.py --engine chromium --built-root .

@@ -100,6 +100,11 @@ jobs:
           python3 scripts/build_live_sync.py
           python3 scripts/build_photo_viewer.py
           python3 scripts/build_field_memo.py
+          python3 scripts/build_edit_sync.py
+          node tests/edit_sync.test.cjs
+          node tests/edit_sync_cloud.test.cjs
+          node tests/edit_sync_integration.test.cjs
+          node tests/sync_traffic.test.cjs
           node --check sentlog/photo-viewer.js
           node tests/photo_ledger.test.cjs
           node tests/photo_ledger_damage.test.cjs
