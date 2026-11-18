@@ -54,7 +54,7 @@ for(const key of ['width','height']){
 const createUrl=URL.createObjectURL.bind(URL),revokeUrl=URL.revokeObjectURL.bind(URL);
 URL.createObjectURL=function(...args){const url=createUrl(...args);photoAudit.urls++;photoAudit.liveUrls.add(url);return url;};
 URL.revokeObjectURL=function(url){photoAudit.revokes++;photoAudit.liveUrls.delete(url);return revokeUrl(url);};
-document.addEventListener('pointerdown',e=>photoAudit.events.push({id:e.pointerId,type:e.pointerType}),true);
+for(const phase of ['pointerdown','pointerup','pointercancel'])document.addEventListener(phase,e=>photoAudit.events.push({id:e.pointerId,type:e.pointerType,phase}),true);
 """
 
 
@@ -139,10 +139,24 @@ def real_pinch(page, session, sequential=True, cancel=False, lose_capture=False)
 
     def dispatch(kind, points):
         nonlocal previous_points
-        if session:
-            session.send('Input.dispatchTouchEvent', {'type': kind, 'touchPoints': points})
-            return
         current = {point['id']: point for point in points}
+        if session:
+            # Our helper takes REMAINING contacts. Chromium's WebTouch path
+            # instead takes RELEASED contacts for a partial touchEnd.
+            payload = [point for key, point in previous_points.items() if key not in current] if kind == 'touchEnd' and points else points
+            try:
+                session.send('Input.dispatchTouchEvent', {'type': kind, 'touchPoints': payload})
+            except Exception as error:
+                # The newer SyntheticPointerActions path adds/removes contacts
+                # through touchMove. Adapt only its explicit protocol rejection.
+                protocol_message = str(error)
+                end_variant = kind == 'touchEnd' and points and 'TouchEnd and TouchCancel must not have any touch points' in protocol_message
+                start_variant = kind == 'touchStart' and previous_points and 'Must have no prior active touch points' in protocol_message
+                if not (end_variant or start_variant):
+                    raise
+                session.send('Input.dispatchTouchEvent', {'type': 'touchMove', 'touchPoints': points})
+            previous_points = current
+            return
         if kind == 'touchCancel':
             events = [('pointercancel', point) for point in previous_points.values()]
         elif kind == 'touchEnd':
@@ -163,8 +177,11 @@ def real_pinch(page, session, sequential=True, cancel=False, lose_capture=False)
     box = page.locator('#photoViewerCanvas').bounding_box()
     cx, cy = box['x'] + box['width'] / 2, box['y'] + box['height'] / 2
     previous = state_of(page)['zoom']
+    start_events = page.evaluate('photoAudit.events.length')
     dispatch('touchStart', [touch_point(11, cx-35, cy)])
     dispatch('touchStart', [touch_point(11, cx-35, cy), touch_point(12, cx+35, cy)])
+    downs = page.evaluate("start=>photoAudit.events.slice(start).filter(e=>e.type==='touch'&&e.phase==='pointerdown').map(e=>e.id)", start_events)
+    assert len(downs) == 2, downs
     for distance in (45, 65, 90):
         dispatch('touchMove', [touch_point(11, cx-distance, cy), touch_point(12, cx+distance, cy)])
     page.wait_for_function("old=>Number(document.getElementById('photoViewerCanvas').dataset.zoom)>old*1.5", arg=previous)
@@ -178,8 +195,11 @@ def real_pinch(page, session, sequential=True, cancel=False, lose_capture=False)
         dispatch('touchCancel', [])
     elif sequential:
         dispatch('touchEnd', [touch_point(12, cx+90, cy)])
+        released = page.evaluate("start=>photoAudit.events.slice(start).filter(e=>e.type==='touch'&&e.phase==='pointerup').map(e=>e.id)", start_events)
+        assert released == [downs[0]], (downs, released)
         assert_ready(page)
         dispatch('touchMove', [touch_point(12, cx+100, cy+12)])
+        assert page.evaluate("start=>photoAudit.events.slice(start).filter(e=>e.type==='touch'&&e.phase==='pointerdown').length", start_events) == 2
         dispatch('touchEnd', [])
     else:
         dispatch('touchEnd', [])
@@ -317,7 +337,7 @@ def built_regression(browser, built_root, encoded, engine):
                                       device_scale_factor=3, service_workers='block')
         # Other app renderers have their own budgets, so only audit photo memory
         # in the isolated fixture above. Here test assembled-app integration.
-        context.add_init_script("window.photoAudit={created:0,urls:0,maxPixels:0,oversize:0,liveUrls:new Set(),events:[]};document.addEventListener('pointerdown',e=>photoAudit.events.push({id:e.pointerId,type:e.pointerType}),true)")
+        context.add_init_script("window.photoAudit={created:0,urls:0,maxPixels:0,oversize:0,liveUrls:new Set(),events:[]};for(const phase of ['pointerdown','pointerup','pointercancel'])document.addEventListener(phase,e=>photoAudit.events.push({id:e.pointerId,type:e.pointerType,phase}),true)")
 
         def route(request):
             if request.request.url.startswith(origin + '/'):

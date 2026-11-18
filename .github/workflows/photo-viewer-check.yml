@@ -13,6 +13,9 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+concurrency:
+  group: photo-viewer-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   browser:
     runs-on: ubuntu-24.04
