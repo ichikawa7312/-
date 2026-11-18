@@ -19,6 +19,8 @@ concurrency:
 jobs:
   browser:
     runs-on: ubuntu-24.04
+    container:
+      image: mcr.microsoft.com/playwright/python:v1.57.0-noble@sha256:8331696befd3ee8b5baefca428446345f548e415a2408fe1d3d1224e9d919682
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
@@ -48,10 +50,9 @@ jobs:
           assert len(commands)>90
           subprocess.run(['bash','-e','-o','pipefail','-c','\n'.join(commands)],check=True)
           PY
-      - name: Install browser test engines
+      - name: Install matching test package for the bundled browsers
         run: |
           python -m pip install playwright==1.57.0 pillow==11.3.0
-          python -m playwright install --with-deps chromium webkit
       - name: Test actual touch input and built-app photo flow
         run: python tests/photo_viewer_ui.py --engine chromium --built-root .
       - name: Check WebKit gesture isolation and release behavior
