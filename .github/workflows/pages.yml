@@ -107,6 +107,7 @@ jobs:
           python3 scripts/build_collaboration_sync.py
           python3 scripts/build_collaboration_editor.py
           python3 scripts/build_collaboration_transfer.py
+          python3 scripts/build_continuous_camera.py
           node tests/record_collaboration.test.cjs
           node tests/collaboration_merge.test.cjs
           node tests/collaboration_photos.test.cjs
@@ -115,6 +116,7 @@ jobs:
           node tests/collaboration_sync.test.cjs
           node tests/collaboration_editor.test.cjs
           node tests/collaboration_transfer.test.cjs
+          node tests/continuous_camera.test.cjs
           node tests/edit_sync.test.cjs
           node tests/edit_sync_cloud.test.cjs
           node tests/edit_sync_integration.test.cjs
@@ -229,7 +231,7 @@ jobs:
           from urllib.request import Request, urlopen
           import os,time
           names=['index.html','sw.js','record-collaboration.js','collaboration-editor.js',
-                 'collaboration-channel.js','collaboration-photos.js','cloud-sync.js',
+                 'collaboration-channel.js','collaboration-photos.js','continuous-camera.js','cloud-sync.js',
                  'sync-merge.js','sync-view.js','original-photo-store.js','record-transfer.js',
                  'photo-ledger.js','photo-ledger-visual3.js','photo-viewer.js']
           base=os.environ['SENTLOG_DEPLOYMENT_URL'].rstrip('/')+'/'

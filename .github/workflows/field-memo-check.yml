@@ -56,7 +56,11 @@ jobs:
       - name: Install matching test package for the bundled browsers
         run: |
           python -m pip install playwright==1.57.0 pillow==11.3.0
-      - name: Test comments and photo updates in Chromium
-        run: python tests/field_record_memo_ui.py --engine chromium --built-root .
-      - name: Test Japanese input and redraw in WebKit
-        run: python tests/field_record_memo_ui.py --engine webkit --built-root .
+      # frRecordMemo is now a read-only projection of shared comments. Exercise
+      # the current composer, IME/caret, redraw and photo delivery through the
+      # canonical two-device suite; the build above also checks durable drafts,
+      # record/drawing binding and comment/photo undo+redo in collaboration_editor.test.cjs.
+      - name: Test shared comment drafts and photo updates in Chromium
+        run: python tests/collaboration_ui.py --engine chromium --built-root .
+      - name: Test shared Japanese input and redraw in WebKit
+        run: python tests/collaboration_ui.py --engine webkit --built-root .
