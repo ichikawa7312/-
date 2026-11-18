@@ -11,7 +11,6 @@ import functools
 import io
 import json
 import os
-import tempfile
 import threading
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -107,7 +106,8 @@ $('stageWrap').addEventListener('pointerdown',()=>fixture.backgroundEvents++);
 
 
 def wait_ready(page):
-    page.wait_for_function("document.getElementById('photoViewer').dataset.photoState==='ready'")
+    page.wait_for_function("['ready','error'].includes(document.getElementById('photoViewer').dataset.photoState)")
+    assert page.locator('#photoViewer').get_attribute('data-photo-state') == 'ready', page.locator('#photoViewerMessage').inner_text()
     page.wait_for_function("document.getElementById('photoViewerCanvas').width>1")
 
 
@@ -329,7 +329,7 @@ def fixture_regression(browser, encoded, mobile, engine):
     print('PASS photo viewer '+engine+' '+('mobile' if mobile else 'desktop')+': guarded gestures, stable editor/original, bounded reusable canvas, release/cancel, errors and async races')
 
 
-def built_regression(browser, built_root, encoded, engine, browser_type):
+def built_regression(browser, built_root, encoded, engine):
     class Handler(SimpleHTTPRequestHandler):
         def log_message(self, *args):
             pass
@@ -337,19 +337,16 @@ def built_regression(browser, built_root, encoded, engine, browser_type):
     server = ThreadingHTTPServer(('127.0.0.1', 0), functools.partial(Handler, directory=str(built_root)))
     threading.Thread(target=server.serve_forever, daemon=True).start()
     origin = f'http://127.0.0.1:{server.server_port}'
-    profile = tempfile.TemporaryDirectory(prefix='sentlog-photo-webkit-') if engine == 'webkit' else None
     context = None
     try:
         options = dict(viewport={'width': 390, 'height': 844}, is_mobile=True, has_touch=True,
                        device_scale_factor=3, service_workers='block')
-        # This exercises real IndexedDB Blob/File storage, so WebKit needs a
-        # normal persistent test profile rather than an ephemeral/private one.
-        context = browser_type.launch_persistent_context(profile.name, headless=True, **options) if profile else browser.new_context(**options)
+        context = browser.new_context(**options)
         # Other app renderers have their own budgets, so only audit photo memory
         # in the isolated fixture above. Here test assembled-app integration.
 
         def route(request):
-            if request.request.url.startswith(origin + '/'):
+            if request.request.url.startswith((origin + '/', 'blob:', 'data:')):
                 request.continue_()
             elif request.request.url.startswith('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/'):
                 request.fulfill(status=200, content_type='text/javascript', body='window.pdfjsLib={GlobalWorkerOptions:{},getDocument(){throw Error("No PDF in photo fixture")}};')
@@ -366,7 +363,7 @@ def built_regression(browser, built_root, encoded, engine, browser_type):
         # document.open/write. Observe the finished document, not discarded
         # bootstrap listeners, so the real finger-release assertion is valid.
         page.evaluate("window.photoAudit={created:0,urls:0,maxPixels:0,oversize:0,liveUrls:new Set(),events:[]};for(const phase of ['pointerdown','pointerup','pointercancel'])document.addEventListener(phase,e=>photoAudit.events.push({id:e.pointerId,type:e.pointerType,phase}),true)")
-        before = page.evaluate("""async encoded=>{
+        before = page.evaluate("""async ({encoded,engine})=>{
           await window.sentlogAppReady;
           const id='photo-test-drawing',pid='photo-test-project',meta={id,name:'Synthetic drawing',sourceType:'image',fileName:'drawing.svg',pageCount:1};
           workspace={projects:[{id:pid,name:'Synthetic photo test',drawings:[meta]}]};
@@ -374,30 +371,46 @@ def built_regression(browser, built_root, encoded, engine, browser_type):
           SentlogRecords.setItem(drawingStorageKey(id),JSON.stringify({...freshDrawingState('Synthetic photo test'),sourceType:'image',fileName:'drawing.svg',width:1200,height:800,
             shapes:[{id:'photo-test-record',kind:'rect',page:1,type:'ひび割れ',typeNo:1,globalNo:1,x:350,y:250,w:100,h:80,photos:[{id:'photo-test',name:'Evidence photo'}]}]}));
           const file=new File(['<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="800"><rect width="1200" height="800" fill="white"/></svg>'],'drawing.svg',{type:'image/svg+xml'});
-          await SentlogRecords.writeFile('background:'+id,file);
           const bytes=Uint8Array.from(atob(encoded),c=>c.charCodeAt(0));
-          await savePhotoBlob('photo-test',new Blob([bytes],{type:'image/jpeg'}),id);
+          const photoBlob=new Blob([bytes],{type:'image/jpeg'});
+          if(engine==='webkit'){
+            // Linux WebKit automation cannot reliably persist synthetic Files
+            // (also documented in image_memory_ui.py). Keep only Blob transport
+            // outside this renderer integration test; all records still use IDB.
+            // Chromium below covers the actual file-store round trip.
+            const files=new Map([['background:'+id,file],[photoDBKey('photo-test',id),photoBlob]]);
+            const originalRead=getDBFile;
+            getDBFile=async function(key){return files.has(key)?files.get(key):originalRead.apply(this,arguments)};
+          }else{
+            await SentlogRecords.writeFile('background:'+id,file);
+            await savePhotoBlob('photo-test',photoBlob,id);
+          }
+          window.photoBuiltHash=async()=>{
+            const blob=await getPhotoBlob('photo-test',id);
+            return Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',await blob.arrayBuffer()))).join(',');
+          };
           await SentlogRecords.settled();await openDrawing(pid,id);
           selected='photo-test-record';scale=1.7;tx=-140;ty=-90;applyTransform();render();
           window.photoBuiltSnapshot=()=>JSON.stringify({state,activeDrawingId,activeProjectId,currentView,selected,scale,tx,ty});
           return photoBuiltSnapshot();
-        }""", encoded)
+        }""", {'encoded': encoded, 'engine': engine})
+        original_hash = page.evaluate('photoBuiltHash()')
         page.evaluate("openPhotoViewer('photo-test','Evidence photo')")
         wait_ready(page)
         session = context.new_cdp_session(page) if engine == 'chromium' else None
         real_pinch(page, session, sequential=True)
         assert page.evaluate('photoBuiltSnapshot()') == before
+        assert page.evaluate('photoBuiltHash()') == original_hash
         page.locator('#photoViewerClose').click()
         assert page.evaluate('photoBuiltSnapshot()') == before
         assert page.locator('#editorView').is_visible()
         assert not errors, errors
-        print('PASS built app '+engine+': pinch/release remains in photo viewer; close returns to unchanged drawing and records')
+        transport = 'Blob transport fixture; renderer integration' if engine == 'webkit' else 'real IndexedDB Blob round trip'
+        print('PASS built app '+engine+' ('+transport+'): pinch/release remains in photo viewer; close returns to unchanged drawing, records and original photo')
     finally:
         if context:
             context.close()
         server.shutdown()
-        if profile:
-            profile.cleanup()
 
 
 def main():
@@ -415,7 +428,7 @@ def main():
             fixture_regression(browser, encoded, mobile=True, engine=args.engine)
             fixture_regression(browser, encoded, mobile=False, engine=args.engine)
             if args.built_root:
-                built_regression(browser, args.built_root.resolve(), encoded, engine=args.engine, browser_type=getattr(playwright, args.engine))
+                built_regression(browser, args.built_root.resolve(), encoded, engine=args.engine)
         finally:
             browser.close()
 
