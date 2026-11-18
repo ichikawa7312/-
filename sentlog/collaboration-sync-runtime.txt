@@ -314,9 +314,10 @@ async function collaborationMetadataRound(ids,context){
   }
   for(const id of needsFiles)if(!collaborationFilePreparation.has('*')&&!collaborationFilePreparation.has(id))collaborationFileWorker.request([id]);
   const revisions=Object.fromEntries([...pulled].map(([id,r])=>[knownCloudProjects.get(id)?.client_key,r.revision]));
-  if(cycle!==null&&!syncing){
+  if(!syncing){
+    const finishCycle=cycle===null?syncStatus.begin():cycle;
     const pending=deferred.size||collaborationFilesOutstanding();
-    syncStatus.finish(cycle,pending?{level:'pending',label:deferred.size?'記録の反映待ち':'ファイル同期待ち',message:deferred.size?'編集中の内容を保護し、受信した記録を再確認しています。':'記録の更新を確認しました。図面・写真の送受信は続いています。'}:
+    syncStatus.finish(finishCycle,pending?{level:'pending',label:deferred.size?'記録の反映待ち':'ファイル同期待ち',message:deferred.size?'編集中の内容を保護し、受信した記録を再確認しています。':'記録の更新を確認しました。図面・写真の送受信は続いています。'}:
       {level:'ok',message:changed||uploaded?'記録の更新を確認しました。':'共有記録に新しい変更はありません。'});
   }
   refreshMergePanel();return {changed,uploaded,deviceId,blocked,revisions,deferredIds:[...deferred]};
@@ -396,7 +397,7 @@ async function collaborationFileRound(ids,context){
     if(ids.includes('*')&&!deferred.size)collaborationFileFailures.delete('*');
     syncErrorNotBefore=Math.max(0,...[...collaborationFileFailures.values()].map(e=>e.retryAt));
     if(collaborationFileFailures.size)syncStatus.finish(cycle,{level:'error',label:'ファイル要確認',message:'図面・写真の同期は完了していません。'+[...collaborationFileFailures.values()].map(e=>e.message).slice(0,3).join(' / ')});
-    else if(deferred.size||collaborationMetadataWorker.pending.length||collaborationFileWorker.pending.length)syncStatus.finish(cycle,{level:'pending',label:'一部反映待ち',message:'記録を保持して再確認しています。図面・写真の送受信が残っています。'});
+    else if(deferred.size||collaborationMetadataWorker.running||collaborationMetadataWorker.pending.length||collaborationFileWorker.pending.length)syncStatus.finish(cycle,{level:'pending',label:'一部反映待ち',message:'記録を保持して再確認しています。図面・写真の送受信が残っています。'});
     else syncStatus.finish(cycle,{level:'ok',message:files||uploaded?'記録と図面・写真の送受信を確認しました。':'記録と図面・写真に新しい変更はありません。'});
     return {deferredIds:[...deferred],retryAt:syncErrorNotBefore,files,uploaded};
   }finally{syncing=false;collaborationAssetOwner='';refreshMergePanel();editSync.wake();}

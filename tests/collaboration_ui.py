@@ -2,6 +2,10 @@
 
 Synthetic REST/notification services only. No real login or business record is used.
 Run in the pinned browser CI container, never as a substitute for physical iOS tests.
+
+Chromium retains real Blob IndexedDB. WebKit first probes raw Blob/File storage;
+only a demonstrated transport failure enables a shared in-memory Blob adapter.
+Records IndexedDB, image conversion, hashes, CAS and Storage requests stay real.
 """
 import argparse
 import base64
@@ -28,10 +32,22 @@ base.CLOUD_QUIET = '66666666-6666-4666-8666-666666666666'
 
 
 class Cloud(base.FakeCloud):
-    def __init__(self, origin):
+    def __init__(self, origin, built_root, engine):
         super().__init__(origin)
         self.assets, self.blobs, self.notifications, self.pages = {}, {}, [], []
+        self.page_errors = []
         self.hold_upload, self.held_uploads, self.drop_ack = None, [], None
+        self.webkit_source = None
+        if engine == 'webkit':
+            source = (built_root / 'sentlog/cloud-sync.js').read_text(encoding='utf-8')
+            marker = 'async function dbGet(key){'
+            assert source.count(marker) == 1, 'Production cloud file-read boundary changed'
+            # dbGet is module-local, so the test response supplies the same Blob
+            # adapter used by getDBFile/putDBFile. Until the probe fails and the
+            # adapter is installed, this branch leaves the real reader intact.
+            self.webkit_source = source.replace(marker, marker + "\n"
+                "  const fixture=window.__sentlogWebKitBlobTransport;\n"
+                "  if(fixture?.files.has(key))return fixture.files.get(key);", 1)
 
     def accept(self, route, entry):
         body = entry['body']
@@ -52,6 +68,9 @@ class Cloud(base.FakeCloud):
 
     def route(self, route, device):
         request, parsed = route.request, urlparse(route.request.url)
+        if self.webkit_source is not None and request.url.startswith(self.origin + '/') and parsed.path == '/sentlog/cloud-sync.js':
+            route.fulfill(status=200, content_type='text/javascript', body=self.webkit_source)
+            return
         if parsed.netloc != 'wiulvaqixphuobdielyy.supabase.co' or request.method == 'OPTIONS':
             return super().route(route, device)
         path, query = unquote(parsed.path), parse_qs(parsed.query)
@@ -123,6 +142,81 @@ SOCKET = r"""(() => {
   window.syntheticNotify=v=>{for(const s of sockets)if(s.readyState===1&&s.topic)s.onmessage?.({data:JSON.stringify({topic:s.topic,event:'broadcast',join_ref:s.join,payload:{event:v.kind,payload:{project_id:v.project_id,revision:v.revision}}})});};
 })();"""
 
+WEBKIT_BLOB_PROBE = r"""async encoded=>{
+  const name='sentlog-synthetic-blob-probe-'+crypto.randomUUID();
+  const bytes=Uint8Array.from(atob(encoded),c=>c.charCodeAt(0));
+  let db,stage='open';
+  try{
+    db=await new Promise((resolve,reject)=>{
+      const request=indexedDB.open(name,1);
+      request.onupgradeneeded=()=>request.result.createObjectStore('files');
+      request.onsuccess=()=>resolve(request.result);request.onerror=()=>reject(request.error);
+      request.onblocked=()=>reject(Error('Synthetic Blob probe database blocked'));
+    });
+    // This is an isolated raw API check, independent of all app wrappers.
+    for(const [kind,value] of [['Blob',new Blob([bytes],{type:'image/png'})],
+      ['File',new File([bytes],'probe.png',{type:'image/png',lastModified:1})]]){
+      stage='write '+kind;
+      await new Promise((resolve,reject)=>{
+        const transaction=db.transaction('files','readwrite');
+        transaction.oncomplete=resolve;transaction.onabort=()=>reject(transaction.error||Error('Synthetic Blob write aborted'));
+        transaction.onerror=()=>{};transaction.objectStore('files').put(value,kind);
+      });
+      stage='read '+kind;
+      const stored=await new Promise((resolve,reject)=>{
+        const request=db.transaction('files','readonly').objectStore('files').get(kind);
+        request.onsuccess=()=>resolve(request.result);request.onerror=()=>reject(request.error);
+      });
+      if(!(stored instanceof Blob))throw Error('Synthetic Blob round-trip returned a non-Blob');
+      const read=new Uint8Array(await stored.arrayBuffer());
+      if(stored.type!=='image/png'||read.length!==bytes.length||!read.every((v,i)=>v===bytes[i]))
+        throw Error('Synthetic Blob round-trip changed the bytes');
+    }
+    return {ok:true,stage:'Blob and File exact round-trip'};
+  }catch(error){return {ok:false,stage,name:error.name,message:error.message};}
+  finally{
+    db?.close();
+    await new Promise((resolve,reject)=>{
+      const request=indexedDB.deleteDatabase(name);request.onsuccess=resolve;request.onerror=()=>reject(request.error);
+      request.onblocked=()=>reject(Error('Synthetic Blob probe cleanup blocked'));
+    });
+  }
+}"""
+
+WEBKIT_BLOB_TRANSPORT = r"""()=>{
+  const files=new Map(),originals=new Map(),metas=new Map(),api=SentlogOriginalPhotos;
+  const read=getDBFile,write=putDBFile;
+  window.__sentlogWebKitBlobTransport={files};
+  getDBFile=async function(key){return files.has(key)?files.get(key):read.apply(this,arguments);};
+  putDBFile=async function(key,value){
+    if(!key.startsWith('photo:'))return write.apply(this,arguments);
+    if(!(value instanceof Blob))throw Error('Synthetic shared photo is not a Blob');
+    files.set(key,value);
+  };
+  // Preserve real getPhotoBlob/savePhotoBlob and makeSharedPhoto. Both the
+  // editor and cloud module read/write this same per-device shared-byte map.
+  api.stageOriginal=async(did,pid,file,meta)=>{
+    if(!(file instanceof Blob))throw Error('Synthetic original is not a Blob');
+    const key=did+':'+pid,previous=metas.get(key);
+    if(previous){
+      if(previous.photoAssociation.operationId!==meta.photoAssociation.operationId)
+        throw Error('Synthetic original identity collision');
+      return structuredClone(previous);
+    }
+    const row={...structuredClone(meta),key,drawingId:did,photoId:pid,size:file.size,type:file.type,
+      originalName:file.name||meta.originalName,storedAt:Date.now(),exportedAt:null};
+    originals.set(key,file);metas.set(key,row);return structuredClone(row);
+  };
+  api.getOriginal=async(did,pid)=>originals.get(did+':'+pid)||null;
+  api.listMeta=async()=>[...metas.values()].map(row=>structuredClone(row));
+  api.updatePhotoAssociation=async(did,pid,association)=>{
+    const row=metas.get(did+':'+pid);
+    if(!row||row.photoAssociation.operationId!==association.operationId)
+      throw Error('Synthetic original association missing');
+    row.photoAssociation=structuredClone(association);return structuredClone(row);
+  };
+}"""
+
 
 def make_page(browser, cloud, device, width):
     context = browser.new_context(viewport={'width': width, 'height': 1000}, is_mobile=True,
@@ -139,6 +233,7 @@ def make_page(browser, cloud, device, width):
     page.goto(cloud.origin + '/sentlog/', wait_until='domcontentloaded')
     page.wait_for_function('window.SentlogCollaboration&&window.sentlogCollabRefresh&&window.SentlogCollaborationPhotos', timeout=45000)
     cloud.pages.append(page)
+    cloud.page_errors.append(errors)
     return context, page, errors
 
 
@@ -178,6 +273,19 @@ def run(browser, cloud, engine):
     fixture = dict(packs=packs, encoded=base64.b64encode(base.photo_png()).decode('ascii'))
     baseline = a.evaluate(base.SETUP, fixture)
     b.evaluate(base.SETUP, dict(fixture, packs=baseline))
+    if engine == 'webkit':
+        for number, page in enumerate((a, b)):
+            probe = page.evaluate(WEBKIT_BLOB_PROBE, fixture['encoded'])
+            page.evaluate('result=>window.__sentlogBlobProbe=result', probe)
+            print('WebKit raw Blob IndexedDB probe', number, json.dumps(probe, ensure_ascii=False), flush=True)
+            if not probe['ok']:
+                assert probe['name'] in ('UnknownError', 'DataCloneError', 'NotSupportedError'), probe
+                page.evaluate(WEBKIT_BLOB_TRANSPORT)
+                print(f'WebKit device {number}: Blob transport fixture enabled; real conversion/hash/CAS/Storage pipeline retained', flush=True)
+            else:
+                print(f'WebKit device {number}: real Blob IndexedDB retained', flush=True)
+    else:
+        print('Chromium: real Blob IndexedDB retained', flush=True)
     cloud.seed(baseline)
     for page in (a, b):
         page.evaluate('async()=>{sentlogImporting=false;await sentlogArchiveSync();await sentlogCloudIdle();}')
@@ -216,7 +324,15 @@ def run(browser, cloud, engine):
     cloud.release_uploads()
     wait(cloud, b, lambda: all(p.evaluate("state.shapes.find(s=>s.id==='survey-a').photos.length") == 3 for p in (a, b)), 'independent photos lost', timeout=25)
     def received_all(page):
-        return page.evaluate("async()=>{const p=state.shapes.find(s=>s.id==='survey-a').photos.filter(x=>x.id!=='retained-photo');return (await Promise.all(p.map(x=>getDBFile('photo:'+activeDrawingId+':'+x.id)))).every(x=>x instanceof Blob&&x.size>0);}")
+        return page.evaluate("""async()=>{
+          const photos=state.shapes.find(s=>s.id==='survey-a').photos.filter(x=>x.id!=='retained-photo');
+          return photos.length===2&&(await Promise.all(photos.map(async photo=>{
+            const blob=await getDBFile('photo:'+activeDrawingId+':'+photo.id);
+            if(!(blob instanceof Blob)||blob.size!==photo.size||blob.type!==photo.type)return false;
+            const digest=await crypto.subtle.digest('SHA-256',await blob.arrayBuffer());
+            return [...new Uint8Array(digest)].map(b=>b.toString(16).padStart(2,'0')).join('')===photo.sha256;
+          }))).every(Boolean);
+        }""")
     wait(cloud, b, lambda: received_all(a) and received_all(b), 'photo bytes not delivered after metadata', timeout=25)
 
     # A confirmation remains open while B confirms and shares a newer measurement.
@@ -269,12 +385,35 @@ def run(browser, cloud, engine):
     cloud.pump()
     assert texts(a).count('応答が途切れても一度だけ保存') == 1
     assert texts(b).count('応答が途切れても一度だけ保存') == 1
+
+    # The existing photo × remains an explicit operation. Another capture can
+    # arrive while its decision is open, and undo must preserve that peer photo.
+    before_ids = set(a.evaluate("state.shapes.find(s=>s.id==='survey-a').photos.map(p=>p.id)"))
+    remove_id = next(photo_id for photo_id in before_ids if photo_id != 'retained-photo')
+    a.evaluate('photoId=>removeSelectedPhoto(photoId)', remove_id)
+    a.locator('.sl-collab-dialog').wait_for(state='visible')
+    capture(b)
+    wait(cloud, a, lambda: all(p.evaluate("state.shapes.find(s=>s.id==='survey-a').photos.length") == 4 for p in (a, b)),
+         'photo confirmation blocked another capture', timeout=25)
+    after_ids = set(a.evaluate("state.shapes.find(s=>s.id==='survey-a').photos.map(p=>p.id)"))
+    peer_ids = after_ids - before_ids
+    assert len(peer_ids) == 1
+    a.locator('.sl-collab-dialog').get_by_role('button', name='写真を外す', exact=True).click()
+    wait(cloud, b, lambda: all(p.evaluate("id=>!state.shapes.find(s=>s.id==='survey-a').photos.some(p=>p.id===id)", remove_id) for p in (a, b)),
+         'explicit photo removal did not converge')
+    for page in (a, b):
+        ids = set(page.evaluate("state.shapes.find(s=>s.id==='survey-a').photos.map(p=>p.id)"))
+        assert ids == after_ids - {remove_id}, ids
+    a.locator('#undoBtn').click()
+    wait(cloud, b, lambda: all(set(p.evaluate("state.shapes.find(s=>s.id==='survey-a').photos.map(p=>p.id)")) == after_ids for p in (a, b)),
+         'photo undo lost another capture or failed to restore its own photo')
+    wait(cloud, b, lambda: received_all(a) and received_all(b), 'restored photo bytes or peer bytes missing', timeout=25)
     assert quiet == cloud.snapshots[base.CLOUD_QUIET], 'unrelated project was rewritten'
     assert not cloud.unexpected, cloud.unexpected
     assert not ea and not eb, (ea, eb)
     a.screenshot(path=f'/tmp/sentlog-collaboration-{engine}-ipad.png', full_page=True)
     b.screenshot(path=f'/tmp/sentlog-collaboration-{engine}-iphone.png', full_page=True)
-    print(f'PASS {engine}: two writers, CAS collision, IME, comments during held Storage upload ({metadata_seconds:.2f}s), photo bytes, stale confirmation, scoped undo, offline/lost-ack recovery; {len(cloud.writes)} snapshots')
+    print(f'PASS {engine}: two writers, CAS collision, IME, comments during held Storage upload ({metadata_seconds:.2f}s), photo bytes, stale confirmation, scoped undo, offline/lost-ack recovery, photo removal/undo during peer capture; {len(cloud.writes)} snapshots')
     ca.close();cb.close()
 
 
@@ -288,7 +427,7 @@ def main():
             pass
     server = ThreadingHTTPServer(('127.0.0.1', 0), functools.partial(Handler, directory=str(args.built_root.resolve())))
     threading.Thread(target=server.serve_forever, daemon=True).start()
-    cloud = Cloud(f'http://127.0.0.1:{server.server_port}')
+    cloud = Cloud(f'http://127.0.0.1:{server.server_port}', args.built_root.resolve(), args.engine)
     try:
         with sync_playwright() as playwright:
             browser = getattr(playwright, args.engine).launch(headless=True)
@@ -298,7 +437,18 @@ def main():
                 print('Recent synthetic requests:', json.dumps(cloud.requests[-25:], ensure_ascii=False))
                 for i, page in enumerate(cloud.pages):
                     try:
-                        print('Browser state', i, page.evaluate("({view:currentView,selected,state,error:document.getElementById('errorBanner')?.textContent,cloud:document.getElementById('sentlogCloudMsg')?.textContent})"))
+                        print('Page errors', i, cloud.page_errors[i])
+                        print('Browser state', i, page.evaluate("""async()=>{
+                          let pending;
+                          try{pending=await SentlogCollaborationPhotos.listPending();}
+                          catch(error){pending={name:error.name,message:error.message};}
+                          return {view:currentView,selected,state,pending,
+                            photoStatus:document.getElementById('photoStatus')?.textContent,
+                            blobProbe:window.__sentlogBlobProbe,
+                            blobFixtureKeys:[...(window.__sentlogWebKitBlobTransport?.files.keys()||[])],
+                            error:document.getElementById('errorBanner')?.textContent,
+                            cloud:document.getElementById('sentlogCloudMsg')?.textContent};
+                        }"""))
                         page.screenshot(path=f'/tmp/sentlog-collaboration-{args.engine}-failure-{i}.png', full_page=True)
                     except Exception:
                         pass

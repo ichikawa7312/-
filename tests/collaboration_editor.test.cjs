@@ -5,6 +5,8 @@ const C=require('../sentlog/record-collaboration.js');
 const copy=x=>JSON.parse(JSON.stringify(x));
 const modelCode=fs.readFileSync(path.join(__dirname,'../sentlog/record-collaboration.js'),'utf8');
 const editorCode=fs.readFileSync(path.join(__dirname,'../sentlog/collaboration-editor.js'),'utf8');
+const legacyPart=fs.readFileSync(path.join(__dirname,'../sentlog/part06.txt'),'utf8');
+const legacyPhotoRemove=legacyPart.slice(legacyPart.indexOf('async function removeSelectedPhoto(photoId){'),legacyPart.indexOf('async function openPhotoViewer('));
 const camel=s=>s.replace(/-([a-z])/g,(_,c)=>c.toUpperCase());
 class Element{
   constructor(tag,document){this.tagName=tag.toUpperCase();this.ownerDocument=document;this.children=[];this.attributes={};this.dataset={};this.style={};this.listeners={};this.hidden=false;this.disabled=false;this.value='';this._text='';this.id='';this.className='';}
@@ -27,20 +29,21 @@ class Element{
 }
 function dom(){const d={activeElement:null,hidden:false};d.head=new Element('head',d);d.body=new Element('body',d);d.createElement=tag=>new Element(tag,d);d.querySelectorAll=s=>[d.head,d.body].flatMap(r=>r.querySelectorAll(s));d.querySelector=s=>d.querySelectorAll(s)[0]||null;d.getElementById=id=>d.querySelector('#'+id);d.body.innerHTML='<aside id="inspector"><div><label>メモ</label><textarea id="memo"></textarea></div><textarea id="frRecordMemo"></textarea><input id="damageType"><input id="member"><input id="lineWidth"><div class="photo-panel"></div></aside><button id="deleteBtn"></button><button id="undoBtn"></button><button id="redoBtn"></button>';return d;}
 const shape=(id='s1')=>C.upgrade({id,kind:'polyline',page:1,type:'ひび割れ',member:'主桁',points:[{x:10,y:20},{x:30,y:40}],memo:'既存記録',photos:[],crackWidthMm:0.2});
+let generatedIds=0;
 function fixture({shapes=[shape()],storage=new Map(),savedState,account='account-a'}={}){
-  const document=dom(),records=new Map(),microtasks=[],timers=new Map();let counter=0,clock=1000,timerId=0,writes=0,failure=false,user=account;
+  const document=dom(),records=new Map(),microtasks=[],timers=new Map();let clock=1000,timerId=0,writes=0,failure=false,user=account;
   const initial=savedState||{currentPage:1,shapes:copy(shapes),collabDeletedRecords:[]};records.set('draw:d1',JSON.stringify(initial));
   class ClockDate extends Date{static now(){return clock;}}
-  const ctx={console,Blob,Date:ClockDate,JSON,Map,Set,Number,Promise,Error,document,navigator:{onLine:true,userAgent:'iPhone',maxTouchPoints:1},crypto:{randomUUID:()=>`uuid-${++counter}`},
+  const ctx={console,Blob,Date:ClockDate,JSON,Map,Set,Number,Promise,Error,document,navigator:{onLine:true,userAgent:'iPhone',maxTouchPoints:1},crypto:{randomUUID:()=>`uuid-${++generatedIds}`},
     localStorage:{getItem:k=>storage.get(k)??null,setItem:(k,v)=>storage.set(k,String(v)),removeItem:k=>storage.delete(k)},
     setTimeout:(fn,ms)=>{const i=++timerId;timers.set(i,{at:clock+ms,fn});return i;},clearTimeout:i=>timers.delete(i),queueMicrotask:fn=>microtasks.push(fn),
     SentlogRecords:{getItem:k=>records.get(k)??null,setItem:(k,v)=>records.set(k,v)},drawingStorageKey:id=>'draw:'+id,
     activeProjectId:'p1',activeDrawingId:'d1',currentView:'editor',selected:initial.shapes[0]?.id||null,state:copy(initial),
     sentlogCollaborationAccountId:()=>user,sentlogCollabRefresh:async projectId=>({fresh:true,projectId}),addEventListener:()=>{},
     persist:()=>{if(failure){failure=false;throw Error('保存失敗');}writes++;records.set('draw:'+ctx.activeDrawingId,JSON.stringify(ctx.state));},
-    rebuildNumberingState:()=>{},render:()=>{},renderSelectedPhotos:()=>{},clearAllHistory:()=>{},undo:()=>{},redo:()=>{},updateHistoryButtons:()=>{},
+    rebuildNumberingState:()=>{},render:()=>{},renderSelectedPhotos:()=>{},clearAllHistory:()=>{},undo:()=>{},redo:()=>{},updateHistoryButtons:()=>{},pushHistory:()=>{},selectedShape:()=>ctx.state.shapes.find(s=>s.id===ctx.selected)||null,
     selectShape:id=>{ctx.selected=id;ctx.render();}};
-  ctx.window=ctx;vm.createContext(ctx);vm.runInContext(modelCode,ctx);vm.runInContext(editorCode,ctx);
+  ctx.window=ctx;vm.createContext(ctx);vm.runInContext(modelCode,ctx);vm.runInContext(legacyPhotoRemove,ctx);vm.runInContext(editorCode,ctx);
   const api=ctx.SentlogCollaboration,input=document.getElementById('slCollabDraft'),panel=document.getElementById('slCollabComments');
   function drain(){let n=0;while(microtasks.length){if(++n>100)throw Error('Microtask loop');microtasks.shift()();}}
   function tick(ms){const end=clock+ms;for(;;){drain();const next=[...timers.entries()].filter(([,v])=>v.at<=end).sort((a,b)=>a[1].at-b[1].at)[0];if(!next)break;clock=next[1].at;timers.delete(next[0]);next[1].fn();}clock=end;drain();}
@@ -58,8 +61,52 @@ await test('autosave appends an independent comment, keeps a stable device, and 
   assert.equal(C.view(f.current).comments.length,2);assert.equal(f.current.memo,'既存記録\n\n一つ目の追記');
   f.type('一つ目の追記を完成');f.tick(650);assert.equal(C.view(f.current).comments.length,2);
   await f.click('次のコメント',f.panel);assert.equal(f.input.value,'');f.type('二つ目');f.tick(650);assert.equal(C.view(f.current).comments.length,3);
-  const reopened=fixture({storage:f.storage,savedState:f.state()});assert.equal(reopened.api.actor().deviceId,device);assert.equal(reopened.writes,0);assert.equal(reopened.input.value,'二つ目');
+  const reopened=fixture({storage:f.storage,savedState:f.state()});assert.equal(reopened.api.actor().deviceId,device);assert.equal(reopened.writes,0);assert.equal(reopened.input.value,'');
+  reopened.type('再読み込み後の追記');reopened.tick(650);assert.equal(C.view(reopened.current).comments.length,4);assert(C.view(reopened.current).comments.some(c=>c.text==='二つ目'));
   assert.equal(f.document.getElementById('memo').readOnly,true);assert.equal(f.document.getElementById('frRecordMemo').readOnly,true);
+});
+
+await test('returning to a completed record starts a fresh comment while active autosave and redraw keep the current composer',async()=>{
+  const f=fixture({shapes:[shape('s1'),shape('s2')]});f.type('継続中の文章');f.api.flushDraft();const entry=C.view(f.current).comments.at(-1),originalId=entry.id;
+  f.ctx.render();f.api.onRemote();assert.equal(f.input.value,'継続中の文章');f.type('継続して完成');f.tick(650);
+  assert.equal(C.view(f.current).comments.length,2);assert.equal(C.view(f.current).comments.find(c=>c.id===originalId).text,'継続して完成');
+  f.ctx.selectShape('s2');f.ctx.selectShape('s1');assert.equal(f.input.value,'');assert.equal(f.panel.querySelector('[data-draft-label]').textContent,'コメントを追記');
+  f.type('再訪後の独立した文章');f.tick(650);assert.equal(C.view(f.current).comments.length,3);assert.equal(C.view(f.current).comments.find(c=>c.id===originalId).text,'継続して完成');
+  assert.notEqual(C.view(f.current).comments.at(-1).id,originalId);
+});
+
+await test('reload restores pending and failed drafts with their exact text and operation identity',async()=>{
+  for(const fail of [false,true]){
+    const f=fixture();f.type(fail?'保存失敗した文章':'まだ自動保存前の文章');if(fail){f.failNextWrite();assert.equal(f.api.flushDraft(),false);}
+    const stored=JSON.parse([...f.storage].find(([k])=>k.startsWith('sentlogCollaborativeDraftV1:'))[1]);
+    const reopened=fixture({storage:f.storage,savedState:f.state()});assert.equal(reopened.input.value,stored.text);assert.equal(reopened.writes,0);reopened.tick(250);
+    const entry=C.view(reopened.current).comments.find(c=>c.id===stored.commentId);assert(entry);assert.equal(entry.text,stored.text);
+    if(fail)assert.equal(entry.headIds[0],stored.revisionId,'a failed operation replays with the same revision ID');
+    assert.equal(C.view(reopened.current).comments.length,2);
+  }
+});
+
+await test('reopened unfinished IME text is retained exactly and never automatically committed as completed text',async()=>{
+  const f=fixture();f.type('保存済みの文章');f.api.flushDraft();const commentId=C.view(f.current).comments.at(-1).id;
+  f.input.dispatch('compositionstart');f.type('変換とちゅう',{isComposing:true});const reopened=fixture({storage:f.storage,savedState:f.state()});
+  assert.equal(reopened.input.value,'変換とちゅう');assert.equal(reopened.api.hasPendingDraft(),true);reopened.tick(5000);assert.equal(reopened.writes,0);assert.equal(reopened.api.flushDraft(),false);
+  reopened.type('変換を確定した文章');reopened.tick(650);assert.equal(C.view(reopened.current).comments.find(c=>c.id===commentId).text,'変換を確定した文章');assert.equal(C.view(reopened.current).comments.length,2);
+  const same=fixture();same.type('変換開始前と同じ文字');same.api.flushDraft();same.input.dispatch('compositionstart');const unchanged=fixture({storage:same.storage,savedState:same.state()});
+  assert.equal(unchanged.input.value,'変換開始前と同じ文字','an IME draft is not considered completed merely because its text still equals savedText');assert.equal(unchanged.api.hasPendingDraft(),true);
+  await unchanged.click('保存',unchanged.panel);assert.equal(unchanged.api.hasPendingDraft(),false);
+});
+
+await test('savedText alone cannot discard a draft when its record write is missing after reload',async()=>{
+  const f=fixture(),before=f.state();f.type('復旧が必要な文章');f.api.flushDraft();const commentId=C.view(f.current).comments.at(-1).id;
+  const reopened=fixture({storage:f.storage,savedState:before});assert.equal(reopened.input.value,'復旧が必要な文章');reopened.tick(250);
+  assert.equal(C.view(reopened.current).comments.find(c=>c.id===commentId).text,'復旧が必要な文章');
+});
+
+await test('explicit comment editing still edits the chosen entry and a later visit returns to independent append mode',async()=>{
+  const f=fixture({shapes:[shape('s1'),shape('s2')]}),id=C.view(f.current).comments[0].id;
+  await f.click('修正',f.panel);await f.click('修正する',f.document.querySelector('.sl-collab-dialog'));assert.equal(f.panel.querySelector('[data-draft-label]').textContent,'コメントを修正');
+  f.type('確認して修正した文章');f.tick(650);assert.equal(C.view(f.current).comments.length,1);assert.equal(C.view(f.current).comments[0].id,id);assert.equal(C.view(f.current).comments[0].text,'確認して修正した文章');
+  f.ctx.selectShape('s2');f.ctx.selectShape('s1');assert.equal(f.input.value,'');assert.equal(f.panel.querySelector('[data-draft-label]').textContent,'コメントを追記');
 });
 
 await test('failed autosave keeps a pending durable draft and retries once without duplicate entries',async()=>{
@@ -129,6 +176,32 @@ await test('photo undo and redo use explicit observed removal and restoration wh
   const f=fixture();f.ctx.state.shapes[0]=C.addPhoto(f.current,{id:'own-photo',name:'自分.jpg'},remoteOpts('Own'));f.ctx.persist();
   f.receive(C.addPhoto(f.current,{id:'peer-photo',name:'相手.jpg'},remoteOpts('Peer')));f.ctx.undo();f.drain();assert.deepEqual(Array.from(f.current.photos,p=>p.id),['peer-photo']);
   f.ctx.redo();f.drain();assert.deepEqual(new Set(f.current.photos.map(p=>p.id)),new Set(['own-photo','peer-photo']));
+});
+
+await test('the existing photo remove handler confirms an observed unlink and undo retains a peer photo added meanwhile',async()=>{
+  const initial=C.addPhoto(shape(),{id:'photo-a',name:'外す写真.jpg'},remoteOpts('Initial')),f=fixture({shapes:[initial]});
+  await f.ctx.removeSelectedPhoto('photo-a');f.drain();assert.equal(f.current.photos.length,1,'thumbnail × must not remove a photo before confirmation');
+  f.receive(C.addPhoto(f.current,{id:'peer-photo',name:'確認中に届いた写真.jpg'},remoteOpts('Peer')));
+  await f.click('写真を外す',f.document.querySelector('.sl-collab-dialog'));assert.deepEqual(Array.from(f.current.photos,p=>p.id),['peer-photo']);assert(C.view(f.current).photos.find(p=>p.id==='photo-a').deleted);
+  assert.equal(f.current.collab.photos['photo-a'].revisions.length,2,'unlink retains the original metadata revision');f.ctx.undo();f.drain();
+  assert.deepEqual(new Set(f.current.photos.map(p=>p.id)),new Set(['photo-a','peer-photo']));assert.equal(f.current.photos.find(p=>p.id==='photo-a').name,'外す写真.jpg');
+});
+
+await test('two pending photo removals keep separate identities and both remain confirmable',async()=>{
+  const o=remoteOpts('Initial');let initial=C.addPhoto(shape(),{id:'photo-a',name:'A.jpg'},o);initial=C.addPhoto(initial,{id:'photo-b',name:'B.jpg'},o);const f=fixture({shapes:[initial]});
+  await f.ctx.removeSelectedPhoto('photo-a');await f.ctx.removeSelectedPhoto('photo-b');f.drain();assert.equal(f.current.photos.length,2);
+  assert(f.document.querySelector('[data-summary]').textContent.includes('A.jpg'));await f.click('写真を外す',f.document.querySelector('.sl-collab-dialog'));
+  assert.deepEqual(Array.from(f.current.photos,p=>p.id),['photo-b']);assert(f.document.querySelector('[data-summary]').textContent.includes('B.jpg'));await f.click('写真を外す',f.document.querySelector('.sl-collab-dialog'));
+  assert.equal(f.current.photos.length,0);assert.equal(Object.keys(f.current.collab.photos).length,2);
+});
+
+await test('a changed photo head requires review again and an account change cancels the pending unlink',async()=>{
+  const initial=C.addPhoto(shape(),{id:'photo-a',name:'最初の名前.jpg'},remoteOpts('Initial')),f=fixture({shapes:[initial]});await f.ctx.removeSelectedPhoto('photo-a');f.drain();let pulls=0;
+  f.ctx.sentlogCollabRefresh=async projectId=>{if(++pulls===1){const row=C.view(f.current).photos.find(p=>p.id==='photo-a');f.receive(C.restorePhoto(f.current,'photo-a',{...remoteOpts('Peer'),expectedHeads:row.headIds,metadata:{...row.metadata,name:'更新された名前.jpg'}}));}return {fresh:true,projectId};};
+  await f.click('写真を外す',f.document.querySelector('.sl-collab-dialog'));assert.equal(f.current.photos.length,1);assert(f.document.querySelector('[data-status]').textContent.includes('もう一度'));assert(f.document.querySelector('[data-summary]').textContent.includes('更新された名前.jpg'));
+  await f.click('写真を外す',f.document.querySelector('.sl-collab-dialog'));assert.equal(f.current.photos.length,0);
+  const other=fixture({shapes:[initial]});await other.ctx.removeSelectedPhoto('photo-a');let done;other.ctx.sentlogCollabRefresh=()=>new Promise(resolve=>{done=resolve;});const pending=other.click('写真を外す',other.document.querySelector('.sl-collab-dialog'));
+  other.setAccount('other-account');done({fresh:true,projectId:'p1'});await pending;assert.equal(other.current.photos.length,1);assert.equal(other.writes,0);
 });
 
 await test('undo skips a field that a peer changed after the local decision',async()=>{

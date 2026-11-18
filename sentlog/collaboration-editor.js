@@ -49,21 +49,35 @@
     try{localStorage.setItem(DRAFT+draftDevice()+':'+key(binding),JSON.stringify(draft));}
     catch(e){message('入力途中の保存ができません。文章をコピーしてから空き容量を確認してください。',true);throw e;}
   }
+  const blankDraft=()=>({text:'',commentId:id(),headIds:[],savedText:'',revisionId:null,editingComment:false,compositionPending:false});
   function readDraft(c){
-    try{const d=JSON.parse(localStorage.getItem(DRAFT+draftDevice()+':'+key(c))||'null');if(d&&typeof d.text==='string')return d;}catch(_){}
-    return {text:'',commentId:id(),headIds:[],savedText:'',revisionId:null};
+    try{
+      const d=JSON.parse(localStorage.getItem(DRAFT+draftDevice()+':'+key(c))||'null');
+      if(d&&typeof d.text==='string'){
+        const record=currentBound(),entry=record?.collab?.comments?.[d.commentId];
+        const saved=Array.isArray(d.headIds)&&d.headIds.length>0&&d.headIds.every(head=>entry?.revisions?.some(r=>r.id===head&&r.text===d.savedText&&!r.deleted));
+        // A completed composer belongs to its original editing session. Starting
+        // another visit must append a new entry rather than silently edit it.
+        // Keep an unconfirmed/failed draft if the saved record cannot prove that
+        // its text reached immutable history, even when savedText was written.
+        if(d.text===d.savedText&&!d.revisionId&&!d.compositionPending&&(!d.text||saved))return blankDraft();
+        return d;
+      }
+    }catch(_){}
+    return blankDraft();
   }
   function stopTimer(){if(saveTimer!==null)clearTimeout(saveTimer);saveTimer=null;}
   function bind(){
     const next=context();if(key(next)===key(binding))return;
     if(composing||finishingComposition){writeDraft();message('変換中の文章は元の記録の下書きに残しています。確定後に切り替わります。');return;}
-    flushDraft();stopTimer();binding=next;editingComment=null;draft=next?readDraft(next):null;
+    flushDraft();stopTimer();binding=next;draft=next?readDraft(next):null;editingComment=draft?.editingComment?draft.commentId:null;
     if(dialog)dialog.hidden=true;decision=null;decisionQueue=[];
     if(input)input.value=draft?.text||'';
     if(draft?.text){
       const actual=currentBound(),entry=actual?M.view(actual).comments.find(x=>x.id===draft.commentId):null;
       if(!entry){draft.savedText='';draft.headIds=[];}
-      if(draft.text!==draft.savedText)saveTimer=setTimeout(flushDraft,250);
+      if(draft.compositionPending)message('変換途中の下書きを復元しました。入力を続けるか「保存」で確定してください。');
+      else if(draft.text!==draft.savedText)saveTimer=setTimeout(flushDraft,250);
     }
   }
   function currentBound(){
@@ -89,7 +103,7 @@
     render();renderSelectedPhotos();refresh();
   }
   function flushDraft(){
-    stopTimer();if(!draft||composing||finishingComposition||draft.text===draft.savedText||(!draft.text.trim()&&!draft.headIds?.length))return false;
+    stopTimer();if(!draft||composing||finishingComposition||draft.compositionPending||draft.text===draft.savedText||(!draft.text.trim()&&!draft.headIds?.length))return false;
     const target=currentBound();if(!target){writeDraft();message('入力を下書きに残しました。記録の移動・削除を確認してください。',true);return false;}
     try{
       if(!draft.revisionId){draft.revisionId=id();draft.revisionAt=now();draft.revisionActor=actor();}writeDraft();
@@ -108,14 +122,20 @@
       refreshDraftActions();return false;
     }
   }
+  function saveCurrentDraft(){
+    if(composing||finishingComposition)return false;
+    if(draft?.compositionPending){draft.compositionPending=false;writeDraft();}
+    return flushDraft();
+  }
   function startNext(){
     if(composing||finishingComposition)return;
+    if(draft?.compositionPending){message('変換途中の下書きは、入力を続けるか「保存」で確定してください。');return;}
     if(draft?.text!==draft?.savedText&&(draft?.text.trim()||draft?.headIds?.length)&&!flushDraft())return;
-    draft={text:'',commentId:id(),headIds:[],savedText:'',revisionId:null};editingComment=null;writeDraft();input.value='';refresh();input.focus();
+    draft=blankDraft();editingComment=null;writeDraft();input.value='';refresh();input.focus();
   }
   function saveAsAppend(){
     if(!draft?.text.trim())return;
-    draft={...draft,commentId:id(),headIds:[],savedText:'',revisionId:null};editingComment=null;writeDraft();flushDraft();
+    draft={...draft,commentId:id(),headIds:[],savedText:'',revisionId:null,editingComment:false};editingComment=null;writeDraft();flushDraft();
   }
   function button(label,fn){const b=document.createElement('button');b.type='button';b.textContent=label;b.onclick=fn;return b;}
   const who=r=>r?.actor?.deviceId?(r.actor.deviceName||'登録端末'):'既存の記録';
@@ -126,16 +146,17 @@
     return state.shapes.find(s=>s.id===d.recordId)||(state.collabDeletedRecords||[]).find(s=>s.id===d.recordId)||null;
   }
   const decisionsKey=c=>DECISIONS+':'+draftDevice()+':'+key(c);
+  const sameDecision=(a,b)=>a.kind===b.kind&&a.key===b.key&&a.commentId===b.commentId&&a.photoId===b.photoId;
   function savedDecisions(c){const k=decisionsKey(c);if(decisionsMemory.has(k))return copy(decisionsMemory.get(k));try{const values=JSON.parse(localStorage.getItem(k)||'[]');return Array.isArray(values)?values.filter(d=>key(d)===key(c)):[];}catch(_){return [];}}
   function saveDecisions(c,values){const k=decisionsKey(c);decisionsMemory.set(k,copy(values));try{if(values.length)localStorage.setItem(k,JSON.stringify(values));else localStorage.removeItem(k);undurableDecisions.delete(k);}catch(e){undurableDecisions.add(k);message('確認待ちの変更はこの画面に残しています。端末への保存ができないため、画面を閉じる前に内容を控えてください。',true);}}
   function enqueueDecisions(values){
-    const groups=new Map();for(const d of values){const k=key(d);if(!groups.has(k))groups.set(k,{context:d,values:savedDecisions(d)});const group=groups.get(k).values,index=group.findIndex(x=>x.kind===d.kind&&x.key===d.key&&x.commentId===d.commentId);if(index<0)group.push(d);else group[index]=d;}
-    for(const g of groups.values())saveDecisions(g.context,g.values);
+    const groups=new Map();for(const d of values){const k=key(d);if(!groups.has(k))groups.set(k,{context:d,values:savedDecisions(d)});const group=groups.get(k).values,index=group.findIndex(x=>sameDecision(x,d));if(index<0)group.push(d);else group[index]=d;}
+    for(const g of groups.values()){saveDecisions(g.context,g.values);if(decision&&key(decision)===key(g.context))decisionQueue=g.values.filter(d=>!sameDecision(d,decision));}
     queueMicrotask(()=>refresh());
   }
   function showDecision(d){
     if(!sameDrawing(d)){enqueueDecisions([d]);return;}
-    if(!decision){const pending=savedDecisions(d);decisionQueue=pending.filter(x=>!(x.kind===d.kind&&x.key===d.key&&x.commentId===d.commentId));}
+    if(!decision){const pending=savedDecisions(d);decisionQueue=pending.filter(x=>!sameDecision(x,d));}
     d.selectionAtOpen=selected;
     decision=d;
     saveDecisions(d,[d,...decisionQueue]);
@@ -144,13 +165,14 @@
       dialog.setAttribute('aria-labelledby','slCollabDecisionTitle');dialog.innerHTML='<section><h2 id="slCollabDecisionTitle">登録済みの内容を確認</h2><p data-summary></p><p data-status role="status"></p><div data-buttons></div></section>';
       document.body.append(dialog);
     }
-    const t=currentTarget(d),v=t?M.view(t):null,field=v?.fields[d.key];
+    const t=currentTarget(d),v=t?M.view(t):null,field=v?.fields[d.key],photo=v?.photos.find(p=>p.id===d.photoId);
     dialog.querySelector('[data-status]').textContent='';
     dialog.querySelector('[data-summary]').textContent=d.kind==='delete'?'この記録を削除します。ほかの端末から新しいコメントや写真が届いている場合は、内容をもう一度確認します。':
       d.kind==='comment-edit'?'このコメントを修正します。修正前の文章も履歴に残ります。':
+      d.kind==='photo-remove'?'写真「'+(photo?.metadata?.name||d.photoName||'選択した写真')+'」をこの記録から外します。写真の原本と変更履歴は残ります。':
       (scalarLabels[d.key]||d.key)+'\n登録：'+valueText(d.key,field?.value)+'（'+who(field?.heads[0])+'）\n変更：'+valueText(d.key,d.value);
     const actions=dialog.querySelector('[data-buttons]');actions.replaceChildren();
-    actions.append(button('キャンセル',closeDecision),button(d.kind==='delete'?'削除する':d.kind==='comment-edit'?'修正する':'変更する',()=>confirmDecision()));
+    actions.append(button('キャンセル',closeDecision),button(d.kind==='delete'?'削除する':d.kind==='comment-edit'?'修正する':d.kind==='photo-remove'?'写真を外す':'変更する',()=>confirmDecision()));
     dialog.hidden=false;
   }
   function closeDecision(){
@@ -171,7 +193,9 @@
       if(!sameDrawing(d)||selected!==d.selectionAtOpen)throw Error('アカウントまたは選択中の記録が変わりました。変更内容を元の記録に残しています。');
       const target=currentTarget(d);if(!target)throw Error('記録が移動または削除されました。');
       const view=M.view(target);
-      const current=d.kind==='delete'?view.token:d.kind==='comment-edit'?view.comments.find(c=>c.id===d.commentId)?.headIds:view.fields[d.key]?.headIds||[];
+      const photo=d.kind==='photo-remove'?view.photos.find(p=>p.id===d.photoId):null;
+      if(d.kind==='photo-remove'&&(!photo||photo.deleted)){closeDecision();message('この写真は既に外されています。原本と変更履歴は残しています。');refresh();return;}
+      const current=d.kind==='delete'?view.token:d.kind==='comment-edit'?view.comments.find(c=>c.id===d.commentId)?.headIds:d.kind==='photo-remove'?photo.headIds:view.fields[d.key]?.headIds||[];
       const expected=d.kind==='delete'?d.token:d.headIds;
       if(!same(current,expected)){
         if(d.kind==='delete')d.token=current;else d.headIds=current;
@@ -179,14 +203,15 @@
       }
       if(d.kind==='comment-edit'){
         const entry=view.comments.find(c=>c.id===d.commentId);if(!entry||entry.conflict)throw Error('複数の修正があります。下の候補から確認してください。');
-        if(composing||draft?.text!==draft?.savedText&&!flushDraft())throw Error('入力中の文章を先に保存してください。下書きは残しています。');
-        draft={text:entry.text,commentId:entry.id,headIds:entry.headIds,savedText:entry.text,revisionId:null};editingComment=entry.id;writeDraft();input.value=draft.text;closeDecision();input.focus();return;
+        if(composing||finishingComposition||draft?.compositionPending||draft?.text!==draft?.savedText&&!flushDraft())throw Error('入力中の文章を先に保存してください。下書きは残しています。');
+        draft={text:entry.text,commentId:entry.id,headIds:entry.headIds,savedText:entry.text,revisionId:null,editingComment:true,compositionPending:false};editingComment=entry.id;writeDraft();input.value=draft.text;closeDecision();refresh();input.focus();return;
       }
       mutate(()=>{
         if(d.kind==='delete'){
           const removed=M.markDeleted(target,opts({expectedToken:d.token}));
           state.shapes=state.shapes.filter(s=>s.id!==target.id);state.collabDeletedRecords=[...(state.collabDeletedRecords||[]).filter(s=>s.id!==target.id),removed];selected=null;
-        }else replaceRecord(M.setField(target,d.key,d.value,opts({expectedHeads:d.headIds,unset:d.unset===true})));
+        }else if(d.kind==='photo-remove')replaceRecord(M.removePhoto(target,d.photoId,opts({expectedHeads:d.headIds})));
+        else replaceRecord(M.setField(target,d.key,d.value,opts({expectedHeads:d.headIds,unset:d.unset===true})));
       });
       closeDecision();refresh();
     }catch(e){status.textContent=e.message;}
@@ -251,7 +276,7 @@
     if(!entries.length){const p=document.createElement('p');p.textContent='確認待ちの変更はありません。';content.append(p);}
     for(const item of entries){
       const box=document.createElement('article'),title=document.createElement('h3');title.textContent=item.record.autoLabel||item.record.no||({ 'drawing-memo':'図面メモ','dimension-line':'寸法線'}[item.record.recordKind])||'記録';box.append(title);
-      for(const d of item.pending){const p=document.createElement('p');p.textContent=d.kind==='delete'?'削除の確認待ち':(scalarLabels[d.key]||d.key||'コメント')+'の変更待ち';box.append(p,button('変更内容を確認',()=>{reviewDialog.hidden=true;showDecision(d);}));}
+      for(const d of item.pending){const p=document.createElement('p');p.textContent=d.kind==='delete'?'削除の確認待ち':d.kind==='photo-remove'?'写真「'+(d.photoName||'選択した写真')+'」を外す確認待ち':(scalarLabels[d.key]||d.key||'コメント')+'の変更待ち';box.append(p,button('変更内容を確認',()=>{reviewDialog.hidden=true;showDecision(d);}));}
       for(const field of Object.values(item.view.fields).filter(f=>f.conflict)){
         const p=document.createElement('p');p.textContent=(scalarLabels[field.key]||({geometry:'位置・形状',labelPos:'文字の位置'}[field.key])||field.key)+'：変更前の共通の内容は '+valueText(field.key,field.unset?undefined:field.value);box.append(p);
         for(const candidate of field.heads){const text=document.createElement('p');text.textContent=who(candidate)+'：'+valueText(field.key,candidate.unset?undefined:candidate.value);box.append(text,button('この内容を採用',()=>resolveConflict('field',field.key,candidate,field.headIds,item.context)));}
@@ -284,10 +309,10 @@
     const photoPanel=document.querySelector('#inspector .photo-panel');photoPanel.before(panel);
     list=panel.querySelector('[data-list]');conflicts=panel.querySelector('[data-conflicts]');input=panel.querySelector('textarea');note=panel.querySelector('[data-note]');
     const actions=panel.querySelector('[data-actions]'),append=button('別のコメントとして追記',saveAsAppend);append.dataset.appendCopy='';append.hidden=true;
-    actions.append(button('保存',flushDraft),button('次のコメント',startNext),append);
-    input.addEventListener('input',e=>{if(!draft)return;draft.text=input.value;draft.revisionId=null;writeDraft();stopTimer();if(!composing&&!finishingComposition&&!e.isComposing)saveTimer=setTimeout(flushDraft,650);});
-    input.addEventListener('compositionstart',()=>{composing=true;stopTimer();});
-    input.addEventListener('compositionend',()=>{composing=false;finishingComposition=true;if(draft){draft.text=input.value;draft.revisionId=null;writeDraft();}
+    actions.append(button('保存',saveCurrentDraft),button('次のコメント',startNext),append);
+    input.addEventListener('input',e=>{if(!draft)return;draft.text=input.value;draft.revisionId=null;draft.compositionPending=composing||e.isComposing===true;writeDraft();stopTimer();if(!composing&&!finishingComposition&&!e.isComposing)saveTimer=setTimeout(flushDraft,650);});
+    input.addEventListener('compositionstart',()=>{composing=true;stopTimer();if(draft){draft.compositionPending=true;writeDraft();}});
+    input.addEventListener('compositionend',()=>{composing=false;finishingComposition=true;if(draft){draft.text=input.value;draft.revisionId=null;draft.compositionPending=false;writeDraft();}
       queueMicrotask(()=>{finishingComposition=false;if(key(context())!==key(binding)){flushDraft();bind();refresh();}else saveTimer=setTimeout(flushDraft,200);});});
     input.addEventListener('blur',()=>{if(composing||finishingComposition){if(draft){draft.text=input.value;writeDraft();}return;}flushDraft();});
     document.getElementById('deleteBtn').onclick=()=>{const s=selectedRecord();if(s)showDecision({...context(),kind:'delete',token:M.revisionToken(s)});};
@@ -345,7 +370,7 @@
     return {record:result,changed};
   }
   function playback(direction){
-    if(composing||finishingComposition)return;
+    if(composing||finishingComposition||draft?.compositionPending)return;
     if(draft?.text!==draft?.savedText&&(draft?.text.trim()||draft?.headIds?.length)&&!flushDraft())return;
     const h=histories.get(historyKey());if(!h?.[direction].length)return;
     const action=h[direction].pop(),from=direction==='undo'?action.after:action.before,to=direction==='undo'?action.before:action.after;
@@ -370,6 +395,14 @@
   const oldSelect=selectShape;selectShape=function(){flushDraft();const result=oldSelect.apply(this,arguments);refresh();return result;};
   const oldClear=clearAllHistory;clearAllHistory=function(){histories.clear();oldClear();updateButtons();};
   undo=()=>playback('undo');redo=()=>playback('redo');updateHistoryButtons=updateButtons;
+  if(typeof removeSelectedPhoto==='function')removeSelectedPhoto=async function(photoId){
+    const record=selectedRecord(),c=context();if(!record||!c)return;
+    const photo=M.view(record).photos.find(p=>p.id===photoId);if(!photo||photo.deleted)return;
+    // The existing thumbnail × keeps its public handler, but now records an
+    // explicit, revision-bound unlink. Original bytes and peer additions stay.
+    enqueueDecisions([{...c,kind:'photo-remove',photoId,photoName:photo.metadata?.name||'',headIds:photo.headIds}]);
+    if(!decision)refresh();
+  };
   document.getElementById('undoBtn').onclick=undo;document.getElementById('redoBtn').onclick=redo;
   for(const event of ['pagehide','blur'])window.addEventListener(event,()=>{if(draft)writeDraft();});
   function semanticRecord(record){
@@ -391,7 +424,7 @@
     if(changed){render();renderSelectedPhotos();refresh();}
   }
   root.SentlogCollaboration={actor,flushDraft,refresh,recordHistory,afterStoredNormalization,
-    hasPendingDraft:()=>composing||finishingComposition||!!draft&&(draft.text!==draft.savedText)&&(!!draft.text.trim()||!!draft.headIds?.length),
+    hasPendingDraft:()=>composing||finishingComposition||!!draft?.compositionPending||!!draft&&(draft.text!==draft.savedText)&&(!!draft.text.trim()||!!draft.headIds?.length),
     isCapturedFieldDraft(element,record){
       const field={damageType:'type',member:'member'}[element?.id],c=context();
       if(!field||!c||record?.id!==c.recordId||undurableDecisions.has(decisionsKey(c)))return false;

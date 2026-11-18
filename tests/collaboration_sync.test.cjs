@@ -172,6 +172,16 @@ test('metadata and fresh confirmations finish while original files are blocked; 
   const fresh=h.context.window.sentlogCollabRefresh('p1');await h.time.tick(0);assert.equal((await fresh).fresh,true);
   h.channel.onChange({kind:'asset',projectId:'cloud-p1'});assert.deepEqual([...h.api.files.pending],['p1']);h.fileHold.resolve();h.fileHold=null;await microtasks();await h.time.tick(0);assert.equal(h.fileCalls.length,2);h.stop();
 });
+test('file completion stays pending until a concurrent metadata round finishes, then settles its own status',async()=>{
+  const h=fixture(),file=deferred(),head=deferred();h.fileHold=file;
+  h.api.files.request(['p1']);await h.time.tick(0);assert.equal(h.context.syncing,true);
+  h.restHook=async path=>{if(path.includes('&select=revision,updated_at'))await head.promise;};
+  h.api.metadata.request(['p1']);await h.time.tick(0);assert.equal(h.api.metadata.running,true);
+  file.resolve();h.fileHold=null;await microtasks();await h.time.tick(0);
+  assert.equal(h.api.files.running,false);assert.equal(h.api.metadata.running,true);assert.equal(h.statuses.at(-1).level,'pending','finishing files cannot acknowledge an unfinished record read');
+  head.resolve();await microtasks();await h.time.tick(0);
+  assert.equal(h.api.metadata.running,false);assert.equal(h.statuses.at(-1).level,'ok','the metadata round that began during file I/O finishes status after files have drained');h.stop();
+});
 test('metadata success cannot clear unrelated file retry state or claim all files synchronized',async()=>{
   const h=fixture();h.fileHold={promise:Promise.reject(Error('photo download failed'))};h.fileHold.promise.catch(()=>{});
   h.api.files.request(['p1']);await h.time.tick(0);assert.equal(h.context.syncErrorNotBefore,h.time.now()+30000);const retry=h.context.syncErrorNotBefore;
