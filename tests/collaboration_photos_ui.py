@@ -53,7 +53,16 @@ def release(page):
 def wait_photos(page, drawing_id, count):
     page.wait_for_function("""({id,count})=>JSON.parse(SentlogRecords.getItem(drawingStorageKey(id)))
       .shapes.find(s=>s.id==='survey-a').photos.length===count""", arg={'id': drawing_id, 'count': count})
-    page.wait_for_function('async()=>!(await SentlogCollaborationPhotos.listPending()).length')
+    # wait_for_function treats the returned Promise itself as truthy. Await
+    # each durable status read explicitly, otherwise the record append can
+    # pass before the original metadata advances from shared to attached.
+    page.evaluate("""async()=>{
+      const deadline=performance.now()+30000;
+      while((await SentlogCollaborationPhotos.listPending()).length){
+        if(performance.now()>=deadline)throw Error('Photo operations did not finish durable attachment');
+        await new Promise(resolve=>setTimeout(resolve,20));
+      }
+    }""")
 
 
 def run(page, engine):
