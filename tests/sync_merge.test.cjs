@@ -34,6 +34,56 @@ pb.drawings[0].state.shapes[0].photos=[{id:'a',name:'different.jpg'}];assert(!M.
 const photoBase=clone(pa),photoDeleted=clone(base),photoAdded=clone(pa);photoAdded.drawings[0].state.shapes[0].photos.push({id:'b',name:'b.jpg'});
 r=M.merge(photoDeleted,photoAdded,{base:photoBase});assert(r.ok);assert.deepEqual(r.payload.drawings[0].state.shapes[0].photos.map(p=>p.id),['b']);
 
+// A shared survey point may receive its comment on iPad and its photo later on
+// iPhone. The newer photo edit must not turn a stale empty memo into a deletion.
+{
+  const started=Date.parse('2026-11-18T04:00:00Z');
+  const photo={id:'iphone-survey-photo',name:'近接.jpg',createdAt:started+2000};
+  const survey=(memo,photos=[])=>({
+    id:'shared-survey',page:1,kind:'field-record',recordKind:'field-record',recordType:'survey',
+    type:'調査',recordNo:1,displayKind:'point',point:{x:100,y:120},
+    points:[{x:100,y:120},{x:100,y:120}],surveyItems:['外観目視'],memo,photos
+  });
+  const emptyBase=make([survey('')],started);
+  const ipadComment=make([survey('iPadで記入した調査コメント')],started+1000);
+  const iphonePhoto=make([survey('',[photo])],started+2000);
+  const before=JSON.stringify([emptyBase,ipadComment,iphonePhoto]);
+  for(const [localSide,remoteSide] of [[ipadComment,iphonePhoto],[iphonePhoto,ipadComment]]){
+    const result=M.merge(localSide,remoteSide,{base:emptyBase});
+    assert(result.ok,'same-point comment and photo edits merge in either device order');
+    const record=result.payload.drawings[0].state.shapes[0];
+    assert.equal(record.memo,'iPadで記入した調査コメント','later photography does not clear the independently added comment');
+    assert.deepEqual(record.photos,[photo]);
+    assert.equal(record.id,'shared-survey');
+    assert.deepEqual(record.point,{x:100,y:120});
+  }
+  assert.equal(JSON.stringify([emptyBase,ipadComment,iphonePhoto]),before,'comment/photo merging never mutates its snapshots');
+
+  const savedBase=make([survey('同期済みのコメント')],started);
+  const photoOnly=make([survey('同期済みのコメント',[photo])],started+2000);
+  for(const [localSide,remoteSide] of [[savedBase,photoOnly],[photoOnly,savedBase]]){
+    const result=M.merge(localSide,remoteSide,{base:savedBase});
+    assert(result.ok);
+    assert.equal(result.payload.drawings[0].state.shapes[0].memo,'同期済みのコメント','photo-only updates retain an existing saved comment');
+    assert.deepEqual(result.payload.drawings[0].state.shapes[0].photos,[photo]);
+  }
+
+  const editedComment=make([survey('iPadで追記した新しいコメント')],started+1000);
+  const clearedComment=make([survey('')],started+1000);
+  for(const textEdit of [editedComment,clearedComment]){
+    for(const [localSide,remoteSide] of [[textEdit,photoOnly],[photoOnly,textEdit]]){
+      const result=M.merge(localSide,remoteSide,{base:savedBase});
+      assert(result.ok,'an explicit comment change and a photo remain independent');
+      assert.equal(result.payload.drawings[0].state.shapes[0].memo,textEdit.drawings[0].state.shapes[0].memo,
+        'intentional edits, including clearing a saved comment, are not undone by later photography');
+      assert.deepEqual(result.payload.drawings[0].state.shapes[0].photos,[photo]);
+    }
+  }
+  const divergentComment=make([survey('iPhoneで別の説明に変更',[photo])],started+3000);
+  assert(!M.merge(editedComment,divergentComment,{base:savedBase}).ok,'genuine competing comments still require review');
+  console.log('PASS survey comment/photo merge: later iPhone photo, either device order, saved text, intentional clearing and real conflicts');
+}
+
 const scaled=clone(local);scaled.drawings[0].state.pageSettings={'1':{scaleDenom:100}};
 assert(!M.merge(scaled,remote,{preserve:true}).ok,'unknown coordinate-frame changes require review');
 assert(!M.merge(scaled,remote,{base}).ok,'a coordinate-frame change cannot reinterpret peer annotations');

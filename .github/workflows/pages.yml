@@ -99,6 +99,7 @@ jobs:
           python3 scripts/build_auto_trace.py
           python3 scripts/build_live_sync.py
           python3 scripts/build_photo_viewer.py
+          python3 scripts/build_field_memo.py
           node --check sentlog/photo-viewer.js
           node tests/photo_ledger.test.cjs
           node tests/photo_ledger_damage.test.cjs

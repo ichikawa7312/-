@@ -110,6 +110,8 @@
   if(!stageWrap||!toolbar||!inspector||!svg)return;
 
   let recordDraft=null,recordPanel=null,recordModeModal=null,recordBtn=null,recordPress=null,recordMove=null,recordLabelMove=null;
+  let memoEdit=null,memoBinding=null,memoRenderDepth=0,memoFlushQueued=false;
+  const pendingMemoEdits=new Set();
   const standard={};
   const defaultDeleteText=$('deleteBtn')?.textContent||'選択変状を削除';
 
@@ -203,6 +205,89 @@
       node.hidden=!show;
     }
   }
+  function memoText(s){return String(s?.memo??'');}
+  function memoSource(edit){
+    if(!edit||typeof activeDrawingId==='undefined'||activeDrawingId!==edit.drawingId)return null;
+    const s=state.shapes?.find(x=>x.id===edit.recordId);
+    // A sync/undo may replace the object while retaining its id. A delayed
+    // input event must never write a previous edit into that replacement.
+    return isFieldRecord(s)&&s===edit.record?s:null;
+  }
+  function memoBound(edit){
+    return !!edit&&memoBinding?.drawingId===edit.drawingId&&memoBinding.recordId===edit.recordId;
+  }
+  function beginMemoEdit(){
+    if(!memoRenderDepth)flushPendingMemoEdits();
+    const s=currentRecord();if(!s||typeof activeDrawingId==='undefined'||!activeDrawingId)return null;
+    if(memoEdit&&memoSource(memoEdit)===s&&memoBound(memoEdit))return memoEdit;
+    if(memoBinding?.drawingId!==activeDrawingId||memoBinding.recordId!==s.id)return null;
+    memoEdit={drawingId:activeDrawingId,recordId:s.id,record:s,page:s.page||state.currentPage,
+      value:$('frRecordMemo').value,saved:memoText(s),dirty:false,composing:false,historyPushed:false,historyEntry:null};
+    return memoEdit;
+  }
+  function readMemoDraft(edit){
+    if(!memoBound(edit))return;
+    edit.value=$('frRecordMemo').value;edit.dirty=edit.value!==edit.saved;
+  }
+  function deferMemoEdit(edit){
+    if(!edit?.dirty)return;
+    pendingMemoEdits.add(edit);
+    if(memoFlushQueued)return;
+    memoFlushQueued=true;
+    queueMicrotask(()=>{memoFlushQueued=false;flushPendingMemoEdits();});
+  }
+  function flushPendingMemoEdits(){
+    if(memoRenderDepth)return;
+    const edits=[...pendingMemoEdits];pendingMemoEdits.clear();
+    for(const edit of edits)saveMemoEdit(edit);
+  }
+  function saveMemoEdit(edit=memoEdit){
+    if(!edit||edit.composing||!edit.dirty)return;
+    // Outer renderers temporarily filter state.shapes. Neither persistence nor
+    // undo snapshots may run until that complete list has been restored.
+    if(memoRenderDepth){deferMemoEdit(edit);return;}
+    const s=memoSource(edit);if(!s)return;
+    if(memoText(s)!==edit.value){
+      const h=typeof historyFor==='function'?historyFor(edit.page):null;
+      // Several input events form one undo entry. If another action has added
+      // history meanwhile, start a new entry instead of grouping across it.
+      if(!edit.historyPushed||(h&&h.undo?.[h.undo.length-1]!==edit.historyEntry)){
+        pushHistory(edit.page);edit.historyPushed=true;
+        edit.historyEntry=typeof historyFor==='function'?historyFor(edit.page).undo?.slice(-1)[0]:null;
+      }
+      s.memo=edit.value;persist();
+    }
+    edit.saved=edit.value;edit.dirty=false;
+  }
+  function finishMemoEdit(){
+    const edit=memoEdit;
+    if(!edit){if(!memoRenderDepth)flushPendingMemoEdits();return;}
+    // Preserve the last visible text when leaving the field/app, including
+    // engines which deliver blur before compositionend.
+    readMemoDraft(edit);edit.composing=false;memoEdit=null;
+    if(memoRenderDepth)deferMemoEdit(edit);
+    else {flushPendingMemoEdits();saveMemoEdit(edit);}
+  }
+  function hasPendingMemoEdit(){
+    return (!!memoSource(memoEdit)&&(memoEdit.composing||memoEdit.dirty))||
+      [...pendingMemoEdits].some(edit=>!!memoSource(edit)&&edit.dirty);
+  }
+  function syncMemoField(s){
+    if(memoEdit&&(memoSource(memoEdit)!==s||memoEdit.recordId!==selected)){
+      const edit=memoEdit;readMemoDraft(edit);edit.composing=false;memoEdit=null;
+      // A selection can change inside another renderer. Carry the bound draft
+      // out of that stack; never save the renderer's temporary shape subset.
+      deferMemoEdit(edit);
+    }
+    if(!s){memoBinding=null;return;}
+    const input=$('frRecordMemo'),value=memoText(s);
+    memoBinding={drawingId:activeDrawingId,recordId:s.id};
+    // Never rewrite the focused composition. Even an identical assignment
+    // can reset an IME/caret; committed text needs no DOM write at all.
+    if(memoSource(memoEdit)===s&&(memoEdit.composing||memoEdit.dirty))return;
+    if(memoEdit&&memoEdit.saved!==value)memoEdit=null;
+    if(input.value!==value)input.value=value;
+  }
   function installInspector(){
     if(recordPanel)return;
     const photoPanel=inspector.querySelector('.photo-panel');
@@ -226,29 +311,47 @@
       cb.onchange=()=>updateSurveyItems();
     }
     photoPanel?.insertAdjacentElement('beforebegin',recordPanel);
-    recordPanel.querySelector('#frRecordMemo').addEventListener('change',()=>{
-      const s=currentRecord();if(!s)return;const next=recordPanel.querySelector('#frRecordMemo').value;
-      if((s.memo||'')===next)return;pushHistory();s.memo=next;persist();
+    const memo=recordPanel.querySelector('#frRecordMemo');
+    memo.addEventListener('focus',beginMemoEdit);
+    memo.addEventListener('beforeinput',beginMemoEdit);
+    memo.addEventListener('input',e=>{
+      const edit=beginMemoEdit();if(!edit)return;readMemoDraft(edit);
+      if(e.isComposing)edit.composing=true;
+      saveMemoEdit();
     });
+    memo.addEventListener('compositionstart',()=>{
+      const edit=beginMemoEdit();if(edit){edit.composing=true;readMemoDraft(edit);}
+    });
+    memo.addEventListener('compositionend',()=>{
+      if(!memoEdit||!memoBound(memoEdit)||!memoSource(memoEdit))return;
+      readMemoDraft(memoEdit);memoEdit.composing=false;saveMemoEdit();
+    });
+    // A late change/blur only finishes its existing bound session. It cannot
+    // start a session for a newly selected record and copy stale text into it.
+    memo.addEventListener('change',finishMemoEdit);
+    memo.addEventListener('blur',finishMemoEdit);
     recordPanel.querySelector('#frSurveyDisplay').onchange=e=>changeSurveyDisplay(e.target.value);
   }
   function syncInspector(){
+    memoRenderDepth++;
+    try{
     installInspector();const s=currentRecord(),custom=!!s;showStandard(!custom);
     recordPanel.hidden=!custom;
     if($('deleteBtn')){$('deleteBtn').textContent=custom?'記録を削除':defaultDeleteText;$('deleteBtn').disabled=!selected;}
     if($('cameraBtn'))$('cameraBtn').disabled=!selected;
     if($('photoAddBtn'))$('photoAddBtn').disabled=!selected;
+    syncMemoField(s);
     if(!custom)return;
     $('frRecordTitle').textContent=recordLabel(s);
     $('frRecordKind').textContent=s.recordType==='photo'?'全景撮影':'調査記録';
     $('frPhotoHelp').hidden=s.recordType!=='photo';
     $('frSurveyFields').hidden=s.recordType!=='survey';
-    $('frRecordMemo').value=s.memo||'';
     if(s.recordType==='survey'){
       const chosen=new Set(Array.isArray(s.surveyItems)?s.surveyItems:[]);
       recordPanel.querySelectorAll('#frSurveyChecks input').forEach(cb=>cb.checked=chosen.has(cb.value));
       $('frSurveyDisplay').value=s.displayKind==='arrow'?'arrow':'point';
     }
+    }finally{memoRenderDepth--;}
   }
   function updateSurveyItems(){
     const s=currentRecord();if(!s||s.recordType!=='survey')return;
@@ -270,6 +373,7 @@
   }
 
   function createRecord(data){
+    finishMemoEdit();
     pushHistory();
     const id=crypto.randomUUID?crypto.randomUUID():'fr-'+Date.now()+'-'+Math.random().toString(16).slice(2);
     const recordType=data.recordType;
@@ -286,6 +390,7 @@
   }
   function selectRecord(id){
     const s=state.shapes.find(x=>x.id===id);if(!isFieldRecord(s))return;
+    if(memoEdit&&(memoEdit.recordId!==id||memoSource(memoEdit)!==s))finishMemoEdit();
     // Match normal damage selection: selecting a record must never raise the
     // mobile information sheet. The bottom handle remains the only opener.
     selected=id;render();if(typeof setSelectionControls==='function')setSelectionControls();renderSelectedPhotos();syncInspector();if(typeof updateMeasureResult==='function')updateMeasureResult();
@@ -581,15 +686,17 @@
       if(recordLabelMove?.pointerId===e.pointerId){stopRecordLabelMove(false);}
       if(recordPress?.pointerId===e.pointerId)clearRecordPress();
     });
-    window.addEventListener('blur',cancelRecordInteraction);
-    window.addEventListener('pagehide',cancelRecordInteraction);
-    document.addEventListener('visibilitychange',()=>{if(document.hidden)cancelRecordInteraction();});
+    window.addEventListener('blur',()=>{finishMemoEdit();cancelRecordInteraction();});
+    window.addEventListener('pagehide',()=>{finishMemoEdit();cancelRecordInteraction();});
+    document.addEventListener('visibilitychange',()=>{if(document.hidden){finishMemoEdit();cancelRecordInteraction();}});
   }
 
   installStyle();installToolbar();installModeModal();installInspector();installEvents();
 
   const oldRender=render;
   render=function(){
+    memoRenderDepth++;
+    try{
     const all=state.shapes||[],records=all.filter(isFieldRecord),normal=all.filter(s=>!isFieldRecord(s));
     let result;
     state.shapes=normal;
@@ -597,15 +704,24 @@
     finally{state.shapes=all;}
     drawRecords(records);syncInspector();
     return result;
+    }finally{memoRenderDepth--;}
   };
 
   const oldSelect=selectShape;
   selectShape=function(id){
     const s=state.shapes.find(x=>x.id===id);
     if(isFieldRecord(s)){selectRecord(id);return;}
+    finishMemoEdit();
     const result=oldSelect.apply(this,arguments);syncInspector();return result;
   };
 
-  root.SentlogFieldRecords={...pure,selectRecord,syncInspector};
+  // Commit before navigation/history replaces the selected record or drawing.
+  // These are existing entry points; no background file or sync data is edited.
+  for(const name of ['clearSelection','showProjects','showDrawings','openDrawing','undo','redo']){
+    const original=root[name];if(typeof original!=='function')continue;
+    root[name]=function(){finishMemoEdit();return original.apply(this,arguments);};
+  }
+
+  root.SentlogFieldRecords={...pure,selectRecord,syncInspector,hasPendingMemoEdit,isMemoEditing:hasPendingMemoEdit};
   if(typeof currentView!=='undefined'&&currentView==='editor')render();else syncInspector();
 })(typeof window==='object'?window:globalThis);

@@ -22,9 +22,21 @@ replace('sentlog/sync-view.js',
     """    // Focus by itself is not a pending edit. Check the saved inspector fields
     // below, but retain the guard for unknown inputs and contenteditable.
     if(focus && focus.matches('input,select,textarea,[contenteditable="true"]')){
-      const safeFields=['damageType','member','memo','lineWidth','globalNo','typeNo'];
+      const safeFields=['damageType','member','memo','lineWidth','globalNo','typeNo','frRecordMemo'];
       if(focus.isContentEditable||!safeFields.includes(focus.id))return true;
     }""")
+
+replace('sentlog/sync-view.js',
+    "    if(loading.style.display==='grid')return true;",
+    "    if(loading.style.display==='grid')return true;\n    if(window.SentlogFieldRecords?.isMemoEditing?.())return true;")
+
+replace('sentlog/sync-view.js',
+    "      const expected={damageType:s.type||'腐食',member:s.member||'',memo:s.memo||'',lineWidth:String(s.strokeWidth||1.2)};",
+    """      // Survey points have their own memo editor. Hidden damage controls
+      // retain old values and must not indefinitely defer incoming comments.
+      const expected=(s.recordKind==='field-record'||s.kind==='field-record')?
+        {frRecordMemo:s.memo||''}:
+        {damageType:s.type||'腐食',member:s.member||'',memo:s.memo||'',lineWidth:String(s.strokeWidth||1.2)};""")
 
 replace('sentlog/cloud-sync.js',
     """    else if(pulled.blocked.size)syncStatus.finish(statusCycle,{level:'pending',label:'作業後に反映',message:'操作中の変更は保留しています。入力・描画を終えると次の同期で反映します。PDFの差し替えや削除は図面を閉じた後に反映します。'});""",
@@ -33,4 +45,4 @@ replace('sentlog/cloud-sync.js',
 
 for file in ('sentlog/sync-view.js','sentlog/cloud-sync.js'):
     subprocess.run(['node','--check',file],cwd=ROOT,check=True)
-print('Built Sentlog live-editor sync: focused inputs no longer hold sync indefinitely; non-conflicting edits merge while editor is open')
+print('Built Sentlog live-editor sync: settled field-record memo receives updates; unfinished text and composition stay protected')

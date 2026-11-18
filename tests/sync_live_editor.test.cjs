@@ -4,11 +4,11 @@ const vm=require('node:vm');
 const path=require('node:path');
 const code=fs.readFileSync(path.join(__dirname,'../sentlog/sync-view.js'),'utf8');
 
-function fixture(){
+function fixture({record={},savePhotos=async()=>{}}={}){
   const WS='surveyFieldNoteWorkspaceV1',DRAW=id=>'surveyFieldNoteDrawingV1:'+id;
   const activeMeta={id:'d1',name:'作業図面',fileName:'plan.pdf',sourceType:'pdf',pageCount:1,updatedAt:1};
   const otherMeta={id:'d2',name:'別のシート',fileName:'side.pdf',sourceType:'pdf',pageCount:1,updatedAt:1};
-  const shape={id:'s1',type:'腐食',no:'',member:'',memo:'',strokeWidth:1.2,photos:[]};
+  const shape={id:'s1',type:'腐食',no:'',member:'',memo:'',strokeWidth:1.2,photos:[],...record};
   const localActive={sourceType:'pdf',fileName:'plan.pdf',pageCount:1,currentPage:1,width:1200,height:800,shapes:[shape]};
   const localOther={sourceType:'pdf',fileName:'side.pdf',pageCount:1,currentPage:1,width:1200,height:800,shapes:[]};
   const project={id:'p',name:'現地調査',updatedAt:1,drawings:[activeMeta,otherMeta]};
@@ -28,13 +28,15 @@ function fixture(){
     },
     async flush(){}
   };
-  const formValues={damageType:'腐食',damageNo:'',member:'',memo:'',lineWidth:'1.2'};
+  // Ordinary inspector fields deliberately keep their previous damage-record
+  // values when a field record is selected; those hidden controls are not drafts.
+  const formValues={damageType:'腐食',damageNo:'',member:'',memo:'',lineWidth:'1.2',frRecordMemo:shape.memo};
   const inspector={classList:{contains:()=>false,toggle:()=>{}}};
   const elements={inspector,headerTitle:{textContent:''},projectNameView:{textContent:''},drawingNameView:{textContent:''}};
   for(const [id,value] of Object.entries(formValues))elements[id]={value};
   const context={
     console,JSON,Map,Set,Date,Number,
-    document:{hidden:false,activeElement:{id:'memo',matches:()=>true,isContentEditable:false},querySelector:()=>null},
+    document:{hidden:false,activeElement:{id:shape.recordKind==='field-record'?'frRecordMemo':'memo',matches:()=>true,isContentEditable:false},querySelector:()=>null},
     SentlogRecords:records,
     drawingStorageKey:DRAW,
     WORKSPACE_KEY:WS,
@@ -43,7 +45,7 @@ function fixture(){
     selected:'s1',drawing:null,panStart:null,labelDrag:null,activeTouches:new Map(),
     loading:{style:{display:'none'}},
     empty:{style:{display:'none'}},
-    addPhotosToSelected:async()=>{},
+    addPhotosToSelected:savePhotos,
     persist:()=>{},
     getProject:()=>context.workspace.projects.find(p=>p.id===context.activeProjectId),
     getDrawingMeta:()=>context.workspace.projects.find(p=>p.id===context.activeProjectId)?.drawings.find(d=>d.id===context.activeDrawingId),
@@ -60,6 +62,7 @@ function fixture(){
   context.window=context;
   context.SentlogShapeMove={isEditing:()=>false};
   context.SentlogPolygonDimensions={isEditing:()=>false};
+  context.SentlogFieldRecords={isMemoEditing:()=>false};
   const instrumented=code.replace('  function localView(incoming,old){',`  window.__syncLiveBusyDebug=()=>({focus:document.activeElement?.id,selected,
     selectedRecord:state.shapes.find(x=>x.id===selected),formMemo:$('memo')?.value,
     busy:busy(),busyBody:busy.toString()});
@@ -68,12 +71,14 @@ function fixture(){
   const incoming=(active=copy(localActive),other=copy(localOther))=>({
     payload:{project:copy(project),drawings:[{meta:copy(activeMeta),state:active},{meta:copy(otherMeta),state:other}]}
   });
-  async function commit(pack){
+  async function commit(pack,merge=true){
     const expectedLocal=JSON.stringify(JSON.parse(store.get(WS)).projects[0]);
+    if(!merge)return await context.window.sentlogSyncView.commit({client_key:'p'},pack,expectedLocal);
     const expectedRecords=[[WS,store.get(WS)],[DRAW('d1'),store.get(DRAW('d1'))],[DRAW('d2'),store.get(DRAW('d2'))]];
     return await context.window.sentlogSyncView.mergeCommit({client_key:'p'},pack,expectedLocal,{expectedRecords,extraWrites:[]});
   }
   return {copy,context,store,records,localActive,localOther,shape,incoming,commit,DRAW,
+    receive:pack=>commit(pack,false),
     setValue:(id,v)=>{elements[id].value=v},
     get commits(){return commits},
     get renders(){return renders}};
@@ -122,7 +127,69 @@ function fixture(){
     const result=await f.commit(f.incoming());
     assert.equal(result.applied,false,'unknown or unsaved input control remains protected');
   }
+  const survey={kind:'field-record',recordKind:'field-record',recordType:'survey',type:'調査',memo:'iPadで入力済みのコメント',surveyItems:[]};
+  const photo={id:'iphone-photo',name:'近接.jpg',createdAt:1794978000000};
+  {
+    const f=fixture({record:survey}),active=f.copy(f.localActive);
+    active.shapes[0].photos.push(photo);
+    const result=await f.receive(f.incoming(active));
+    assert.equal(result.applied,true,'a saved field memo can receive photos while its textarea stays focused');
+    assert.equal(f.context.document.activeElement.id,'frRecordMemo');
+    assert.equal(f.context.selected,'s1','receiving the photo retains the selected survey point');
+    assert.equal(f.context.state.shapes[0].memo,survey.memo,'a stale hidden damage memo must not replace the field memo');
+    assert.deepEqual(f.context.state.shapes[0].photos,[photo]);
+    const saved=JSON.parse(f.store.get(f.DRAW('d1'))).shapes[0];
+    assert.equal(saved.memo,survey.memo);
+    assert.deepEqual(saved.photos,[photo]);
+  }
+  {
+    const f=fixture({record:survey}),other=f.copy(f.localOther);
+    other.shapes.push({id:'remote-field-update',photos:[]});
+    const result=await f.commit(f.incoming(undefined,other));
+    assert.equal(result.applied,true,'settled field memo and stale hidden standard controls do not block an independent merge');
+    assert.equal(f.commits,1);
+    assert.equal(f.context.state.shapes[0].memo,survey.memo);
+  }
+  for(const focused of [true,false]){
+    const f=fixture({record:survey}),active=f.copy(f.localActive);
+    f.setValue('frRecordMemo','まだ保存されていない追記');
+    if(!focused)f.context.document.activeElement={matches:()=>false};
+    active.shapes[0].photos.push(photo);
+    const before=f.store.get(f.DRAW('d1'));
+    const result=await f.receive(f.incoming(active));
+    assert.equal(result.applied,false,'uncommitted field memo remains protected even after focus moves');
+    assert.equal(result.reason,'editing');
+    assert.equal(f.store.get(f.DRAW('d1')),before,'pending text prevents any snapshot replacement');
+    assert.equal(f.context.state.shapes[0].memo,survey.memo);
+    assert.equal(f.context.state.shapes[0].photos.length,0);
+  }
+  {
+    const f=fixture({record:survey}),active=f.copy(f.localActive);
+    active.shapes[0].photos.push(photo);
+    f.context.SentlogFieldRecords.isMemoEditing=()=>true;
+    const result=await f.receive(f.incoming(active));
+    assert.equal(result.applied,false,'IME composition blocks receive even when the visible value still equals saved text');
+    assert.equal(result.reason,'editing');
+    assert.equal(f.context.state.shapes[0].photos.length,0);
+    f.context.SentlogFieldRecords.isMemoEditing=()=>false;
+    assert.equal((await f.receive(f.incoming(active))).applied,true,'receive resumes after composition commits');
+    assert.equal(f.context.state.shapes[0].memo,survey.memo);
+  }
+  {
+    let finishPhoto;
+    const photoReady=new Promise(resolve=>{finishPhoto=resolve;});
+    const f=fixture({record:survey,savePhotos:()=>photoReady}),active=f.copy(f.localActive);
+    active.shapes[0].photos.push(photo);
+    const processing=f.context.addPhotosToSelected([]);
+    const result=await f.receive(f.incoming(active));
+    assert.equal(result.applied,false,'photo capture processing continues to block snapshot replacement');
+    assert.equal(result.reason,'editing');
+    assert.equal(f.context.state.shapes[0].photos.length,0);
+    finishPhoto();await processing;
+    assert.equal((await f.receive(f.incoming(active))).applied,true,'photo processing releases its receive guard after settling');
+    assert.equal(f.context.state.shapes[0].memo,survey.memo);
+  }
   assert(!code.includes("if(mergeOptions && currentView==='editor')return {applied:false,reason:'close-drawing'};"),
     'the unconditional editor merge rejection must be removed');
-  console.log('PASS editor live sync: idle input, guarded background merge, selected-record safety, unsaved text and unknown-input protection');
+  console.log('PASS editor live sync: field memo/photo receive, hidden inspector isolation, IME and draft protection, capture guard, selected-record safety');
 })().catch(error=>{console.error(error);process.exitCode=1});
