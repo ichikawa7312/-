@@ -39,17 +39,18 @@ class Cloud(base.FakeCloud):
         self.assets, self.blobs, self.notifications, self.pages = {}, {}, [], []
         self.page_errors = []
         self.hold_upload, self.held_uploads, self.drop_ack = None, [], None
-        self.webkit_source = None
+        self.webkit_sources = {}
         if engine == 'webkit':
-            source = (built_root / 'sentlog/cloud-sync.js').read_text(encoding='utf-8')
-            marker = 'async function dbGet(key){'
-            assert source.count(marker) == 1, 'Production cloud file-read boundary changed'
-            # dbGet is module-local, so the test response supplies the same Blob
-            # adapter used by getDBFile/putDBFile. Until the probe fails and the
-            # adapter is installed, this branch leaves the real reader intact.
-            self.webkit_source = source.replace(marker, marker + "\n"
-                "  const fixture=window.__sentlogWebKitBlobTransport;\n"
-                "  if(fixture?.files.has(key))return fixture.files.get(key);", 1)
+            for filename, marker in [('cloud-sync.js', 'async function dbGet(key){'),
+                                     ('photo-recovery.js', 'async function localPhoto(key){')]:
+                source = (built_root / 'sentlog' / filename).read_text(encoding='utf-8')
+                assert source.count(marker) == 1, f'Production {filename} file-read boundary changed'
+                # Both readers are module-local. Share precisely the photo Blob
+                # transport used by getDBFile and SentlogRecords.writeFile;
+                # before a failed raw probe, the real reader remains unchanged.
+                self.webkit_sources['/sentlog/' + filename] = source.replace(marker, marker + "\n"
+                    "  const fixture=window.__sentlogWebKitBlobTransport;\n"
+                    "  if(fixture?.files.has(key))return fixture.files.get(key);", 1)
 
     def accept(self, route, entry):
         body = entry['body']
@@ -70,8 +71,8 @@ class Cloud(base.FakeCloud):
 
     def route(self, route, device):
         request, parsed = route.request, urlparse(route.request.url)
-        if self.webkit_source is not None and request.url.startswith(self.origin + '/') and parsed.path == '/sentlog/cloud-sync.js':
-            route.fulfill(status=200, content_type='text/javascript', body=self.webkit_source)
+        if parsed.path in self.webkit_sources and request.url.startswith(self.origin + '/'):
+            route.fulfill(status=200, content_type='text/javascript', body=self.webkit_sources[parsed.path])
             return
         if parsed.netloc != 'wiulvaqixphuobdielyy.supabase.co' or request.method == 'OPTIONS':
             return super().route(route, device)
@@ -212,13 +213,20 @@ WEBKIT_BLOB_PROBE = r"""async encoded=>{
 
 WEBKIT_BLOB_TRANSPORT = r"""()=>{
   const files=new Map(),originals=new Map(),metas=new Map(),api=SentlogOriginalPhotos;
-  const read=getDBFile,write=putDBFile;
+  const read=getDBFile,write=putDBFile,recordWrite=SentlogRecords.writeFile;
   window.__sentlogWebKitBlobTransport={files};
   getDBFile=async function(key){return files.has(key)?files.get(key):read.apply(this,arguments);};
-  putDBFile=async function(key,value){
-    if(!key.startsWith('photo:'))return write.apply(this,arguments);
+  const storePhoto=(key,value)=>{
     if(!(value instanceof Blob))throw Error('Synthetic shared photo is not a Blob');
     files.set(key,value);
+  };
+  putDBFile=async function(key,value){
+    return key.startsWith('photo:')?storePhoto(key,value):write.apply(this,arguments);
+  };
+  // Photo recovery calls writeFile directly on reconnect. Keep its verification
+  // and the real record-error guards, using the same photo-only Blob transport.
+  SentlogRecords.writeFile=async function(key,value){
+    return key.startsWith('photo:')?storePhoto(key,value):recordWrite.apply(this,arguments);
   };
   // Preserve real getPhotoBlob/savePhotoBlob and makeSharedPhoto. Both the
   // editor and cloud module read/write this same per-device shared-byte map.
@@ -395,14 +403,23 @@ def run(browser, cloud, engine):
     assert a.evaluate("state.shapes.find(s=>s.id==='survey-a').photos.length") == 3
 
     # Offline additions merge on reconnection without duplicate comments.
+    for page in (a, b):
+        page.evaluate('SentlogRecords.assertSafe()')
     ca.set_offline(True)
+    a.wait_for_function('!navigator.onLine')
+    assert b.evaluate('navigator.onLine'), 'Taking one device offline affected its peer'
     add_comment(a, '圏外の間のコメント')
     a.wait_for_timeout(900)
     assert '圏外の間のコメント' in texts(a)
     add_comment(b, '接続中の別コメント')
     b.wait_for_timeout(1800)
     ca.set_offline(False)
-    wait(cloud, b, lambda: all('圏外の間のコメント' in texts(p) and '接続中の別コメント' in texts(p) for p in (a, b)), 'offline changes did not converge', timeout=20)
+    a.wait_for_function('navigator.onLine')
+    def offline_comments_converged():
+        for page in (a, b):
+            page.evaluate('SentlogRecords.assertSafe()')
+        return all('圏外の間のコメント' in texts(p) and '接続中の別コメント' in texts(p) for p in (a, b))
+    wait(cloud, b, offline_comments_converged, 'offline changes did not converge', timeout=20)
     assert texts(a).count('圏外の間のコメント') == 1
     assert texts(a) == texts(b)
 
@@ -479,6 +496,8 @@ def main():
                             blobProbe:window.__sentlogBlobProbe,
                             blobFixtureKeys:[...(window.__sentlogWebKitBlobTransport?.files.keys()||[])],
                             storageBodyAdapters:window.__sentlogWebKitStorageBodies,
+                            storageIssues:SentlogRecords.issues,storageFailed:SentlogRecords.failed,
+                            online:navigator.onLine,
                             error:document.getElementById('errorBanner')?.textContent,
                             cloud:document.getElementById('sentlogCloudMsg')?.textContent};
                         }"""))
