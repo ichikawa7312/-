@@ -1,0 +1,42 @@
+/* project-sync-controls-v1: select local projects, including unsent projects. */
+let projectSyncControlBusy=false;
+function renderProjectSyncControls(){
+  const select=document.getElementById('sentlogSyncProjectSelect'),button=document.getElementById('sentlogSyncProjectNow');
+  if(!select||!button)return;
+  const selected=select.value;
+  const projects=(workspace().projects||[]).filter(p=>{
+    if(!p?.id)return false;
+    const cp=[...knownCloudProjects.values()].find(row=>row.client_key===p.id);
+    return cp?.status!=='archived'&&(!archive.ready||archive.includeLocal(p.id,null));
+  }).sort((a,b)=>Number(b.updatedAt||0)-Number(a.updatedAt||0));
+  select.replaceChildren();
+  for(const p of projects){
+    const option=document.createElement('option');option.value=p.id;option.textContent=p.name||'案件';select.appendChild(option);
+  }
+  if(projects.some(p=>p.id===selected))select.value=selected;
+  else if(projects.length)select.value=projects[0].id;
+  else {const option=document.createElement('option');option.value='';option.textContent='同期できる案件がありません';select.appendChild(option);}
+  select.disabled=projectSyncControlBusy||!projects.length;
+  button.disabled=projectSyncControlBusy||!projects.length||!navigator.onLine||!session?.user?.id;
+  button.textContent=projectSyncControlBusy?'この案件を確認中…':'この案件だけ同期';
+}
+async function syncSelectedProject(){
+  if(projectSyncControlBusy)return;
+  const owner=session?.user?.id,id=document.getElementById('sentlogSyncProjectSelect')?.value;
+  if(!owner){msg('ログインしてから同期してください。');return;}
+  if(!navigator.onLine){msg('オンラインになると同期を再開できます。');return;}
+  const project=(workspace().projects||[]).find(p=>p.id===id);
+  if(!project){msg('同期する案件を選んでください。');renderProjectSyncControls();return;}
+  projectSyncControlBusy=true;renderProjectSyncControls();
+  msg('「'+(project.name||'案件')+'」の記録・図面・写真を確認しています。',true);
+  try{
+    const result=await syncNow({force:true,projectIds:[id]});
+    if(owner!==session?.user?.id)return;
+    if(!result?.started)msg('同期を開始できませんでした。入力中の内容を保存し、通信とログインを確認してください。');
+    else msg('');
+    // The sync engine owns partial-failure and completion messages. Starting a
+    // request alone must never be presented here as a successful transfer.
+    syncStatus.refresh();
+  }catch(error){if(owner===session?.user?.id)msg(error?.message||String(error));}
+  finally{projectSyncControlBusy=false;renderProjectSyncControls();}
+}

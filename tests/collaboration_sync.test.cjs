@@ -7,7 +7,7 @@ const helpers=fs.readFileSync(require.resolve('../sentlog/edit-sync-runtime.txt'
 const fileHelpers=helpers.slice(helpers.indexOf('function sharedFileText('),helpers.indexOf('// Browser integration.'));
 const copy=x=>JSON.parse(JSON.stringify(x)),stable=x=>JSON.stringify(C.canonical(x));
 const deferred=()=>{let resolve,reject;const promise=new Promise((a,b)=>{resolve=a;reject=b;});return {promise,resolve,reject};};
-async function microtasks(){for(let n=0;n<100;n++)await Promise.resolve();}
+async function microtasks(){for(let n=0;n<500;n++)await Promise.resolve();}
 function clock(){
   let time=100000,serial=0;const timers=new Map();
   return {now:()=>time,setTimer:(fn,ms)=>{const id=++serial;timers.set(id,{at:time+ms,fn});return id;},clearTimer:id=>timers.delete(id),
@@ -17,12 +17,12 @@ const pureContext=vm.createContext({setTimeout,clearTimeout});vm.runInContext(pu
 const {createCollaborationWorker,collaborationCanSkipFileCheck}=pureContext.api;
 const cases=[];const test=(name,fn)=>cases.push({name,fn});
 
-test('serialized metadata retains guarded revision without another notification',async()=>{
+test('serialized worker retries a deferred project without delaying another project',async()=>{
   const time=clock(),calls=[],first=deferred();let active=0,max=0;
   const worker=createCollaborationWorker({...time,enabled:()=>true,owner:()=> 'a',run:async ids=>{active++;max=Math.max(max,active);calls.push([...ids]);if(calls.length===1)await first.promise;active--;return {deferredIds:calls.length===1?['p1']:[]};}});
   worker.request(['p1']);await time.tick(0);worker.request(['p2']);await time.tick(500);assert.equal(calls.length,1);
-  first.resolve();await microtasks();await time.tick(799);assert.equal(calls.length,1);await time.tick(1);
-  assert.deepEqual(new Set(calls[1]),new Set(['p1','p2']));assert.equal(max,1);assert.equal(worker.pending.length,0);worker.stop();
+  first.resolve();await microtasks();await time.tick(799);assert.deepEqual(calls,[['p1'],['p2']]);await time.tick(1);
+  assert.deepEqual(calls[2],['p1']);assert.equal(max,1);assert.equal(worker.pending.length,0);worker.stop();
 });
 test('fresh confirmation waits for a new round after the current round',async()=>{
   const time=clock(),hold=deferred(),calls=[];
@@ -34,8 +34,8 @@ test('fresh confirmation waits for a new round after the current round',async()=
 test('account changes discard old results while retaining physical single-flight',async()=>{
   const time=clock(),hold=deferred();let owner='a',active=0,max=0;const commits=[];
   const worker=createCollaborationWorker({...time,enabled:()=>true,owner:()=>owner,run:async(ids,context)=>{active++;max=Math.max(max,active);try{if(context.owner==='a')await hold.promise;context.assertCurrent();commits.push(context.owner);return {deferredIds:[]};}finally{active--;}}});
-  const old=worker.wait(['p1']).catch(e=>e);await time.tick(0);owner='b';worker.reset();worker.request(['p2']);await time.tick(2000);assert.equal(max,1);
-  hold.resolve();await microtasks();await time.tick(0);assert.equal((await old).code,'COLLAB_ACCOUNT_CHANGED');assert.deepEqual(commits,['b']);assert.equal(max,1);worker.stop();
+  const old=worker.wait(['p1']).catch(e=>e);await time.tick(0);owner='b';worker.reset();const newer=worker.wait(['p2']);await time.tick(2000);assert.equal(max,1);
+  hold.resolve();await microtasks();await time.tick(0);await newer;assert.equal((await old).code,'COLLAB_ACCOUNT_CHANGED');assert.deepEqual(commits,['b']);assert.equal(max,1);worker.stop();
 });
 test('offline/hidden pause and network/permanent backoffs cannot be shortened by new notifications',async()=>{
   const time=clock();let enabled=false,attempt=0,mode='network';const worker=createCollaborationWorker({...time,enabled:()=>enabled,owner:()=> 'a',run:async()=>{attempt++;if(mode==='network')throw Error('network');if(mode==='protocol')throw Object.assign(Error('COLLAB_HISTORY_REQUIRED: history'),{retryable:false});return {deferredIds:[]};}});
@@ -61,6 +61,7 @@ function fixture(){
   const h={time,data,base,project,server:{revision:1,payload:copy(base),updated_at:'2026-11-18'},calls:[],statuses:[],fileCalls:[],commits:0,restHook:null,hashHook:null,fileHold:null,channel:null};
   const records={getItem:k=>data.get(k)??null,setItem:(k,v)=>data.set(k,String(v)),batch:w=>{for(const [k,v] of w){if(v===null)data.delete(k);else data.set(k,v);}},settled:async()=>{},assertSafe(){},flush:async()=>{}};
   const cp={id:'cloud-p1',client_key:'p1',name:'現場',status:'active'};
+  h.cloudProjects=new Map([[cp.id,cp]]);h.otherServers=new Map();
   const ls=new Map([['device','device-id']]);
   const context={console,Blob,structuredClone,Map,Set,Date:class extends Date{static now(){return time.now();}},setTimeout:time.setTimer,clearTimeout:time.clearTimer,
     session:{user:{id:'owner-a'},access_token:'test'},syncing:false,syncNotBefore:0,syncErrorNotBefore:0,mergeBusy:false,
@@ -79,18 +80,25 @@ function fixture(){
     rest:async(path,options={})=>{
       h.calls.push({path,options});if(h.restHook){const value=await h.restHook(path,options);if(value!==undefined)return value;}
       if(path.includes('sentlog_devices'))return options.method?null:[{id:'device-id',active:true,device_name:'現場のiPad'}];
-      if(path.includes('sentlog_projects?select='))return [copy(cp)];
-      if(path.includes('sentlog_projects?client_key='))return [copy(cp)];
+      if(path.includes('sentlog_projects?select='))return [...h.cloudProjects.values()].map(copy);
+      if(path.includes('sentlog_projects?client_key=')){const key=new URL(path,'https://test.invalid').searchParams.get('client_key').slice(3);return [...h.cloudProjects.values()].filter(p=>p.client_key===key).map(copy);}
+      if(path==='/rest/v1/sentlog_projects'&&options.method==='POST'){const body=JSON.parse(options.body),made={...body,id:'cloud-'+body.client_key};h.cloudProjects.set(made.id,made);return [copy(made)];}
       if(path.includes('sentlog_projects?id='))return null;
       if(path.includes('sentlog_project_snapshots?')){
-        if(options.method==='POST'){const v=JSON.parse(options.body);h.server={revision:v.revision,payload:copy(v.payload),updated_at:v.updated_at};return [copy(h.server)];}
-        return path.includes('payload')?[copy(h.server)]:[{revision:h.server.revision,updated_at:h.server.updated_at}];
+        const params=new URL(path,'https://test.invalid').searchParams,v=options.body?JSON.parse(options.body):null;
+        const id=v?.project_id||params.get('project_id')?.slice(3),server=id===cp.id?h.server:h.otherServers.get(id);
+        if(options.method==='POST'||options.method==='PATCH'){
+          if(options.method==='PATCH'&&(!server||Number(params.get('revision')?.slice(3))!==server.revision))return [];
+          const next={project_id:id,revision:v.revision,payload:copy(v.payload),updated_at:v.updated_at};
+          if(id===cp.id)h.server=next;else h.otherServers.set(id,next);return [copy(next)];
+        }
+        if(!server)return [];return path.includes('payload')?[copy(server)]:[{revision:server.revision,updated_at:server.updated_at}];
       }
       throw Error('Unexpected REST '+path);
     }};
   context.window.sentlogSyncView={commit:async(cp,snap,expected,options)=>{
     if(!options.expectedRecords.every(([key,v])=>data.get(key)===v))return {applied:false};h.commits++;
-    const ws=JSON.parse(data.get(WS));ws.projects=ws.projects.map(p=>p.id===cp.client_key?copy(snap.payload.project):p);
+    const ws=JSON.parse(data.get(WS));if(ws.projects.some(p=>p.id===cp.client_key))ws.projects=ws.projects.map(p=>p.id===cp.client_key?copy(snap.payload.project):p);else ws.projects.push(copy(snap.payload.project));
     const writes=[[WS,JSON.stringify(ws)],...snap.payload.drawings.map(d=>[DP+d.meta.id,JSON.stringify(d.state)]),...options.extraWrites];records.batch(writes);return {applied:true};}};
   vm.createContext(context);vm.runInContext(fileHelpers+runtime+'\nprojectSnapshot=collaborationProjectSnapshot;this.testAPI={metadata:collaborationMetadataWorker,files:collaborationFileWorker,device:collaborationEnsureDevice,snapshot:collaborationProjectSnapshot,normalize:collaborationNormalizeStored,pull:collaborationPullProject,upsert:collaborationUpsert,photos:collaborationCollectPhotos,uploadHistorical:collaborationUploadPhoto,round:collaborationMetadataRound,sync:collaborationSyncNow,reset:collaborationSessionChanged};',context);
   h.context=context;h.api=context.testAPI;h.current={owner:'owner-a',assertCurrent(){if(context.session?.user?.id!=='owner-a')throw Object.assign(Error('owner'),{code:'COLLAB_ACCOUNT_CHANGED'});}};
@@ -139,7 +147,7 @@ test('metadata sends are scoped, use fresh revision for CAS, and never enter ori
   const h=fixture();const st=JSON.parse(h.data.get(DP+'d1'));st.shapes[0]=C.appendComment(st.shapes[0],'追記',{commentId:'c2',revisionId:'c2-r1',actor:{deviceId:'d',deviceName:'端末'},at:3});h.data.set(DP+'d1',JSON.stringify(st));
   const result=await h.api.round(['p1'],h.current);assert.equal(result.uploaded,1);assert.equal(h.fileCalls.length,0);assert.equal(h.api.files.pending.length,0);
   const heads=h.calls.filter(c=>c.path.includes('sentlog_project_snapshots')&&!c.options.method);assert.equal(heads.length,1,'the freshly pulled head is reused, with no redundant revision GET');
-  const write=h.calls.find(c=>c.options.method==='POST');const body=JSON.parse(write.options.body);assert.equal(body.revision,2);assert.equal(body.payload.project.collaborationVersion,1);assert.match(body.payload.drawings[0].state.shapes[0].memo,/追記/);assert.equal(h.context.getSyncMeta('p1').revision,2);h.stop();
+  const write=h.calls.find(c=>c.options.method==='PATCH'&&c.path.includes('sentlog_project_snapshots'));const body=JSON.parse(write.options.body);assert.equal(body.revision,2);assert.equal(body.payload.project.collaborationVersion,1);assert.match(body.payload.drawings[0].state.shapes[0].memo,/追記/);assert.equal(h.context.getSyncMeta('p1').revision,2);h.stop();
 });
 test('first legacy upgrade without a sync baseline accepts exact content and preserves a real divergent edit',async()=>{
   for(const divergent of [false,true]){
@@ -148,17 +156,17 @@ test('first legacy upgrade without a sync baseline accepts exact content and pre
     if(divergent)plain.drawings[0].state.shapes[0].memo='未送信の別内容';
     h.data.set(DP+'d1',JSON.stringify(plain.drawings[0].state));h.data.delete(MP+'p1');
     const result=await h.api.round(['p1'],h.current);
-    if(divergent){assert.ok(result.deferredIds.includes('p1'));assert.equal(h.calls.filter(c=>c.options.method==='POST').length,0);assert.match(JSON.parse(h.data.get(DP+'d1')).shapes[0].memo,/未送信/);}
+    if(divergent){assert.ok(result.deferredIds.includes('p1'));assert.equal(h.calls.filter(c=>c.options.method&&c.path.includes('sentlog_project_snapshots')).length,0);assert.match(JSON.parse(h.data.get(DP+'d1')).shapes[0].memo,/未送信/);}
     else{assert.equal(result.deferredIds.length,0);assert.equal(h.server.revision,2);assert.equal(h.server.payload.project.collaborationVersion,1);}
     h.stop();
   }
 });
 test('CAS race keeps project queued for a short fresh read; protocol guard does not get blind retries',async()=>{
   const h=fixture();const st=JSON.parse(h.data.get(DP+'d1'));st.shapes[0].memo='旧版から回収';h.data.set(DP+'d1',JSON.stringify(st));
-  h.restHook=async(path,options)=>{if(options.method==='POST')throw Error('別端末の変更があります。同期を再確認してください。');};
-  h.api.metadata.request(['p1']);await h.time.tick(0);assert.deepEqual([...h.api.metadata.pending],['p1']);const writes=()=>h.calls.filter(c=>c.options.method==='POST').length;assert.equal(writes(),1);
+  h.restHook=async(path,options)=>{if(options.method&&path.includes('sentlog_project_snapshots'))throw Error('別端末の変更があります。同期を再確認してください。');};
+  h.api.metadata.request(['p1']);await h.time.tick(0);assert.deepEqual([...h.api.metadata.pending],['p1']);const writes=()=>h.calls.filter(c=>c.options.method&&c.path.includes('sentlog_project_snapshots')).length;assert.equal(writes(),1);
   await h.time.tick(799);assert.equal(writes(),1);await h.time.tick(1);assert.equal(writes(),2);
-  h.restHook=async(path,options)=>{if(options.method==='POST')throw Error('COLLAB_HISTORY_REQUIRED: missing old revision');};await h.time.tick(800);assert.equal(h.api.metadata.retryAt,Infinity);const count=writes();h.api.metadata.request(['p1']);await h.time.tick(60000);assert.equal(writes(),count);h.stop();
+  h.restHook=async(path,options)=>{if(options.method&&path.includes('sentlog_project_snapshots'))throw Error('COLLAB_HISTORY_REQUIRED: missing old revision');};await h.time.tick(800);assert.equal(h.api.metadata.retryAt,Infinity);const count=writes();h.api.metadata.request(['p1']);await h.time.tick(60000);assert.equal(writes(),count);h.stop();
 });
 test('a same-timestamp local edit during hashing prevents incoming commit',async()=>{
   const h=fixture();h.server.revision=2;h.server.payload.drawings[0].state.shapes[0]=C.appendComment(h.server.payload.drawings[0].state.shapes[0],'受信',{commentId:'remote',revisionId:'remote-r',at:3});let once=false;
@@ -192,6 +200,105 @@ test('fresh confirmation rejects unavailable, missing, deferred and switched-acc
   const missing=h.context.window.sentlogCollabRefresh('missing').catch(e=>e);await h.time.tick(0);assert.match((await missing).message,/同期対象/);
   const hold=deferred();h.restHook=async path=>{if(path.includes('sentlog_project_snapshots')){await hold.promise;return [{revision:1}];}};
   const old=h.context.window.sentlogCollabRefresh('p1').catch(e=>e);await h.time.tick(0);h.context.session={user:{id:'owner-b'}};h.api.reset();hold.resolve();await microtasks();await h.time.tick(0);assert.equal((await old).code,'COLLAB_ACCOUNT_CHANGED');h.stop();
+});
+
+function addFixtureProject(h,id,{existing=false}={}){
+  const project={id,name:'現場 '+id,updatedAt:2,collaborationVersion:1,drawings:[{id:'drawing-'+id,name:'全景',pageCount:1}]};
+  const drawing={sourceType:'pdf',fileName:'図面.pdf',pageCount:1,shapes:[C.upgrade({id:'record-'+id,memo:'初回',photos:[{id:'photo-'+id,name:'写真.jpg',size:10}]})],collabDeletedRecords:[]};
+  const ws=JSON.parse(h.data.get(WS));ws.projects.push(project);h.data.set(WS,JSON.stringify(ws));h.data.set(DP+'drawing-'+id,JSON.stringify(drawing));
+  if(existing){
+    const cp={id:'cloud-'+id,client_key:id,name:project.name,status:'active'},base={project:copy(project),drawings:[{meta:copy(project.drawings[0]),state:copy(drawing)}]};
+    h.cloudProjects.set(cp.id,cp);h.context.knownCloudProjects.set(cp.id,cp);h.otherServers.set(cp.id,{project_id:cp.id,revision:1,payload:base,updated_at:'2026-11-18'});
+    h.data.set(MP+id,JSON.stringify({revision:1,fingerprint:stable(base),fingerprint_schema:2,local_updated_at:2,base_snapshot:base}));
+  }
+  return project;
+}
+function editFixtureProject(h,id,memo='未送信の記録'){
+  const p=JSON.parse(h.data.get(WS)).projects.find(p=>p.id===id),key=DP+p.drawings[0].id,st=JSON.parse(h.data.get(key));
+  st.shapes[0].memo=memo;h.data.set(key,JSON.stringify(st));
+}
+function snapshotWrites(h,id){return h.calls.filter(c=>c.options.method&&c.path.includes('sentlog_project_snapshots')&&(c.path.includes('project_id=eq.cloud-'+id+'&')||JSON.parse(c.options.body||'{}').project_id==='cloud-'+id));}
+function failProjectWrite(h,id,error){h.restHook=async(path,options)=>{
+  if(options.method&&path.includes('sentlog_project_snapshots')&&(path.includes('project_id=eq.cloud-'+id+'&')||JSON.parse(options.body||'{}').project_id==='cloud-'+id))throw error;
+};}
+
+test('timeout in an existing project does not block a new project registration or its photos',async()=>{
+  const h=fixture();editFixtureProject(h,'p1');addFixtureProject(h,'p2');
+  failProjectWrite(h,'p1',Object.assign(Error('canceling statement due to statement timeout'),{code:'57014',status:500}));
+  const photos=[];h.context.uploadPhoto=async(cp,device,item)=>{photos.push([cp.id,item.photo.id]);return {status:'uploaded'};};
+  h.api.files.request(['*']);await h.time.tick(0);
+  assert.equal(h.otherServers.get('cloud-p2').revision,1);assert.equal(h.server.revision,1);
+  assert.deepEqual(h.fileCalls,['cloud-p2']);assert.deepEqual(photos,[['cloud-p2','photo-p2']]);
+  assert.deepEqual([...h.api.metadata.pending],['p1']);assert.deepEqual([...h.api.files.pending],['p1']);
+  assert.equal(h.statuses.at(-1).level,'error');assert.match(h.statuses.at(-1).message,/現場：記録の保存.*時間切れ/);
+  const fresh=h.context.window.sentlogCollabRefresh('p1');await assert.rejects(fresh,/時間切れ/);h.stop();
+});
+test('permanent history failure remains paused while another existing project synchronizes',async()=>{
+  const h=fixture();addFixtureProject(h,'p2',{existing:true});editFixtureProject(h,'p1');editFixtureProject(h,'p2');
+  failProjectWrite(h,'p1',Error('COLLAB_HISTORY_REQUIRED: missing old revision'));
+  h.api.files.request(['*']);await h.time.tick(0);
+  assert.equal(h.otherServers.get('cloud-p2').revision,2);assert.deepEqual(h.fileCalls,['cloud-p2']);assert.equal(h.api.metadata.retryAt,Infinity);
+  const attempts=snapshotWrites(h,'p1').length;editFixtureProject(h,'p2','正常案件の追加変更');h.api.metadata.request(['p2']);await h.time.tick(0);
+  assert.equal(h.otherServers.get('cloud-p2').revision,3);assert.equal(snapshotWrites(h,'p1').length,attempts);
+  assert.notEqual(h.statuses.at(-1).level,'ok');await assert.rejects(h.context.window.sentlogCollabRefresh('p1'),/COLLAB_HISTORY_REQUIRED/);h.stop();
+});
+test('new project events bypass another project cooldown without forcing its retry',async()=>{
+  const h=fixture();editFixtureProject(h,'p1');failProjectWrite(h,'p1',Object.assign(Error('statement timeout'),{code:'57014'}));
+  h.api.files.request(['*']);await h.time.tick(0);const attempts=snapshotWrites(h,'p1').length;
+  addFixtureProject(h,'p2');h.api.files.request(['p2']);await h.time.tick(0);
+  assert.equal(h.otherServers.get('cloud-p2').revision,1);assert.deepEqual(h.fileCalls,['cloud-p2']);assert.equal(snapshotWrites(h,'p1').length,attempts);
+  await h.time.tick(29999);assert.equal(snapshotWrites(h,'p1').length,attempts);await h.time.tick(1);assert.ok(snapshotWrites(h,'p1').length>attempts);h.stop();
+});
+test('normalization and pull failures are isolated and never authorize their file I/O',async()=>{
+  for(const stage of ['normalize','pull']){
+    const h=fixture();addFixtureProject(h,'p2',{existing:true});editFixtureProject(h,'p2');
+    if(stage==='normalize')h.data.set(DP+'d1','invalid json');
+    else h.restHook=async(path,options)=>{if(!options.method&&path.includes('sentlog_project_snapshots?project_id=eq.cloud-p1'))throw Error('受信エラー');};
+    h.api.files.request(['*']);await h.time.tick(0);
+    assert.equal(h.otherServers.get('cloud-p2').revision,2);assert.deepEqual(h.fileCalls,['cloud-p2']);assert.equal(snapshotWrites(h,'p1').length,0);
+    assert.match(h.statuses.at(-1).message,stage==='normalize'?/現場：端末の記録確認/:/現場：記録の受信/);h.stop();
+  }
+});
+test('account-wide auth, device and durable-store failures still stop subsequent projects',async()=>{
+  for(const kind of ['auth','device','store']){
+    const h=fixture();addFixtureProject(h,'p2',{existing:true});editFixtureProject(h,'p1');editFixtureProject(h,'p2');
+    if(kind==='auth')failProjectWrite(h,'p1',Object.assign(Error('expired session'),{status:401}));
+    if(kind==='device')failProjectWrite(h,'p1',Error('COLLAB_DEVICE_REQUIRED: device inactive'));
+    if(kind==='store'){
+      const batch=h.context.window.SentlogRecords.batch;let unsafe=false;
+      h.context.window.SentlogRecords.batch=(...args)=>{batch(...args);unsafe=true;};
+      h.context.window.SentlogRecords.assertSafe=()=>{if(unsafe)throw Error('端末に保存できません');};
+    }
+    h.api.files.request(['*']);await h.time.tick(0);
+    assert.equal(snapshotWrites(h,'p2').length,0);assert.equal(h.fileCalls.length,0);assert.ok(h.api.metadata.globalRetryAt>h.time.now());h.stop();
+  }
+});
+test('file failures have independent cooldowns and successful metadata cannot erase them',async()=>{
+  const h=fixture();addFixtureProject(h,'p2',{existing:true});const original=h.context.pullProjectAssets;
+  h.context.pullProjectAssets=async(cp,...args)=>{if(cp.id==='cloud-p1')throw Error('写真の受信エラー');return original(cp,...args);};
+  h.api.files.request(['*']);await h.time.tick(0);assert.deepEqual(h.fileCalls,['cloud-p2']);assert.match(h.statuses.at(-1).message,/現場：図面・写真の受信/);
+  addFixtureProject(h,'p3');h.api.files.request(['p3']);await h.time.tick(0);assert.ok(h.fileCalls.includes('cloud-p3'));assert.notEqual(h.statuses.at(-1).level,'ok');h.stop();
+});
+test('another project metadata success cannot acknowledge a queued CAS retry',async()=>{
+  const h=fixture();addFixtureProject(h,'p2',{existing:true});editFixtureProject(h,'p1');editFixtureProject(h,'p2');
+  failProjectWrite(h,'p1',Error('別端末の変更があります。同期を再確認してください。'));
+  h.api.metadata.request(['p1']);await h.time.tick(0);h.api.metadata.request(['p2']);await h.time.tick(0);
+  assert.equal(h.otherServers.get('cloud-p2').revision,2);assert.deepEqual([...h.api.metadata.pending],['p1']);assert.equal(h.statuses.at(-1).level,'pending');h.stop();
+});
+test('a scoped manual retry recovers only that project and clears its own failure',async()=>{
+  const h=fixture();editFixtureProject(h,'p1');failProjectWrite(h,'p1',Object.assign(Error('statement timeout'),{code:'57014'}));
+  h.api.files.request(['*']);await h.time.tick(0);h.restHook=null;
+  const retry=h.api.sync({force:true,projectIds:['p1']});await h.time.tick(0);await retry;
+  assert.equal(h.server.revision,2);assert.deepEqual(h.fileCalls,['cloud-p1']);assert.equal(h.statuses.at(-1).level,'ok');h.stop();
+});
+test('multi-project waiters aggregate results across independent project retry times',async()=>{
+  const time=clock(),calls=[];let initial=true;
+  const worker=createCollaborationWorker({...time,enabled:()=>true,owner:()=> 'a',mergeResults:parts=>({ids:parts.flatMap(p=>p.ids)}),run:async ids=>{
+    calls.push([...ids]);if(initial){initial=false;return {ids, deferredIds:['a'],retryById:{a:time.now()+1000}};}return {ids,deferredIds:[]};
+  }});
+  worker.request(['a']);await time.tick(0);let completed=false;const result=worker.wait(['a','b']).then(r=>{completed=true;return r;});
+  await time.tick(0);assert.equal(completed,false);assert.deepEqual(calls,[['a'],['b']]);await time.tick(1000);
+  assert.deepEqual([...(await result).ids],['b','a']);worker.stop();
 });
 const watchdog=setTimeout(()=>{console.error('FAIL collaboration sync fixture promise did not settle');process.exit(1);},15000);
 (async()=>{for(const t of cases){await t.fn();console.log('PASS '+t.name);}console.log('PASS '+cases.length+' collaboration synchronization scenarios');})().catch(e=>{console.error(e);process.exitCode=1;}).finally(()=>clearTimeout(watchdog));

@@ -147,7 +147,9 @@ async function manualSyncTests(){
  f.failures.archive=true;f.context.archive.ready=false;await f.api.syncNow({force:true});assert.equal(f.events.filter(e=>e[0]==='status').at(-1)[1],'error');
  f.failures.archive=false;await f.api.syncNow();assert.equal(rounds(),first,'automatic retries respect error backoff');
  await f.api.syncNow({force:true,manualProject:'cloud-c'});assert(f.events.some(e=>e[0]==='download'&&e[1]==='cloud-c'),'explicit scope still permits read-only archived delivery');
- assert(f.context.syncErrorNotBefore>f.now,'another project cannot clear a failed full-file pass');
+ assert(f.api.files.globalRetryAt>f.now,'a scoped retry retains the shared failure deadline');
+ assert(f.api.files.pending.includes('*'),'another project cannot consume the unfinished full-file pass');
+ assert.notEqual(f.events.filter(e=>e[0]==='status').at(-1)[1],'ok','unfinished full-file work cannot be reported as complete');
  await f.api.syncNow({force:true});assert.equal(f.context.syncErrorNotBefore,0,'explicit all-project retry can complete the outstanding pass');
  const before=rounds();f.context.window.sentlogImporting=true;await f.api.syncNow({force:true});assert.equal(rounds(),before,'manual operation retains import safety guard');f.context.window.sentlogImporting=false;
  let release;const hold=new Promise(r=>{release=r;}),original=f.context.pullProjectAssets;
@@ -165,7 +167,7 @@ const watchdog=setTimeout(()=>{console.error('FAIL traffic fixture promise did n
  assert(index.includes("['sync-traffic.js?v=190','SentlogSyncTraffic"));assert(index.includes('src="./sync-traffic.js?v=190"'));assert(pc.includes('src="../sentlog/sync-traffic.js?v=190"'));assert(sw.includes("'sync-traffic.js'"));assert(sw.includes('sentlog-pwa-v201'));
  if(cloud.includes('collaboration-sync-v1')){
   assert(cloud.includes('cycleAssets.get(cp.id)||[]'),'the file round reuses its verified delivery asset list');
-  assert(cloud.includes('Date.now()<syncNotBefore||Date.now()<collaborationFileWorker.retryAt'),'file throttle and retained error deadline stay independent of metadata');
+  assert(cloud.includes('Date.now()<syncNotBefore||Date.now()<collaborationFileWorker.globalRetryAt'),'shared failures retain the file throttle while project failures have independent retries');
  }else{
   assert(cloud.includes('cycleAssets.get(cp.id)||await readProjectAssets'));
   assert(cloud.includes('edit-sync-v20261118')?cloud.includes('if(!options?.force&&!quick&&Date.now()<syncNotBefore)return {started:false,retryAt:syncNotBefore};'):cloud.includes('if(!options?.force&&Date.now()<syncNotBefore)return;'));
