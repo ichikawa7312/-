@@ -44,7 +44,7 @@ export function createSyncStatusView(doc = document) {
     // The existing phone-layout class also covers phone landscape. Keep full details and accessibility labels.
     const phone = doc.documentElement.classList.contains('sentlog-phone');
     const compactTitle = title === '自動同期ON' ? '同期ON' :
-      kind === 'err' ? '要確認' : account && online && outcome.level === 'pending' ? '反映待ち' : title;
+      kind === 'err' ? '要確認' : account && online && outcome.level === 'pending' ? (running ? '確認中' : '反映待ち') : title;
     text(label, phone ? compactTitle : title);
     attr(button, 'data-kind', kind);
     attr(button, 'data-activity', String(active));
