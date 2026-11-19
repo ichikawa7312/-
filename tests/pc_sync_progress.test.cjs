@@ -23,6 +23,15 @@ let passed=0;async function test(name,fn){await fn();passed++;console.log('PASS 
  await test('PC-verified active drawing stays in cloud but is complete for PC sync',async()=>{const drawing={...asset(4),kind:'drawing',file_name:'drawing.pdf',status:'pc_verified'};const s=setup([drawing],[id(4)]);const rows=await s.ctx.pendingAssets();assert.equal(rows.length,0);assert.equal(s.elements.get('pendingCount').textContent,'0');assert.match(s.elements.get('pendingDetail').textContent,/図面クラウド保持中（PC同期済み）：1件/)});
  await test('archived projects are excluded',async()=>{const s=setup([asset(1),{...asset(2),project_id:'archive'},{...asset(3),project_id:'retired'}]);const rows=await s.ctx.pendingAssets();assert.equal(rows.length,1)});
  await test('pending count changes after each confirmed cloud cleanup',async()=>{const s=setup([asset(1),asset(2),asset(3)]);await s.ctx.syncOnce();assert.deepEqual(s.counts,['3','2','1']);assert.equal(s.elements.get('pendingCount').textContent,'0');assert.equal(s.events.at(-1)[1],'ok')});
+ await test('large PC backlog is processed in bounded passes without false completion',async()=>{
+  const s=setup(Array.from({length:37},(_,i)=>asset(i+1)));
+  await s.ctx.syncOnce();assert.equal(s.read().length,25);
+  assert.equal(s.elements.get('pendingCount').textContent,'25');
+  assert.equal(s.events.filter(Array.isArray).at(-1)[1],'warn');
+  await s.ctx.syncOnce(true);assert.equal(s.read().length,13);
+  await s.ctx.syncOnce(true);await s.ctx.syncOnce(true);
+  assert.equal(s.read().length,0,'rotating cursor eventually processes every pending item');
+ });
  await test('failed item remains pending and status is not success',async()=>{const s=setup([asset(1),asset(2)],[],id(1));await s.ctx.syncOnce();assert.equal(s.elements.get('pendingCount').textContent,'1');assert.equal(s.events.at(-1)[1],'warn');assert.match(s.events.at(-1)[0],/未完了/);assert.equal(s.read()[0].id,id(1))});
  await test('auth rejection stops the current batch without erasing inventory',async()=>{const s=setup([asset(1),asset(2)]);let checks=0;s.ctx.ensureSession=async()=>{if(++checks>1){const e=Error('re-login');e.code='REAUTH_REQUIRED';throw e}};await s.ctx.syncOnce();assert.equal(s.read().length,2);assert.equal(s.events.filter(Array.isArray).at(-1)[1],'err');assert.equal(s.ctx.busy,false)});
  await test('stopped PC registration blocks inventory and file operations',async()=>{const s=setup([asset(1)]);s.ctx.ensureDevice=async()=>{throw Error('device stopped')};await s.ctx.syncOnce();assert.equal(s.queries.length,0);assert.equal(s.read().length,1);assert.equal(s.events.filter(Array.isArray).at(-1)[1],'err')});
