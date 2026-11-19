@@ -1,0 +1,33 @@
+name: Sentlog delta-sync prototype safety tests
+on:
+  pull_request:
+    paths:
+      - 'sentlog/delta-sync-core.js'
+      - 'tests/delta_sync_protocol.test.cjs'
+      - 'tests/collaboration_merge.test.cjs'
+      - 'docs/sentlog-delta-sync-prototype.md'
+      - '.github/workflows/sentlog-delta-prototype.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  simulate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Syntax and security invariants
+        run: |
+          node --check sentlog/delta-sync-core.js
+          node --check tests/delta_sync_protocol.test.cjs
+      - name: Offline, concurrency and idempotency scenarios
+        run: |
+          node tests/delta_sync_protocol.test.cjs
+      - name: Existing immutable record safety
+        run: |
+          node tests/record_collaboration.test.cjs
