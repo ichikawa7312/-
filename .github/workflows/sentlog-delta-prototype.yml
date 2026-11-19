@@ -7,6 +7,9 @@ on:
       - 'tests/collaboration_merge.test.cjs'
       - 'docs/sentlog-delta-sync-prototype.md'
       - '.github/workflows/sentlog-delta-prototype.yml'
+      - 'docs/sentlog-delta-v1-schema-prototype.sql'
+      - 'tests/delta_schema_fixture.sql'
+      - 'tests/delta_schema_assertions.sql'
   workflow_dispatch:
 permissions:
   contents: read
@@ -31,3 +34,36 @@ jobs:
       - name: Existing immutable record safety
         run: |
           node tests/record_collaboration.test.cjs
+
+  database:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: test_only
+          POSTGRES_DB: sentlog_delta_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      PGHOST: localhost
+      PGPORT: '5432'
+      PGUSER: postgres
+      PGPASSWORD: test_only
+      PGDATABASE: sentlog_delta_test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Prepare isolated database
+        run: psql -v ON_ERROR_STOP=1 -f tests/delta_schema_fixture.sql
+      - name: Compile candidate delta schema
+        run: psql -v ON_ERROR_STOP=1 -f docs/sentlog-delta-v1-schema-prototype.sql
+      - name: Check RLS, sequence and retries
+        run: psql -v ON_ERROR_STOP=1 -f tests/delta_schema_assertions.sql
