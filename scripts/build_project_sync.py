@@ -104,14 +104,14 @@ function pcScheduleBackoff(e){
         pc_page=pc_page.replace("if(e.code==='REAUTH_REQUIRED'||e.code==='SESSION_CHANGED')throw e;",
             "if(e.code==='REAUTH_REQUIRED'||e.code==='SESSION_CHANGED'||pcServiceUnavailable(e))throw e;")
         pc_page=pc_page.replace('  const remaining=await pendingAssets();',
-            '  const remaining=await pendingAssets();\\n  pcFailureStreak=0;pcRetryAfter=0;')
+            '  const remaining=await pendingAssets();\n  pcFailureStreak=0;pcRetryAfter=0;')
         pc_page=pc_page.replace("}catch(e){setSync('同期は完了していません：'+e.message,'err');log('同期確認: '+e.message)}",
             "}catch(e){pcScheduleBackoff(e);setSync('同期は完了していません：'+e.message,'err');log('同期確認: '+e.message)}")
     else:
         pc_page=pc_page.replace("}catch(e){log('処理待ち: '+(a.file_name||a.id)+' / '+e.message)}",
             "}catch(e){log('処理待ち: '+(a.file_name||a.id)+' / '+e.message);if(pcServiceUnavailable(e))throw e}")
         pc_page=pc_page.replace("    setSync(list.length?'同期完了':'新しいデータはありません','ok')",
-            "    pcFailureStreak=0;pcRetryAfter=0;\\n    setSync(list.length?'同期完了':'新しいデータはありません','ok')")
+            "    pcFailureStreak=0;pcRetryAfter=0;\n    setSync(list.length?'同期完了':'新しいデータはありません','ok')")
         pc_page=pc_page.replace("}catch(e){setSync('同期エラー: '+e.message,'err');log('同期エラー: '+e.message)}",
             "}catch(e){pcScheduleBackoff(e);setSync('同期エラー: '+e.message,'err');log('同期エラー: '+e.message)}")
 if 'pcRetryAfter' not in pc_page or 'pcServiceUnavailable' not in pc_page:
