@@ -8,6 +8,11 @@ permissions:
 jobs:
   verify:
     runs-on: ubuntu-24.04
+    container:
+      image: mcr.microsoft.com/playwright/python:v1.57.0-noble@sha256:8331696befd3ee8b5baefca428446345f548e415a2408fe1d3d1224e9d919682
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v4
@@ -175,7 +180,7 @@ jobs:
           npm install --prefix "$RUNNER_TEMP/sentlog-dom" linkedom@0.18.12 --no-audit --no-fund
           NODE_PATH="$RUNNER_TEMP/sentlog-dom/node_modules" node tests/drawing_memos_dom.cjs
           pip install playwright==1.57.0
-          python -m playwright install --with-deps chromium webkit
+          python -m playwright install chromium webkit
           python tests/dxf_ui.py
           SENTLOG_TEST_BROWSERS=chromium,webkit python tests/peer_photos_ui.py
           python tests/dimension_text_ui.py

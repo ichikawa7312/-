@@ -7,6 +7,11 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-24.04
+    container:
+      image: mcr.microsoft.com/playwright/python:v1.57.0-noble@sha256:8331696befd3ee8b5baefca428446345f548e415a2408fe1d3d1224e9d919682
+    defaults:
+      run:
+        shell: bash
     timeout-minutes: 20
     env:
       PYTHONUNBUFFERED: '1'
