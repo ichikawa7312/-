@@ -91,10 +91,16 @@ def run(browser, cloud, engine):
             record['photos'] = []
         new_pack['drawings'][0]['state']['shapes'][0]['photos'] = [
             dict(id=NEW_PHOTO, name='synthetic-new.png', type='image/png', size=len(base.photo_png()), createdAt=1)]
-        page.evaluate("""async ({pack,encoded,photoId})=>{
+        staged_record = page.evaluate("""async ({pack,encoded,photoId})=>{
           const ws=JSON.parse(SentlogRecords.getItem(WORKSPACE_KEY));
           const existing=JSON.parse(SentlogRecords.getItem(drawingStorageKey('edit-plan')));
-          existing.shapes.find(s=>s.id==='survey-a').memo='端末に残す未送信の記録';
+          const index=existing.shapes.findIndex(s=>s.id==='survey-a');
+          // Use the same immutable comment operation as the production editor.
+          // The memo is a projection of both comments, not a replacement string.
+          const edited=SentlogRecordCollaboration.appendComment(existing.shapes[index],'端末に残す未送信の記録',{
+            actor:SentlogCollaboration.actor(),at:99,
+            commentId:'unsent-local-comment',revisionId:'unsent-local-revision'});
+          existing.shapes[index]=edited;
           ws.projects.push(pack.project);workspace=ws;
           const photo=new Blob([Uint8Array.from(atob(encoded),c=>c.charCodeAt(0))],{type:'image/png'});
           await SentlogRecords.writeFile('photo:'+pack.drawings[0].meta.id+':'+photoId,photo);
@@ -102,7 +108,19 @@ def run(browser, cloud, engine):
             [drawingStorageKey('edit-plan'),JSON.stringify(existing)],
             [drawingStorageKey(pack.drawings[0].meta.id),JSON.stringify(pack.drawings[0].state)]]);
           await SentlogRecords.settled();SentlogRecords.assertSafe();renderProjects();
+          return edited;
         }""", dict(pack=new_pack, encoded=encoded, photoId=NEW_PHOTO))
+        expected_memo = '保存済みの所見\n\n端末に残す未送信の記録'
+        assert staged_record['memo'] == expected_memo, staged_record
+        original_record = next(r for r in saved_existing['payload']['drawings'][0]['state']['shapes'] if r['id'] == 'survey-a')
+        original_comments = original_record['collab']['comments']
+        staged_comments = staged_record['collab']['comments']
+        assert set(staged_comments) == set(original_comments) | {'unsent-local-comment'}, staged_comments
+        for comment_id, history in original_comments.items():
+            assert staged_comments[comment_id] == history, staged_comments
+        new_revisions = staged_comments['unsent-local-comment']['revisions']
+        assert len(new_revisions) == 1 and new_revisions[0]['text'] == '端末に残す未送信の記録', new_revisions
+        assert new_revisions[0]['actor']['deviceId'] == collaboration.A, new_revisions
         cloud.fail_existing = True
 
         # A local-only project must be selectable before any cloud registration.
@@ -126,7 +144,9 @@ def run(browser, cloud, engine):
         assert asset['project_id'] == NEW_CLOUD
         assert hashlib.sha256(cloud.blobs[asset['storage_path']]).hexdigest() == asset['sha256']
         assert cloud.snapshots[base.CLOUD_PROJECT] == saved_existing, 'failed save changed the shared record'
-        assert page.evaluate("JSON.parse(SentlogRecords.getItem(drawingStorageKey('edit-plan'))).shapes.find(s=>s.id==='survey-a').memo") == '端末に残す未送信の記録'
+        local_record = page.evaluate("JSON.parse(SentlogRecords.getItem(drawingStorageKey('edit-plan'))).shapes.find(s=>s.id==='survey-a')")
+        assert local_record['memo'] == expected_memo, local_record
+        assert local_record['collab'] == staged_record['collab'], dict(expected=staged_record, actual=local_record)
 
         # A successful scoped retry must not clear the other project's error.
         page.locator('#sentlogCloudStatus').click()
