@@ -69,6 +69,7 @@ assert.match(sw,/field-records\.js/);
 const catalog=fs.readFileSync(path.join(root,'sentlog/damage-catalog.js'),'utf8');
 assert.match(catalog,/recordKind==='field-record'/,'field records must not appear in the normal damage-name catalog');
 const source=fs.readFileSync(path.join(root,'sentlog/field-records.js'),'utf8');
+assert.match(source,/createdAt:Date\.now\(\)/,'new field records retain a creation timestamp for offline numbering');
 assert.match(source,/○が撮影位置/);
 assert.match(source,/矢印の長さは図面上で一定/);
 assert.match(source,/fill:'#fff',stroke:color/);

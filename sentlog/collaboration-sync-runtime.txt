@@ -547,4 +547,13 @@ window.sentlogCollabRefresh=async projectId=>{
   return {fresh:true,projectId:id,revision:Number(result.revisions[id]||getSyncMeta(id)?.revision||0)};
 };
 window.addEventListener('offline',()=>collaborationChannel?.wake());
-document.addEventListener('visibilitychange',()=>collaborationWake());
+// An offline/closed client must catch up on reconnect even if its prior
+// unchanged-file audit was recent. Do not wait for that quiet timer.
+window.addEventListener('online',()=>{
+  collaborationQuietAuditUntil=0;syncNotBefore=0;collaborationWake();
+  void collaborationSyncNow();
+});
+document.addEventListener('visibilitychange',()=>{
+  if(!document.hidden){collaborationQuietAuditUntil=0;syncNotBefore=0;void collaborationSyncNow();}
+  collaborationWake();
+});

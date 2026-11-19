@@ -61,6 +61,33 @@
     }catch{return false;}
   }
   const recordName=s=>s?.recordKind==='drawing-memo'?'図面メモ（'+({rect:'四角',ellipse:'丸',line:'線',freehand:'フリーハンド',text:'文字',dimension:'寸法'}[s.memoType]||'記入')+'）':null;
+  // Only independently added field records of the same type are sorted.
+  // Existing IDs, geometry, comments, photos and other drawing layers remain
+  // unchanged. Creation time is a display ordering hint, NEVER a conflict
+  // resolution rule; an ID breaks clock-skew or same-millisecond ties.
+  function orderConcurrentFieldRecords(shapes,left,right,baseShapes){
+    if(!Array.isArray(shapes))return shapes;
+    const l=Array.isArray(left)?left:[],r=Array.isArray(right)?right:[];
+    const remoteIds=new Set(r.map(x=>x?.id));
+    const established=new Set((Array.isArray(baseShapes)?baseShapes:l.filter(x=>remoteIds.has(x?.id)))
+      .map(x=>x?.id).filter(Boolean));
+    const ordered=shapes.slice();
+    const recordTypes=new Set(ordered.filter(s=>s?.recordKind==='field-record'&&!established.has(s.id))
+      .map(s=>s.recordType).filter(t=>typeof t==='string'&&t));
+    const stamp=s=>Number.isSafeInteger(s?.createdAt)&&s.createdAt>0?s.createdAt:Number.MAX_SAFE_INTEGER;
+    for(const type of recordTypes){
+      const slots=[];
+      for(let i=0;i<ordered.length;i++){
+        const s=ordered[i];
+        if(s?.recordKind==='field-record'&&s.recordType===type&&!established.has(s.id))slots.push(i);
+      }
+      if(slots.length<2)continue;
+      const sorted=slots.map(i=>ordered[i]).sort((a,b)=>stamp(a)-stamp(b)||
+        String(a.id).localeCompare(String(b.id)));
+      slots.forEach((slot,i)=>{ordered[slot]=sorted[i];});
+    }
+    return ordered;
+  }
   function merge(local,remote,options={}){
     const conflicts=[],preserve=options.preserve===true,base=options.base;
     const clash=(path,reason='内容が異なります')=>{conflicts.push({path,reason});return undefined;};
@@ -181,6 +208,9 @@
       const st=properties(l.state,r.state,b?.state,path+' / 用紙・縮尺',['shapes',...viewKeys]);
       if(collaborativeDrawing(l,r,b))Object.assign(st,collaborativeRecords(l.state,r.state,b?.state,path));
       else st.shapes=entities(l.state.shapes||[],r.state.shapes||[],b?.state?.shapes||[],path,shapeValue,(a,z,ancestor,label)=>shape(a,z,ancestor,label,l.meta.id,l.meta,r.meta));
+      // Two phones may each create a local 調査-1 while offline.
+      // Fix only new display ordering, then derive unique labels below.
+      st.shapes=orderConcurrentFieldRecords(st.shapes,l.state.shapes,r.state.shapes,b?.state?.shapes);
       for(const k of viewKeys)if(l.state[k]!==undefined)st[k]=copy(l.state[k]);
       meta.updatedAt=Math.max(Number(l.meta.updatedAt)||0,Number(r.meta.updatedAt)||0);
       return {id:l.id,meta,state:st};
@@ -242,6 +272,7 @@
         if(s.recordKind==='drawing-memo'||s.recordKind==='dimension-line'||s.kind==='dimension')continue;
         if(!s.collab)s.type=s.type||'腐食';
         const type=s.type||'腐食';s.globalNo=++number;s.typeNo=counters[type]=(counters[type]||0)+1;s.autoLabel=type+'-'+s.typeNo;
+        if(s.recordKind==='field-record')s.recordNo=s.typeNo;
       }
       d.state.nextGlobalNo=number+1;d.state.typeCounters={...counters};
       d.meta.shapeCount=number;d.meta.photoCount=d.state.shapes.reduce((n,s)=>n+(s.photos?.length||0),0);

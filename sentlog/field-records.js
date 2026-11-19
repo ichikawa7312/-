@@ -381,7 +381,9 @@
       id,page:state.currentPage,kind:'field-record',recordKind:'field-record',recordType,
       type:recordType==='photo'?PHOTO_TYPE:SURVEY_TYPE,
       recordNo:nextRecordNumber(state.shapes,recordType),
-      photos:[],memo:'',surveyItems:[],...data
+      photos:[],memo:'',surveyItems:[],...data,
+      // Stable creation time is never reset by subsequent edits or merges.
+      createdAt:Date.now()
     };
     state.shapes.push(s);rebuildNumberingState();s.recordNo=s.typeNo;s.autoLabel=recordLabel(s);
     selected=s.id;persist();render();renderSelectedPhotos();syncInspector();
