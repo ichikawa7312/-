@@ -304,6 +304,26 @@ test('fully synced idle projects do not run an expensive full-file audit every 1
   const later=h.api.sync();await h.time.tick(0);assert.equal((await later).started,true,'a periodic safety audit still runs later');
   h.stop();
 });
+test('realtime reconnect bursts do not multiply full file audits or trap sync status in pending',async()=>{
+  const h=fixture();
+  h.channel.onReady();await h.time.tick(0);await microtasks();
+  assert.equal(h.fileCalls.length,1,'first join must still reconcile remote files');
+  assert.equal(h.statuses.at(-1).level,'ok','first audit must settle after all file work');
+  for(let n=0;n<3;n++){
+    await h.time.tick(1000);h.channel.onReady();await h.time.tick(0);await microtasks();
+  }
+  assert.equal(h.fileCalls.length,1,'multiple realtime reconnects cannot force full re-scans');
+  assert.equal(h.statuses.at(-1).level,'ok','no false pending state survives quiet reconnects');
+  // A fresh remote asset must bypass the 90-second quiet-audit throttle.
+  h.channel.onChange({kind:'asset',projectId:'cloud-p1'});
+  await h.time.tick(0);await microtasks();
+  assert.equal(h.fileCalls.length,2,'real asset event starts a scoped file reconciliation immediately');
+  assert.equal(h.statuses.at(-1).level,'ok');
+  await h.time.tick(90000);
+  h.channel.onReady();await h.time.tick(0);await microtasks();
+  assert.equal(h.fileCalls.length,3,'later reconnections can still trigger the periodic safety audit');
+  h.stop();
+});
 test('a scoped manual retry recovers only that project and clears its own failure',async()=>{
   const h=fixture();editFixtureProject(h,'p1');failProjectWrite(h,'p1',Object.assign(Error('statement timeout'),{code:'57014'}));
   h.api.files.request(['*']);await h.time.tick(0);h.restHook=null;

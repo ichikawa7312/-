@@ -521,7 +521,11 @@ function collaborationSessionChanged(){
 }
 function collaborationWake(){collaborationMetadataWorker.wake();collaborationFileWorker.wake();collaborationChannel?.wake();}
 const collaborationChannel=window.SentlogCollaborationChannel?.create({url:SUPABASE_URL,key:SUPABASE_KEY,session:()=>session,enabled:collaborationAvailable,
-  onReady:()=>{collaborationMetadataWorker.request(['*']);collaborationFileWorker.request(['*']);},
+  // Realtime can reconnect several times while Supabase initializes the tenant.
+  // Never force a full 5k-photo/100+ drawing audit on *every* successful join.
+  // The normal bounded sync handles first startup and periodic reconciliation;
+  // direct record/asset notifications and manual checks keep their own paths.
+  onReady:()=>{void collaborationSyncNow();},
   onChange:event=>{
     const cp=knownCloudProjects.get(event.projectId),id=cp?.client_key||'*';
     if(event.kind==='asset'){collaborationFileWorker.request([id]);return;}
