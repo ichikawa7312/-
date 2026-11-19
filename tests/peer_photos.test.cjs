@@ -2,13 +2,13 @@
 const assert=require('node:assert/strict'),vm=require('node:vm'),fs=require('node:fs');
 const {webcrypto,createHash}=require('node:crypto');
 const source=fs.readFileSync('sentlog/peer-photo-recovery.js','utf8');
-async function scenario({missing=false,corrupt=false,stale=false,inactive=false,archived=false,hidden=false,failUpload=false,failFinish=false,many=false}={}){
+async function scenario({missing=false,corrupt=false,stale=false,inactive=false,archived=false,hidden=false,failUpload=false,failFinish=false,many=false,enormous=false,rounds=1}={}){
  const original=new Blob(['verified-photo']),hash=createHash('sha256').update('verified-photo').digest('hex');
  const asset={id:'a',project_id:'project',mime_type:'image/jpeg',byte_size:original.size,sha256:hash,metadata:{drawing_id:'drawing',photo_id:'photo'}};
  const files=new Map(missing?[]:[['photo:drawing:photo',corrupt?new Blob(['corrupt-photo!']):original]]),before=[...files];
  const calls=[],writes=[],messages=[],current=new Date().toISOString(),old='2020-01-01T00:00:00.000Z';
  let pending=true,published=false;
- const items=many?Array.from({length:1100},(_,i)=>({asset_id:'0'+String(i).padStart(5,'0'),device_id:'peer',expected_sha256:hash,requested_at:current})):[];
+ const items=(enormous||many)?Array.from({length:enormous?4500:1100},(_,i)=>({asset_id:'0'+String(i).padStart(5,'0'),device_id:'peer',expected_sha256:hash,requested_at:current})):[];
  items.push({asset_id:'a',device_id:'peer',expected_sha256:hash,requested_at:stale?old:current});
  const element=()=>({style:{},setAttribute(){},append(){},set textContent(x){messages.push(x);}});
  const session={access_token:'synthetic',expires_at:9999999999,user:{id:'owner'}};
@@ -41,7 +41,7 @@ async function scenario({missing=false,corrupt=false,stale=false,inactive=false,
    }
  };
  ctx.window=ctx;vm.createContext(ctx);vm.runInContext(source,ctx);
- await ctx.sentlogCheckPeerPhotos();
+ for(let pass=0;pass<rounds;pass++)await ctx.sentlogCheckPeerPhotos(pass>0);
  assert.deepEqual([...files],before,'source photo is never rewritten or deleted');
  return {calls,writes,messages,published};
 }
@@ -53,6 +53,11 @@ async function scenario({missing=false,corrupt=false,stale=false,inactive=false,
  const uploadFailure=await scenario({failUpload:true});assert.deepEqual(uploadFailure.writes,['claim','upload']);assert(!uploadFailure.published);
  const finishFailure=await scenario({failFinish:true});assert(!finishFailure.published);assert(finishFailure.messages.some(x=>x.includes('Load failed')));
  const many=await scenario({many:true});assert(many.published,'requests after first 1000 are included');
+ const first=await scenario({enormous:true});assert(!first.published);
+ assert.equal(first.calls.filter(path=>path.endsWith('/sentlog_pdf_requests')).length,3,'one pass is bounded to 1,200 requests');
+ const roundRobin=await scenario({enormous:true,rounds:4});
+ assert(roundRobin.published,'later pages are inspected on subsequent passes without losing the source');
+ assert(roundRobin.calls.filter(path=>path.endsWith('/sentlog_pdf_requests')).length<=12);
  const page=fs.readFileSync('sentlog/index.html','utf8');
  assert(page.includes("['peer-photo-recovery.js?v=187','sentlogCheckPeerPhotos']"));
  assert(page.includes('src="./peer-photo-recovery.js?v=187"'));
