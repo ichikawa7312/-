@@ -117,3 +117,5 @@ test('clock skew cannot duplicate survey numbers and photo records are numbered 
   assert.deepEqual(new Set(out.map(s=>s.id)),new Set(['a','b','p']));
 });
 console.log(passed+' collaborative snapshot merge scenarios passed');
+// Shared-model preflight is intentionally test-only; no production code changes.
+require('./delta_sync_preflight.test.cjs');
