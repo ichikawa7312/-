@@ -123,3 +123,34 @@ BEGIN
  END IF;
 END $$;
 SELECT 'PASS SQL server: RLS, active devices, idempotency, rejected collisions, no sequence gaps, broadcast' AS result;
+-- Verify dormant mode and that legacy snapshot writes are explicitly refused
+-- after test activation. Production activation is NOT performed here.
+INSERT INTO public.sentlog_projects(id,owner_id,status)
+VALUES('44444444-4444-4444-8444-444444444444','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','active');
+INSERT INTO public.sentlog_project_snapshots(project_id,revision)
+VALUES('44444444-4444-4444-8444-444444444444',1);
+INSERT INTO sentlog_delta_private.heads(project_id,owner_id,last_seq,enabled)
+VALUES('44444444-4444-4444-8444-444444444444','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',0,false);
+CREATE TRIGGER delta_guard_test BEFORE UPDATE ON public.sentlog_project_snapshots
+  FOR EACH ROW EXECUTE FUNCTION sentlog_delta_private.reject_legacy_snapshot();
+GRANT UPDATE ON public.sentlog_project_snapshots TO authenticated;
+SET ROLE authenticated;
+SELECT pg_catalog.set_config('request.jwt.claim.sub','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',false);
+DO $
+BEGIN
+ BEGIN
+   UPDATE public.sentlog_project_snapshots SET revision=10
+     WHERE project_id='11111111-1111-4111-8111-111111111111';
+   RAISE EXCEPTION 'an older client overwrote a delta-enabled snapshot';
+ EXCEPTION WHEN SQLSTATE '55000' THEN NULL;
+ END;
+ UPDATE public.sentlog_project_snapshots SET revision=2
+   WHERE project_id='44444444-4444-4444-8444-444444444444';
+ IF (SELECT revision FROM public.sentlog_project_snapshots
+     WHERE project_id='44444444-4444-4444-8444-444444444444')<>2 THEN
+   RAISE EXCEPTION 'inactive delta mode must preserve old snapshot updates';
+ END IF;
+END $;
+RESET ROLE;
+SELECT 'PASS SQL server: legacy-client writes blocked after activation; inactive projects stay writable' AS result;
+
