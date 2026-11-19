@@ -7,7 +7,7 @@ CREATE TABLE auth.users (id uuid PRIMARY KEY);
 CREATE FUNCTION auth.uid() RETURNS uuid
 LANGUAGE sql STABLE SECURITY INVOKER SET search_path=''
 AS $$
-  SELECT pg_catalog.nullif(pg_catalog.current_setting('request.jwt.claim.sub',true),'')::uuid
+  SELECT NULLIF(pg_catalog.current_setting('request.jwt.claim.sub',true),'')::uuid
 $$;
 CREATE TABLE public.sentlog_projects(
   id uuid PRIMARY KEY,
