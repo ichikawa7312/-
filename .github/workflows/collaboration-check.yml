@@ -7,6 +7,13 @@ on:
       - '.github/workflows/pages.yml'
       - '.github/workflows/collaboration-check.yml'
       - 'scripts/build_continuous_camera.py'
+      - 'scripts/build_project_sync.py'
+      - 'sentlog/collaboration-sync-runtime.txt'
+      - 'sentlog/project-sync-controls.txt'
+      - 'tests/collaboration_sync*'
+      - 'tests/collaboration_snapshot_write*'
+      - 'tests/project_sync_controls*'
+      - 'tests/project_sync_ui.py'
       - 'sentlog/continuous-camera.js'
       - 'sentlog/collaboration-photos.js'
       - 'tests/continuous_camera*'
@@ -70,6 +77,12 @@ jobs:
       - name: Shared records in WebKit
         if: ${{ always() && steps.build.outcome == 'success' && steps.browser_runtime.outcome == 'success' }}
         run: python tests/collaboration_ui.py --engine webkit --built-root .
+      - name: Isolated project synchronization in Chromium
+        if: ${{ always() && steps.build.outcome == 'success' && steps.browser_runtime.outcome == 'success' }}
+        run: python tests/project_sync_ui.py --engine chromium --built-root .
+      - name: Isolated project synchronization in WebKit
+        if: ${{ always() && steps.build.outcome == 'success' && steps.browser_runtime.outcome == 'success' }}
+        run: python tests/project_sync_ui.py --engine webkit --built-root .
       - name: Recoverable camera capture in Chromium
         if: ${{ always() && steps.build.outcome == 'success' && steps.browser_runtime.outcome == 'success' }}
         run: python tests/collaboration_photos_ui.py --engine chromium --built-root .
@@ -95,4 +108,5 @@ jobs:
           path: |
             /tmp/sentlog-collaboration-*.png
             /tmp/sentlog-continuous-camera-*.png
+            /tmp/sentlog-project-sync-*.png
           if-no-files-found: ignore

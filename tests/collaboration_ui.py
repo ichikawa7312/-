@@ -53,10 +53,8 @@ class Cloud(base.FakeCloud):
                     "  if(fixture?.files.has(key))return fixture.files.get(key);", 1)
 
     def accept(self, route, entry):
-        body = entry['body']
-        old = self.snapshots[body['project_id']]
-        if body['revision'] != old['revision'] + 1:
-            self.respond(route, {'code': 'P0001', 'message': '別端末の変更があります。同期を再確認してください。'}, 409)
+        body = self.snapshot_candidate(route, entry)
+        if body is None:
             return
         assert body['payload']['project']['collaborationVersion'] == 1
         assert route.request.headers.get('x-client-info') == 'sentlog-collaboration/1'
@@ -67,7 +65,7 @@ class Cloud(base.FakeCloud):
             self.drop_ack = None
             route.abort('failed')
         else:
-            self.respond(route, [body])
+            self.respond(route, self.rows([body], {'select': entry['query']['select']}))
 
     def route(self, route, device):
         request, parsed = route.request, urlparse(route.request.url)

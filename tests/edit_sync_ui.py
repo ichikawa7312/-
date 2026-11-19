@@ -88,15 +88,42 @@ class FakeCloud:
             self.snapshots[cp['id']] = dict(project_id=cp['id'], revision=1, payload=pack,
                                            updated_at='2026-11-18T00:00:00Z')
 
+    def snapshot_candidate(self, route, entry):
+        body, query = entry['body'], entry['query']
+        assert query.get('select') == ['project_id,revision,updated_at'], entry
+        if entry['method'] == 'PATCH':
+            assert 'project_id' not in body and 'owner_id' not in body, entry
+            project_filter = query.get('project_id', [''])[0]
+            revision_filter = query.get('revision', [''])[0]
+            assert project_filter.startswith('eq.') and revision_filter.startswith('eq.'), entry
+            project_id = project_filter[3:]
+            previous = self.snapshots.get(project_id)
+            # Evaluate the condition when a held request is released, so two
+            # writers race against the actual server revision, not a cached row.
+            if previous is None or str(previous['revision']) != revision_filter[3:]:
+                self.respond(route, [])
+                return None
+            candidate = dict(copy.deepcopy(previous), **copy.deepcopy(body))
+        else:
+            assert entry['method'] == 'POST' and 'on_conflict' not in query, entry
+            project_id = body['project_id']
+            previous = self.snapshots.get(project_id)
+            if previous is not None:
+                self.respond(route, {'code': '23505', 'message': 'duplicate snapshot'}, 409)
+                return None
+            candidate = copy.deepcopy(body)
+        if candidate['revision'] != (previous['revision'] if previous else 0) + 1:
+            self.respond(route, {'code': 'P0001', 'message': '別端末の変更があります。同期を再確認してください。'}, 409)
+            return None
+        return candidate
+
     def accept(self, route, entry):
-        body = entry['body']
-        previous = self.snapshots[body['project_id']]
-        if body['revision'] != previous['revision'] + 1:
-            self.respond(route, {'message': 'Synthetic revision conflict'}, 409)
+        body = self.snapshot_candidate(route, entry)
+        if body is None:
             return
         self.snapshots[body['project_id']] = copy.deepcopy(body)
         self.writes.append(copy.deepcopy(entry))
-        self.respond(route, [body])
+        self.respond(route, self.rows([body], {'select': entry['query']['select']}))
 
     def release(self):
         held, self.held = self.held, []
@@ -137,7 +164,7 @@ class FakeCloud:
                     assert query == {'select': ['project_id,revision'], 'limit': ['1001']}, entry
                 self.respond(route, self.rows(self.snapshots.values(), query))
             else:
-                assert request.method == 'POST' and body['updated_by_device'] == device, entry
+                assert request.method in ('POST', 'PATCH') and body['updated_by_device'] == device, entry
                 self.posts.append(copy.deepcopy(entry))
                 if self.hold_device == device:
                     self.hold_device = None
@@ -304,7 +331,7 @@ def run(browser, cloud):
     before, attempts = len(cloud.writes), len(cloud.posts)
     cloud.hold_device = 'ipad'
     a.locator('#frRecordMemo').fill('送信中にも所見を追記')
-    wait_for(a, lambda: bool(cloud.held), 'Automatic snapshot POST never reached the barrier', 8)
+    wait_for(a, lambda: bool(cloud.held), 'Automatic snapshot write never reached the barrier', 8)
     text = '送信中にも所見を追記。追加した内容も残す。'
     a.locator('#frRecordMemo').fill(text)
     a.wait_for_timeout(1100)

@@ -42,7 +42,7 @@ function fixture(){
   const fingerprint=value=>C.snapshotText(value);
   for(const p of projects){
     const payload=snapshot(p),cp=controls.find(c=>c.client_key===p.id);
-    remote.set(cp.id,{revision:1,payload,updated_at:'2026-11-18T00:00:00Z'});
+    remote.set(cp.id,{project_id:cp.id,revision:1,payload,updated_at:'2026-11-18T00:00:00Z'});
     data.set(META+p.id,JSON.stringify({revision:1,fingerprint:fingerprint(payload),fingerprint_schema:2,base_snapshot:payload}));
   }
   const failures={photo:null,pdf:null,archive:false,merge:false,receive:false};
@@ -65,11 +65,25 @@ function fixture(){
       const url=new URL(request,'https://test.invalid'),method=options.method||'GET';
       if(url.pathname==='/rest/v1/sentlog_projects'){events.push(['projects']);return copy(controls);}
       assert.equal(url.pathname,'/rest/v1/sentlog_project_snapshots');
-      if(method==='POST'){
-        const value=JSON.parse(options.body),old=remote.get(value.project_id);
-        assert.equal(value.revision,Number(old?.revision||0)+1,'the real upsert keeps the server revision precondition');
-        events.push(['snapshot',value.project_id]);remote.set(value.project_id,copy(value));return [{updated_at:value.updated_at}];
+      if(method==='POST'||method==='PATCH'){
+        const value=JSON.parse(options.body),id=method==='PATCH'?url.searchParams.get('project_id')?.replace(/^eq\./,''):value.project_id;
+        const old=remote.get(id);
+        assert.equal(url.searchParams.get('select'),'project_id,revision,updated_at','a save returns only its receipt');
+        if(method==='PATCH'){
+          assert.equal(Object.prototype.hasOwnProperty.call(value,'project_id'),false,'updates cannot change the project identity');
+          assert.equal(Object.prototype.hasOwnProperty.call(value,'owner_id'),false,'updates cannot change the owner');
+          const expected=url.searchParams.get('revision');
+          assert.match(expected||'',/^eq\.\d+$/,'updates include the expected server revision');
+          if(!old||String(old.revision)!==expected.slice(3))return [];
+        }else{
+          assert.equal(url.searchParams.has('on_conflict'),false,'new snapshots use a plain INSERT');
+          if(old)throw Object.assign(Error('duplicate snapshot'),{status:409,code:'23505'});
+        }
+        assert.equal(value.revision,Number(old?.revision||0)+1,'snapshot writes keep the server revision precondition');
+        const saved={...copy(old||{}),...copy(value),project_id:id};
+        events.push(['snapshot',id]);remote.set(id,saved);return [{project_id:id,revision:saved.revision,updated_at:saved.updated_at}];
       }
+      assert.equal(method,'GET');
       const id=url.searchParams.get('project_id')?.replace(/^eq\./,''),row=remote.get(id);
       events.push([url.searchParams.get('select')?.includes('payload')?'payload':'head',id]);
       if(!row)return [];return url.searchParams.get('select')?.includes('payload')?[copy(row)]:[{revision:row.revision,updated_at:row.updated_at}];
@@ -171,7 +185,7 @@ const watchdog=setTimeout(()=>{console.error('FAIL integration promise did not s
   await test('caught PDF errors also retain file work for the next cycle',async()=>{
     const f=fixture();f.edit('a',d=>d.pageReplacements={'1':{updatedAt:5,pdfHash:'a'.repeat(64),pdfSize:500}});f.failures.pdf='cloud-a';
     await f.api.syncNow({eventDriven:true,projectIds:['a']});const failed={started:true,retryAt:f.api.files.retryAt};assert.equal(failed.retryAt,f.now+30000);
-    assert(f.events.some(e=>e[0]==='status'&&e[2]==='ファイル要確認'));
+    assert(f.events.some(e=>e[0]==='status'&&e[1]==='error'&&e[2]==='一部の案件を要確認'));
     await f.advance(30000);await f.api.syncNow({eventDriven:true,projectIds:['a']});
     assert.equal(f.events.filter(e=>e[0]==='uploadPDF').length,2,'per-drawing errors cannot be mistaken for a completed attachment pass');
   });
