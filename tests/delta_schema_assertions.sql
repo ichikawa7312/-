@@ -88,9 +88,6 @@ BEGIN
  IF (r->>'seq')::bigint <> 2 THEN
   RAISE EXCEPTION 'rollback must not leave a sequence gap: %',r;
  END IF;
- IF (SELECT last_seq FROM sentlog_delta_private.heads WHERE project_id='11111111-1111-4111-8111-111111111111') <> 2 THEN
-  RAISE EXCEPTION 'head sequence mismatches committed rows';
- END IF;
 END $$;
 -- Confirm a different user cannot see or post the first user's events.
 SELECT pg_catalog.set_config('request.jwt.claim.sub','bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',false);
@@ -117,6 +114,9 @@ DO $$
 BEGIN
  IF (SELECT count(*) FROM public.sentlog_delta_events) <> 2 THEN
   RAISE EXCEPTION 'events were lost or duplicated';
+ END IF;
+ IF (SELECT last_seq FROM sentlog_delta_private.heads WHERE project_id='11111111-1111-4111-8111-111111111111') <> 2 THEN
+  RAISE EXCEPTION 'head sequence mismatches committed rows';
  END IF;
  IF (SELECT count(*) FROM realtime.test_messages) <> 2 THEN
   RAISE EXCEPTION 'broadcast must occur once per committed event only';
