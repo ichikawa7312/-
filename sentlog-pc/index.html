@@ -49,7 +49,7 @@ button{border:1px solid #cbd5e1;background:#fff;border-radius:9px;padding:10px 1
 
   <div class="card">
     <h2>3. 自動同期</h2>
-    <p class="muted">この画面をEdgeで開いておけば、新しい写真・図面PDFを約60秒ごとに確認します。PCへ保存後、ファイルサイズとSHA-256を照合し、必要端末への配信も確認できたデータだけSupabaseから削除します。</p>
+    <p class="muted">この画面をEdgeで開いておけば、新しい写真・図面PDFを約5秒ごとに確認します。PCへ保存後、ファイルサイズとSHA-256を照合し、必要端末への配信も確認できたデータだけSupabaseから削除します。</p>
     <div class="row">
       <button id="startBtn" class="primary" disabled>自動同期を開始</button>
       <button id="stopBtn" disabled>停止</button>
@@ -189,22 +189,8 @@ async function deleteVerified(a){
   const j=await r.json().catch(()=>({}));if(!r.ok)throw Error(j.error||j.detail||'クラウド削除失敗');
   deletedCount++;$('deletedCount').textContent=deletedCount;log('Supabase一時ファイル削除: '+a.file_name)
 }
-// A project-wide Data API outage must not trigger a new full inventory scan every 5 seconds.
-let pcRetryAfter=0,pcFailureStreak=0;
-function pcServiceUnavailable(e){
-  const message=String(e?.message||e||'');
-  return /(?:^|\D)(?:500|502|503|504|522|524)(?:\D|$)|PGRST00[0-3]|57014|timeout|timed out|connection|network|Failed to fetch|通信が.*切れ|接続.*失敗/i.test(message);
-}
-function pcScheduleBackoff(e){
-  if(!pcServiceUnavailable(e))return false;
-  pcFailureStreak=Math.min(6,pcFailureStreak+1);
-  const delay=Math.min(300000,30000*Math.pow(2,pcFailureStreak-1));
-  pcRetryAfter=Date.now()+delay;
-  log('クラウド接続不調：ファイルを保護し、'+Math.ceil(delay/1000)+'秒後以降に再確認します。');
-  return true;
-}
 async function syncOnce(){
-  if(busy||Date.now()<pcRetryAfter)return;busy=true;setSync('同期中…','busy');
+  if(busy)return;busy=true;setSync('同期中…','busy');
   try{
     await ensureSession();if(!(await permission()))throw Error('保存先フォルダへの書き込み許可が必要です');
     const list=await pendingAssets();
@@ -212,14 +198,13 @@ async function syncOnce(){
       try{
         if(a.status==='uploaded')await saveVerified(a);
         await deleteVerified(a);
-      }catch(e){log('処理待ち: '+(a.file_name||a.id)+' / '+e.message);if(pcServiceUnavailable(e))throw e}
+      }catch(e){log('処理待ち: '+(a.file_name||a.id)+' / '+e.message)}
     }
-    pcFailureStreak=0;pcRetryAfter=0;
     setSync(list.length?'同期完了':'新しいデータはありません','ok')
-  }catch(e){pcScheduleBackoff(e);setSync('同期エラー: '+e.message,'err');log('同期エラー: '+e.message)}
+  }catch(e){setSync('同期エラー: '+e.message,'err');log('同期エラー: '+e.message)}
   finally{busy=false}
 }
-function start(){if(timer)return;syncOnce();timer=setInterval(syncOnce,60000);setSync('自動同期ON','ok');refreshUI();log('自動同期を開始')}
+function start(){if(timer)return;syncOnce();timer=setInterval(syncOnce,5000);setSync('自動同期ON','ok');refreshUI();log('自動同期を開始')}
 function stop(){if(timer){clearInterval(timer);timer=null}setSync('停止中');refreshUI();log('自動同期を停止')}
 
 $('loginBtn').onclick=login;$('logoutBtn').onclick=()=>{stop();saveSession(null);log('ログアウト')};
