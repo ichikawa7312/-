@@ -50,7 +50,7 @@ async function refreshSession(){session=await sessionGuard.ensure();return sessi
 async function ensureSession(){session=await sessionGuard.ensure();return session;}
 """)
 runtime=(ROOT/'sentlog/pc-sync-progress.txt').read_text()
-cut=runtime.index('async function syncOnce(){')
+cut=runtime.index('async function syncOnce(force=false){')
 section(p,'async function pendingAssets(){','async function downloadAsset(a){',runtime[:cut])
 section(p,'async function syncOnce(){','function start(){',runtime[cut:])
 change(p,
