@@ -136,7 +136,7 @@ CREATE TRIGGER delta_guard_test BEFORE UPDATE ON public.sentlog_project_snapshot
 GRANT UPDATE ON public.sentlog_project_snapshots TO authenticated;
 SET ROLE authenticated;
 SELECT pg_catalog.set_config('request.jwt.claim.sub','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',false);
-DO $
+DO $$
 BEGIN
  BEGIN
    UPDATE public.sentlog_project_snapshots SET revision=10
@@ -150,7 +150,7 @@ BEGIN
      WHERE project_id='44444444-4444-4444-8444-444444444444')<>2 THEN
    RAISE EXCEPTION 'inactive delta mode must preserve old snapshot updates';
  END IF;
-END $;
+END $$;
 RESET ROLE;
 SELECT 'PASS SQL server: legacy-client writes blocked after activation; inactive projects stay writable' AS result;
 
