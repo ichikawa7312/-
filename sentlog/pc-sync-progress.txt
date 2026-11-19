@@ -42,14 +42,14 @@ async function syncOnce(force=false){
  let problems=0,checked=0;
  try{
   await ensureSession();await ensureDevice();if(!(await permission()))throw Error('保存先フォルダへの書き込み許可が必要です');
-  const list=await pendingAssets();
+  const inventory=await pendingAssets();
   // Bound verification and cleanup operations, rotating through blocked rows.
-  const batchSize=Math.min(12,list.length);
-  const start=list.length?pcPendingCursor%list.length:0;
-  const batch=Array.from({length:batchSize},(_,i)=>list[(start+i)%list.length]);
-  pcPendingCursor=list.length?(start+batchSize)%list.length:0;
-  for(const a of batch){
-   setSync('確認中 '+(checked+1)+' / '+batch.length+'件：'+(a.file_name||'ファイル'),'busy');
+  const batchSize=Math.min(12,inventory.length);
+  const start=inventory.length?pcPendingCursor%inventory.length:0;
+  const list=Array.from({length:batchSize},(_,i)=>inventory[(start+i)%inventory.length]);
+  pcPendingCursor=inventory.length?(start+batchSize)%inventory.length:0;
+  for(const a of list){
+   setSync('確認中 '+(checked+1)+' / '+list.length+'件：'+(a.file_name||'ファイル'),'busy');
    try{
     await ensureSession();
     if(a.status==='uploaded'){
