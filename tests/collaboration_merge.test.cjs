@@ -68,4 +68,52 @@ test('coordinate-frame and source-file guards remain active for collaborative pr
   const scale=copy(base);scale.drawings[0].state.pageSettings={'1':{scaleDenom:100}};assert.equal(M.merge(scale,base,{base}).ok,false);
 });
 
+test('two offline 調査-1 records preserve both contents and receive stable numbers',()=>{
+  const base=make([]),start=Date.parse('2026-11-19T10:00:00+09:00');
+  const a=C.upgrade({id:'survey-phone-A',kind:'field-record',recordKind:'field-record',recordType:'survey',type:'調査',
+    recordNo:1,typeNo:1,autoLabel:'調査-1',createdAt:start,point:{x:2,y:3},memo:'Aの調査内容',photos:[{id:'a-photo',name:'A.jpg'}]});
+  const b=C.upgrade({id:'survey-phone-B',kind:'field-record',recordKind:'field-record',recordType:'survey',type:'調査',
+    recordNo:1,typeNo:1,autoLabel:'調査-1',createdAt:start+300000,point:{x:22,y:33},memo:'Bの調査内容',photos:[{id:'b-photo',name:'B.jpg'}]});
+  const before=JSON.stringify([a,b]);
+  for(const [local,remote] of [[make([a]),make([b])],[make([b]),make([a])]]){
+    const out=merged(local,remote,base).drawings[0].state.shapes;
+    assert.deepEqual(out.map(s=>s.id),['survey-phone-A','survey-phone-B']);
+    assert.deepEqual(out.map(s=>s.autoLabel),['調査-1','調査-2']);
+    assert.deepEqual(out.map(s=>s.typeNo),[1,2]);
+    assert.deepEqual(out.map(s=>s.recordNo),[1,2]);
+    assert.deepEqual(out.map(s=>s.memo),['Aの調査内容','Bの調査内容']);
+    assert.deepEqual(out.map(s=>s.photos[0].id),['a-photo','b-photo']);
+    assert.deepEqual(out.map(s=>s.point),[{x:2,y:3},{x:22,y:33}]);
+  }
+  assert.equal(JSON.stringify([a,b]),before,'neither offline source may be mutated');
+});
+test('offline field numbering anchors existing records and identical times use stable IDs',()=>{
+  const known=C.upgrade({id:'known',kind:'field-record',recordKind:'field-record',recordType:'survey',type:'調査',
+    recordNo:1,typeNo:1,createdAt:1,memo:'既存の調査',photos:[]});
+  const base=make([known]);
+  const a=C.upgrade({id:'a',kind:'field-record',recordKind:'field-record',recordType:'survey',type:'調査',
+    recordNo:2,typeNo:2,createdAt:1000,memo:'新規A',photos:[]});
+  const b=C.upgrade({id:'b',kind:'field-record',recordKind:'field-record',recordType:'survey',type:'調査',
+    recordNo:2,typeNo:2,createdAt:1000,memo:'新規B',photos:[]});
+  for(const [l,r] of [[make([known,a]),make([known,b])],[make([known,b]),make([known,a])]]){
+    const first=merged(l,r,base),shapes=first.drawings[0].state.shapes;
+    assert.deepEqual(shapes.map(s=>s.id),['known','a','b']);
+    assert.deepEqual(shapes.map(s=>s.autoLabel),['調査-1','調査-2','調査-3']);
+    assert.deepEqual(shapes.map(s=>s.recordNo),[1,2,3]);
+    const second=merged(first,r,base);
+    assert.deepEqual(second.drawings[0].state.shapes.map(s=>s.id),['known','a','b']);
+  }
+});
+test('clock skew cannot duplicate survey numbers and photo records are numbered independently',()=>{
+  const a=C.upgrade({id:'a',kind:'field-record',recordKind:'field-record',recordType:'survey',type:'調査',
+    createdAt:300000,recordNo:1,memo:'A',photos:[]});
+  const b=C.upgrade({id:'b',kind:'field-record',recordKind:'field-record',recordType:'survey',type:'調査',
+    createdAt:100,recordNo:1,memo:'B',photos:[]});
+  const photo=C.upgrade({id:'p',kind:'field-record',recordKind:'field-record',recordType:'photo',type:'全景',
+    createdAt:50,recordNo:1,memo:'全景',photos:[]});
+  const out=merged(make([a,photo]),make([b]),make([])).drawings[0].state.shapes;
+  assert.deepEqual(out.filter(s=>s.recordType==='survey').map(s=>s.autoLabel),['調査-1','調査-2']);
+  assert.deepEqual(out.filter(s=>s.recordType==='photo').map(s=>s.autoLabel),['全景-1']);
+  assert.deepEqual(new Set(out.map(s=>s.id)),new Set(['a','b','p']));
+});
 console.log(passed+' collaborative snapshot merge scenarios passed');
