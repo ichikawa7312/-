@@ -68,5 +68,18 @@ for file in (ROOT / 'tests').iterdir():
         pending[str(file.relative_to(ROOT))] = revised
 for path, source in pending.items():
     (ROOT / path).write_text(source, encoding='utf-8')
+
+# The PC page must keep its guarded original build inputs unchanged.
+# Pace the finished page only after all prior archive/session transformations.
+pc_page = ROOT / 'sentlog-pc/index.html'
+pc_text = pc_page.read_text(encoding='utf-8')
+for old, new in (
+    ('timer=setInterval(syncOnce,5000);', 'timer=setInterval(syncOnce,30000);'),
+    ("$('onceBtn').onclick=syncOnce;", "$('onceBtn').onclick=()=>syncOnce(true);"),
+):
+    if pc_text.count(old) != 1:
+        raise RuntimeError('PC load-safety integration changed: ' + old)
+    pc_text = pc_text.replace(old, new)
+pc_page.write_text(pc_text, encoding='utf-8')
 subprocess.run(['node', '--check', 'sentlog/cloud-sync.js'], cwd=ROOT, check=True)
 print('Built isolated project synchronization and local-project recovery controls')
