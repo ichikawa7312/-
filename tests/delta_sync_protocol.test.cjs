@@ -242,7 +242,7 @@ await test('a changed PHOTO ID is never silently overwritten',async()=>{
   const base=initial(),next=C.addPhoto(base,{id:'photo',name:'first.jpg',size:44},opts('A','photo-id'));
   const event=D.diffRecord(base,next,{eventId:'m1',projectId:project,drawingId:drawing,deviceId:'A'});
   const modified=clone(event),id=Object.keys(modified.patch.photos)[0];
-  const target=C.combine(base,event);
+  const target=D.combine(base,event);
   modified.patch.photos[id].revisions[0].value.name='different.jpg';
   assert.throws(()=>D.combine(target,modified),error=>error.code==='DELTA_COLLISION');
 });
