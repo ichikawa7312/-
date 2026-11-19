@@ -204,11 +204,11 @@ async function syncOnce(){
   }catch(e){setSync('同期エラー: '+e.message,'err');log('同期エラー: '+e.message)}
   finally{busy=false}
 }
-function start(){if(timer)return;syncOnce();timer=setInterval(syncOnce,30000);setSync('自動同期ON','ok');refreshUI();log('自動同期を開始')}
+function start(){if(timer)return;syncOnce();timer=setInterval(syncOnce,5000);setSync('自動同期ON','ok');refreshUI();log('自動同期を開始')}
 function stop(){if(timer){clearInterval(timer);timer=null}setSync('停止中');refreshUI();log('自動同期を停止')}
 
 $('loginBtn').onclick=login;$('logoutBtn').onclick=()=>{stop();saveSession(null);log('ログアウト')};
-$('folderBtn').onclick=chooseFolder;$('permissionBtn').onclick=permission;$('startBtn').onclick=start;$('stopBtn').onclick=stop;$('onceBtn').onclick=()=>syncOnce(true);
+$('folderBtn').onclick=chooseFolder;$('permissionBtn').onclick=permission;$('startBtn').onclick=start;$('stopBtn').onclick=stop;$('onceBtn').onclick=syncOnce;
 window.addEventListener('online',()=>{if(timer)syncOnce()});window.addEventListener('offline',()=>setSync('オフライン待機','warn'));
 
 (async()=>{
