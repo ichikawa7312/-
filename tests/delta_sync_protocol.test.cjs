@@ -174,10 +174,11 @@ await test('server saves an event but client loses response; retry is idempotent
   const transport=e.transports.A,push=transport.push.bind(transport);
   let first=true;transport.push=async event=>{
     const out=await push(event);
-    if(first){first=false;throw Error('reply lost');}return out;
+    if(first){first=false;e.transports.A.flag.online=false;throw Error('reply lost');}return out;
   };
   await assert.rejects(()=>e.clients.A.sync(),/reply lost/);
-  assert.equal((await e.clients.A.snapshot()).outbox.length,1);
+  assert.equal((await e.clients.A.snapshot()).outbox.length,1,'unacknowledged change remains in the durable queue');
+  e.transports.A.flag.online=true;
   await e.clients.A.sync();
   assert.equal((await e.clients.A.snapshot()).outbox.length,0);
   assert.equal(e.server.rows(project).filter(x=>x.event.eventId==='once-op').length,1);
