@@ -1,6 +1,6 @@
 /* edit-sync-v20261118: change-driven sends and small revision-only receive checks. */
 function createSyncHeadWatcher({read,project,revision,include,request,enabled,owner,
-  now=()=>Date.now(),setTimer=setTimeout,clearTimer=clearTimeout,interval=3000,retryMs=30000}){
+  now=()=>Date.now(),setTimer=setTimeout,clearTimer=clearTimeout,interval=15000,retryMs=30000}){
   let account=owner(),generation=0,timer=null,flight=null,retryAt=0,stopped=false;
   const notified=new Map();
   function arm(delay=interval){

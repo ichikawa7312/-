@@ -125,7 +125,7 @@ section(p,' async function receive(id){',' async function provide(id){',''' asyn
   else if(newFiles)show('写真 '+good+'/'+seen+' 件を保存・照合しました。図面を開くと確認できます。');
   else show('写真 '+good+'/'+seen+' 件を確認済み。');
  }''')
-change(p,'setInterval(run,15000)','setInterval(run,30000)')
+change(p,'setInterval(run,15000)','setInterval(run,60000)')
 # PDF confirmations use the same durable ledger but retain the existing SHA/size RPC.
 p='sentlog/pdf-recovery.js'
 change(p,'const acked=new Set();','// Receipt persistence is shared with the other synchronizers.')

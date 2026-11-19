@@ -119,4 +119,5 @@ if 'pcRetryAfter' not in pc_page or 'pcServiceUnavailable' not in pc_page:
 pc_path.write_text(pc_page, encoding='utf-8')
 
 subprocess.run(['node', '--check', 'sentlog/cloud-sync.js'], cwd=ROOT, check=True)
+subprocess.run(['node', 'tests/sync_status_pending.test.cjs'], cwd=ROOT, check=True)
 print('Built isolated project synchronization and local-project recovery controls')

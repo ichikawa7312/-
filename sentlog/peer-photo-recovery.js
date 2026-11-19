@@ -33,11 +33,14 @@
      for(const row of rows){if(!row.id||row.id<=after)throw Error('端末一覧を確認できません。');after=row.id;out.push(row);}
    }
  }
- async function requests(){
+ async function requests(peerIds){
+   // Avoid querying the full global backlog when only one peer is online.
+   if(!Array.isArray(peerIds)||!peerIds.length)return [];
+   const peerFilter='&device_id=in.('+peerIds.map(enc).join(',')+')';
    const out=[];let last=null;
    for(;;){
      const cursor=last?'&or='+enc('(asset_id.gt.'+last.asset_id+',and(asset_id.eq.'+last.asset_id+',device_id.gt.'+last.device_id+'))'):'';
-     const rows=await api('sentlog_pdf_requests?received_at=is.null&select=asset_id,device_id,expected_sha256,requested_at&order=asset_id.asc,device_id.asc&limit=400'+cursor);
+     const rows=await api('sentlog_pdf_requests?received_at=is.null&select=asset_id,device_id,expected_sha256,requested_at&order=asset_id.asc,device_id.asc&limit=400'+peerFilter+cursor);
      if(!Array.isArray(rows))throw Error('写真の受信待ちを確認できません。');if(!rows.length)return out;
      for(const row of rows){
        if(!row.asset_id||!row.device_id||(last&&(row.asset_id<last.asset_id||(row.asset_id===last.asset_id&&row.device_id<=last.device_id))))throw Error('写真の受信待ち一覧を確認できません。');
@@ -84,13 +87,18 @@
    busy=true;
    try{
      await window.sentlogManagementSession?.();
-     const pending=await requests();
-     if(!pending.length){show(uploadedTotal?'端末間の写真補完：'+uploadedTotal+'枚を送信しました。受信済みの写真は端末の写真確認欄で確認できます。':'');return;}
+     // A disconnected device cannot receive now. Leave its queue intact
+     // until its next check-in; avoid downloading thousands of old requests.
      const devices=await allRows('sentlog_devices','active=eq.true&select=id,last_seen_at,device_type');
-     const live=new Map(devices.map(d=>[d.id,d])),cutoff=Date.now()-15*60*1000;
-     const desired=new Map();
-     for(const q of pending){const peer=live.get(q.device_id);
-       if(q.device_id!==id&&peer&&['iphone','ipad','browser'].includes(peer.device_type)&&(Date.parse(q.requested_at)>=cutoff||Date.parse(peer.last_seen_at)>=cutoff)){
+     const cutoff=Date.now()-15*60*1000;
+     const peers=devices.filter(d=>d.id!==id&&['iphone','ipad','browser'].includes(d.device_type)&&
+       Number.isFinite(Date.parse(d.last_seen_at))&&Date.parse(d.last_seen_at)>=cutoff);
+     if(!peers.length){show('写真をそろえるときは、もう一方の端末でもセントログを開いてください。');return;}
+     const pending=await requests(peers.map(d=>d.id));
+     if(!pending.length){show(uploadedTotal?'端末間の写真補完：'+uploadedTotal+'枚を送信しました。受信済みの写真は端末の写真確認欄で確認できます。':'');return;}
+     const eligible=new Set(peers.map(d=>d.id)),desired=new Map();
+     for(const q of pending){
+       if(eligible.has(q.device_id)){
          const hashes=desired.get(q.asset_id)||new Set();hashes.add(String(q.expected_sha256).toLowerCase());desired.set(q.asset_id,hashes);
        }
      }

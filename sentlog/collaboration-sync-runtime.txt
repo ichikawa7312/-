@@ -104,6 +104,7 @@ function collaborationCanSkipFileCheck(local,remote,base){
 
 // Browser integration. No original-photo/PDF reads occur in an ordinary metadata round.
 let collaborationDeviceCache=null,collaborationArchiveAt=0,collaborationProjectsAt=0,collaborationAssetOwner='';
+let collaborationQuietAuditUntil=0;
 const collaborationDeviceSeen=new Map(),collaborationManualProjects=new Map(),collaborationFileFailures=new Map(),collaborationMetadataFailures=new Map();
 const collaborationFilePreparation=new Set(),collaborationForcedProjects=new Set();
 function collaborationAssertOwner(owner){
@@ -486,6 +487,14 @@ async function collaborationSyncNow(options={}){
   collaborationChannel?.wake();
   const ids=Array.isArray(options.projectIds)&&options.projectIds.length?[...options.projectIds]:['*'];
   if(options.eventDriven){collaborationMetadataWorker.request(ids);return {started:true};}
+  // Edits, Realtime asset notifications, foreground wake and explicit button
+  // presses still have their own immediate paths. Only *unchanged* periodic
+  // full-file audits are reduced; the database is not a 15-second file counter.
+  const quietAudit=ids.length===1&&ids[0]==='*'&&!options.force&&!options.manualProject&&!options.projectIds;
+  const hasOutstanding=collaborationMetadataFailures.size||collaborationFileFailures.size||
+    collaborationMetadataWorker.pending.length||collaborationFileWorker.pending.length;
+  if(quietAudit&&!hasOutstanding&&Date.now()<collaborationQuietAuditUntil)
+    return {started:false,retryAt:collaborationQuietAuditUntil};
   if(!options.force&&(collaborationFileWorker.running||Date.now()<syncNotBefore||Date.now()<collaborationFileWorker.globalRetryAt))return {started:false,retryAt:Math.max(syncNotBefore,collaborationFileWorker.globalRetryAt)};
   let manualId=null;
   if(options.manualProject){
@@ -498,13 +507,16 @@ async function collaborationSyncNow(options={}){
   if(options.force)for(const id of ids)collaborationForcedProjects.add(id);
   try{
     const result=await collaborationFileWorker.wait(ids,{force:!!options.force});
+    if(quietAudit&&!result?.deferredIds?.length&&!result?.failedIds?.length&&
+       !collaborationMetadataFailures.size&&!collaborationFileFailures.size)
+      collaborationQuietAuditUntil=Date.now()+90000;
     return {started:true,...(result?.deferredIds?.length?{retryAt:Math.max(result.retryAt||0,Date.now()+3000)}:{})};
   }catch(_){return {started:true,retryAt:collaborationFileWorker.retryAt||Date.now()+30000};}
   finally{if(manualId)collaborationManualProjects.delete(manualId);if(options.force)for(const id of ids)collaborationForcedProjects.delete(id);}
 }
 function collaborationSessionChanged(){
   collaborationDeviceCache=null;collaborationArchiveAt=0;collaborationProjectsAt=0;collaborationDeviceSeen.clear();
-  collaborationManualProjects.clear();collaborationFileFailures.clear();collaborationMetadataFailures.clear();collaborationFilePreparation.clear();collaborationForcedProjects.clear();syncErrorNotBefore=0;syncNotBefore=0;
+  collaborationManualProjects.clear();collaborationFileFailures.clear();collaborationMetadataFailures.clear();collaborationFilePreparation.clear();collaborationForcedProjects.clear();syncErrorNotBefore=0;syncNotBefore=0;collaborationQuietAuditUntil=0;
   delete window.SentlogCollaborationDevice;collaborationMetadataWorker.reset();collaborationFileWorker.reset();collaborationChannel?.wake();
 }
 function collaborationWake(){collaborationMetadataWorker.wake();collaborationFileWorker.wake();collaborationChannel?.wake();}
