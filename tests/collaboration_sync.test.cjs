@@ -62,12 +62,12 @@ function fixture(){
   const records={getItem:k=>data.get(k)??null,setItem:(k,v)=>data.set(k,String(v)),batch:w=>{for(const [k,v] of w){if(v===null)data.delete(k);else data.set(k,v);}},settled:async()=>{},assertSafe(){},flush:async()=>{}};
   const cp={id:'cloud-p1',client_key:'p1',name:'現場',status:'active'};
   h.cloudProjects=new Map([[cp.id,cp]]);h.otherServers=new Map();
-  const ls=new Map([['device','device-id']]);
+  const ls=new Map([['device','device-id']]),events={};
   const context={console,Blob,structuredClone,Map,Set,Date:class extends Date{static now(){return time.now();}},setTimeout:time.setTimer,clearTimeout:time.clearTimer,
     session:{user:{id:'owner-a'},access_token:'test'},syncing:false,syncNotBefore:0,syncErrorNotBefore:0,mergeBusy:false,
     SUPABASE_URL:'https://example.invalid',SUPABASE_KEY:'public',DEVICE_KEY:'device',WORKSPACE_KEY:WS,DRAWING_KEY_PREFIX:DP,SYNC_META_PREFIX:MP,SYNC_FINGERPRINT_SCHEMA:2,
-    document:{hidden:false,addEventListener(){}},navigator:{onLine:true},localStorage:{getItem:k=>ls.get(k)??null,setItem:(k,v)=>ls.set(k,v)},
-    window:{SentlogRecordCollaboration:C,SentlogRecords:records,sentlogAppReady:Promise.resolve(),addEventListener(){},SentlogCollaborationChannel:{create:opts=>(h.channel=opts,{wake(){}})}},
+    document:{hidden:false,addEventListener(type,callback){events[type]=callback;}},navigator:{onLine:true},localStorage:{getItem:k=>ls.get(k)??null,setItem:(k,v)=>ls.set(k,v)},
+    window:{SentlogRecordCollaboration:C,SentlogRecords:records,sentlogAppReady:Promise.resolve(),addEventListener(type,callback){events[type]=callback;},SentlogCollaborationChannel:{create:opts=>(h.channel=opts,{wake(){}})}},
     archive:{ready:true,refresh:async()=>{},canSync:p=>p.status==='active',includeLocal:()=>true},knownCloudProjects:new Map([[cp.id,cp]]),syncConflicts:new Map(),drawingUploadBlocks:new Set(),editSync:{wake(){}},
     syncStatus:{begin:()=>h.statuses.length,finish:(id,s)=>h.statuses.push(s),track:async(label,fn)=>fn()},refreshMergePanel(){},enc:encodeURIComponent,
     ensureSession:async()=>context.session,ensureDevice:async()=> 'device-id',deviceName:()=> '端末',deviceType:()=> 'browser',
@@ -101,7 +101,7 @@ function fixture(){
     const ws=JSON.parse(data.get(WS));if(ws.projects.some(p=>p.id===cp.client_key))ws.projects=ws.projects.map(p=>p.id===cp.client_key?copy(snap.payload.project):p);else ws.projects.push(copy(snap.payload.project));
     const writes=[[WS,JSON.stringify(ws)],...snap.payload.drawings.map(d=>[DP+d.meta.id,JSON.stringify(d.state)]),...options.extraWrites];records.batch(writes);return {applied:true};}};
   vm.createContext(context);vm.runInContext(fileHelpers+runtime+'\nprojectSnapshot=collaborationProjectSnapshot;this.testAPI={metadata:collaborationMetadataWorker,files:collaborationFileWorker,device:collaborationEnsureDevice,snapshot:collaborationProjectSnapshot,normalize:collaborationNormalizeStored,pull:collaborationPullProject,upsert:collaborationUpsert,photos:collaborationCollectPhotos,uploadHistorical:collaborationUploadPhoto,round:collaborationMetadataRound,sync:collaborationSyncNow,reset:collaborationSessionChanged};',context);
-  h.context=context;h.api=context.testAPI;h.current={owner:'owner-a',assertCurrent(){if(context.session?.user?.id!=='owner-a')throw Object.assign(Error('owner'),{code:'COLLAB_ACCOUNT_CHANGED'});}};
+  h.context=context;h.api=context.testAPI;h.events=events;h.current={owner:'owner-a',assertCurrent(){if(context.session?.user?.id!=='owner-a')throw Object.assign(Error('owner'),{code:'COLLAB_ACCOUNT_CHANGED'});}};
   h.stop=()=>{h.api.metadata.stop();h.api.files.stop();};return h;
 }
 
@@ -322,6 +322,20 @@ test('realtime reconnect bursts do not multiply full file audits or trap sync st
   await h.time.tick(90000);
   h.channel.onReady();await h.time.tick(0);await microtasks();
   assert.equal(h.fileCalls.length,3,'later reconnections can still trigger the periodic safety audit');
+  h.stop();
+});
+test('offline reconnect and foreground resume catch up without waiting for the quiet audit',async()=>{
+  const h=fixture();
+  const first=h.api.sync();await h.time.tick(0);await first;
+  assert.equal(h.fileCalls.length,1);
+  assert.equal(h.statuses.at(-1).level,'ok');
+  h.context.navigator.onLine=false;h.events.offline?.();await h.time.tick(0);
+  h.context.navigator.onLine=true;h.events.online?.();await h.time.tick(0);
+  assert.equal(h.fileCalls.length,2,'network recovery forces a fresh file reconciliation');
+  assert.equal(h.statuses.at(-1).level,'ok');
+  h.context.document.hidden=true;await h.time.tick(0);
+  h.context.document.hidden=false;h.events.visibilitychange?.();await h.time.tick(0);
+  assert.equal(h.fileCalls.length,3,'returning to foreground also catches unseen changes promptly');
   h.stop();
 });
 test('a scoped manual retry recovers only that project and clears its own failure',async()=>{
