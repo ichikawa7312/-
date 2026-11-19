@@ -16,11 +16,12 @@ def change(path: str, old: str, new: str, count: int = 1) -> None:
         raise RuntimeError(f'Archive integration point changed: {path}: {old[:70]!r}')
     p.write_text(s.replace(old, new))
 
-# Guard the original synchronizer versions, rather than patch unknown future code.
+# Guard the reviewed original synchronizer versions, rather than patch unknown code.
+# The PC page baseline includes a reviewed 30-second scan period and manual retry.
 for path, expected in {
     'sentlog/cloud-sync.js': 'b55678435627b3823cce77839b3e26ddbc0367c6',
     'sentlog/pdf-recovery.js': 'c1da1f2fabc8b35358930d67df289dd8dd15646a',
-    'sentlog-pc/index.html': 'b684cbdb8a25d6e629acd0861353b005e0f87dee',
+    'sentlog-pc/index.html': '25758524acdcbc1fbfd874defd1bbf57723d43db',
 }.items():
     data = (ROOT / path).read_bytes()
     actual = hashlib.sha1(b'blob ' + str(len(data)).encode() + b'\0' + data).hexdigest()
