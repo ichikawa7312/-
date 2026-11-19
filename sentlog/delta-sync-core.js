@@ -11,36 +11,109 @@
   const clone=x=>x===undefined?undefined:JSON.parse(JSON.stringify(x));
   const own=(o,k)=>Object.prototype.hasOwnProperty.call(o,k);
   const valid=x=>typeof x==='string'&&x.length>0&&x.length<=512;
+  const object=x=>x!==null&&typeof x==='object'&&!Array.isArray(x);
+  const put=(o,k,v)=>Object.defineProperty(o,k,{value:v,writable:true,enumerable:true,configurable:true});
   function problem(code,message){const e=Error(message);e.code=code;return e;}
   function assert(condition,code,message){if(!condition)throw problem(code,message);}
   const groups=['comments','fields','photos'];
   const keyOf=(drawingId,recordId)=>JSON.stringify([drawingId,recordId]);
-  const emptyState=()=>({version:1,cursor:0,records:{},outbox:[]});
-  function validateState(state){
-    assert(state&&state.version===1&&Number.isSafeInteger(state.cursor)&&state.cursor>=0,
+  const scopeKeys=['ownerId','projectId','deviceId'];
+  const identityKeys=['projectId','eventId','deviceId','drawingId','recordId'];
+  const emptyState=scope=>({version:2,scope:clone(scope),cursor:0,records:{},outbox:[]});
+  function sameScope(a,b){return object(a)&&scopeKeys.every(k=>a[k]===b[k]);}
+  function validateState(state,scope,deep=false){
+    assert(state&&state.version===2&&sameScope(state.scope,scope),
+      'DELTA_SCOPE','保存データの利用者・案件・端末が一致しません。元のデータを保持しました');
+    assert(Number.isSafeInteger(state.cursor)&&state.cursor>=0,
       'DELTA_LOCAL_STATE','端末の同期位置を確認できません');
-    assert(state.records&&typeof state.records==='object'&&!Array.isArray(state.records)&&
-      Array.isArray(state.outbox),'DELTA_LOCAL_STATE','端末の記録を確認できません');
-    for(const e of state.outbox)validateEvent(e);
+    assert(object(state.records)&&Array.isArray(state.outbox),
+      'DELTA_LOCAL_STATE','端末の記録を確認できません');
+    const ids=new Set();
+    for(const e of state.outbox){
+      validateEvent(e);
+      assert(e.projectId===scope.projectId&&e.deviceId===scope.deviceId,
+        'DELTA_SCOPE','別の案件・端末の未送信データは送信できません');
+      assert(!ids.has(e.eventId),'DELTA_LOCAL_STATE','未送信の変更IDが重複しています');ids.add(e.eventId);
+    }
+    if(deep)for(const [key,record]of Object.entries(state.records)){
+      let parts;try{parts=JSON.parse(key);}catch{}
+      assert(Array.isArray(parts)&&parts.length===2&&parts.every(valid)&&record?.id===parts[1]&&
+        keyOf(...parts)===key,'DELTA_LOCAL_STATE','保存された記録の識別情報が一致しません');
+      C.upgrade(record);
+    }
     return state;
   }
+  function jsonValue(value,active=new Set(),depth=0){
+    assert(depth<=64,'DELTA_EVENT','変更データの階層が深すぎます');
+    if(value===null||typeof value==='boolean'||typeof value==='string')return;
+    if(typeof value==='number'){assert(Number.isFinite(value),'DELTA_EVENT','数値が不正です');return;}
+    assert(typeof value==='object'&&!active.has(value),'DELTA_EVENT','変更データは循環しないJSONである必要があります');
+    assert(Array.isArray(value)||Object.getPrototypeOf(value)===Object.prototype||Object.getPrototypeOf(value)===null,
+      'DELTA_EVENT','ファイルや実行可能なオブジェクトを変更履歴には保存できません');
+    active.add(value);for(const child of Object.values(value))jsonValue(child,active,depth+1);active.delete(value);
+  }
+  function photoMetadata(value,id){
+    assert(object(value)&&valid(id)&&value.id===id,'DELTA_EVENT','写真の識別情報が一致しません');
+    if(own(value,'sha256'))assert(typeof value.sha256==='string'&&/^[a-f0-9]{64}$/i.test(value.sha256),
+      'DELTA_EVENT','写真の照合情報が不正です');
+    if(own(value,'size'))assert(Number.isSafeInteger(value.size)&&value.size>=0,'DELTA_EVENT','写真サイズが不正です');
+    function noBytes(v){
+      if(typeof v==='string')assert(!/^data:/i.test(v),'DELTA_FILE_BYTES','写真本体は専用の転送経路で保存してください');
+      if(v&&typeof v==='object')for(const [k,child]of Object.entries(v)){
+        assert(!['data','localBlob','blob','bytes'].includes(k),'DELTA_FILE_BYTES','写真本体を変更履歴に含めることはできません');noBytes(child);
+      }
+    }
+    noBytes(value);
+  }
+  function revisions(rows,kind,key,seen){
+    assert(Array.isArray(rows),'DELTA_EVENT','変更履歴の形式が不正です');
+    for(const r of rows){
+      assert(object(r)&&valid(r.id)&&!seen.has(r.id)&&Array.isArray(r.parents)&&
+        r.parents.every(valid)&&new Set(r.parents).size===r.parents.length,
+        'DELTA_EVENT','変更IDまたは変更前の識別情報が不正です');
+      seen.add(r.id);
+      assert(object(r.actor)&&(r.actor.deviceId===null||typeof r.actor.deviceId==='string')&&
+        typeof r.actor.deviceName==='string'&&Number.isFinite(r.at)&&r.at>=0,
+        'DELTA_EVENT','変更元の情報が不正です');
+      if(kind==='comments')assert(typeof r.text==='string'&&typeof r.deleted==='boolean','DELTA_EVENT','コメントの形式が不正です');
+      if(kind==='fields'){
+        if(own(r,'unset'))assert(typeof r.unset==='boolean','DELTA_EVENT','項目の削除状態が不正です');
+        assert(r.unset===true||own(r,'value'),'DELTA_EVENT','変更する値がありません');
+        if(key==='geometry'&&!r.unset)assert(object(r.value)&&Object.keys(r.value).every(k=>C.GEOMETRY_KEYS.includes(k)),
+          'DELTA_EVENT','記録の位置・形状が不正です');
+      }
+      if(kind==='photos'){assert(typeof r.deleted==='boolean','DELTA_EVENT','写真の削除状態が不正です');photoMetadata(r.value,key);}
+      if(kind==='deletion')assert(typeof r.deleted==='boolean'&&Array.isArray(r.observed)&&r.observed.every(valid),
+        'DELTA_EVENT','削除の確認履歴が不正です');
+    }
+  }
   function validateEvent(e){
-    assert(e&&e.schema===1&&valid(e.eventId)&&valid(e.projectId)&&
-      valid(e.drawingId)&&valid(e.recordId)&&valid(e.deviceId),
+    jsonValue(e);
+    assert(object(e)&&e.schema===1&&identityKeys.every(k=>valid(e[k])),
       'DELTA_EVENT','変更の識別情報が不正です');
     assert(['create','patch'].includes(e.kind),'DELTA_EVENT','変更の種類が不正です');
-    if(e.kind==='create'){
-      assert(e.record&&e.record.id===e.recordId&&e.record.collab,
-        'DELTA_EVENT','新規記録の共同編集履歴がありません');
-      C.upgrade(e.record);
-    }else{
-      assert(e.patch&&typeof e.patch==='object'&&!Array.isArray(e.patch)&&
-        groups.every(g=>e.patch[g]&&typeof e.patch[g]==='object'&&!Array.isArray(e.patch[g]))&&
-        Array.isArray(e.patch.deletion),'DELTA_EVENT','差分の形式が不正です');
+    // The same byte limit is enforced on UTF-8 JSON by the server. Its jsonb
+    // representation can be a little larger; server rejection still keeps outbox.
+    assert(new TextEncoder().encode(JSON.stringify(e)).byteLength<=256*1024,
+      'DELTA_TOO_LARGE','変更が大きすぎます');
+    const content=e.kind==='create'?e.record?.collab:e.patch;
+    assert(object(content)&&groups.every(g=>object(content[g])),'DELTA_EVENT','差分の形式が不正です');
+    const seen=new Set();
+    for(const g of groups)for(const [id,entry]of Object.entries(content[g])){
+      assert(valid(id)&&object(entry)&&Array.isArray(entry.revisions)&&entry.revisions.length,
+        'DELTA_EVENT','変更履歴が不足しています');
+      if(g==='comments')assert(Number.isSafeInteger(entry.order)&&entry.order>=0,'DELTA_EVENT','コメント順序が不正です');
+      revisions(entry.revisions,g,id,seen);
     }
-    // No photo blob/data URL may be carried by the record event. The file sync
-    // verifies the original SHA-256/size through a separate durable path.
-    assert(JSON.stringify(e).length<=256*1024,'DELTA_TOO_LARGE','変更が大きすぎます');
+    const deletion=e.kind==='create'?content.deletion?.revisions:content.deletion;
+    revisions(deletion,'deletion','record',seen);
+    if(e.kind==='create'){
+      assert(e.record&&e.record.id===e.recordId&&content.version===1&&deletion.length,
+        'DELTA_EVENT','新規記録の共同編集履歴がありません');
+      if(own(e.record,'photos'))assert(Array.isArray(e.record.photos),'DELTA_EVENT','写真の一覧が不正です');
+      for(const p of e.record.photos||[])photoMetadata(p,p?.id);
+      C.upgrade(e.record);
+    }else assert(seen.size>0,'DELTA_EVENT','変更内容が空です');
     return e;
   }
   function removedOrChanged(before,after){
@@ -53,6 +126,7 @@
     return (after||[]).filter(r=>!b.has(r.id)).map(clone);
   }
   function diffRecord(before,after,context){
+    if(before!==null&&before!==undefined)jsonValue(before);jsonValue(after);
     const {eventId,projectId,drawingId,deviceId}=context||{};
     const previous=before?C.upgrade(before):null;
     const next=C.upgrade(after);
@@ -72,8 +146,8 @@
         if(g==='comments')assert(now[id].order===entry.order,'DELTA_HISTORY_LOSS','コメント順序が変更されています');
       }
       for(const [id,entry] of Object.entries(now)){
-        const added=removedOrChanged(old[id]?.revisions,entry.revisions);
-        if(added.length)changes[g][id]={...(g==='comments'?{order:entry.order}:{}),revisions:added};
+        const added=removedOrChanged(own(old,id)?old[id].revisions:[],entry.revisions);
+        if(added.length)put(changes[g],id,{...(g==='comments'?{order:entry.order}:{}),revisions:added});
       }
     }
     changes.deletion=removedOrChanged(previous.collab.deletion.revisions,next.collab.deletion.revisions);
@@ -90,12 +164,13 @@
       return joined.record;
     }
     assert(current,'DELTA_MISSING_BASE','元の記録を受信する必要があります');
+    assert(current.id===event.recordId,'DELTA_RECORD','別の記録の変更を適用できません');
     const initial=C.upgrade(current),collab=clone(initial.collab);
     for(const g of groups){
       for(const [id,entry] of Object.entries(event.patch[g])){
         assert(entry&&Array.isArray(entry.revisions)&&entry.revisions.length>0,
           'DELTA_EVENT','変更履歴が不足しています');
-        if(!own(collab[g],id))collab[g][id]={...(g==='comments'?{order:entry.order}:{}),revisions:[]};
+        if(!own(collab[g],id))put(collab[g],id,{...(g==='comments'?{order:entry.order}:{}),revisions:[]});
         if(g==='comments')assert(collab[g][id].order===entry.order,
           'DELTA_CONFLICT','コメントの登録順序が一致しません');
         const existing=new Map(collab[g][id].revisions.map(rev=>[rev.id,rev]));
@@ -114,138 +189,184 @@
     }
     return C.upgrade({...initial,collab});
   }
-  function createReplica({projectId,deviceId,store,transport,onStatus=()=>{},onConflict=()=>{},pageLimit=100}){
-    assert(valid(projectId)&&valid(deviceId)&&store&&transport,'DELTA_CONFIG','接続設定が不正です');
+  function createReplica({ownerId,projectId,deviceId,store,transport,onStatus=()=>{},onConflict=()=>{},
+    pageLimit=100,reconcileIntervalMs=60000,requestTimeoutMs=15000,retryBaseMs=1000,retryMaxMs=30000,
+    visible=()=>true,timers={setTimeout:(fn,ms)=>setTimeout(fn,ms),clearTimeout:id=>clearTimeout(id)}}){
+    const scope={ownerId,projectId,deviceId};
+    assert(scopeKeys.every(k=>valid(scope[k]))&&store&&transport,'DELTA_CONFIG','接続設定が不正です');
     assert(typeof store.read==='function'&&typeof store.write==='function'&&
       typeof transport.push==='function'&&typeof transport.list==='function'&&
       typeof transport.online==='function','DELTA_CONFIG','保存・通信方法が不正です');
-    assert(Number.isSafeInteger(pageLimit)&&pageLimit>=1&&pageLimit<=500,
-      'DELTA_CONFIG','取得件数が不正です');
-    let chain=Promise.resolve(),live=null,state=null,started=false,pendingWake=false;
-    function serialized(fn){
-      const work=chain.then(fn);
-      chain=work.catch(()=>{});
-      return work;
+    if(typeof store.getScope==='function')assert(sameScope(store.getScope(),scope),'DELTA_SCOPE','端末保存先が別の利用者・案件です');
+    assert(Number.isSafeInteger(pageLimit)&&pageLimit>=1&&pageLimit<=500&&
+      Number.isSafeInteger(reconcileIntervalMs)&&reconcileIntervalMs>=0&&
+      Number.isSafeInteger(requestTimeoutMs)&&requestTimeoutMs>0&&
+      Number.isSafeInteger(retryBaseMs)&&retryBaseMs>0&&Number.isSafeInteger(retryMaxMs)&&retryMaxMs>=retryBaseMs,
+      'DELTA_CONFIG','同期の取得件数・待機時間が不正です');
+    let localChain=Promise.resolve(),state=null,started=false,closed=false,live=null,pump=null,requested=false;
+    let wakeTimer=null,reconcileTimer=null,retryTimer=null,retries=0;
+    const inflight=new Set();
+    function active(){assert(!closed,'DELTA_CLOSED','この同期処理は終了しています');}
+    function schedule(fn,ms){const timer=timers.setTimeout(fn,ms);timer?.unref?.();return timer;}
+    function clear(name){if(name!==null)timers.clearTimeout(name);}
+    function local(fn){
+      const task=localChain.then(async()=>{active();await load();active();return fn();});
+      localChain=task.catch(()=>{});return task;
     }
     async function load(){
       if(state)return;
-      const recovered=await store.read();
-      state=validateState(recovered?clone(recovered):emptyState());
+      const recovered=await store.read();active();
+      state=validateState(recovered===null||recovered===undefined?emptyState(scope):clone(recovered),scope,true);
     }
     async function persist(next){
-      validateState(next);
-      // The store must atomically replace the record state + cursor + outbox.
-      // Never advertise delivery or remove an outbox item before this resolves.
-      await store.write(clone(next));
-      state=next;
+      active();validateState(next,scope);
+      // Adapter transaction must commit record + cursor + outbox atomically.
+      // Network waits never own the local queue. CAS rejection is propagated;
+      // stale whole-state writes must not be retried as an overwrite.
+      await store.write(clone(next));active();state=next;
     }
-    function status(level,description){onStatus({level,message:description,pending:state?.outbox?.length||0,cursor:state?.cursor||0});}
-    function visibleConflicts(record){
-      const view=C.view(record);
-      if(view.conflicts.length)onConflict({projectId,recordId:record.id,conflicts:clone(view.conflicts)});
+    function emit(fn,value){if(closed)return;try{fn(value);}catch{/* UI observers cannot undo a committed save. */}}
+    function conflictCount(){return state?Object.values(state.records).reduce((n,r)=>n+C.view(r).conflicts.length,0):0;}
+    function status(level,description){emit(onStatus,{level,message:description,pending:state?.outbox?.length||0,
+      cursor:state?.cursor||0,conflicts:conflictCount()});}
+    function visibleConflicts(record){const conflicts=C.view(record).conflicts;
+      if(conflicts.length)emit(onConflict,{projectId,recordId:record.id,conflicts:clone(conflicts)});
     }
-    function connected(){return transport.online();}
+    function connected(){return !closed&&transport.online();}
+    function retryable(error){
+      const code=Number(error?.status||error?.statusCode);
+      if([400,401,403,404,409,422].includes(code)||['UPGRADE_REQUIRED','DELTA_UPGRADE_REQUIRED','DELTA_SCOPE','DELTA_STORE_STALE'].includes(error?.code))return false;
+      if(error?.retryable===true)return true;
+      return [408,425,429].includes(code)||(code>=500&&code<=599)||error?.code==='DELTA_TIMEOUT';
+    }
+    function retry(error){
+      if(!started||closed||!retryable(error)||!connected()||!visible()||retryTimer!==null)return;
+      const wait=Math.min(retryMaxMs,retryBaseMs*2**Math.min(retries++,20));
+      retryTimer=schedule(()=>{retryTimer=null;wake();},wait);
+    }
+    function reconcile(){
+      if(closed||!started||!reconcileIntervalMs||reconcileTimer!==null)return;
+      reconcileTimer=schedule(()=>{reconcileTimer=null;if(connected()&&visible())wake();reconcile();},reconcileIntervalMs);
+    }
+    function request(fn){
+      active();const controller=new AbortController();let rejectClose;
+      const cancelled=new Promise((resolve,reject)=>{rejectClose=reject;});
+      const ticket={cancel(){controller.abort();rejectClose(problem('DELTA_CLOSED','同期処理を終了しました'));}};
+      inflight.add(ticket);let timeout;
+      const deadline=new Promise((resolve,reject)=>{timeout=schedule(()=>{controller.abort();
+        reject(problem('DELTA_TIMEOUT','通信が時間内に完了しませんでした。変更内容は保持しています'));},requestTimeoutMs);});
+      return Promise.race([Promise.resolve().then(()=>{active();return fn(controller.signal);}),deadline,cancelled])
+        .then(value=>{active();return value;}).finally(()=>{clear(timeout);inflight.delete(ticket);});
+    }
     async function catchUp(){
-      if(!connected())return {offline:true};
       let applied=0;
       for(let page=0;page<10000;page++){
-        const rows=await transport.list(projectId,state.cursor,pageLimit);
+        if(!connected())return {offline:true,applied};
+        const cursor=await local(()=>state.cursor);
+        const rows=await request(signal=>transport.list(projectId,cursor,pageLimit,{signal}));
         assert(Array.isArray(rows)&&rows.length<=pageLimit,'DELTA_SERVER','変更一覧が不正です');
-        if(!rows.length)return {applied,cursor:state.cursor};
-        for(const row of rows){
+        if(!rows.length)return {applied,cursor};
+        for(const row of rows)await local(async()=>{
           assert(row&&Number.isSafeInteger(row.seq)&&row.seq===state.cursor+1,
             'DELTA_SEQUENCE_GAP','未受信の変更があります。同期位置は進めません');
           assert(row.event?.projectId===projectId,'DELTA_FOREIGN','別案件の変更を受信しました');
-          const key=keyOf(row.event.drawingId,row.event.recordId);
-          const next=clone(state);
-          next.records[key]=combine(next.records[key]||null,row.event);
-          next.cursor=row.seq;
-          await persist(next);
-          visibleConflicts(next.records[key]);
-          applied++;
-        }
-        if(rows.length<pageLimit)return {applied,cursor:state.cursor};
+          const key=keyOf(row.event.drawingId,row.event.recordId),next=clone(state);
+          put(next.records,key,combine(own(next.records,key)?next.records[key]:null,row.event));next.cursor=row.seq;
+          await persist(next);visibleConflicts(next.records[key]);applied++;
+        });
+        if(rows.length<pageLimit)return {applied,cursor:await local(()=>state.cursor)};
       }
       throw problem('DELTA_PAGE_LIMIT','変更履歴の件数が多いため、次回の同期に分割します');
     }
     async function flush(){
-      if(!connected())return {offline:true};
       let pushed=0;
-      while(state.outbox.length){
-        const event=state.outbox[0];
-        // A duplicate request after a lost response returns the same seq;
-        // the server must reject a reused ID with changed content.
-        const ack=await transport.push(clone(event));
-        assert(ack&&Number.isSafeInteger(ack.seq)&&ack.seq>=1,
-          'DELTA_NOT_DURABLE','サーバー保存を確認できません');
-        const next=clone(state);
-        assert(next.outbox[0]?.eventId===event.eventId,
-          'DELTA_LOCAL_STATE','未送信の記録が変更されました');
-        next.outbox.shift();
-        await persist(next);
-        pushed++;
+      for(;;){
+        if(!connected())return {offline:true,pushed};
+        const event=await local(()=>clone(state.outbox[0]));if(!event)return {pushed};
+        const ack=await request(signal=>transport.push(clone(event),{signal}));
+        assert(ack&&Number.isSafeInteger(ack.seq)&&ack.seq>=1&&identityKeys.every(k=>ack[k]===event[k]),
+          'DELTA_NOT_DURABLE','この変更のサーバー保存を確認できません');
+        await local(async()=>{
+          const next=clone(state);
+          assert(C.equal(next.outbox[0],event),'DELTA_LOCAL_STATE','未送信の記録が変更されました');
+          next.outbox.shift();await persist(next);pushed++;
+        });
       }
-      return {pushed};
     }
     async function work(){
-      await load();
+      await local(()=>{});
       if(!connected()){status('offline','圏外中の変更は端末に保管しています');return {offline:true,pending:state.outbox.length};}
       try{
-        const {pushed=0}=await flush(),received=await catchUp();
-        status('ok','変更点を同期しました');
-        return {pushed,received:received.applied,pending:state.outbox.length,cursor:state.cursor};
-      }catch(error){
-        status('warning','変更内容を保持しました：'+error.message);
-        throw error;
-      }
+        const sent=await flush(),received=await catchUp();
+        retries=0;clear(retryTimer);retryTimer=null;
+        if(sent.offline||received.offline||!connected()){
+          status('offline','通信の復旧後に変更点の同期を再開します');return {offline:true,pending:state.outbox.length};
+        }
+        const conflicts=conflictCount();
+        status(conflicts?'review':state.outbox.length?'queued':'ok',conflicts?'変更点を受信しました。競合した内容の確認が必要です':
+          state.outbox.length?'端末の変更を送信待ちです':'記録の変更点を同期しました（写真本体は別途確認）');
+        return {pushed:sent.pushed,received:received.applied,pending:state.outbox.length,cursor:state.cursor,conflicts};
+      }catch(error){if(!closed){status('warning','変更内容を保持しました：'+error.message);retry(error);}throw error;}
+    }
+    function sync(){
+      if(closed)return Promise.reject(problem('DELTA_CLOSED','この同期処理は終了しています'));
+      clear(wakeTimer);wakeTimer=null;requested=true;
+      if(pump)return pump;
+      const run=async()=>{let result;while(requested){requested=false;result=await work();}return result;};
+      pump=run().finally(()=>{pump=null;if(requested&&!closed)wake();});return pump;
     }
     function wake(){
-      if(pendingWake)return;
-      pendingWake=true;
-      Promise.resolve().then(()=>{
-        pendingWake=false;
-        void serialized(work).catch(()=>{}); // Report via onStatus.
-      });
+      if(closed||!started||wakeTimer!==null)return;
+      if(pump){requested=true;return;}
+      // A task boundary coalesces rapid input and keeps local-save acknowledgement
+      // independent of network callbacks and remote notifications.
+      wakeTimer=schedule(()=>{wakeTimer=null;void sync().catch(()=>{});},0);
     }
     return {
       async start(){
-        return serialized(async()=>{
-          await load();
-          if(!started){
-            started=true;
-            live=typeof transport.subscribe==='function'?transport.subscribe(projectId,notice=>{
-              if(notice?.projectId===projectId)wake();
-            }):null;
+        await local(()=>{
+          if(!started){started=true;
+            try{live=typeof transport.subscribe==='function'?transport.subscribe(projectId,notice=>{
+              if(notice?.projectId===projectId)wake();}):null;}
+            catch(error){status('warning','変更通知へ接続できません。差分の定期確認を続けます');}
+            reconcile();
           }
-          return work();
         });
+        return sync();
       },
       async change({drawingId,before,after,eventId}){
-        return serialized(async()=>{
-          await load();
-          assert(valid(drawingId),'DELTA_RECORD','図面が見つかりません');
-          const key=keyOf(drawingId,after?.id);
-          const local=state.records[key]||null;
-          assert((!before&&!local)||(before&&local&&C.equal(C.upgrade(before),C.upgrade(local))),
-            'DELTA_STALE','記録がほかの操作で更新されました');
-          const event=diffRecord(local,after,{eventId,projectId,drawingId,deviceId});
+        // Capture the submitted edit before it waits behind any disk operation.
+        // UI drafts may keep changing while the transaction is queued.
+        if(before!==null&&before!==undefined)jsonValue(before);jsonValue(after);
+        before=before?clone(before):null;after=clone(after);
+        return local(async()=>{
+          assert(valid(drawingId)&&valid(after?.id)&&valid(eventId),'DELTA_RECORD','図面・記録・変更IDを確認できません');
+          const pending=state.outbox.find(e=>e.eventId===eventId);
+          if(pending){const repeated=diffRecord(before,after,{eventId,projectId,drawingId,deviceId});
+            assert(C.equal(repeated,pending),'DELTA_COLLISION','同じ変更IDに異なる内容があります');
+            wake();return {eventId,duplicate:true,pending:state.outbox.length};}
+          const key=keyOf(drawingId,after.id),current=own(state.records,key)?state.records[key]:null;
+          assert((!before&&!current)||(before&&current&&C.equal(C.upgrade(before),C.upgrade(current))),
+            'DELTA_STALE','記録がほかの操作で更新されました。入力内容を保持して再確認してください');
+          const event=diffRecord(current,after,{eventId,projectId,drawingId,deviceId});
           if(!event)return {unchanged:true,pending:state.outbox.length};
-          const next=clone(state);
-          next.records[key]=C.upgrade(after);
-          next.outbox.push(event);
-          await persist(next);
-          status('queued','端末に変更を保存しました');
+          const next=clone(state);put(next.records,key,C.upgrade(after));next.outbox.push(event);
+          await persist(next);status('queued','端末に変更を保存しました');wake();
           return {eventId,pending:state.outbox.length};
         });
       },
-      sync(){return serialized(work);},
-      onOnline(){wake();},
-      onVisible(){wake();},
-      async snapshot(){return serialized(async()=>{await load();return clone(state);});},
-      close(){if(typeof live==='function')live();live=null;started=false;}
+      sync,
+      onOnline(){clear(retryTimer);retryTimer=null;wake();},
+      onVisible(){if(visible())wake();},
+      snapshot(){return local(()=>clone(state));},
+      close(){if(closed)return;closed=true;started=false;requested=false;
+        clear(wakeTimer);clear(reconcileTimer);clear(retryTimer);wakeTimer=reconcileTimer=retryTimer=null;
+        for(const ticket of inflight)ticket.cancel();
+        if(typeof live==='function')try{live();}catch{}live=null;
+      }
     };
   }
-  const api={version:1,diffRecord,combine,createReplica,keyOf,validateEvent};
+  const api={version:2,diffRecord,combine,createReplica,keyOf,validateEvent};
   if(typeof module==='object'&&module.exports)module.exports=api;
   else root.SentlogDeltaSyncCore=api;
 })(typeof window!=='undefined'?window:globalThis);

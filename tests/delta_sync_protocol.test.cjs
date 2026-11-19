@@ -37,17 +37,17 @@ function fakeServer(){
         if(dedupe.has(id)){
           const row=dedupe.get(id);
           if(row.encoded!==encoded)throw Object.assign(Error('Operation ID collision'),{code:'DUPLICATE_DIFFERENT_EVENT'});
-          return {seq:row.seq};
+          return {seq:row.seq,...Object.fromEntries(['projectId','eventId','deviceId','drawingId','recordId'].map(k=>[k,row.event[k]]))};
         }
         const rows=logs.get(event.projectId)||[],seq=rows.length+1;
         rows.push({seq,event:clone(event)});logs.set(event.projectId,rows);
-        dedupe.set(id,{seq,encoded});stats.events++;
+        dedupe.set(id,{seq,encoded,event:clone(event)});stats.events++;
         for(const sub of listeners)if(sub.projectId===event.projectId){
           const dest=flags.get(sub.device);
           if(!dest?.online||dest.dropNotice)continue;
           stats.notice++;sub.callback({projectId:event.projectId,seq});
         }
-        return {seq};
+        return {seq,...Object.fromEntries(['projectId','eventId','deviceId','drawingId','recordId'].map(k=>[k,event[k]]))};
       },
       async list(projectId,cursor,limit){
         if(!flag.online)throw Error('network unavailable');
@@ -73,7 +73,7 @@ function environment(names=['A','B'],config={}){
   const server=fakeServer(),clients={},stores={},transports={},statuses={};
   for(const id of names){
     stores[id]=store();transports[id]=server.transport(id);statuses[id]=[];
-    clients[id]=D.createReplica({projectId:project,deviceId:id,store:stores[id],
+    clients[id]=D.createReplica({ownerId:'test-owner',projectId:project,deviceId:id,store:stores[id],
       transport:transports[id],pageLimit:config.pageLimit||8,onStatus:x=>statuses[id].push(x)});
   }
   return {server,clients,stores,transports,statuses};
@@ -161,7 +161,7 @@ await test('offline queue survives restart and replays automatically after recon
   await recordChange(e.clients.B,r=>C.appendComment(r,'圏外で記録した内容',opts('B','offline')),'offline-op');
   assert.equal((await e.clients.B.snapshot()).outbox.length,1);
   e.clients.B.close();
-  const restarted=D.createReplica({projectId:project,deviceId:'B',store:e.stores.B,transport:e.transports.B});
+  const restarted=D.createReplica({ownerId:'test-owner',projectId:project,deviceId:'B',store:e.stores.B,transport:e.transports.B});
   await restarted.start();assert.equal((await restarted.snapshot()).outbox.length,1);
   e.transports.B.flag.online=true;
   restarted.onOnline();await tick();await restarted.sync();await e.clients.A.sync();
@@ -247,17 +247,15 @@ await test('a changed PHOTO ID is never silently overwritten',async()=>{
   assert.throws(()=>D.combine(target,modified),error=>error.code==='DELTA_COLLISION');
 });
 await test('wrong project and missing record payloads cannot advance cursor',async()=>{
-  const e=environment();await bootstrap(e);
-  const prior=await e.clients.A.snapshot();
-  const wrong={schema:1,eventId:'e',projectId:'wrong',drawingId:drawing,recordId:recordId,deviceId:'A',kind:'patch',
-    patch:{comments:{},fields:{},photos:{},deletion:[]}};
-  const transport=e.transports.A;
-  const p=transport.push.bind(transport);
-  await p(wrong);
-  const cursor=(await e.clients.A.snapshot()).cursor;
-  await e.clients.A.sync();
-  assert.equal((await e.clients.A.snapshot()).cursor,cursor);
-  assert.deepEqual(prior.records,(await e.clients.A.snapshot()).records);
+  const e=environment();await bootstrap(e);const prior=await e.clients.A.snapshot();
+  const record=initial(),wrong=D.diffRecord(null,record,{eventId:'foreign',projectId:'wrong',drawingId:drawing,deviceId:'A'});
+  const normal=e.transports.A.list.bind(e.transports.A);e.transports.A.list=async()=>[{seq:prior.cursor+1,event:wrong}];
+  await assert.rejects(()=>e.clients.A.sync(),error=>error.code==='DELTA_FOREIGN');
+  const missing=D.diffRecord(record,C.appendComment(record,'base missing',opts('A','missing')),
+    {eventId:'missing',projectId:project,drawingId:'other-drawing',deviceId:'A'});
+  e.transports.A.list=async()=>[{seq:prior.cursor+1,event:missing}];
+  await assert.rejects(()=>e.clients.A.sync(),error=>error.code==='DELTA_MISSING_BASE');
+  e.transports.A.list=normal;const final=await e.clients.A.snapshot();assert.equal(final.cursor,prior.cursor);assert.deepEqual(final.records,prior.records);
 });
 await test('unseen notifications require no idle polling but reconnect catches up',async()=>{
   const e=environment();await bootstrap(e);

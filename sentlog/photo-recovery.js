@@ -137,22 +137,44 @@
    throw e;
   }
  }
- async function uploadPhoto(asset,id){
+ function pcSession(ownerId,id){
+  const s=session();
+  if(!ownerId||s?.user?.id!==ownerId||!s.access_token||device()!==id){
+   const e=Error('写真再送中にログインまたは端末登録が変わりました。再確認してから再開してください。');
+   e.code='PHOTO_SESSION_CHANGED';throw e;
+  }
+  return s;
+ }
+ async function uploadPhoto(asset,id,ownerId){
+  pcSession(ownerId,id);
   const mime=String(asset.mime_type||'').toLowerCase();
   if(!allowed.has(mime))throw Error('登録された写真形式を確認できません：'+asset.file_name);
   // Before claiming, actually read the PC original and verify every byte.
   const file=await pcPhoto(asset);
+  pcSession(ownerId,id);
   const claim=await rpc('sentlog_claim_photo_redelivery',{p_asset_id:asset.id,p_device_id:id,p_sha256:asset.sha256,p_byte_size:Number(asset.byte_size)});
   if(!claim?.claimed)return false;
-  const path=String(claim.storage_path).split('/').map(enc).join('/');
-  const s=session();
-  const r=await fetch(BASE+'/storage/v1/object/'+BUCKET+'/'+path,{
-   method:'POST',headers:{apikey:KEY,Authorization:'Bearer '+s.access_token,'Content-Type':mime,'x-upsert':'false'},body:file
-  });
-  if(!r.ok){const data=await r.json().catch(()=>({}));
-   throw Error('写真の再送に失敗しました（'+r.status+'）：'+(data.error||data.message||'保存形式を確認してください。'));
+  const s=pcSession(ownerId,id),parts=String(claim.storage_path||'').split('/');
+  const ext={'image/jpeg':'.jpg','image/png':'.png','image/webp':'.webp','image/heic':'.heic','image/heif':'.heif'}[mime];
+  if(typeof claim.token!=='string'||!/^[a-zA-Z0-9-]+$/.test(claim.token)||
+     parts.length!==5||parts[0]!==ownerId||parts[1]!==asset.project_id||
+     parts[2]!=='redelivery'||parts[3]!==asset.id||parts[4]!==claim.token+ext)
+   throw Error('写真の送信先が対象の案件・写真と一致しません。再送を停止しました。');
+  const path=parts.map(enc).join('/'),controller=new AbortController(),timer=setTimeout(()=>controller.abort(),90000);
+  try{
+   const r=await fetch(BASE+'/storage/v1/object/'+BUCKET+'/'+path,{
+    method:'POST',signal:controller.signal,headers:{apikey:KEY,Authorization:'Bearer '+s.access_token,'Content-Type':mime,'x-upsert':'false'},body:file
+   });
+   if(!r.ok){const data=await r.json().catch(()=>({}));
+    throw Error('写真の再送に失敗しました（'+r.status+'）：'+(data.error||data.message||'保存形式を確認してください。'));
+   }
+  }finally{clearTimeout(timer);}
+  pcSession(ownerId,id);
+  const finished=await rpc('sentlog_finish_photo_redelivery',{p_asset_id:asset.id,p_device_id:id,p_token:claim.token});
+  pcSession(ownerId,id);
+  if(finished?.published!==true||finished.asset_id!==asset.id){
+   throw Error('写真の再送完了を確認できません。元の保管ファイルを保持して再確認します。');
   }
-  await rpc('sentlog_finish_photo_redelivery',{p_asset_id:asset.id,p_device_id:id,p_token:claim.token});
   return true;
  }
  async function receive(id){
@@ -204,7 +226,8 @@
   else if(newFiles)show('写真 '+good+'/'+seen+' 件を保存・照合しました。図面を開くと確認できます。');
   else show('写真 '+good+'/'+seen+' 件を確認済み。');
  }
- async function provide(id){
+ async function provide(id,ownerId){
+  pcSession(ownerId,id);
   const requests=await api('sentlog_pdf_requests?received_at=is.null&select=asset_id,device_id,expected_sha256,requested_at&limit=5000');
   if(!(requests||[]).length){show('写真の再取得依頼はありません。');return;}
   // InPrivate browser registrations may outlive the browser by days. The server
@@ -228,8 +251,8 @@
     &&desired.has(a.id+':'+String(a.sha256).toLowerCase()));
   let count=0,errors=[];
   for(const a of pending){
-   try{if(await uploadPhoto(a,id))count++;}
-   catch(e){errors.push((a.file_name||'写真')+'：'+e.message);}
+   try{if(await uploadPhoto(a,id,ownerId))count++;}
+   catch(e){if(e?.code==='PHOTO_SESSION_CHANGED')throw e;errors.push((a.file_name||'写真')+'：'+e.message);}
   }
   if(errors.length)show('写真再取得エラー：'+errors.slice(0,3).join(' / '));
   else if(count)show('写真 '+count+' 件をPC原本から再送しました。受信端末の保存確認待ちです。');
@@ -244,7 +267,7 @@
   try{
    if(IS_PC)await window.ensureSession?.();
    else await window.sentlogManagementSession?.();
-   if(IS_PC)await provide(id);else await receive(id);
+   if(IS_PC)await provide(id,s.user?.id);else await receive(id);
   }catch(e){show('写真の再取得を確認できません：'+e.message);}
   finally{busy=false;}
  }

@@ -51,8 +51,8 @@ async function fixture({corrupt=false,unknownMime=false,staleRequest=false,recen
        else if(u.includes('sentlog_projects'))result=[{id:a.project_id}];
        else if(u.includes('sentlog_pc_receipts'))result=[receipt];
        else if(u.includes('sentlog_claim_photo_redelivery')){
-         calls.push('claim');result={claimed:true,token:'token-1',storage_path:'owner-id/project/redelivery/'+a.id+'/token-1.jpg'};
-       }else if(u.includes('sentlog_finish_photo_redelivery')){calls.push('finish');result={published:true};}
+         calls.push('claim');result={claimed:true,token:'token-1',storage_path:'owner-id/'+a.project_id+'/redelivery/'+a.id+'/token-1.jpg'};
+       }else if(u.includes('sentlog_finish_photo_redelivery')){calls.push('finish');result={published:true,asset_id:a.id};}
        else throw Error('unexpected REST '+u);
        return new Response(JSON.stringify(result),{status:200,headers:{'content-type':'application/json'}});
      }

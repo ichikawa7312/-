@@ -2,10 +2,15 @@ name: Sentlog delta-sync prototype safety tests
 on:
   pull_request:
     paths:
-      - 'sentlog/delta-sync-core.js'
-      - 'tests/delta_sync_protocol.test.cjs'
+      - 'sentlog/delta-sync-*.js'
+      - 'sentlog/photo-recovery.js'
+      - 'tests/delta_*'
+      - 'tests/photo_redelivery_adversarial.test.cjs'
+      - 'tests/photo_recovery_pc.test.cjs'
       - 'tests/collaboration_merge.test.cjs'
-      - 'docs/sentlog-delta-sync-prototype.md'
+      - 'docs/sentlog-delta-*.md'
+      - 'scripts/build_project_sync.py'
+      - 'scripts/build_sync_traffic.py'
       - '.github/workflows/sentlog-delta-prototype.yml'
       - 'docs/sentlog-delta-v1-schema-prototype.sql'
       - 'tests/delta_schema_fixture.sql'
@@ -14,6 +19,9 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+concurrency:
+  group: delta-prototype-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 jobs:
   simulate:
     runs-on: ubuntu-latest
@@ -28,20 +36,51 @@ jobs:
       - name: Syntax and security invariants
         run: |
           node --check sentlog/delta-sync-core.js
+          node --check sentlog/delta-sync-indexeddb.js
+          node --check sentlog/photo-recovery.js
           node --check tests/delta_sync_protocol.test.cjs
       - name: Offline, concurrency and idempotency scenarios
         run: |
           node tests/delta_sync_protocol.test.cjs
+          node tests/delta_sync_adversarial.test.cjs
+          node tests/delta_interleavings.test.cjs
+          node tests/photo_redelivery_adversarial.test.cjs
       - name: Existing immutable record safety
         run: |
           node tests/record_collaboration.test.cjs
+
+  browser-storage:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [chromium, webkit]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Prepare real browser engine
+        timeout-minutes: 10
+        run: |
+          python -m pip install playwright==1.62.0
+          python -m playwright install --with-deps ${{ matrix.browser }}
+      - name: Check real IndexedDB durability and offline restart
+        timeout-minutes: 6
+        run: python tests/delta_indexeddb_browser.py --browser ${{ matrix.browser }} --output release-diagnostics/delta-indexeddb-${{ matrix.browser }}.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: delta-indexeddb-${{ matrix.browser }}
+          path: release-diagnostics/
 
   database:
     runs-on: ubuntu-latest
     timeout-minutes: 8
     services:
       postgres:
-        image: postgres:17
+        image: postgres:17.12
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: test_only
@@ -68,5 +107,11 @@ jobs:
         run: psql -v ON_ERROR_STOP=1 -f docs/sentlog-delta-v1-schema-prototype.sql
       - name: Check RLS, sequence and retries
         run: psql -v ON_ERROR_STOP=1 -f tests/delta_schema_assertions.sql
+      - name: Compare client and SQL payload validation on the same corpus
+        run: node tests/delta_payload_contract.cjs --sql | psql -X -v ON_ERROR_STOP=1
+      - name: Reject malformed events and unsafe legacy writes
+        run: psql -v ON_ERROR_STOP=1 -f tests/delta_schema_adversarial.sql
       - name: Stress test parallel commits and duplicate retries
         run: bash tests/delta_schema_parallel.sh
+      - name: Check archive and device-stop races
+        run: bash tests/delta_schema_lifecycle_races.sh

@@ -1,5 +1,16 @@
 -- Executed only against disposable PostgreSQL CI service.
 \set ON_ERROR_STOP on
+DO $$
+BEGIN
+ IF (SELECT count(*) FROM sentlog_delta_private.heads)<>0 THEN
+   RAISE EXCEPTION 'schema draft activated or seeded a project';
+ END IF;
+ IF EXISTS(SELECT 1 FROM pg_catalog.pg_trigger
+   WHERE tgrelid='public.sentlog_project_snapshots'::regclass AND
+     tgfoid='sentlog_delta_private.reject_legacy_snapshot()'::regprocedure) THEN
+   RAISE EXCEPTION 'schema draft activated the legacy snapshot guard';
+ END IF;
+END $$;
 INSERT INTO sentlog_delta_private.heads(project_id,owner_id,last_seq,enabled,activated_at)
 VALUES
  ('11111111-1111-4111-8111-111111111111','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',0,true,now()),
@@ -11,7 +22,12 @@ LANGUAGE sql SECURITY INVOKER AS $$
  SELECT pg_catalog.jsonb_build_object(
   'schema',1,'eventId',eid,'projectId',project,'deviceId',dev,
   'drawingId','drawing-1','recordId','survey-1','kind','patch',
-  'patch',pg_catalog.jsonb_build_object('comments',pg_catalog.jsonb_build_object('c',body))
+  'patch',pg_catalog.jsonb_build_object(
+    'comments',pg_catalog.jsonb_build_object('c',pg_catalog.jsonb_build_object('order',0,
+      'revisions',pg_catalog.jsonb_build_array(pg_catalog.jsonb_build_object(
+        'id','revision:'||eid,'parents','[]'::jsonb,'actor',pg_catalog.jsonb_build_object('deviceId',dev,'deviceName','SQL fixture'),
+        'at',0,'text',body,'deleted',false)))),
+    'fields','{}'::jsonb,'photos','{}'::jsonb,'deletion','[]'::jsonb)
  )
 $$;
 GRANT EXECUTE ON FUNCTION public.test_event(text,text,text,text) TO authenticated;
@@ -31,6 +47,13 @@ BEGIN
   'event-1','drawing-1','survey-1',public.test_event('event-1','value'));
  IF (b->>'seq')::bigint <> 1 OR NOT (b->>'duplicate')::boolean THEN
   RAISE EXCEPTION 'identical event replay was not idempotent: %',b;
+ END IF;
+ IF (a-'seq'-'duplicate') IS DISTINCT FROM (b-'seq'-'duplicate') OR
+   a->>'eventId' IS DISTINCT FROM 'event-1' OR a->>'recordId' IS DISTINCT FROM 'survey-1' OR
+   a->>'projectId' IS DISTINCT FROM '11111111-1111-4111-8111-111111111111' OR
+   a->>'deviceId' IS DISTINCT FROM 'aaaaaaaa-0000-4000-8000-000000000001' OR
+   a->>'drawingId' IS DISTINCT FROM 'drawing-1' THEN
+   RAISE EXCEPTION 'initial or duplicate acknowledgment lost its event identity';
  END IF;
  IF (SELECT count(*) FROM public.sentlog_delta_events WHERE owner_id=auth.uid()) <> 1 THEN
   RAISE EXCEPTION 'unexpected event count after duplicate';
