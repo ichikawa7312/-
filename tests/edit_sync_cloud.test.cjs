@@ -214,7 +214,7 @@ async function receiverTests(){
     // Leave getSyncMeta unchanged, as happens while the selected record cannot
     // be merged. The independent 15-second fallback owns retries of this head.
     await s.clock.advance(24000);
-    assert.equal(s.requests.length,2,'15-second fallback makes only two head reads within 24 seconds, including the initial check');
+    assert.equal(s.requests.length,3,'initial read, queued wakeup and a fifteen-second fallback make three reads, well below the old 3-second polling rate');
     assert.equal(s.enqueues.length,1,'unchanged blocked heads cannot trigger repeated full payload reads');
     assert.equal(s.meta.get(projects.a.client_key).revision,1);
     s.setRows([head(projects.a,3)]);await s.api.syncHeads.poll();
