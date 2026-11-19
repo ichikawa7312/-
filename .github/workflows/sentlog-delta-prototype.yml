@@ -10,6 +10,7 @@ on:
       - 'docs/sentlog-delta-v1-schema-prototype.sql'
       - 'tests/delta_schema_fixture.sql'
       - 'tests/delta_schema_assertions.sql'
+      - 'tests/delta_schema_parallel.sh'
   workflow_dispatch:
 permissions:
   contents: read
@@ -67,3 +68,5 @@ jobs:
         run: psql -v ON_ERROR_STOP=1 -f docs/sentlog-delta-v1-schema-prototype.sql
       - name: Check RLS, sequence and retries
         run: psql -v ON_ERROR_STOP=1 -f tests/delta_schema_assertions.sql
+      - name: Stress test parallel commits and duplicate retries
+        run: bash tests/delta_schema_parallel.sh
