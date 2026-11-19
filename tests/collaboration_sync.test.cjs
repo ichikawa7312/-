@@ -285,6 +285,25 @@ test('another project metadata success cannot acknowledge a queued CAS retry',as
   h.api.metadata.request(['p1']);await h.time.tick(0);h.api.metadata.request(['p2']);await h.time.tick(0);
   assert.equal(h.otherServers.get('cloud-p2').revision,2);assert.deepEqual([...h.api.metadata.pending],['p1']);assert.equal(h.statuses.at(-1).level,'pending');h.stop();
 });
+test('fully synced idle projects do not run an expensive full-file audit every 15 seconds',async()=>{
+  const h=fixture(),initial=h.api.sync();await h.time.tick(0);
+  const first=await initial;assert.equal(first.started,true);
+  assert.equal(h.fileCalls.length,1,'first startup pass checks the actual file state');
+  assert.equal(h.statuses.at(-1).level,'ok','normal file audit settles after metadata preflight');
+  assert(h.statuses.some(s=>s.level==='pending'),'the intermediate preflight causes the visible pending message');
+  const calls=h.fileCalls.length;
+  for(let n=0;n<4;n++){
+    const idle=await h.api.sync();assert.equal(idle.started,false,'quiet automatic timer does not rescan unchanged assets');
+  }
+  assert.equal(h.fileCalls.length,calls,'no background file re-read while quiet');
+  const edited=h.api.sync({eventDriven:true,projectIds:['p1']});await h.time.tick(0);
+  assert.equal((await edited).started,true,'event-driven record checks remain immediate');
+  const forced=h.api.sync({force:true,projectIds:['p1']});await h.time.tick(0);await forced;
+  assert.equal(h.fileCalls.length,calls+1,'manual project sync bypasses quiet throttling');
+  await h.time.tick(90000);
+  const later=h.api.sync();await h.time.tick(0);assert.equal((await later).started,true,'a periodic safety audit still runs later');
+  h.stop();
+});
 test('a scoped manual retry recovers only that project and clears its own failure',async()=>{
   const h=fixture();editFixtureProject(h,'p1');failProjectWrite(h,'p1',Object.assign(Error('statement timeout'),{code:'57014'}));
   h.api.files.request(['*']);await h.time.tick(0);h.restHook=null;
