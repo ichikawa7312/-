@@ -21,9 +21,15 @@ async function scenario({missing=false,corrupt=false,stale=false,inactive=false,
    indexedDB:{open(){const q={};queueMicrotask(()=>{q.result={close(){},transaction(){return {objectStore(){return {get(k){const r={};queueMicrotask(()=>{r.result=files.get(k);r.onsuccess()});return r;}}}}}};q.onsuccess()});return q;}},
    fetch:async(url,options={})=>{
      const u=new URL(url),q=u.searchParams,body=options.body&&typeof options.body==='string'?JSON.parse(options.body):null;
-     let result=[];calls.push(u.pathname);
+     let result=[];calls.push(u.pathname+u.search);
      if(u.pathname.endsWith('/sentlog_pdf_requests')){
        result=pending?items:[];
+       if(q.has('device_id')){
+         const filter=q.get('device_id').match(/^in\.\((.*)\)$/);
+         assert(filter,'unexpected live-peer filter');
+         const ids=new Set(filter[1].split(','));
+         result=result.filter(row=>ids.has(row.device_id));
+       }
        if(q.has('or')){const after=q.get('or').match(/asset_id.gt.([^,]+)/)[1];result=result.filter(r=>r.asset_id>after);}
        result=result.slice(0,Math.min(1000,Number(q.get('limit')||1000)));
      }else if(u.pathname.endsWith('/sentlog_devices'))result=q.has('id')||inactive?[]:[{id:'peer',device_type:'ipad',last_seen_at:stale?old:current}];
@@ -53,6 +59,10 @@ async function scenario({missing=false,corrupt=false,stale=false,inactive=false,
  const uploadFailure=await scenario({failUpload:true});assert.deepEqual(uploadFailure.writes,['claim','upload']);assert(!uploadFailure.published);
  const finishFailure=await scenario({failFinish:true});assert(!finishFailure.published);assert(finishFailure.messages.some(x=>x.includes('Load failed')));
  const many=await scenario({many:true});assert(many.published,'requests after first 1000 are included');
+ assert(many.calls.filter(x=>x.includes('/sentlog_pdf_requests?')).every(x=>x.includes('device_id=in.')),'request scans are narrowed to live peers');
+ const offlinePeer=await scenario({stale:true}),noPeers=await scenario({inactive:true});
+ assert.equal(offlinePeer.calls.filter(x=>x.includes('/sentlog_pdf_requests?')).length,0,'stale receiver needs no request scan');
+ assert.equal(noPeers.calls.filter(x=>x.includes('/sentlog_pdf_requests?')).length,0,'no receiver needs no request scan');
  const page=fs.readFileSync('sentlog/index.html','utf8');
  assert(page.includes("['peer-photo-recovery.js?v=187','sentlogCheckPeerPhotos']"));
  assert(page.includes('src="./peer-photo-recovery.js?v=187"'));
