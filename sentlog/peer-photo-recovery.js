@@ -6,6 +6,8 @@
  const BASE='https://wiulvaqixphuobdielyy.supabase.co',KEY='sb_publishable_4pCeFn-wPsEYzFLhCMCINw_VEUfxz0-';
  const enc=encodeURIComponent,allowed=new Set(['image/jpeg','image/png','image/webp','image/heic','image/heif']);
  let busy=false,message='',uploadedTotal=0;
+ // Bound onboarding scans: never walk thousands of old device requests each minute.
+ let requestCursor=null,nextAllowedAt=0,failedScans=0;
  const sessions=()=>{try{return JSON.parse(localStorage.getItem('sentlogCloudSessionV1')||'null')}catch{return null;}};
  function show(text){
    message=text;
@@ -34,16 +36,23 @@
    }
  }
  async function requests(){
-   const out=[];let last=null;
-   for(;;){
+   // Each pass inspects at most 1,200 requests. The cursor continues in the
+   // next pass and wraps, so even older unreceived requests remain reachable.
+   const out=[];let last=requestCursor,exhausted=false;
+   for(let page=0;page<3;page++){
      const cursor=last?'&or='+enc('(asset_id.gt.'+last.asset_id+',and(asset_id.eq.'+last.asset_id+',device_id.gt.'+last.device_id+'))'):'';
      const rows=await api('sentlog_pdf_requests?received_at=is.null&select=asset_id,device_id,expected_sha256,requested_at&order=asset_id.asc,device_id.asc&limit=400'+cursor);
-     if(!Array.isArray(rows))throw Error('写真の受信待ちを確認できません。');if(!rows.length)return out;
+     if(!Array.isArray(rows))throw Error('写真の受信待ちを確認できません。');
+     if(!rows.length){exhausted=true;break;}
      for(const row of rows){
        if(!row.asset_id||!row.device_id||(last&&(row.asset_id<last.asset_id||(row.asset_id===last.asset_id&&row.device_id<=last.device_id))))throw Error('写真の受信待ち一覧を確認できません。');
        last=row;out.push(row);
      }
+     if(rows.length<400){exhausted=true;break;}
    }
+   // A failed page leaves the previous cursor unchanged and is retried safely.
+   requestCursor=exhausted?null:last;
+   return out;
  }
  async function readLocal(key){
    const db=await new Promise((resolve,reject)=>{const q=indexedDB.open('surveyFieldNoteDB',1);
@@ -78,13 +87,15 @@
    await api('rpc/sentlog_device_photo_redelivery_v1',{...params,p_action:'finish',p_token:claim.token});
    return true;
  }
- async function run(){
+ async function run(force=false){
    if(busy||document.hidden||!navigator.onLine||window.sentlogImporting||!window.SentlogRecords?.ready)return;
+   if(force!==true&&Date.now()<nextAllowedAt)return;
    const id=localStorage.getItem('sentlogCloudDeviceV1');if(!id||!sessions()?.access_token)return;
    busy=true;
    try{
      await window.sentlogManagementSession?.();
      const pending=await requests();
+     failedScans=0;nextAllowedAt=Date.now()+60000;
      if(!pending.length){show(uploadedTotal?'端末間の写真補完：'+uploadedTotal+'枚を送信しました。受信済みの写真は端末の写真確認欄で確認できます。':'');return;}
      const devices=await allRows('sentlog_devices','active=eq.true&select=id,last_seen_at,device_type');
      const live=new Map(devices.map(d=>[d.id,d])),cutoff=Date.now()-15*60*1000;
@@ -113,12 +124,16 @@
      else if(checked)show('写真補完：この端末から送れる写真を確認しています。写真が残っているもう一方の端末も開いてください。');
      // Receiving is already hash-verified and durable in photo-recovery.js.
      window.sentlogCheckPhotoRecovery?.();
-   }catch(e){show('写真補完の確認：'+(e.name==='AbortError'?'通信が途中で止まりました。次回の確認で再試行します。':e.message));}
+   }catch(e){
+     failedScans=Math.min(failedScans+1,5);
+     nextAllowedAt=Date.now()+Math.min(600000,30000*Math.pow(2,failedScans-1));
+     show('写真補完の確認：'+(e.name==='AbortError'?'通信が途中で止まりました。次回の確認で再試行します。':e.message));
+   }
    finally{busy=false;}
  }
- window.sentlogCheckPeerPhotos=run;
- Promise.resolve(window.sentlogAppReady).then(()=>{setTimeout(run,4500);setInterval(run,15000);});
+ window.sentlogCheckPeerPhotos=()=>run(true);
+ Promise.resolve(window.sentlogAppReady).then(()=>{setTimeout(run,4500);setInterval(run,60000);});
  window.addEventListener('online',run);window.addEventListener('pageshow',run);
  document.addEventListener('visibilitychange',()=>{if(!document.hidden)run();});
- document.addEventListener('click',e=>{if(e.target?.closest?.('#sentlogCloudSyncNow'))run();if(message)show(message);});
+ document.addEventListener('click',e=>{if(e.target?.closest?.('#sentlogCloudSyncNow'))run(true);if(message)show(message);});
 })();
