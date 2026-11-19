@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Disposable GitHub Actions PostgreSQL instance only. Never target a live DB.
 set -euo pipefail
-test "\${PGDATABASE:-}" = "sentlog_delta_test" || { echo 'unsafe database target' >&2; exit 1; }
+test "${PGDATABASE:-}" = "sentlog_delta_test" || { echo 'unsafe database target' >&2; exit 1; }
 dir=$(mktemp -d); trap 'rm -rf "$dir"' EXIT
 owner="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 project="11111111-1111-4111-8111-111111111111"
@@ -17,10 +17,10 @@ submit() {
 }
 pids=()
 for i in $(seq 1 24); do submit "parallel-$i" & pids+=("$!"); done
-for pid in "\${pids[@]}"; do if ! wait "$pid"; then cat "$dir"/*.log; exit 1; fi; done
+for pid in "${pids[@]}"; do if ! wait "$pid"; then cat "$dir"/*.log; exit 1; fi; done
 pids=()
 for i in $(seq 1 8); do submit "parallel-dup" & pids+=("$!"); done
-for pid in "\${pids[@]}"; do if ! wait "$pid"; then cat "$dir"/*.log; exit 1; fi; done
+for pid in "${pids[@]}"; do if ! wait "$pid"; then cat "$dir"/*.log; exit 1; fi; done
 psql -X -v ON_ERROR_STOP=1 <<'SQL'
 DO $$
 DECLARE n bigint; maximum bigint; head bigint; uniques bigint;
