@@ -68,5 +68,55 @@ for file in (ROOT / 'tests').iterdir():
         pending[str(file.relative_to(ROOT))] = revised
 for path, source in pending.items():
     (ROOT / path).write_text(source, encoding='utf-8')
+# Run PC outage safeguards only after strict pristine-source checks and all
+# other generators. Do not alter the source PC page or change any record format.
+pc_path = ROOT / 'sentlog-pc/index.html'
+pc_page = pc_path.read_text(encoding='utf-8')
+if pc_page.count('timer=setInterval(syncOnce,5000)') != 1:
+    raise RuntimeError('PC scan interval integration changed')
+pc_page = pc_page.replace('timer=setInterval(syncOnce,5000)',
+                          'timer=setInterval(syncOnce,60000)')
+pc_page = pc_page.replace('約5秒ごとに確認します', '約60秒ごとに確認します')
+if 'function pcServiceUnavailable(e)' not in pc_page:
+    pc_helpers = '''// A Data API outage must not trigger repeated full inventory scans.
+let pcRetryAfter=0,pcFailureStreak=0;
+function pcServiceUnavailable(e){
+  const message=String(e?.message||e||'');
+  return /(?:^|\\D)(?:500|502|503|504|522|524)(?:\\D|$)|PGRST00[0-3]|57014|timeout|timed out|connection|network|Failed to fetch|通信が.*切れ|接続.*失敗/i.test(message);
+}
+function pcScheduleBackoff(e){
+  if(!pcServiceUnavailable(e))return false;
+  pcFailureStreak=Math.min(6,pcFailureStreak+1);
+  const delay=Math.min(300000,30000*Math.pow(2,pcFailureStreak-1));
+  pcRetryAfter=Date.now()+delay;
+  log('クラウド接続不調：ファイルを保持し、'+Math.ceil(delay/1000)+'秒後以降に再確認します。');
+  return true;
+}
+'''
+    if pc_page.count('async function syncOnce(){') != 1:
+        raise RuntimeError('PC synchronization integration changed')
+    pc_page = pc_page.replace('async function syncOnce(){', pc_helpers+'async function syncOnce(){')
+    old = "if(busy)return;busy=true;setSync('同期中…','busy');"
+    if pc_page.count(old) != 1:
+        raise RuntimeError('PC retry gate integration changed')
+    pc_page = pc_page.replace(old, "if(busy||Date.now()<pcRetryAfter)return;busy=true;setSync('同期中…','busy');")
+    if "if(e.code==='REAUTH_REQUIRED'||e.code==='SESSION_CHANGED')throw e;" in pc_page:
+        pc_page=pc_page.replace("if(e.code==='REAUTH_REQUIRED'||e.code==='SESSION_CHANGED')throw e;",
+            "if(e.code==='REAUTH_REQUIRED'||e.code==='SESSION_CHANGED'||pcServiceUnavailable(e))throw e;")
+        pc_page=pc_page.replace('  const remaining=await pendingAssets();',
+            '  const remaining=await pendingAssets();\n  pcFailureStreak=0;pcRetryAfter=0;')
+        pc_page=pc_page.replace("}catch(e){setSync('同期は完了していません：'+e.message,'err');log('同期確認: '+e.message)}",
+            "}catch(e){pcScheduleBackoff(e);setSync('同期は完了していません：'+e.message,'err');log('同期確認: '+e.message)}")
+    else:
+        pc_page=pc_page.replace("}catch(e){log('処理待ち: '+(a.file_name||a.id)+' / '+e.message)}",
+            "}catch(e){log('処理待ち: '+(a.file_name||a.id)+' / '+e.message);if(pcServiceUnavailable(e))throw e}")
+        pc_page=pc_page.replace("    setSync(list.length?'同期完了':'新しいデータはありません','ok')",
+            "    pcFailureStreak=0;pcRetryAfter=0;\n    setSync(list.length?'同期完了':'新しいデータはありません','ok')")
+        pc_page=pc_page.replace("}catch(e){setSync('同期エラー: '+e.message,'err');log('同期エラー: '+e.message)}",
+            "}catch(e){pcScheduleBackoff(e);setSync('同期エラー: '+e.message,'err');log('同期エラー: '+e.message)}")
+if 'pcRetryAfter' not in pc_page or 'pcServiceUnavailable' not in pc_page:
+    raise RuntimeError('PC outage guard not present in output')
+pc_path.write_text(pc_page, encoding='utf-8')
+
 subprocess.run(['node', '--check', 'sentlog/cloud-sync.js'], cwd=ROOT, check=True)
 print('Built isolated project synchronization and local-project recovery controls')
