@@ -205,36 +205,6 @@
   else if(newFiles)show('写真 '+good+'/'+seen+' 件を保存・照合しました。図面を開くと確認できます。');
   else show('写真 '+good+'/'+seen+' 件を確認済み。');
  }
- // A newly registered device may leave thousands of pending receipts.
- // Walk them incrementally instead of repeatedly fetching 5,000 rows.
- async function pcPendingRequests(){
-   const out=[];let last=pcRequestCursor,exhausted=false;
-   for(let page=0;page<3;page++){
-     const cursor=last?'&or='+enc('(asset_id.gt.'+last.asset_id+',and(asset_id.eq.'+last.asset_id+',device_id.gt.'+last.device_id+'))'):'';
-     const rows=await api('sentlog_pdf_requests?received_at=is.null&select=asset_id,device_id,expected_sha256,requested_at&order=asset_id.asc,device_id.asc&limit=400'+cursor);
-     if(!Array.isArray(rows))throw Error('写真の受信待ち一覧を確認できません。');
-     if(!rows.length){exhausted=true;break;}
-     for(const row of rows){
-       if(!row.asset_id||!row.device_id||(last&&(row.asset_id<last.asset_id||(row.asset_id===last.asset_id&&row.device_id<=last.device_id))))throw Error('写真の受信待ち情報が重複しています。');
-       last=row;out.push(row);
-     }
-     if(rows.length<400){exhausted=true;break;}
-   }
-   pcRequestCursor=exhausted?null:last;
-   return out;
- }
- // Query only demanded photo IDs, not the entire historical asset catalog.
- async function requestedPhotoAssets(desired){
-   const ids=[...new Set([...desired].map(v=>v.split(':')[0]))],out=[];
-   for(let at=0;at<ids.length;at+=75){
-     const chunk=ids.slice(at,at+75);
-     if(!chunk.every(id=>/^[0-9a-f-]{36}$/i.test(id)))throw Error('写真の識別情報が不正です。');
-     const rows=await api('sentlog_assets?kind=eq.photo&status=eq.storage_deleted&id=in.('+chunk.map(enc).join(',')+')&select=id,project_id,status,file_name,mime_type,byte_size,sha256,storage_path,metadata&limit=100');
-     if(!Array.isArray(rows)||rows.some(a=>!chunk.includes(a.id)))throw Error('写真の再配信対象を確認できません。');
-     out.push(...rows);
-   }
-   return out;
- }
  async function provide(id){
   const requests=await pcPendingRequests();
   if(!(requests||[]).length){show('写真の再取得依頼はありません。');return;}
@@ -269,6 +239,36 @@
   else if(count)show('写真 '+count+' 件をPC原本から再送しました。受信端末の保存確認待ちです。');
   else if(pending.length)show('写真の再送確認待ちです。受信側セントログも開いてください。');
   else show('写真の再取得依頼はありません。');
+ }
+ // A newly registered device may leave thousands of pending receipts.
+ // Walk them incrementally instead of repeatedly fetching 5,000 rows.
+ async function pcPendingRequests(){
+   const out=[];let last=pcRequestCursor,exhausted=false;
+   for(let page=0;page<3;page++){
+     const cursor=last?'&or='+enc('(asset_id.gt.'+last.asset_id+',and(asset_id.eq.'+last.asset_id+',device_id.gt.'+last.device_id+'))'):'';
+     const rows=await api('sentlog_pdf_requests?received_at=is.null&select=asset_id,device_id,expected_sha256,requested_at&order=asset_id.asc,device_id.asc&limit=400'+cursor);
+     if(!Array.isArray(rows))throw Error('写真の受信待ち一覧を確認できません。');
+     if(!rows.length){exhausted=true;break;}
+     for(const row of rows){
+       if(!row.asset_id||!row.device_id||(last&&(row.asset_id<last.asset_id||(row.asset_id===last.asset_id&&row.device_id<=last.device_id))))throw Error('写真の受信待ち情報が重複しています。');
+       last=row;out.push(row);
+     }
+     if(rows.length<400){exhausted=true;break;}
+   }
+   pcRequestCursor=exhausted?null:last;
+   return out;
+ }
+ // Query only demanded photo IDs, not the entire historical asset catalog.
+ async function requestedPhotoAssets(desired){
+   const ids=[...new Set([...desired].map(v=>v.split(':')[0]))],out=[];
+   for(let at=0;at<ids.length;at+=75){
+     const chunk=ids.slice(at,at+75);
+     if(!chunk.every(id=>/^[0-9a-f-]{36}$/i.test(id)))throw Error('写真の識別情報が不正です。');
+     const rows=await api('sentlog_assets?kind=eq.photo&status=eq.storage_deleted&id=in.('+chunk.map(enc).join(',')+')&select=id,project_id,status,file_name,mime_type,byte_size,sha256,storage_path,metadata&limit=100');
+     if(!Array.isArray(rows)||rows.some(a=>!chunk.includes(a.id)))throw Error('写真の再配信対象を確認できません。');
+     out.push(...rows);
+   }
+   return out;
  }
  async function run(force=false){
   if(busy||!navigator.onLine||document.hidden||window.sentlogImporting||(!IS_PC&&!window.SentlogRecords?.ready))return;
