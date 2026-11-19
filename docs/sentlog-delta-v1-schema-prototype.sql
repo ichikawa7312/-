@@ -156,16 +156,20 @@ CREATE TRIGGER sentlog_delta_event_announce AFTER INSERT ON public.sentlog_delta
 -- FIRST and have their offline drafts rescued. This trigger is *not* enabled
 -- until the migration/legacy-device tests pass.
 CREATE OR REPLACE FUNCTION sentlog_delta_private.reject_legacy_snapshot()
-RETURNS trigger LANGUAGE plpgsql SECURITY INVOKER SET search_path=''
+RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path=''
 AS $fn$
-DECLARE pid uuid:=coalesce(NEW.project_id,OLD.project_id);
+DECLARE pid uuid;
 BEGIN
+  pid:=CASE WHEN TG_OP='DELETE' THEN OLD.project_id ELSE NEW.project_id END;
   IF EXISTS(SELECT 1 FROM sentlog_delta_private.heads WHERE project_id=pid AND enabled) THEN
     RAISE EXCEPTION 'DELTA_UPGRADE_REQUIRED: この案件は新しい同期方式です。端末内の記録を保持し、セントログを更新してください。'
       USING ERRCODE='55000';
   END IF;
-  RETURN coalesce(NEW,OLD);
+  IF TG_OP='DELETE' THEN RETURN OLD; END IF;
+  RETURN NEW;
 END $fn$;
+REVOKE ALL ON FUNCTION sentlog_delta_private.reject_legacy_snapshot()
+  FROM PUBLIC, anon, authenticated;
 -- DO NOT CREATE THE reject_legacy_snapshot TRIGGER UNTIL THE CLIENT MIGRATION
 -- IS VERIFIED; the function by itself does not change snapshot writes.
 
