@@ -179,7 +179,7 @@ jobs:
       - run: |
           npm install --prefix "$RUNNER_TEMP/sentlog-dom" linkedom@0.18.12 --no-audit --no-fund
           NODE_PATH="$RUNNER_TEMP/sentlog-dom/node_modules" node tests/drawing_memos_dom.cjs
-          pip install playwright==1.57.0
+          python -m pip install playwright==1.57.0
           python -m playwright install chromium webkit
           python tests/dxf_ui.py
           SENTLOG_TEST_BROWSERS=chromium,webkit python tests/peer_photos_ui.py
@@ -219,7 +219,7 @@ jobs:
           python tests/single_number_ui.py
           python tests/optional_symbol_ui.py
           python tests/dimension_lines_ui.py
-          pip install ezdxf==1.4.4
+          python -m pip install ezdxf==1.4.4
           python tests/dxf_outputs.py
           python tests/shape_dimensions_ui.py
           python tests/editable_shape_dimensions_ui.py

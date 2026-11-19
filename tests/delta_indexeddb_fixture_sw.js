@@ -17,6 +17,10 @@ self.addEventListener('fetch',event=>{
   if(event.request.method!=='GET'||!FILES.includes(event.request.url))return;
   event.respondWith((async()=>{
     const cache=await caches.open(CACHE);
-    return (await cache.match(event.request))||fetch(event.request);
+    const cached=await cache.match(event.request);
+    if(!cached)return fetch(event.request);
+    const headers=new Headers(cached.headers);
+    headers.set('X-Sentlog-Fixture-Source','service-worker-cache');
+    return new Response(cached.body,{status:cached.status,statusText:cached.statusText,headers});
   })());
 });

@@ -39,7 +39,7 @@ jobs:
                   inside=False
           if len(commands)<80: raise RuntimeError('Unexpected archive workflow layout; no checks were skipped')
           commands += [
-              'pip install reportlab==4.4.9 pypdf==6.10.0',
+              'python -m pip install reportlab==4.4.9 pypdf==6.10.0',
               'SENTLOG_TEST_BROWSERS=chromium,webkit python tests/drawing_export_ui.py'
           ]
           out=pathlib.Path('release-diagnostics');out.mkdir(exist_ok=True)

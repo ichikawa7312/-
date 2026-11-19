@@ -52,7 +52,7 @@ jobs:
   browser-storage:
     runs-on: ubuntu-24.04
     container:
-      image: mcr.microsoft.com/playwright/python:v1.57.0-noble@sha256:8331696befd3ee8b5baefca428446345f548e415a2408fe1d3d1224e9d919682
+      image: mcr.microsoft.com/playwright/python:v1.64.1-noble@sha256:330d401ae23c905896a0c26c66c36fc971b621519e7b11b435a8328d7bf6e031
     timeout-minutes: 18
     strategy:
       fail-fast: false
@@ -65,7 +65,7 @@ jobs:
           python-version: '3.12'
       - name: Install matching package for the bundled browser engines
         timeout-minutes: 10
-        run: python -m pip install playwright==1.57.0
+        run: python -m pip install playwright==1.64.1
       - name: Check real IndexedDB durability and offline restart
         timeout-minutes: 6
         run: python tests/delta_indexeddb_browser.py --browser ${{ matrix.browser }} --output release-diagnostics/delta-indexeddb-${{ matrix.browser }}.json

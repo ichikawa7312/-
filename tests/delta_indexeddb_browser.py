@@ -11,9 +11,11 @@ fixture has a test-only service worker, not the production app's worker.
 import argparse
 import functools
 import json
+import socket
 import tempfile
 import threading
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from importlib.metadata import version as package_version
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -308,7 +310,29 @@ def main():
               'photo_original_delivery_tested': False,
               'backend': 'in-page synthetic event server; no Supabase requests',
               'storage': 'real IndexedDB in disposable browser profile',
-              'network': 'loopback fixture only'}
+              'network': 'loopback fixture only',
+              'playwright_version': package_version('playwright'),
+              'offline_methods': ['Playwright offline flag', 'fixture origin stopped; external requests blocked'],
+              'playwright_offline_probe': {'status': 'not-run'}}
+    origin_stopped = False
+
+    def stop_origin():
+        nonlocal origin_stopped
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+        assert not thread.is_alive(), 'fixture HTTP server did not stop'
+        assert server.socket.fileno() == -1, 'fixture server socket is still open'
+        with socket.socket() as probe:
+            probe.settimeout(2)
+            result = probe.connect_ex(('127.0.0.1', server.server_address[1]))
+            assert result != 0, 'fixture origin is still reachable'
+        report['origin_unreachable_probe'] = {'connect_errno': result, 'server_socket_closed': True}
+        origin_stopped = True
+
+    def cached_navigation(response):
+        assert response is not None and response.status == 200, 'cached fixture did not return HTTP 200'
+        assert response.headers.get('x-sentlog-fixture-source') == 'service-worker-cache', 'navigation was not fulfilled by the cached test worker'
 
     def restrict(context):
         blocked = []
@@ -370,10 +394,49 @@ def main():
             saved = page.evaluate(PERSIST)
             page.reload()
             page.wait_for_function('!!navigator.serviceWorker.controller')
+            assert page.evaluate("""async()=>{
+              const files=[location.href,'../sentlog/record-collaboration.js','../sentlog/delta-sync-core.js','../sentlog/delta-sync-indexeddb.js'];
+              return (await Promise.all(files.map(path=>caches.match(new URL(path,location.href).href)))).every(Boolean);
+            }"""), 'offline fixture resources are not cached'
+
+            # The original strict offline-flag gate is retained. Playwright
+            # fixed its WebKit worker-navigation bug in the 1.64 line; this
+            # job pins the fixed browser/package together. Never ignore a
+            # failed emulated-offline navigation or count it as a success.
+            report['playwright_offline_probe'] = {'status': 'running'}
             context.set_offline(True)
-            page.reload()
+            cached_navigation(page.reload())
+            assert page.evaluate(RESTORE) == saved, 'emulated-offline reload changed durable state'
+            name = 'emulated-offline reload reads durable unsent state through test worker'
+            report['cases'].append(name)
+            print(f'PASS {args.browser}: {name}', flush=True)
+            assert not errors, errors
+            assert not blocked, blocked
+            context.close()
+
+            context = engine.launch_persistent_context(profile, **launch)
+            blocked = restrict(context)
+            page = context.pages[0] if context.pages else context.new_page()
+            page.on('pageerror', lambda error: errors.append(str(error)))
+            context.set_offline(True)
+            cached_navigation(page.goto(url))
+            assert page.evaluate(RESTORE) == saved, 'emulated-offline browser restart changed durable state'
+            name = 'new browser process with offline flag reopens committed state'
+            report['cases'].append(name)
+            print(f'PASS {args.browser}: {name}', flush=True)
+            report['playwright_offline_probe'] = {'status': 'passed', 'reload': True, 'new_process': True}
+            context.set_offline(False)
+            page.goto(url)
+            assert page.evaluate(RESTORE) == saved, 'offline-flag probe damaged saved state'
+
+            # Shut down the actual origin, verify its port is unreachable, and
+            # require a worker-only marker. The browser cannot fetch fixture JS
+            # or HTML from a network fallback. This is an unavailable-origin
+            # test, not a claim to emulate physical iPhone airplane mode.
+            stop_origin()
+            cached_navigation(page.reload())
             assert page.evaluate(RESTORE) == saved, 'offline reload changed durable state'
-            name = 'offline reload reads durable unsent state through test worker'
+            name = 'origin-unavailable reload reads durable unsent state through test worker'
             report['cases'].append(name)
             print(f'PASS {args.browser}: {name}', flush=True)
             assert not errors, errors
@@ -385,10 +448,9 @@ def main():
             context = engine.launch_persistent_context(profile, **launch)
             blocked = restrict(context)
             page = context.pages[0] if context.pages else context.new_page()
-            context.set_offline(True)
-            page.goto(url)
+            cached_navigation(page.goto(url))
             assert page.evaluate(RESTORE) == saved, 'browser restart changed durable state'
-            name = 'new browser process offline reopens committed state'
+            name = 'new browser process reopens committed state while origin is unreachable'
             report['cases'].append(name)
             print(f'PASS {args.browser}: {name}', flush=True)
             assert not blocked, blocked
@@ -396,11 +458,14 @@ def main():
             report.update(status='passed', passed=len(report['cases']))
             print(json.dumps(report, ensure_ascii=False), flush=True)
     except Exception as error:
+        if report['playwright_offline_probe']['status'] == 'running':
+            report['playwright_offline_probe'] = {'status': 'failed', 'error': str(error)}
         report.update(status='failed', passed=len(report['cases']), error=str(error))
         raise
     finally:
-        server.shutdown()
-        server.server_close()
+        if not origin_stopped:
+            server.shutdown()
+            server.server_close()
         if args.output:
             args.output.parent.mkdir(parents=True, exist_ok=True)
             args.output.write_text(json.dumps(report, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
