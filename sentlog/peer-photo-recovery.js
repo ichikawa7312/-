@@ -131,7 +131,7 @@
    }
    finally{busy=false;}
  }
- window.sentlogCheckPeerPhotos=run;
+ window.sentlogCheckPeerPhotos=()=>run(true);
  Promise.resolve(window.sentlogAppReady).then(()=>{setTimeout(run,4500);setInterval(run,60000);});
  window.addEventListener('online',run);window.addEventListener('pageshow',run);
  document.addEventListener('visibilitychange',()=>{if(!document.hidden)run();});
