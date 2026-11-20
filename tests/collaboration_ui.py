@@ -620,7 +620,11 @@ def run_deletion_confirmation(browser, cloud, engine):
     removed = saved['saved']['collabDeletedRecords'][0]
     assert removed['id'] == 'survey-a' and len(removed['photos']) == 31
     assert removed['photos'] == before_photos and '確認中の別端末の追記' in removed['memo']
-    assert saved['saved']['shapes'][0] == retained_record
+    # Existing numbering closes the visible gap after deletion. Every other
+    # field, including stable recordNo, ID and complete history, stays exact.
+    expected_remaining = copy.deepcopy(retained_record)
+    expected_remaining.update(globalNo=1, typeNo=1, autoLabel='調査-1')
+    assert saved['saved']['shapes'][0] == expected_remaining
     assert saved['view'] == 'editor' and saved['drawing'] == base.DRAWING
     assert page.evaluate("""async expected=>{
       const bytes=Uint8Array.from(atob(expected),c=>c.charCodeAt(0));
