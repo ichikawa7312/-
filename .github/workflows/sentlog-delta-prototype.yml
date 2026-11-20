@@ -13,9 +13,11 @@ on:
       - 'scripts/build_sync_traffic.py'
       - '.github/workflows/sentlog-delta-prototype.yml'
       - 'docs/sentlog-delta-v1-schema-prototype.sql'
+      - 'docs/sentlog-delta-semantic-validation-prototype.sql'
       - 'tests/delta_schema_fixture.sql'
       - 'tests/delta_schema_assertions.sql'
       - 'tests/delta_schema_parallel.sh'
+      - 'tests/delta_semantic_assertions.sql'
   workflow_dispatch:
 permissions:
   contents: read
@@ -105,12 +107,16 @@ jobs:
         run: psql -v ON_ERROR_STOP=1 -f tests/delta_schema_fixture.sql
       - name: Compile candidate delta schema
         run: psql -v ON_ERROR_STOP=1 -f docs/sentlog-delta-v1-schema-prototype.sql
+      - name: Install record history semantic protection (prototype only)
+        run: psql -v ON_ERROR_STOP=1 -f docs/sentlog-delta-semantic-validation-prototype.sql
       - name: Check RLS, sequence and retries
         run: psql -v ON_ERROR_STOP=1 -f tests/delta_schema_assertions.sql
       - name: Compare client and SQL payload validation on the same corpus
         run: node tests/delta_payload_contract.cjs --sql | psql -X -v ON_ERROR_STOP=1
       - name: Reject malformed events and unsafe legacy writes
         run: psql -v ON_ERROR_STOP=1 -f tests/delta_schema_adversarial.sql
+      - name: Reject missing record/parent, cyclic and rewritten histories
+        run: psql -v ON_ERROR_STOP=1 -f tests/delta_semantic_assertions.sql
       - name: Stress test parallel commits and duplicate retries
         run: bash tests/delta_schema_parallel.sh
       - name: Check archive and device-stop races
