@@ -32,8 +32,6 @@ jobs:
   simulate:
     runs-on: ubuntu-latest
     timeout-minutes: 8
-    env:
-      NODE_PATH: ${{ runner.temp }}/sentlog-prototype-deps/node_modules
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -54,6 +52,7 @@ jobs:
         run: npm install --prefix "$RUNNER_TEMP/sentlog-prototype-deps" --ignore-scripts --no-audit --no-fund --save-exact fake-indexeddb@6.2.8
       - name: Offline, concurrency and idempotency scenarios
         run: |
+          export NODE_PATH="$RUNNER_TEMP/sentlog-prototype-deps/node_modules"
           node tests/delta_sync_protocol.test.cjs
           node tests/delta_sync_adversarial.test.cjs
           node tests/delta_interleavings.test.cjs
