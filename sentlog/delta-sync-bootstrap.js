@@ -102,7 +102,8 @@
         // Re-read authoritative bytes and recompute the plan. A saved plan hash
         // alone is not permission to install an edited or obsolete candidate.
         const initial=await baseline(candidate.baselineReceipt,ctx,fence);
-        const rebuilt=await ctx.wait(R.plan({scope,baseline:initial,localSnapshot:local.snapshot,currentScope,signal:ctx.signal,groupTransport:transport}),fence);
+        const rebuilt=await ctx.wait(R.plan({scope,baseline:initial,localSnapshot:local.snapshot,currentScope,signal:ctx.signal,
+          groupTransport:transport,accepted:candidate.accepted}),fence);
         insist(rebuilt.planSha256===candidate.planSha256&&rebuilt.readyForInstall,'BOOTSTRAP_PLAN_CHANGED',
           '引き継ぐ内容が照合時から変わっています。上書きを止めました');
         const fresh=await ctx.wait(source.recheck(local.snapshot),fence);
@@ -111,7 +112,7 @@
         progress('installing');
         const installed=await ctx.wait(replicaStore.installBaseline({state:candidate.state,baseline:candidate.baselineReceipt,
           source:{migrationId,localProjectId,fingerprint:candidate.sourceFingerprint},planSha256:candidate.planSha256,
-          metadata:candidate.metadata,validate:verify,signal:ctx.signal}),fence);
+          metadata:candidate.metadata,accepted:candidate.accepted,validate:verify,signal:ctx.signal}),fence);
         progress('installed',{idempotent:installed.idempotent,pending:installed.state.outbox.length});
         return {version:1,status:'installed',migrationId,...installed,localSeedVerified:true,
           readyForActivation:false,readyForCloudSync:false,assetDeliveryVerified:false};

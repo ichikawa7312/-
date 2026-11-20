@@ -30,7 +30,8 @@ await SentlogDeltaReconcile.verifyPlan(plan, {scope, currentScope, signal});
 
 | フィールド | 内容 |
 | --- | --- |
-| `state` | core v2 の `{version:2, scope, cursor:0, records, outbox, blockedOutbox:[]}` |
+| `state` | core v2 の `{version:2, scope, cursor, records, outbox, blockedOutbox:[]}`。cursor は初期基準だけなら 0、受信済み履歴を検証した場合は固定した head |
+| `accepted` | 有効化済み案件を認証済み transport で照合した場合の `{schema:1, baselineId, headSeq, eventCount, eventsSha256}` |
 | `baselineReceipt` | ページ取得中に変化していないことを確認した receipt |
 | `sourceFingerprint` / `localProjectId` | 保護元の控えとローカル案件の識別情報 |
 | `reviewItems` | 内容を保持した個別の確認項目。`blocking` で初期保存を止める必要があるか示す |
@@ -68,7 +69,9 @@ SQL は `project.drawings` と drawing envelope の順序・詳細 metadata が�
 
 記録のキーは core と同じ `JSON.stringify([drawingId, recordId])`。同じ記録 ID が別図面にあっても混ぜない。
 
-初期 state は baseline の全記録から始める。端末に存在しない記録を削除とは扱わず、サーバー側だけにある記録を残す。端末側だけにある記録は、baseline に存在する図面へ属することを確認して create 差分にする。既存記録の両履歴は `record-collaboration.js` の immutable history merger で統合し、サーバーにない revision だけを patch にする。
+初期 state は baseline の全記録から始める。有効化済みで inspect/list を持つ実 transport を使う場合は、inspect の head までの受理済み履歴も先に適用する。scope・baseline・連続した sequence・group 全体の範囲を確認し、全ページを受信した場合だけ cursor を進める。上限はこの受信範囲について 200,000 events / 64 MiB とし、超過時は保護済みコピーを保持して初期保存を停止する。
+
+端末に存在しない記録を削除とは扱わず、サーバー側だけにある記録を残す。端末側だけにある記録は、基準または共有 metadata で確認できる図面へ属することを確認して create 差分にする。既存記録の両履歴は `record-collaboration.js` の immutable history merger で統合し、サーバーにない revision だけを patch にする。PC snapshot にある受理済みの履歴を新しい編集として再送しない。install で渡す `accepted` は prepare 時の固定範囲と digest であり、その範囲を再取得して同じ結果になる必要がある。
 
 コメントは revision / comment ID で区別し、文章が同じという理由で統合しない。写真も ID と不変の履歴で照合する。同時に変更されたフィールドや削除と追記の競合は、共同編集モデルが表現できる全候補を保持し、非停止の確認項目として残す。時計の新しさで片方を勝者にしない。
 

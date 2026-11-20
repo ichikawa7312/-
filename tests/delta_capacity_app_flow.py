@@ -1,4 +1,4 @@
-"""One real capacity UI flow, using disposable SQL and a synthetic PC directory.
+"""Real capacity UI flows, using disposable SQL and a synthetic PC directory.
 
 Call after delta_app_ui's certified checkpoint. The application HTML, capacity
 buttons, record store, delta journal, copy GC and IndexedDB Blobs are unchanged.
@@ -67,6 +67,44 @@ ARCHIVE_PROOF = r"""async ({cp,job})=>{
   const result=await sentlogDeltaRuntime.archiveProof(cp,job);
   await result.validate();const {validate,...proof}=result;return proof;
 }"""
+
+PROJECT_STATE = r"""async ({scope,localProjectId,drawingIds})=>{
+  await SentlogRecords.settled();
+  const store=SentlogDeltaIndexedDB.createStore(scope);let replica;
+  try{replica=await store.read();}finally{store.close();}
+  const binding=SentlogRecords.deltaJournal.bindingFor(localProjectId);
+  const pending=await SentlogRecords.deltaJournal.pending({scope,localProjectId});
+  const workspace=JSON.parse(SentlogRecords.getItem('surveyFieldNoteWorkspaceV1')||'{"projects":[]}');
+  const present=workspace.projects.some(project=>project.id===localProjectId);
+  const snapshot=present?SentlogDeltaAppBridge.captureProject({records:SentlogRecords,localProjectId}):null;
+  const histories={};
+  for(const drawing of snapshot?[...snapshot.drawings,...(snapshot.project.deltaMetadata?.retainedDrawings||[])]:[])
+    for(const record of [...(drawing.state.shapes||[]),...(drawing.state.collabDeletedRecords||[])])
+      histories[JSON.stringify([drawing.meta.id,record.id])]=SentlogRecordCollaboration.upgrade(record).collab;
+  return {phase:binding?.phase,baselineId:binding?.baselineId,pending:pending.count,claimId:pending.claimId,present,
+    rawDrawings:drawingIds.map(id=>({id,present:SentlogRecords.getItem('surveyFieldNoteDrawingV1:'+id)!==null})),
+    shared:snapshot?SentlogDeltaMetadata.shared(snapshot):null,histories,
+    replica:{cursor:replica.cursor,records:replica.records,outbox:replica.outbox.length,blocked:(replica.blockedOutbox||[]).length}};
+}"""
+
+READ_ORIGINALS = r"""async drawingIds=>{
+  const originals=[];
+  for(const meta of await SentlogOriginalPhotos.listMeta()){
+    if(!drawingIds.includes(meta.drawingId))continue;
+    const blob=await SentlogOriginalPhotos.getOriginal(meta.drawingId,meta.photoId);
+    if(!(blob instanceof Blob)){originals.push({drawingId:meta.drawingId,photoId:meta.photoId,missing:true});continue;}
+    const bytes=await blob.arrayBuffer();
+    const sha256=[...new Uint8Array(await crypto.subtle.digest('SHA-256',bytes))].map(x=>x.toString(16).padStart(2,'0')).join('');
+    originals.push({drawingId:meta.drawingId,photoId:meta.photoId,size:blob.size,sha256});
+  }
+  return originals.sort((a,b)=>a.photoId.localeCompare(b.photoId));
+}"""
+
+
+def _state_summary(state):
+    return {key: state[key] for key in ('phase', 'baselineId', 'pending', 'claimId', 'present', 'rawDrawings')} | {
+        'cursor': state['replica']['cursor'], 'outbox': state['replica']['outbox'], 'blocked': state['replica']['blocked'],
+        'recordCount': len(state['replica']['records']), 'historyCount': len(state['histories'])}
 
 
 def _wait(cloud, page, predicate, description, timeout=60):
@@ -164,7 +202,7 @@ class _SyntheticPc:
 
 
 def run(cloud, page, peer, certificate, cloud_project, owner, device, peer_device, pc_device):
-    """Execute files cleanup/restoration through the built production controls."""
+    """Execute files and whole-project restoration through production controls."""
     cp, project_id = copy.deepcopy(cloud_project), cloud_project['id']
     keys = _keys(certificate['payload'])
     page.wait_for_function('window.SentlogCapacity&&window.SentlogDeltaCapacityGC')
@@ -267,6 +305,92 @@ def run(cloud, page, peer, certificate, cloud_project, owner, device, peer_devic
             assert [operation['action'] for operation in pc.operations] == ['verify', 'restore']
             pc.verify(pc.job)
             print('PASS built capacity restore rechecks a synthetic PC directory, restores native bytes, and guarded manual sync rehydrates asset receipts', flush=True)
+
+            # Repeat through the distinct detached-project/WAL recovery path.
+            # The same on-disk PC package is independently re-read for each
+            # new SQL capacity operation; no local snapshot is injected.
+            drawing_ids = [drawing['meta']['id'] for drawing in certificate['payload']['drawings']]
+            project_context = {**context, 'drawingIds': drawing_ids}
+            _wait(cloud, page, lambda: (lambda state: state['phase'] == 'active' and not state['pending']
+                  and not state['claimId'] and not state['replica']['outbox'] and not state['replica']['blocked'])(
+                      page.evaluate(PROJECT_STATE, project_context)),
+                  'Restored files did not leave a clean project before whole-project cleanup')
+            before_project = page.evaluate(PROJECT_STATE, project_context)
+            camera_originals = page.evaluate(READ_ORIGINALS, drawing_ids)
+            assert camera_originals and all(not item.get('missing') for item in camera_originals), camera_originals
+            server_before = cloud.backend.admin(op='state', ownerId=owner, projectId=project_id)
+            before_project_bytes = page.evaluate(BLOB_STATS, context)
+            ack_start, download_start = len(cloud.photo_requests), len(pc.downloads)
+            diagnostics['beforeWholeProject'] = _state_summary(before_project)
+
+            page.get_by_role('button', name='この端末から案件を外す', exact=True).click()
+            confirm_project = page.get_by_role('button', name='この端末から案件一式を外す', exact=True)
+            confirm_project.wait_for(state='visible', timeout=60000)
+            page.once('dialog', lambda dialog: dialog.accept())
+            confirm_project.click()
+            _wait(cloud, page, lambda: 'この端末の整理が完了しました。' in page.locator('.sl-capacity-dialog .sl-capacity-message').inner_text(),
+                  'Built whole-project capacity cleanup did not finish')
+            detached = page.evaluate(PROJECT_STATE, project_context)
+            diagnostics['afterDetach'] = _state_summary(detached)
+            assert page.evaluate('id=>SentlogCapacity.isWholeRemoved(id)', project_id)
+            assert detached['phase'] == 'detached' and not detached['present'] and not detached['pending'] and not detached['claimId'], _state_summary(detached)
+            assert all(not drawing['present'] for drawing in detached['rawDrawings']), detached['rawDrawings']
+            assert detached['replica'] == before_project['replica'], 'Detaching a local cache changed immutable replica history or created an outbox'
+            assert all(item.get('missing') for item in page.evaluate(READ_FILES, keys))
+            detached_bytes = page.evaluate(BLOB_STATS, context)
+            diagnostics['afterDetachBytes'] = detached_bytes
+            assert detached_bytes['totalBlobBytes'] < before_project_bytes['totalBlobBytes'] and detached_bytes['assetBlobBytes'] == 0, (before_project_bytes, detached_bytes)
+            assert page.evaluate(READ_ORIGINALS, drawing_ids) == camera_originals, 'Whole-project cleanup altered camera originals'
+            assert {item['key']: item.get('sha256') for item in peer.evaluate(READ_FILES, keys)} == {item['key']: item['sha256'] for item in peer_originals}
+            print('PASS built whole-project cleanup detaches the real journal, removes local records/files, and retains immutable history, camera originals and peer bytes', flush=True)
+
+            page.locator('.sl-capacity-dialog').get_by_role('button', name='閉じる', exact=True).click()
+            page.get_by_role('button', name='PCからこの端末に復旧', exact=True).click()
+            _wait(cloud, page, lambda: '復旧完了！' in page.locator('.sl-capacity-dialog .sl-capacity-message').inner_text(),
+                  'Built detached-project restoration did not finish its verified PC file/WAL transaction')
+            restored_project = page.evaluate(PROJECT_STATE, project_context)
+            diagnostics['immediatelyAfterWholeRestore'] = _state_summary(restored_project)
+            assert restored_project['phase'] == 'active' and restored_project['present'], _state_summary(restored_project)
+            assert restored_project['shared'] == before_project['shared'], 'PC restoration changed project/drawing metadata'
+            assert restored_project['histories'] == before_project['histories'], 'PC restoration changed record/photo/comment history'
+            assert restored_project['replica'] == before_project['replica'], 'A pure cache restoration created new replica changes'
+            assert all(drawing['present'] for drawing in restored_project['rawDrawings'])
+            assert not page.evaluate('id=>SentlogCapacity.isCleared(id)', project_id)
+            assert {item['key']: item.get('sha256') for item in page.evaluate(READ_FILES, keys)} == {item['key']: item['sha256'] for item in originals}
+            assert page.evaluate(READ_ORIGINALS, drawing_ids) == camera_originals, 'PC restoration replaced camera originals'
+            assert len(pc.downloads) - download_start == len(keys), pc.downloads[download_start:]
+
+            page.locator('.sl-capacity-dialog').get_by_role('button', name='閉じる', exact=True).click()
+            page.get_by_role('button', name='この案件を手動同期', exact=True).click()
+            def whole_restore_synced():
+                state = page.evaluate(PROJECT_STATE, project_context)
+                assets = page.evaluate(BLOB_STATS, context)['assets']
+                return (state['phase'] == 'active' and state['present'] and not state['pending'] and not state['claimId']
+                        and not state['replica']['outbox'] and not state['replica']['blocked']
+                        and bool(assets) and all(row['phase'] == 'acknowledged' for row in assets))
+            _wait(cloud, page, whole_restore_synced, 'Manual sync did not finish detached cache replay and exact photo ACKs')
+            whole_final = page.evaluate(PROJECT_STATE, project_context)
+            whole_final_bytes = page.evaluate(BLOB_STATS, context)
+            diagnostics['afterWholeManualSync'] = _state_summary(whole_final)
+            diagnostics['afterWholeManualSyncBytes'] = whole_final_bytes
+            assert whole_final['replica'] == before_project['replica'], 'Cache replay emitted authored restore revisions or altered old history'
+            assert whole_final['shared'] == before_project['shared'] and whole_final['histories'] == before_project['histories']
+            assert whole_final['baselineId'] == before_project['baselineId']
+            assert whole_final_bytes['assetBlobBytes'] == before_project_bytes['assetBlobBytes']
+            assert whole_final_bytes['migrationBlobBytes'] == before_project_bytes['migrationBlobBytes']
+            assert page.evaluate(READ_ORIGINALS, drawing_ids) == camera_originals, 'Manual photo synchronization altered camera originals'
+            acknowledgements = {request['assetId'] for request in cloud.photo_requests[ack_start:]
+                if request['device'] == device and request['path'].endswith('/rpc/sentlog_ack_photo')}
+            assert acknowledgements == {row['assetId'] for row in before_project_bytes['assets']}, acknowledgements
+            server_after = cloud.backend.admin(op='state', ownerId=owner, projectId=project_id)
+            assert server_after['heads'][0]['last_seq'] == server_before['heads'][0]['last_seq']
+            assert server_after['counts']['events'] == server_before['counts']['events'], 'A pure cache restore appended server events'
+            assert sorted(json.dumps(row, sort_keys=True) for row in server_after['recordStates']) == sorted(
+                json.dumps(row, sort_keys=True) for row in server_before['recordStates']), 'PC restoration rewrote server record/metadata state'
+            assert [operation['action'] for operation in pc.operations] == ['verify', 'restore', 'verify', 'restore']
+            assert [operation['mode'] for operation in pc.operations] == ['files', 'files', 'project', 'project']
+            pc.verify(pc.job)
+            print('PASS built whole-project PC restoration and manual sync preserve all record/metadata history, keep outbox/server events unchanged, and re-ACK restored photo bytes', flush=True)
         finally:
             try:
                 diagnostics['message'] = page.locator('.sl-capacity-dialog .sl-capacity-message').all_text_contents()

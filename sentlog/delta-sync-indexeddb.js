@@ -10,6 +10,8 @@
   const valid=x=>typeof x==='string'&&x.length>0&&x.length<=512;
   const object=x=>!!x&&typeof x==='object'&&!Array.isArray(x);
   const digest=x=>typeof x==='string'&&/^[0-9a-f]{64}$/.test(x);
+  const acceptedHead=(value,baseline)=>object(value)&&value.schema===1&&value.baselineId===baseline?.baselineId&&
+    Number.isSafeInteger(value.headSeq)&&value.headSeq>=0&&value.eventCount===value.headSeq&&digest(value.eventsSha256);
   function problem(code,message){const e=Error(message);e.code=code;return e;}
   function assert(ok,code,message){if(!ok)throw problem(code,message);}
   function copy(value){return root.structuredClone(value);}
@@ -84,13 +86,15 @@
         new Set(b.drawingIds).size===b.drawingIds.length&&b.metadataCount===b.drawingIds.length+1&&
         b.deviceMigrationVerified===false&&b.assetDeliveryVerified===false&&
         object(s)&&valid(s.migrationId)&&s.localProjectId===b.clientProjectId&&digest(s.fingerprint)&&
-        digest(value.planSha256)&&digest(value.initialStateSha256)&&digest(value.metadataSha256)&&object(value.metadata),
+        digest(value.planSha256)&&digest(value.initialStateSha256)&&digest(value.metadataSha256)&&object(value.metadata)&&
+        (value.accepted===undefined||acceptedHead(value.accepted,b)),
         'DELTA_BASELINE_FORMAT','引き継ぎ元と検証結果を確認できません。既存の記録は保持しています');
       canonical(value);return value;
     }
     async function verifyInitialState(value){
       if(value.provenance&&value.revision===1)
-        assert(await hash(canonical(value.state))===value.provenance.initialStateSha256,'DELTA_BASELINE_VERIFY',
+        assert(value.state.cursor===(value.provenance.accepted?.headSeq??0)&&
+          await hash(canonical(value.state))===value.provenance.initialStateSha256,'DELTA_BASELINE_VERIFY',
           '初期記録の保存内容が照合結果と一致しません。既存の内容を保持しています');
     }
     function connect(){
@@ -210,7 +214,7 @@
         expectedRevision=revision;
       });
     }
-    function installBaseline({state,baseline,source,planSha256,metadata,validate,signal}={}){
+    function installBaseline({state,baseline,source,planSha256,metadata,accepted,validate,signal}={}){
       let candidate,proof;
       const check=()=>{
         assertOpen();assert(!signal?.aborted,'DELTA_STORE_CANCELLED','引き継ぎを中止しました');
@@ -224,10 +228,11 @@
         const core=root.SentlogDeltaSyncCore||(typeof module==='object'&&module.exports?require('./delta-sync-core.js'):null);
         assert(typeof core?.validateState==='function','DELTA_BASELINE_CONFIG','引き継ぎの検証機能がありません');
         core.validateState(candidate,scope,true);
-        assert(candidate.cursor===0&&(!candidate.blockedOutbox||candidate.blockedOutbox.length===0),
+        assert((accepted===undefined?candidate.cursor===0:acceptedHead(accepted,baseline)&&candidate.cursor===accepted.headSeq)&&
+          (!candidate.blockedOutbox||candidate.blockedOutbox.length===0),
           'DELTA_BASELINE_FORMAT','引き継ぎ時の受信位置または確認待ち履歴が不正です');
         canonical(candidate);
-        proof=copy({version:1,scope:copy(scope),baseline,source,planSha256,metadata,
+        proof=copy({version:1,scope:copy(scope),baseline,source,planSha256,metadata,...(accepted===undefined?{}:{accepted}),
           initialStateSha256:'0'.repeat(64),metadataSha256:'0'.repeat(64)});validateProvenance(proof);
       }catch(error){return Promise.reject(error);}
       return serialized(async()=>{

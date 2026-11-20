@@ -239,7 +239,49 @@
     }catch(error){review(reviews,error.code||'RECONCILE_METADATA',error.message,{localMetadata:project.deltaMetadata});}
     return {project,drawings,records,localView};
   }
-  async function plan({scope:inputScope,baseline:inputBaseline,localSnapshot:inputSnapshot,currentScope,signal,groupTransport,sharedMetadata=false}={}){
+  function acceptedHead(value,r){return object(value)&&value.schema===1&&value.baselineId===r.baselineId&&
+    r.state==='active'&&r.deltaEnabled===true&&integer(value.headSeq)&&value.eventCount===value.headSeq&&digest(value.eventsSha256);}
+  async function readAccepted({state,receipt:r,transport,pinned,scope,signal,check}){
+    if(!r.deltaEnabled||r.state!=='active'||typeof transport?.inspect!=='function'||typeof transport?.list!=='function'){
+      insist(!pinned,'RECONCILE_ACCEPTED_HEAD','受信済み履歴の照合方法がありません');return null;
+    }
+    const mode=await transport.inspect({signal});check();
+    insist(mode?.enabled===true&&sameScope(mode,scope)&&mode.baseline?.baselineId===r.baselineId&&integer(mode.headSeq),
+      'RECONCILE_ACCEPTED_HEAD','共有先の受信済み履歴と初期基準が一致しません');
+    if(pinned)insist(acceptedHead(pinned,r)&&pinned.headSeq<=mode.headSeq,'RECONCILE_ACCEPTED_HEAD','照合済み履歴の範囲を再確認できません');
+    const target=pinned?.headSeq??mode.headSeq;
+    insist(target<=200000,'RECONCILE_ACCEPTED_LIMIT','受信済み履歴が一度の引継ぎ上限を超えています');
+    let cursor=0,count=0,bytes=0,chain=await hash('sentlog-accepted-v1:'+r.baselineId);check();
+    while(cursor<target){
+      const rows=await transport.list(scope.projectId,cursor,100,{signal});check();
+      insist(Array.isArray(rows)&&rows.length>0&&rows.length<=100,'RECONCILE_ACCEPTED_GAP','受信済み履歴のページが不足しています');
+      for(const row of rows){
+        if(cursor===target)break;
+        insist(object(row)&&row.seq===cursor+1,'RECONCILE_ACCEPTED_GAP','受信済み履歴の順序が一致しません');
+        let events,end,entry;
+        if(own(row,'group')){
+          D.validateGroup(row.group);events=row.group.events;end=row.endSeq;
+          insist(!own(row,'event')&&row.group.projectId===scope.projectId&&end===row.seq+events.length-1,
+            'RECONCILE_ACCEPTED_GAP','一括履歴の範囲または案件が一致しません');
+          entry={seq:row.seq,endSeq:end,group:row.group};
+        }else{D.validateEvent(row.event);events=[row.event];end=row.seq;entry={seq:row.seq,event:row.event};
+          insist(!own(row,'endSeq'),'RECONCILE_ACCEPTED_GAP','単独履歴の範囲が不正です');}
+        insist(end<=target&&events.every(event=>event.projectId===scope.projectId),'RECONCILE_ACCEPTED_GAP','照合する位置が一括履歴の途中です');
+        const text=JSON.stringify(C.canonical(entry));bytes+=new TextEncoder().encode(text).byteLength;count+=events.length;
+        insist(bytes<=64*1024*1024&&count<=200000,'RECONCILE_ACCEPTED_LIMIT','受信済み履歴が一度の引継ぎ上限を超えています');
+        // Stage only the records in this whole group. Recopying every baseline
+        // record per received event would multiply bootstrap memory and work.
+        const updates=new Map();for(const event of events){const key=D.keyOf(event.drawingId,event.recordId);
+          updates.set(key,D.combine(updates.has(key)?updates.get(key):own(state.records,key)?state.records[key]:null,event));}
+        const nextHash=await hash(chain+'\n'+text);check();
+        for(const [key,record]of updates)put(state.records,key,record);cursor=end;chain=nextHash;
+      }
+      insist(cursor===target||rows.hasMore!==false,'RECONCILE_ACCEPTED_GAP','照合する位置まで履歴を受信できません');
+    }
+    state.cursor=cursor;const result={schema:1,baselineId:r.baselineId,headSeq:cursor,eventCount:count,eventsSha256:chain};
+    insist(!pinned||C.equal(result,pinned),'RECONCILE_ACCEPTED_CHANGED','受信済み履歴が照合時から変更されています');return result;
+  }
+  async function plan({scope:inputScope,baseline:inputBaseline,localSnapshot:inputSnapshot,currentScope,signal,groupTransport,sharedMetadata=false,accepted:requestedHead}={}){
     const scope=scopeOf(inputScope),snapshot=clone(inputSnapshot),baselineInput=clone(inputBaseline),check=()=>guard(scope,currentScope,signal);check();
     insist(snapshot?.version===1&&snapshot.kind==='sentlog-legacy-source'&&valid(snapshot.projectId)&&digest(snapshot.fingerprint)&&
       Array.isArray(snapshot.rawEntries)&&Array.isArray(snapshot.issues),'RECONCILE_SOURCE_FORMAT','保護した旧保存の控えが不正です');
@@ -269,7 +311,14 @@
       try{put(state.records,key,normalizedRecord(row.record));}
       catch(error){review(reviews,error.code||'RECONCILE_BASELINE_RECORD',error.message,{drawingId:row.drawingId,recordId:row.recordId,serverRecord:row.record});}
     }
-    let metadataAtomic=false;
+    let metadataAtomic=false,accepted=null;
+    async function receiveAccepted(){
+      accepted=await readAccepted({state,receipt:r,transport:groupTransport,pinned:requestedHead,scope,signal,check});check();
+      if(accepted)for(const [key,record]of Object.entries(state.records)){
+        const [drawingId,recordId]=JSON.parse(key);if(drawingId===M?.namespace)continue;
+        server.set(key,{drawingId,recordId,record:clone(record)});
+      }
+    }
     if(metadataEnabled)try{
       insist(local.project,'RECONCILE_SOURCE_PROJECT','端末の案件設定がありません');
       const app=(project,drawings,rows)=>({version:1,kind:'sentlog-app-project',localProjectId:r.clientProjectId,project:clone(project),drawings:drawings.map(d=>{
@@ -284,6 +333,7 @@
       for(const drawing of header.project.deltaMetadata?.retainedDrawings||[])for(const bucket of ['shapes','collabDeletedRecords'])for(const record of drawing.state[bucket]||[]){
         const key=D.keyOf(drawing.meta.id,record.id),normalized=normalizedRecord(record);insist(!own(state.records,key)||C.equal(state.records[key].collab,normalized.collab),'RECONCILE_RETAINED_COLLISION','保持した図面の履歴が重複しています');put(state.records,key,normalized);server.set(key,{drawingId:drawing.meta.id,recordId:record.id,record:normalized});
       }
+      await receiveAccepted();
       let changes;
       if(local.project.deltaMetadata){
         const localDocs=await M.seed(localApp);changes=[];
@@ -303,6 +353,7 @@
       }
       for(const record of Object.values(M.metadataRecords(state.records))){const doc=await M.materializeDocument(record);if(doc.kind==='drawing')allowed.add(doc.identity.drawingId);}
     }catch(error){review(reviews,error.code||'RECONCILE_METADATA',error.message||'設定の照合を完了できません');}
+    else try{await receiveAccepted();}catch(error){review(reviews,error.code||'RECONCILE_ACCEPTED_HEAD',error.message||'受信済み履歴を照合できません');}
     for(const [key,group]of [...local.records].sort(([a],[b])=>a<b?-1:a>b?1:0)){
       check();const first=group[0],old=server.get(key),details={drawingId:first.drawingId,recordId:first.recordId,
         serverRecord:old?.record||null,localRecords:group.map(x=>({bucket:x.bucket,record:x.record}))};
@@ -337,7 +388,7 @@
     const deletionIntent=state.outbox.filter(e=>e.kind==='patch'&&e.patch.deletion.some(r=>r.deleted===true));
     const moveMarkers=state.outbox.filter(e=>e.kind==='create'?e.record.transferOrigin?.operation==='move':
       e.patch.fields.transferOrigin?.revisions.some(r=>r.value?.operation==='move'));
-    const relocated=created.filter(e=>baseline.records.some(row=>row.recordId===e.recordId&&row.drawingId!==e.drawingId&&
+    const relocated=created.filter(e=>[...server.values()].some(row=>row.recordId===e.recordId&&row.drawingId!==e.drawingId&&
       !local.records.has(D.keyOf(row.drawingId,row.recordId))));
     if(moveMarkers.length||relocated.length||created.length&&deletionIntent.length||metadataAtomic&&state.outbox.length>1){
       const identity=e=>({eventId:e.eventId,drawingId:e.drawingId,recordId:e.recordId});
@@ -374,7 +425,7 @@
       if(projection.metadataConflicts.length)review(reviews,'RECONCILE_CONCURRENT_EDITS','設定の変更候補を両方保持しました',{conflicts:projection.metadataConflicts},false);
     }catch(error){review(reviews,error.code||'RECONCILE_METADATA',error.message||'設定を再表示できません');}
     const result={version:1,kind:'sentlog-delta-reconciliation',hashFormat:PLAN_FORMAT,scope:clone(scope),baselineReceipt:clone(r),
-      sourceFingerprint:snapshot.fingerprint,localProjectId:snapshot.projectId,state,reviewItems:reviews,
+      sourceFingerprint:snapshot.fingerprint,localProjectId:snapshot.projectId,state,reviewItems:reviews,...(accepted?{accepted}:{}),
       metadata:{header:clone(header),drawings:clone(serverDrawings),localView:local.localView,...(metadataEnabled?{sharedMetadata:true}: {})},
       preservedLocal:{rawEntries:clone(snapshot.rawEntries),source:clone(snapshot.source),originals:clone(snapshot.originals||[]),
         captureIntentRaw:snapshot.captureIntentRaw??null,files:(snapshot.files||[]).map(({blob,...info})=>clone(info)),manifest:clone(snapshot.manifest||[])},
@@ -387,11 +438,13 @@
   async function verifyPlan(input,{scope:inputScope,currentScope,signal}={}){
     const scope=scopeOf(inputScope),value=clone(input),check=()=>guard(scope,currentScope,signal);check();
     insist(value?.version===1&&value.kind==='sentlog-delta-reconciliation'&&value.hashFormat===PLAN_FORMAT&&sameScope(value.scope,scope)&&
-      value.state?.version===2&&sameScope(value.state.scope,scope)&&value.state.cursor===0&&object(value.state.records)&&Array.isArray(value.state.outbox)&&
+      value.state?.version===2&&sameScope(value.state.scope,scope)&&integer(value.state.cursor)&&object(value.state.records)&&Array.isArray(value.state.outbox)&&
       Array.isArray(value.state.blockedOutbox)&&value.state.blockedOutbox.length===0&&Array.isArray(value.reviewItems)&&
       value.readyForInstall===!value.reviewItems.some(x=>x.blocking)&&value.readyForActivation===false&&value.readyForCloudSync===false&&
       digest(value.sourceFingerprint)&&digest(value.planSha256),'RECONCILE_PLAN','照合結果の形式または対象が一致しません');
     receipt(value.baselineReceipt,scope);insist(value.localProjectId===value.baselineReceipt.clientProjectId,'RECONCILE_SCOPE','照合した案件の対応が一致しません');
+    insist(value.accepted?acceptedHead(value.accepted,value.baselineReceipt)&&value.state.cursor===value.accepted.headSeq:value.state.cursor===0,
+      'RECONCILE_ACCEPTED_HEAD','引継ぎ時の受信位置に対応する履歴証明がありません');
     jsonValue(value.metadata);
     const expected=value.planSha256;delete value.planSha256;
     insist(await hash(JSON.stringify(lossless(value)))===expected,'RECONCILE_PLAN_CHANGED','照合後の保存予定が変更されています');check();
