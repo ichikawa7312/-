@@ -215,6 +215,11 @@
           state.shapes=state.shapes.filter(s=>s.id!==target.id);state.collabDeletedRecords=[...(state.collabDeletedRecords||[]).filter(s=>s.id!==target.id),removed];selected=null;
         }else if(d.kind==='photo-remove')replaceRecord(M.removePhoto(target,d.photoId,opts({expectedHeads:d.headIds})));
         else replaceRecord(M.setField(target,d.key,d.value,opts({expectedHeads:d.headIds,unset:d.unset===true})));
+      },()=>{
+        // Persist succeeded. Rendering a deletion clears the selected-record
+        // binding, so consume this exact decision before that render can
+        // discard its in-memory identity. Keep every other pending decision.
+        saveDecisions(d,savedDecisions(d).filter(item=>!sameDecision(item,d)));
       });
       closeDecision();refresh();
     }catch(e){if(decision===d&&confirmation===attempt)status.textContent=e.message;}

@@ -14,6 +14,7 @@
   const cancel=t=>{try{t?.cancel();}catch(_){}};
   const cancelled=e=>e?.name==='RenderingCancelledException';
   const cameraOpen=()=>window.SentlogContinuousCamera?.isOpen?.()===true;
+  const invalidateOpen=()=>{if(typeof invalidateDrawingFileOpen==='function')invalidateDrawingFileOpen();};
   function releaseDocuments(){
     const documents=new Set([ownedDocument,pdfDoc]);ownedDocument=null;
     for(const doc of documents){
@@ -109,10 +110,10 @@
   const oldSetup=setupStage;
   setupStage=function(){invalidate();return oldSetup.apply(this,arguments);};
   const oldShowProjects=showProjects,oldShowDrawings=showDrawings;
-  showProjects=function(){invalidateDrawingFileOpen();invalidate();releaseDocuments();return oldShowProjects.apply(this,arguments);};
-  showDrawings=function(){invalidateDrawingFileOpen();invalidate();releaseDocuments();return oldShowDrawings.apply(this,arguments);};
+  showProjects=function(){invalidateOpen();invalidate();releaseDocuments();return oldShowProjects.apply(this,arguments);};
+  showDrawings=function(){invalidateOpen();invalidate();releaseDocuments();return oldShowDrawings.apply(this,arguments);};
   const oldOpenDrawing=openDrawing;
-  openDrawing=async function(){invalidateDrawingFileOpen();invalidate();releaseDocuments();return oldOpenDrawing.apply(this,arguments);};
+  openDrawing=async function(){invalidateOpen();invalidate();releaseDocuments();return oldOpenDrawing.apply(this,arguments);};
 
   // Base rendering is bounded in memory. Zoom detail is cropped to the visible region,
   // so even a large A0 sheet at 800% never needs a giant full-page bitmap.

@@ -249,6 +249,34 @@ await test('record deletion retains complete history and undo restores that exac
   const f=fixture();f.type('削除前の追記');f.api.flushDraft();await f.document.getElementById('deleteBtn').onclick();await f.click('削除する',f.document.querySelector('.sl-collab-dialog'));
   assert.equal(f.ctx.state.shapes.length,0);assert.equal(f.ctx.state.collabDeletedRecords.length,1);assert(f.ctx.state.collabDeletedRecords[0].memo.includes('削除前の追記'));
   f.ctx.undo();f.drain();assert.equal(f.ctx.state.shapes.length,1);assert.equal(f.ctx.state.collabDeletedRecords.length,0);assert(f.ctx.state.shapes[0].memo.includes('削除前の追記'));
+  f.ctx.selectShape('s1');f.drain();assert.equal(f.document.querySelector('.sl-collab-dialog').hidden,true,'a completed deletion must not reappear after undo and reselect');
+  const reopened=fixture({storage:f.storage,savedState:f.state()});assert.equal(reopened.document.querySelector('.sl-collab-dialog'),null,'reload must not restore a completed delete decision');
+});
+
+await test('completed deletion consumes only its own decision while another pending field edit survives undo',async()=>{
+  const f=fixture();await f.document.getElementById('deleteBtn').onclick();
+  // A delayed field callback can finish while the delete dialog is already
+  // open. Its independent pending intent must survive the selection reset.
+  f.current.member='横桁';f.ctx.persist();f.drain();
+  const pending=()=>[...f.storage].filter(([key])=>key.startsWith('sentlogCollaborativeDecisionsV1:')).flatMap(([,value])=>JSON.parse(value));
+  assert.deepEqual(pending().map(d=>d.kind),['delete','field']);
+  await f.click('削除する',f.document.querySelector('.sl-collab-dialog'));
+  assert.deepEqual(pending().map(d=>[d.kind,d.key,d.value]),[['field','member','横桁']]);
+  f.ctx.undo();f.drain();f.ctx.selectShape('s1');f.drain();
+  assert.equal(f.buttons('削除する',f.document.querySelector('.sl-collab-dialog')).length,0);
+  assert.equal(f.buttons('変更する',f.document.querySelector('.sl-collab-dialog')).length,1);
+  await f.click('変更する',f.document.querySelector('.sl-collab-dialog'));assert.equal(f.current.member,'横桁');
+});
+
+await test('failed deletion persist retains the record selection and every pending confirmation for retry',async()=>{
+  const f=fixture();await f.document.getElementById('deleteBtn').onclick();f.current.member='横桁';f.ctx.persist();f.drain();
+  const pending=()=>[...f.storage].filter(([key])=>key.startsWith('sentlogCollaborativeDecisionsV1:')).flatMap(([,value])=>JSON.parse(value));
+  const before=copy(pending());f.failNextWrite();await f.click('削除する',f.document.querySelector('.sl-collab-dialog'));
+  assert.equal(f.ctx.selected,'s1');assert.equal(f.ctx.state.shapes.length,1);assert.equal(f.ctx.state.collabDeletedRecords.length,0);
+  assert.deepEqual(pending(),before);assert.equal(f.document.querySelector('.sl-collab-dialog').hidden,false);
+  assert(f.document.querySelector('[data-status]').textContent.includes('保存失敗'));
+  await f.click('削除する',f.document.querySelector('.sl-collab-dialog'));
+  assert.equal(f.ctx.state.shapes.length,0);assert.deepEqual(pending().map(d=>d.kind),['field']);
 });
 
 await test('deletion waits for a fresh record token and retains all 31 photos when a peer comment arrives',async()=>{

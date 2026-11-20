@@ -205,4 +205,17 @@ function fixture(){
   const missing=drawer.openDrawing('project','missing');pendingFiles[7].resolve(null);await missing;
   assert.equal(fileErrors.length,1);assert.deepEqual(recoveries,['missing'],'the current missing drawing still requests recovery');
   console.log('PASS delayed background reads cannot open an old drawing, replace a newer same-drawing file, show stale errors or recover a closed view');
+
+  // A network-first service worker can temporarily combine a newer renderer
+  // with cached core fragments. The previous core has no invalidation hook.
+  for(const method of ['showProjects','showDrawings','openDrawing']){
+    const mixed=fixture();mixed.context.pdfDoc=mixed.doc;
+    await mixed.context.renderPdfPage(1);await mixed.flush();
+    mixed.context.invalidateDrawingFileOpen=undefined;
+    assert.equal(vm.runInContext('typeof invalidateDrawingFileOpen',mixed.context),'undefined');
+    await mixed.context[method]('project','drawing');
+    assert.equal(mixed.doc.destroyCalls,1,method+' still releases the old PDF worker');
+    assert.equal(mixed.context.pdfDoc,null);assert.equal(mixed.writes.length,1);
+  }
+  console.log('PASS mixed-version update: newer PDF navigation safely supports a cached core without the optional invalidation hook');
 })().catch(error=>{console.error(error);process.exitCode=1;});

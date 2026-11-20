@@ -91,11 +91,14 @@
     wrap.dataset.imageViewport='true';
     return r;
   }
+  function touchViewportArea(r){
+    const pixels=bounded(r.width,r.height,Math.min(2,window.devicePixelRatio||1),TOUCH_DETAIL_PIXELS);
+    return {pixels,key:[epoch,scale,tx,ty,r.width,r.height,pixels.width,pixels.height].join(':')};
+  }
   function drawTouchViewport(){
     const v=view;if(!current(v) || document.hidden || cameraOpen())return;
     const r=updateViewport();if(!r)return;
-    const pixels=bounded(r.width,r.height,Math.min(2,window.devicePixelRatio||1),TOUCH_DETAIL_PIXELS);
-    const key=[epoch,scale,tx,ty,r.width,r.height,pixels.width,pixels.height].join(':');
+    const {pixels,key}=touchViewportArea(r);
     if(key===detailKey)return;
     const buffer=front||document.createElement('canvas');
     if(buffer.width!==pixels.width || buffer.height!==pixels.height){
@@ -238,7 +241,19 @@
   window.addEventListener('sentlog-camera-visibility',event=>{
     if(event.detail?.open){
       clearTimeout(timer);timer=0;cancelAnimationFrame(frame);frame=0;
-      dispose(front);front=null;detailKey='';
-    }else schedule(0);
+      // The touch viewport is already bounded to 1.5 MP. Retain this one
+      // existing surface so an unchanged close needs no bitmap reconstruction
+      // or DOM insertion. Rotation remains suspended while the camera covers it.
+      // Larger desktop detail rasters release their pixels but keep their node.
+      if(front && (!touch || front.width*front.height>TOUCH_DETAIL_PIXELS)){
+        front.width=1;front.height=1;detailKey='';
+      }
+    }else{
+      if(touch && front && current(view) && scale>0 && detailKey){
+        const r=wrap.getBoundingClientRect();
+        if(r.width>0 && r.height>0 && touchViewportArea(r).key===detailKey)return;
+      }
+      schedule(0);
+    }
   });
 })();
