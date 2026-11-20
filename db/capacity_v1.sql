@@ -65,7 +65,7 @@ begin
       jsonb_build_object('operation',to_jsonb(o),
         'job',jsonb_build_object('id',jj.id,'project_id',jj.project_id,'revision',jj.revision,
           'payload',jj.payload,'manifest',jj.manifest,
-          'catalog_hash',jj.catalog_hash,'pc_receipt',jj.pc_receipt))
+          'catalog_hash',jj.catalog_hash,'pc_receipt',jj.pc_receipt,'delta_checkpoint',to_jsonb(jj)->'delta_checkpoint'))
       order by o.created_at),'[]'::jsonb) into rec
     from sentlog_archive_private.capacity_ops o
       join sentlog_archive_private.jobs jj on jj.id=o.job_id
@@ -144,7 +144,7 @@ begin
       return jsonb_build_object('operation',to_jsonb(x),'job',
           jsonb_build_object('id',j.id,'project_id',j.project_id,
             'payload',j.payload,'manifest',j.manifest,'revision',j.revision,
-            'catalog_hash',j.catalog_hash,'pc_receipt',j.pc_receipt),
+            'catalog_hash',j.catalog_hash,'pc_receipt',j.pc_receipt,'delta_checkpoint',to_jsonb(j)->'delta_checkpoint'),
           'files',paths);
     end if;
     if p_action='cancel' then

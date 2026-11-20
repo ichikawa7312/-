@@ -1,0 +1,57 @@
+// sentlog-delta-app-v1: the application journal, replica and certified PC view.
+const sentlogDeltaStatuses=new Map();
+const sentlogDeltaCheckpointTimes=new Map();
+const sentlogDeltaInstaller=window.SentlogDeltaAppMigration.createInstaller({records:window.SentlogRecords,
+  onProgress:detail=>{if(detail.localProjectId)sentlogDeltaStatuses.set(detail.localProjectId,detail);}});
+const sentlogDeltaApp=window.SentlogDeltaAppRuntime.createRuntime({
+  records:window.SentlogRecords,url:SUPABASE_URL,key:SUPABASE_KEY,session:()=>session,ensureSession,
+  authGeneration:()=>sessionGuard.generation(),subscribeAuth:fn=>sessionGuard.subscribe(fn),
+  deviceId:()=>localStorage.getItem(DEVICE_KEY),
+  actor:()=>({deviceId:localStorage.getItem(DEVICE_KEY),deviceName:window.SentlogCollaborationDevice?.name||'この端末'}),
+  install:sentlogDeltaInstaller,readFile:dbGet,
+  withFileLock:(key,fn)=>window.SentlogSyncTraffic.withFileLock(key,fn),
+  onStatus:status=>{sentlogDeltaStatuses.set(status.localProjectId,status);},
+  onPhotoReceived:({reference})=>window.sentlogSyncView?.photoReceived(reference.drawingId),
+  async applyProjection(cp,projection,options){
+    const local=workspace().projects.find(p=>p.id===cp.client_key),expectedLocal=JSON.stringify(local||null);
+    const result=await window.sentlogSyncView.commit(cp,{payload:projection},expectedLocal,
+      {expectedRecords:options.expectedRecords,extraWrites:[],deltaProjection:options});
+    if(result?.applied)window.SentlogDeltaMetadataUI?.update(cp,projection);
+    return {...result,deferred:result?.applied!==true};
+  }
+});
+window.sentlogDeltaRuntime=sentlogDeltaApp;
+window.sentlogDeltaOwnsProject=id=>{
+  if(sentlogDeltaApp.isActive(id))return true;
+  return window.SentlogRecords.deltaJournal.listBindingsSync().some(b=>b.localProjectId===id||b.scope.projectId===id);
+};
+window.sentlogDeltaOwnsPhoto=(projectId,drawingId)=>{
+  if(projectId&&window.sentlogDeltaOwnsProject(projectId))return true;
+  if(!drawingId)return false;
+  return (workspace().projects||[]).some(p=>window.sentlogDeltaOwnsProject(p.id)&&
+    [...(p.drawings||[]),...(p.deltaMetadata?.retainedDrawings||[]).map(d=>d.meta)].some(d=>d.id===drawingId));
+};
+window.sentlogDeltaCheckpoint=async cp=>{
+  const mode=await sentlogDeltaApp.inspect(cp);if(!mode.enabled)return null;
+  return sentlogDeltaApp.checkpoint(cp,{force:true});
+};
+window.sentlogDeltaArchiveProof=(cp,job,options)=>job?.delta_checkpoint?sentlogDeltaApp.archiveProof(cp,job,options):null;
+window.sentlogDeltaSuspendPhotos=cp=>sentlogDeltaApp.suspendPhotos(cp);
+async function collaborationDeltaRound(cp,context){
+  context.assertCurrent();const result=await sentlogDeltaApp.sync(cp);context.assertCurrent();
+  if(!result.deferred){
+    const latest=workspace().projects.find(p=>p.id===cp.client_key);
+    if(cp.status!=='archived'&&latest&&cp.name!==(latest.name||'案件')){
+      const name=latest.name||'案件';
+      await rest('/rest/v1/sentlog_projects?id=eq.'+enc(cp.id),{method:'PATCH',headers:{Prefer:'return=minimal'},body:JSON.stringify({name})});
+      context.assertCurrent();cp.name=name;knownCloudProjects.set(cp.id,cp);
+    }
+    // Interactive edits travel as deltas. The compatibility document is for
+    // periodic PC pickup and explicit archive/manual confirmation only.
+    if(cp.status!=='archived'&&(context.force||Date.now()-(sentlogDeltaCheckpointTimes.get(cp.id)||0)>=60000)){
+      const checkpoint=await sentlogDeltaApp.checkpoint(cp);context.assertCurrent();
+      if(checkpoint){result.revision=checkpoint.revision;sentlogDeltaCheckpointTimes.set(cp.id,Date.now());}
+    }
+  }
+  return result;
+}

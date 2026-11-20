@@ -24,7 +24,7 @@ async function api(path,body){const r=await net('/rest/v1/'+path,body===undefine
 const rpc=(name,body)=>api('rpc/'+name,body);
 async function db(name,store,key,value){
   if(value!==undefined && name==='surveyFieldNoteDB' && window.SentlogRecords?.ready)return window.SentlogRecords.writeFile(key,value);
-  const connection=await new Promise((resolve,reject)=>{const q=indexedDB.open(name,1);q.onupgradeneeded=()=>{if(!q.result.objectStoreNames.contains(store))q.result.createObjectStore(store)};q.onsuccess=()=>resolve(q.result);q.onerror=()=>reject(q.error)});
+  const connection=await (name==='surveyFieldNoteDB'&&window.SentlogRecords?.openFilesDatabase?window.SentlogRecords.openFilesDatabase():new Promise((resolve,reject)=>{const q=indexedDB.open(name,...(name==='surveyFieldNoteDB'?[]:[1]));q.onupgradeneeded=()=>{if(!q.result.objectStoreNames.contains(store))q.result.createObjectStore(store)};q.onsuccess=()=>{const db=q.result;db.onversionchange=()=>db.close();resolve(db)};q.onerror=()=>reject(q.error)}));
   try{return await new Promise((resolve,reject)=>{const write=value!==undefined,tx=connection.transaction(store,write?'readwrite':'readonly'),q=write?tx.objectStore(store).put(value,key):tx.objectStore(store).get(key);let result;q.onsuccess=()=>{result=q.result};tx.oncomplete=()=>resolve(result);tx.onerror=()=>reject(tx.error);tx.onabort=()=>reject(tx.error||new Error('端末への保存が中断されました'))})}finally{connection.close()}
 }
 async function hash(blob){if(localHashes.has(blob))return localHashes.get(blob);const bytes=await crypto.subtle.digest('SHA-256',await blob.arrayBuffer());const h=Array.from(new Uint8Array(bytes),b=>b.toString(16).padStart(2,'0')).join('');localHashes.set(blob,h);return h}

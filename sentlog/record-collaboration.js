@@ -10,6 +10,13 @@
   const object=v=>v!==null&&typeof v==='object'&&!Array.isArray(v);
   const own=(o,k)=>Object.prototype.hasOwnProperty.call(o,k);
   const put=(o,k,v)=>Object.defineProperty(o,k,{value:v,writable:true,enumerable:true,configurable:true});
+  // Locale-independent ordering shared with PostgreSQL UTF-8 COLLATE "C".
+  // Walk code points so supplementary characters also compare identically.
+  function compareIds(a,b){
+    let i=0,j=0;
+    while(i<a.length&&j<b.length){const x=a.codePointAt(i),y=b.codePointAt(j);if(x!==y)return x-y;i+=x>0xffff?2:1;j+=y>0xffff?2:1;}
+    return i<a.length?1:j<b.length?-1:0;
+  }
   function canonical(v){
     if(Array.isArray(v))return v.map(canonical);
     return object(v)?Object.fromEntries(Object.keys(v).sort().map(k=>[k,canonical(v[k])])):v;
@@ -90,18 +97,21 @@
   }
   function normalize(c){
     const out=clone(c);validate(out);
-    for(const {entry} of entries(out)){for(const r of entry.revisions){r.parents.sort();if(r.observed)r.observed=[...new Set(r.observed)].sort();}entry.revisions.sort((a,b)=>a.id.localeCompare(b.id));}
+    // Revision payloads are immutable, including their existing parent and
+    // observed-array order. Reordering those arrays would invalidate retries
+    // captured by older collaboration/1 clients with UTF-16 canonical ordering.
+    for(const {entry} of entries(out))entry.revisions.sort((a,b)=>compareIds(a.id,b.id));
     return canonical(out);
   }
   function heads(entry){
-    const parents=new Set(entry.revisions.flatMap(r=>r.parents));return entry.revisions.filter(r=>!parents.has(r.id)).sort((a,b)=>a.id.localeCompare(b.id));
+    const parents=new Set(entry.revisions.flatMap(r=>r.parents));return entry.revisions.filter(r=>!parents.has(r.id)).sort((a,b)=>compareIds(a.id,b.id));
   }
   function common(entry,leaves){
     const map=new Map(entry.revisions.map(r=>[r.id,r]));
     function ancestors(id){const seen=new Set(),todo=[id];while(todo.length){const next=todo.pop();if(seen.has(next))continue;seen.add(next);todo.push(...map.get(next).parents);}return seen;}
     const sets=leaves.map(r=>ancestors(r.id));let shared=[...sets[0]].filter(id=>sets.every(s=>s.has(id)));
     shared=shared.filter(id=>!shared.some(other=>id!==other&&ancestors(other).has(id)));
-    return shared.map(id=>map.get(id)).sort((a,b)=>a.id.localeCompare(b.id));
+    return shared.map(id=>map.get(id)).sort((a,b)=>compareIds(a.id,b.id));
   }
   const fieldValue=r=>r?.unset?{unset:true}:{value:r?.value};
   const commentValue=r=>({text:r.text,deleted:r.deleted});
@@ -111,7 +121,7 @@
     const selected=agreed.length&&agreed.every(r=>equal(valueOf(r),valueOf(agreed[0])))?agreed[0]:null;
     return {heads:clone(leaves),headIds:leaves.map(r=>r.id),conflict,commonHeadIds:agreed.map(r=>r.id),selected};
   }
-  function token(c){return digest(entries(c).map(({kind,key,entry})=>[kind,key,entry.revisions]).sort((a,b)=>stable(a).localeCompare(stable(b))));}
+  function token(c){return digest(entries(c).map(({kind,key,entry})=>[kind,key,entry.revisions]).sort((a,b)=>compareIds(stable(a),stable(b))));}
   function summarize(c){
     const comments=[],fields={},photos=[],conflicts=[];
     for(const [id,entry] of Object.entries(c.comments)){
@@ -119,7 +129,7 @@
       const row={id,text:[...new Set(visible.map(h=>h.text))].join('\n\n'),order:entry.order,headIds:r.headIds,heads:r.heads,deleted,conflict:r.conflict,createdAt:Math.min(...entry.revisions.map(h=>h.at))};
       comments.push(row);if(r.conflict)conflicts.push({kind:'comment',id,headIds:r.headIds,candidates:r.heads});
     }
-    comments.sort((a,b)=>a.order-b.order||a.id.localeCompare(b.id));
+    comments.sort((a,b)=>a.order-b.order||compareIds(a.id,b.id));
     for(const [key,entry] of Object.entries(c.fields)){
       const r=register(entry,fieldValue),unset=!r.selected||r.selected.unset===true;
       put(fields,key,{key,value:unset?undefined:clone(r.selected.value),unset,headIds:r.headIds,heads:r.heads,conflict:r.conflict,commonHeadIds:r.commonHeadIds});
@@ -132,7 +142,7 @@
       photos.push({id,metadata,headIds:r.headIds,heads:r.heads,deleted,conflict:r.conflict});
       if(r.conflict)conflicts.push({kind:'photo',id,headIds:r.headIds,candidates:r.heads});
     }
-    photos.sort((a,b)=>a.id.localeCompare(b.id));
+    photos.sort((a,b)=>compareIds(a.id,b.id));
     const decisions=heads(c.deletion),liveHeads=entries(c).filter(x=>x.kind!=='deletion').flatMap(x=>heads(x.entry).map(r=>r.id));
     const hasDelete=decisions.some(r=>r.deleted),deleted=hasDelete&&decisions.every(r=>r.deleted&&liveHeads.every(id=>r.observed.includes(id)));
     const pendingDelete=hasDelete&&!deleted;
@@ -160,6 +170,27 @@
     return materialize(record,seed(record));
   }
   function view(record){return summarize(upgrade(record).collab);}
+  // Old collaboration/1 clients sorted display lists with localeCompare.
+  // This compatibility check accepts only that recomputable presentation;
+  // an unrecorded field edit or arbitrary memo/cache still fails.
+  function matchesProjection(record,{allowLegacyOrder=false}={}){
+    if(!record?.collab)return false;
+    try{
+      const source=clone(record),expected=upgrade(record);delete source.collab;delete expected.collab;
+      if(!own(source,'memo'))source.memo='';if(!own(source,'photos'))source.photos=[];
+      if(equal(source,expected))return true;if(!allowLegacyOrder)return false;
+      const sourceMemo=source.memo,sourcePhotos=source.photos,expectedMemo=expected.memo,expectedPhotos=expected.photos;
+      delete source.memo;delete source.photos;delete expected.memo;delete expected.photos;
+      if(!equal(source,expected))return false;
+      const legacyPhotos=clone(expectedPhotos).sort((a,b)=>a.id.localeCompare(b.id));
+      if(!equal(sourcePhotos,expectedPhotos)&&!equal(sourcePhotos,legacyPhotos))return false;
+      if(sourceMemo===expectedMemo)return true;
+      if(sourceMemo!==record.collab.projection?.memo)return false;
+      const legacyMemo=view(record).comments.filter(row=>!row.deleted).sort((a,b)=>a.order-b.order||a.id.localeCompare(b.id)).map(row=>
+        [...new Set(row.heads.filter(h=>!h.deleted).sort((a,b)=>a.id.localeCompare(b.id)).map(h=>h.text))].join('\n\n')).join('\n\n');
+      return sourceMemo===legacyMemo;
+    }catch{return false;}
+  }
   function revisionToken(record){return view(record).token;}
   function isDeleted(record){return view(record).deleted;}
   function editable(record){const out=upgrade(record);if(summarize(out.collab).deleted)throw error('COLLAB_RECORD_DELETED','削除済みの記録です。変更内容は送信せず保持してください');return out;}
@@ -176,7 +207,7 @@
     entry.revisions.push(r);return true;
   }
   function checkHeads(entry,expected,allowConflict,valueOf){
-    if(!Array.isArray(expected)||!equal([...new Set(expected)].sort(),heads(entry).map(r=>r.id)))throw error('COLLAB_STALE','確認中に別の変更が届きました。新しい内容を確認してください');
+    if(!Array.isArray(expected)||!equal([...new Set(expected)].sort(compareIds),heads(entry).map(r=>r.id)))throw error('COLLAB_STALE','確認中に別の変更が届きました。新しい内容を確認してください');
     if(!allowConflict&&register(entry,valueOf).conflict)throw error('COLLAB_CONFLICT','複数の変更候補があります。採用する内容を確認してください');
   }
   function appendComment(record,text,options={}){
@@ -300,7 +331,7 @@
       return {ok:true,record,conflicts:summarize(collab).conflicts};
     }catch(e){return {ok:false,reason:e.message,code:e.code||'COLLAB_INVALID',conflicts:[]};}
   }
-  const api={VERSION,GEOMETRY_KEYS,upgrade,view,revisionToken,isDeleted,appendComment,editComment,resolveComment,removeComment,
+  const api={VERSION,GEOMETRY_KEYS,compareIds,upgrade,view,matchesProjection,revisionToken,isDeleted,appendComment,editComment,resolveComment,removeComment,
     setField,resolveField,addPhoto,removePhoto,restorePhoto,markDeleted,restore,applyLocalEdit,mergeRecords,canonical,equal};
   if(typeof module!=='undefined'&&module.exports)module.exports=api;
   root.SentlogRecordCollaboration=api;

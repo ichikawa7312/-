@@ -78,7 +78,7 @@ change(p,'if(done)await syncNow();','if(done)await syncNow({force:true});')
 change(p,"syncTimer=setInterval(()=>{if(session&&navigator.onLine)syncNow()},5000);","syncTimer=setInterval(()=>{if(session&&navigator.onLine&&!document.hidden)syncNow()},15000);")
 
 p='sentlog/photo-recovery.js'
-section(p,' async function receive(id){',' async function provide(id){',''' async function acknowledgePhoto(a,id,force=false){
+section(p,' async function receive(id){',' async function provide(id,ownerId){',''' async function acknowledgePhoto(a,id,force=false){
   return window.SentlogSyncTraffic.ack('photo',a,id,args=>rpc('sentlog_ack_photo',args),{force});
  }
  async function receive(id){

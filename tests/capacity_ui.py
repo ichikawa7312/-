@@ -32,9 +32,10 @@ def f(asset,key,kind,name,data):
          'temp_path':owner+'/archive-restore/'+opid+'/'+asset}
 manifest=[f(asset1,'background:'+drawingid,'drawing','plan.pdf',pdf),f(asset2,'photo:'+drawingid+':'+photoid,'photo','photo.jpg',photo)]
 job={'id':jobid,'project_id':'cloud-test','revision':1,'payload':payload,'manifest':manifest,'catalog_hash':'a'*64,
-     'pc_receipt':{'package_sha256':'b'*64,'path':'PC\\復旧用\\cloud-test\\'+jobid+'\\manifest.sentlog.json'}}
+     'pc_receipt':{'package_sha256':'b'*64,'catalog_hash':'a'*64,'file_count':len(manifest),
+                   'path':'PC\\復旧用\\cloud-test\\'+jobid+'\\manifest.sentlog.json'}}
 op={'id':opid,'owner_id':owner,'device_id':'device-current','project_id':'cloud-test','job_id':jobid,'state':'ready','action':'verify','mode':'files',
-    'expires_at':'2099-12-01T00:00:00Z'}
+    'pc_device_id':'synthetic-pc','pc_ready_at':'2026-10-09T04:00:00Z','expires_at':'2099-12-01T00:00:00Z'}
 cp={'id':'cloud-test','client_key':project['id'],'name':project['name'],'status':'archived','checking':False,'retired':False,'job_id':jobid}
 try:
  with sync_playwright() as p:
@@ -43,7 +44,7 @@ try:
   browser=p.chromium.launch(**options)
   for width in (390,1280):
    context=browser.new_context(viewport={'width':width,'height':900},service_workers='block')
-   context.add_init_script("""localStorage.setItem('sentlogCloudSessionV1',JSON.stringify({access_token:'synthetic-only',expires_at:Math.floor(Date.now()/1000)+3600,user:{id:'synthetic-owner',email:'test@example.invalid'}}));localStorage.setItem('sentlogCloudDeviceV1','device-current');""")
+   context.add_init_script("""localStorage.setItem('sentlogCloudSessionV1',JSON.stringify({access_token:'synthetic-only',expires_at:Math.floor(Date.now()/1000)+3600,user:{id:OWNER,email:'test@example.invalid'}}));localStorage.setItem('sentlogCloudDeviceV1','device-current');""".replace('OWNER',json.dumps(owner)))
    calls=[];unexpected=[];operation={}
    def route(rr):
     r=rr.request;url=r.url

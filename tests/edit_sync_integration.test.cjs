@@ -59,7 +59,7 @@ function fixture(){
     archive:{ready:true,refresh:async()=>{if(failures.archive)throw Error('archive unavailable');},
       canSync:(cp,manual)=>C.maySync(controls.find(c=>c.id===cp.id),manual),
       includeLocal:(id,manual)=>C.maySync(controls.find(c=>c.client_key===id),manual)},
-    ensureSession:async()=>{},ensureDevice:async()=>'device',
+    ensureSession:async()=>{},ensureDevice:async()=>'device',dbGet:async()=>undefined,
     ensureCloudProject:async p=>{events.push(['ensure-project',p.id]);return controls.find(c=>c.client_key===p.id);},
     rest:async(request,options={})=>{
       const url=new URL(request,'https://test.invalid'),method=options.method||'GET';
@@ -105,7 +105,13 @@ function fixture(){
   };
   context.syncStatus.track=async(label,fn)=>fn();
   context.window={SentlogRecordCollaboration:Model,addEventListener(){},sentlogAppReady:Promise.resolve(),sentlogImporting:false,
-    SentlogRecords:{getItem:key=>data.get(key)??null,setItem:(key,value)=>data.set(key,value),batch:writes=>{for(const [k,v] of writes)data.set(k,v);},settled:async()=>{},assertSafe(){}},
+    // This fixture exercises the legacy branch against a server without delta
+    // rollout. The delta browser suite uses the actual runtime and SQL RPCs.
+    SentlogDeltaAppMigration:{createInstaller:()=>async()=>{throw Error('Legacy fixture must not migrate');}},
+    SentlogDeltaAppRuntime:{createRuntime:()=>({inspect:async()=>({enabled:false,canActivate:false}),isActive:()=>false,
+      reset(){},wake(){},sync:async()=>{throw Error('Legacy fixture must not use a delta writer');}})},
+    SentlogRecords:{deltaJournal:{bindingFor:()=>null,listBindingsSync:()=>[]},
+      getItem:key=>data.get(key)??null,setItem:(key,value)=>data.set(key,value),batch:writes=>{for(const [k,v] of writes)data.set(k,v);},settled:async()=>{},assertSafe(){}},
     sentlogSyncView:{commit:async(cp,snap,expected,options)=>{
       if(!options.expectedRecords.every(([k,v])=>(data.get(k)??null)===v))return {applied:false};
       events.push(['commit',cp.id]);if(failures.receive)return {applied:false,reason:'editing'};

@@ -119,10 +119,11 @@ async function ensureDevice(){
 }
 
 function openDB(){
+  if(window.SentlogRecords?.openFilesDatabase)return window.SentlogRecords.openFilesDatabase();
   return new Promise((resolve,reject)=>{
-    const req=indexedDB.open(DB_NAME,1);
+    const req=indexedDB.open(DB_NAME);
     req.onupgradeneeded=()=>{const db=req.result;if(!db.objectStoreNames.contains('files'))db.createObjectStore('files')};
-    req.onsuccess=()=>resolve(req.result);req.onerror=()=>reject(req.error);
+    req.onsuccess=()=>{const db=req.result;db.onversionchange=()=>db.close();resolve(db)};req.onerror=()=>reject(req.error);
   });
 }
 async function dbGet(key){

@@ -49,8 +49,8 @@
    }
  }
  async function readLocal(key){
-   const db=await new Promise((resolve,reject)=>{const q=indexedDB.open('surveyFieldNoteDB',1);
-     q.onsuccess=()=>resolve(q.result);q.onerror=()=>reject(q.error);});
+   const db=await (window.SentlogRecords?.openFilesDatabase?window.SentlogRecords.openFilesDatabase():new Promise((resolve,reject)=>{const q=indexedDB.open('surveyFieldNoteDB');
+     q.onsuccess=()=>{const connection=q.result;connection.onversionchange=()=>connection.close();resolve(connection)};q.onerror=()=>reject(q.error);}));
    try{return await new Promise((resolve,reject)=>{const q=db.transaction('files','readonly').objectStore('files').get(key);
      q.onsuccess=()=>resolve(q.result);q.onerror=()=>reject(q.error);});}finally{db.close();}
  }

@@ -2,7 +2,9 @@
 (function(root){
   'use strict';
   function create({url,key,session,enabled,onChange,onReady=()=>{},Socket=root.WebSocket,
-    setTimer=setTimeout,clearTimer=clearTimeout,random=Math.random}){
+    setTimer=setTimeout,clearTimer=clearTimeout,random=Math.random,topicPrefix='sentlog-records',onState=()=>{}}){
+    if(!['sentlog-records','sentlog-delta'].includes(topicPrefix))throw Error('通知の接続先が不正です');
+    const delta=topicPrefix==='sentlog-delta';
     let socket=null,owner='',token='',topic='',generation=0,sequence=0,joinRef='',heartbeatRef='',
       timer=null,heartbeat=null,joinTimeout=null,failures=0,joined=false,stopped=false;
     const uuid=v=>typeof v==='string'&&/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v);
@@ -16,7 +18,7 @@
       socket.send(JSON.stringify({topic:channel,event,payload,ref,join_ref:channel===topic?joinRef:null}));return ref;
     }
     function reconnect(){
-      close();if(stopped||!enabled())return;
+      close();try{onState('DISCONNECTED');}catch(_){}if(stopped||!enabled())return;
       const delay=Math.min(30000,1000*2**Math.min(failures++,5))*(.8+random()*.4);
       timer=setTimer(()=>{timer=null;wake();},delay);
     }
@@ -36,7 +38,7 @@
         return;
       }
       if(timer!==null)return;
-      token=nextToken;topic='realtime:sentlog-records:'+owner;joinRef=String(++sequence);
+      token=nextToken;topic='realtime:'+topicPrefix+':'+owner;joinRef=String(++sequence);
       const epoch=++generation;
       try{socket=new Socket(url.replace(/^http/,'ws').replace(/\/$/,'')+'/realtime/v1/websocket?apikey='+encodeURIComponent(key)+'&vsn=1.0.0');}
       catch(_){reconnect();return;}
@@ -60,8 +62,12 @@
           if(heartbeat!==null)clearTimer(heartbeat);heartbeat=setTimer(beat,20000);onReady();return;
         }
         if(m.event==='phx_error'||m.event==='phx_close'){reconnect();return;}
-        if(!joined||m.event!=='broadcast'||!['records','asset'].includes(m.payload?.event))return;
+        if(!joined||m.event!=='broadcast'||!(delta?['delta']:['records','asset']).includes(m.payload?.event))return;
         const value=m.payload.payload;if(!value||!uuid(value.project_id))return;
+        if(delta){
+          if(!Number.isSafeInteger(value.seq)||value.seq<1)return;
+          onChange({kind:'delta',projectId:value.project_id,seq:value.seq});return;
+        }
         if(m.payload.event==='records'&&(!Number.isSafeInteger(Number(value.revision))||Number(value.revision)<1))return;
         onChange({kind:m.payload.event,projectId:value.project_id,revision:Number(value.revision)||0});
       };

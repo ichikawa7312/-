@@ -18,8 +18,8 @@ def change(path: str, old: str, new: str, count: int = 1) -> None:
 
 # Guard the original synchronizer versions, rather than patch unknown future code.
 for path, expected in {
-    'sentlog/cloud-sync.js': 'b55678435627b3823cce77839b3e26ddbc0367c6',
-    'sentlog/pdf-recovery.js': 'c1da1f2fabc8b35358930d67df289dd8dd15646a',
+    'sentlog/cloud-sync.js': '70cc3a9986138eb2e64831a486954a0f41716cd4',
+    'sentlog/pdf-recovery.js': 'a901865280a6737cd156c7dc3652956c2bda464a',
     'sentlog-pc/index.html': 'b684cbdb8a25d6e629acd0861353b005e0f87dee',
 }.items():
     data = (ROOT / path).read_bytes()

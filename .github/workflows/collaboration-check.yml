@@ -8,6 +8,10 @@ on:
       - '.github/workflows/collaboration-check.yml'
       - 'scripts/build_continuous_camera.py'
       - 'scripts/build_project_sync.py'
+      - 'scripts/build_delta_sync.py'
+      - 'sentlog/delta-sync-*'
+      - 'tests/delta_app_*'
+      - 'docs/sentlog-delta-*.sql'
       - 'sentlog/collaboration-sync-runtime.txt'
       - 'sentlog/project-sync-controls.txt'
       - 'tests/collaboration_sync*'
@@ -70,7 +74,8 @@ jobs:
           PY
       - name: Install matching test package for bundled browsers
         id: browser_runtime
-        run: python -m pip install playwright==1.57.0 pillow==11.3.0
+        run: |
+          python -m pip install playwright==1.57.0 pillow==11.3.0
       - name: Shared records in Chromium
         if: ${{ always() && steps.build.outcome == 'success' && steps.browser_runtime.outcome == 'success' }}
         run: python tests/collaboration_ui.py --engine chromium --built-root .

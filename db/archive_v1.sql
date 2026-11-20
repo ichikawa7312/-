@@ -185,7 +185,8 @@ begin
     end if;
     if p_data->>'catalog_hash' is distinct from j.catalog_hash then raise exception '保管の内容が変わりました。'; end if;
     update sentlog_archive_private.jobs set reports=reports||jsonb_build_object(p_device_id::text,
-      jsonb_build_object('clean',coalesce((p_data->>'clean')::boolean,false),'reason',left(coalesce(p_data->>'reason',''),500),'at',now())) where id=j.id;
+      jsonb_build_object('clean',coalesce((p_data->>'clean')::boolean,false),'reason',left(coalesce(p_data->>'reason',''),500),'at',now())||
+      case when p_data ? 'delta_proof' then jsonb_build_object('delta_proof',p_data->'delta_proof') else '{}'::jsonb end) where id=j.id;
     return jsonb_build_object('reported',true);
   elsif p_action='pc_error' then
     if not ispc then raise exception 'PCから操作してください。'; end if;

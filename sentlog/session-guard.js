@@ -8,11 +8,24 @@
   const locks=options.locks===undefined?root.navigator?.locks:options.locks;
   const now=options.now||Date.now;
   const key=options.key, marker=key+':reauth-required';
-  let flight=null,retryAt=0,failures=0,lastRaw;
+  let flight=null,retryAt=0,failures=0,lastRaw,lastRequired,authGeneration=0;
+  const subscribers=new Set();
   function read(){try{return JSON.parse(store.getItem(key)||'null')}catch{return null}}
   function required(){return store.getItem(marker)==='1'}
-  function notify(){lastRaw=store.getItem(key);options.onChange?.(read(),required());}
-  function adopt(){if(store.getItem(key)!==lastRaw)notify();return read()}
+  const identity=s=>JSON.stringify([s?.user?.id||null,s?.access_token||null,s?.refresh_token||null]);
+  let observed=identity(read()),previousOwner=read()?.user?.id||null;
+  lastRaw=store.getItem(key);lastRequired=required();
+  function notify(forceChange=false){
+   lastRaw=store.getItem(key);const next=read(),needsLogin=required(),nextIdentity=identity(next);
+   const changed=forceChange||observed!==nextIdentity||lastRequired!==needsLogin;
+   const event=!next?.access_token?'SIGNED_OUT':!previousOwner||previousOwner!==next.user?.id?'SIGNED_IN':'TOKEN_REFRESHED';
+   observed=nextIdentity;previousOwner=next?.user?.id||null;lastRequired=needsLogin;
+   if(changed)authGeneration++;
+   // Display failures cannot undo a persisted login or hide it from fences.
+   try{options.onChange?.(next,needsLogin);}catch{}
+   if(changed)for(const listener of [...subscribers])try{listener(event,next,{generation:authGeneration,reauthRequired:needsLogin});}catch{}
+  }
+  function adopt(){if(store.getItem(key)!==lastRaw||required()!==lastRequired)notify();return read()}
   function set(value){
    if(value)store.setItem(key,JSON.stringify(value));else store.removeItem(key);
    store.removeItem(marker);retryAt=0;failures=0;notify();return value;
@@ -24,8 +37,8 @@
    const e=Error(current?'ログイン情報が変更されました。次の同期で確認します。':'ログインしてください。');
    e.code='SESSION_CHANGED';throw e;
   }
-  function rejectSession(previous){
-   const current=read();if(!same(current,previous))return changed(current,previous);
+  function rejectSession(previous,generation){
+   const current=adopt();if(!same(current,previous)||authGeneration!==generation)return changed(current,previous);
    store.removeItem(key);store.setItem(marker,'1');retryAt=0;notify();
    const e=Error(MESSAGE);e.code='REAUTH_REQUIRED';throw e;
   }
@@ -35,11 +48,11 @@
    e.code='AUTH_RETRY_LATER';return e;
   }
   async function refresh(){
-   const previous=adopt();
+   const previous=adopt(),generation=authGeneration;
    if(!previous){const e=Error(required()?MESSAGE:'ログインしてください。');e.code='REAUTH_REQUIRED';throw e;}
    if(fresh(previous))return previous;
    if(now()<retryAt){const e=Error('ログイン更新の通信待ちです。間隔を空けて再確認します。');e.code='AUTH_RETRY_LATER';throw e;}
-   if(!previous.refresh_token)return rejectSession(previous);
+   if(!previous.refresh_token)return rejectSession(previous,generation);
    const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),20000);
    let response,data;
    try{
@@ -50,15 +63,15 @@
     });
     data=await response.json().catch(()=>({}));
    }catch(e){
-    const current=read();if(!same(current,previous))return changed(current,previous);
+    const current=adopt();if(!same(current,previous)||authGeneration!==generation)return changed(current,previous);
     throw retry();
    }finally{clearTimeout(timeout)}
-   const current=read();if(!same(current,previous))return changed(current,previous);
+   const current=adopt();if(!same(current,previous)||authGeneration!==generation)return changed(current,previous);
    if(!response.ok){
     const code=String(data.code||data.error_code||data.error||'');
     const invalid=['refresh_token_already_used','refresh_token_not_found','session_not_found','session_expired','invalid_refresh_token','invalid_grant','user_not_found','user_banned'].includes(code)
      || /invalid refresh token|refresh token.*(not found|already used|expired)/i.test(String(data.msg||data.message||data.error_description||''));
-    if([400,401,403].includes(response.status)&&invalid)return rejectSession(previous);
+    if([400,401,403].includes(response.status)&&invalid)return rejectSession(previous,generation);
     throw retry();
    }
    if(!data.access_token||!data.refresh_token||data.user?.id!==previous.user?.id)throw retry('ログイン更新の応答を確認できません。記録を保持して再確認します。');
@@ -73,8 +86,20 @@
    flight=Promise.resolve(task);
    try{return await flight}finally{flight=null}
   }
-  root.addEventListener?.('storage',e=>{if(e.key===key||e.key===marker){retryAt=0;failures=0;notify();}});
-  return {read,set,ensure,required,message:MESSAGE};
+  root.addEventListener?.('storage',e=>{if(e.key===key||e.key===marker||e.key===null){
+   retryAt=0;failures=0;
+   // Storage events can be delivered after logout and re-login have both
+   // finished in another tab. The intermediate change still invalidates work
+   // even if the current serialized session has returned to the same value.
+   notify(e.key===null||e.oldValue!==e.newValue);
+  }});
+  function subscribe(listener){
+   if(typeof listener!=='function')throw Error('認証状態を受け取る関数が必要です');
+   adopt();subscribers.add(listener);return()=>subscribers.delete(listener);
+  }
+  // Reading the generation also adopts a same-tab storage change. The counter
+  // distinguishes logout -> login even when the same account/token returns.
+  return {read,set,ensure,required,subscribe,generation(){adopt();return authGeneration;},message:MESSAGE};
  }
  root.SentlogSessionGuard={create,message:MESSAGE};
 })(typeof window==='undefined'?globalThis:window);

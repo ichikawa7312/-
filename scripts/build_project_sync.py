@@ -9,6 +9,7 @@ import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
 TOKEN = '20261119-project-sync-1'
+PHOTO_TOKEN = '20261119-photo-delivery-1'
 pending = {}
 
 
@@ -50,12 +51,26 @@ if len(versions) != 2 or len(set(versions)) != 1:
 old_token = versions[0]
 change('sentlog/index.html', 'cloud-sync.js?v=' + old_token, 'cloud-sync.js?v=' + TOKEN, 2)
 change('sentlog/index.html', "'collaboration-sync-v1'", "'project-sync-controls-v1'")
+# The PC file sender now validates its target, publication receipt and deadline.
+# Give both app entry points a new URL before any eventual production release.
+photo_tokens = set()
+for photo_page in ['sentlog/index.html', 'sentlog-pc/index.html']:
+    photo_source = pending.get(photo_page, (ROOT / photo_page).read_text(encoding='utf-8'))
+    matches = re.findall(r'(?<!peer-)photo-recovery\.js\?v=([A-Za-z0-9._-]+)', photo_source)
+    if not matches or len(set(matches)) != 1:
+        raise RuntimeError('Photo sender bootstrap references changed: ' + photo_page)
+    photo_tokens.add(matches[0])
+    revised_photo, count = re.subn(r'(?<!peer-)photo-recovery\.js\?v=' + re.escape(matches[0]),
+                                  'photo-recovery.js?v=' + PHOTO_TOKEN, photo_source)
+    if count != len(matches):
+        raise RuntimeError('Photo sender bootstrap count changed: ' + photo_page)
+    pending[photo_page] = revised_photo
 worker = (ROOT / 'sentlog/sw.js').read_text(encoding='utf-8')
 match = re.search(r'sentlog-pwa-v(\d+)', worker)
 if not match:
     raise RuntimeError('Offline cache revision missing')
 old_cache = match.group(0)
-new_cache = 'sentlog-pwa-v' + str(int(match.group(1)) + 1)
+new_cache = 'sentlog-pwa-v' + str(int(match.group(1)) + 2)
 pending['sentlog/sw.js'] = worker.replace(old_cache, new_cache)
 for file in (ROOT / 'tests').iterdir():
     if file.suffix not in ('.cjs', '.py'):
@@ -64,6 +79,9 @@ for file in (ROOT / 'tests').iterdir():
     revised = source.replace(old_cache, new_cache)
     revised = revised.replace('cloud-sync.js?v=' + old_token, 'cloud-sync.js?v=' + TOKEN)
     revised = revised.replace(r'cloud-sync\.js\?v=' + old_token, r'cloud-sync\.js\?v=' + TOKEN)
+    for photo_token in photo_tokens:
+        revised = re.sub(r'(?<!peer-)photo-recovery\.js\?v=' + re.escape(photo_token),
+                         'photo-recovery.js?v=' + PHOTO_TOKEN, revised)
     if revised != source:
         pending[str(file.relative_to(ROOT))] = revised
 for path, source in pending.items():
