@@ -85,8 +85,13 @@
       insist(!local||!['active','detached'].includes(local.phase)||c.mode.enabled,'DELTA_APP_DOWNGRADE','切替済み案件の旧保存へ戻すことはできません。変更を保持しています');
       return copy(c.mode);
     }
-    async function open(c,{activate=false,revision}={}){
+    function assertConfirmable(c,local){
+      insist(local?.phase==='active'&&c.mode?.enabled===true,'DELTA_APP_CONFIRM_PENDING',
+        '保存方式の切替を確認しています。変更は実行していません。切替が完了してから、もう一度確認してください');
+    }
+    async function open(c,{activate=false,revision,confirmation=false}={}){
       check(c);let local=await binding(c);
+      if(confirmation)assertConfirmable(c,local);
       if(local?.phase==='detached')return null;
       if(!c.mode||activate||local?.phase==='staging')c.mode=await c.transport.inspect();check(c);
       if(!c.mode.enabled&&!activate)return null;
@@ -122,18 +127,27 @@
       await c.replica.start();check(c);return c;
     }
     async function sync(cp,options={}){
-      const c=await context(cp);if(c.flight)return c.flight;
+      const c=await context(cp);
+      if(options.confirmation){
+        if(!c.mode)await inspect(cp);check(c);assertConfirmable(c,await binding(c));
+        // An older round may already have read the server before the user
+        // opened this decision. Complete it, then make a new scoped receive.
+        while(c.flight){await c.flight;check(c);}
+      }
+      if(c.flight)return c.flight;
       const task=(async()=>{
         if(!c.mode)await inspect(cp);check(c);
         const local=await binding(c);check(c);
+        if(options.confirmation)assertConfirmable(c,local);
         if(!c.mode?.enabled&&!options.activate&&!local)return {enabled:false};
-        const opened=await open(c,{...options,activate:options.activate===true||local?.phase==='staging'});check(c);
+        const opened=await open(c,{...options,activate:!options.confirmation&&(options.activate===true||local?.phase==='staging')});check(c);
         if(!opened)return {enabled:true,detached:true,deferred:false,pending:0,revision:c.mode.snapshotRevision??c.mode.baseline.snapshotRevision};
-        await c.controller.drain();check(c);await c.replica.sync();check(c);
+        await c.controller.drain();check(c);const received=await c.replica.sync();check(c);
+        if(options.confirmation)insist(received?.offline!==true&&network()&&visible(),'DELTA_APP_CONFIRM_OFFLINE','通信が途切れたため最新の記録を確認できません。変更は実行していません');
         const applied=await c.controller.project();check(c);const status=await c.replica.snapshotWithStatus();check(c);
         c.snapshotToken=status.snapshotToken;
         const pending=status.snapshot.outbox.length+(status.snapshot.blockedOutbox?.length||0);
-        return {enabled:true,pending,cursor:status.snapshot.cursor,applied:applied?.applied===true,
+        return {enabled:true,...(options.confirmation?{fresh:true}:{}),pending,cursor:status.snapshot.cursor,applied:applied?.applied===true,
           deferred:applied?.deferred===true||pending>0,revision:c.mode.snapshotRevision??c.checkpoint?.revision??c.mode.baseline.snapshotRevision};
       })();c.flight=task;try{return await task;}finally{if(c.flight===task)c.flight=null;}
     }

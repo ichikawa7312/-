@@ -7,11 +7,26 @@
   const stage=document.getElementById('stage');
   if (!wrap || !stage || typeof renderPdfPage!=='function') return;
   const MAX_EDGE=4096, BASE_PIXELS=2200000, DETAIL_PIXELS=6000000;
-  let epoch=0, view=null, front=null, baseTask=null, detailTask=null;
+  let epoch=0, view=null, front=null, baseTask=null, detailTask=null, ownedDocument=null;
+  const releasedDocuments=new WeakSet();
   let timer=0, request=0, detailKey='', detailBusy=false;
   const dispose=c=>{if(c){c.remove();c.width=1;c.height=1;}};
   const cancel=t=>{try{t?.cancel();}catch(_){}};
   const cancelled=e=>e?.name==='RenderingCancelledException';
+  const cameraOpen=()=>window.SentlogContinuousCamera?.isOpen?.()===true;
+  function releaseDocuments(){
+    const documents=new Set([ownedDocument,pdfDoc]);ownedDocument=null;
+    for(const doc of documents){
+      if(!doc)continue;
+      if(pdfDoc===doc)pdfDoc=null;
+      if(typeof doc.destroy!=='function' || releasedDocuments.has(doc))continue;
+      releasedDocuments.add(doc);
+      // Each getDocument call owns its worker. Releasing only a captured old
+      // document cannot terminate a replacement opened while this awaits.
+      try{Promise.resolve(doc.destroy()).catch(error=>console.warn('Sentlog PDF release',error));}
+      catch(error){console.warn('Sentlog PDF release',error);}
+    }
+  }
   const note=document.createElement('div');
   note.id='sentlogPdfQuality'; note.className='meta'; note.style.marginTop='8px';
   document.getElementById('zoomValue')?.closest('.zoom-row')?.after(note);
@@ -42,14 +57,20 @@
     return {x,y,w,h,...pixels,key:[epoch,x,y,w,h,pixels.width,pixels.height].map(n=>Math.round(n*100)/100).join(':')};
   }
   function schedule(delay=180){
-    if(!view)return;
+    if(!view || cameraOpen())return;
     clearTimeout(timer);request++;
     timer=setTimeout(()=>{timer=0;drawDetail();},delay);
   }
   async function drawDetail(){
-    const v=view;if(!isCurrent(v) || document.hidden)return;
+    const v=view;if(!isCurrent(v) || document.hidden || cameraOpen())return;
     if(detailBusy || activeTouches.size || panStart || labelDrag){schedule(120);return;}
     const area=region(v);if(!area || area.key===detailKey)return;
+    // The bounded base already contains these pixels when the sheet fits on a
+    // small screen. Rendering the same PDF a second time adds no visible detail.
+    if(area.width/area.w<=canvas.width/state.width && area.height/area.h<=canvas.height/state.height){
+      dispose(front);front=null;detailKey=area.key;
+      status('表示：画面に合わせて表示');return;
+    }
     const serial=request;
     const buffer=document.createElement('canvas');
     buffer.width=area.width;buffer.height=area.height;
@@ -62,7 +83,7 @@
       task=v.page.render({canvasContext:context,viewport:v.viewport,
         transform:[sx,0,0,sy,-area.x*sx,-area.y*sy],background:'rgb(255,255,255)'});
       detailTask=task;await task.promise;
-      if(!isCurrent(v) || serial!==request)return;
+      if(!isCurrent(v) || serial!==request || cameraOpen())return;
       buffer.className='sentlog-pdf-detail';buffer.setAttribute('aria-hidden','true');
       buffer.style.cssText='position:absolute;pointer-events:none;transform-origin:0 0;background:white;left:'+area.x+'px;top:'+area.y+'px;width:'+area.w+'px;height:'+area.h+'px;';
       // A painted back buffer is inserted below annotations before the old one is released.
@@ -84,28 +105,28 @@
   const oldTransform=applyTransform;
   applyTransform=function(){oldTransform.apply(this,arguments);schedule();};
   const oldOpen=openFile;
-  openFile=async function(){invalidate();return oldOpen.apply(this,arguments);};
+  openFile=async function(){invalidate();releaseDocuments();return oldOpen.apply(this,arguments);};
   const oldSetup=setupStage;
   setupStage=function(){invalidate();return oldSetup.apply(this,arguments);};
   const oldShowProjects=showProjects,oldShowDrawings=showDrawings;
-  showProjects=function(){invalidate();return oldShowProjects.apply(this,arguments);};
-  showDrawings=function(){invalidate();return oldShowDrawings.apply(this,arguments);};
+  showProjects=function(){invalidateDrawingFileOpen();invalidate();releaseDocuments();return oldShowProjects.apply(this,arguments);};
+  showDrawings=function(){invalidateDrawingFileOpen();invalidate();releaseDocuments();return oldShowDrawings.apply(this,arguments);};
   const oldOpenDrawing=openDrawing;
-  openDrawing=async function(){invalidate();return oldOpenDrawing.apply(this,arguments);};
+  openDrawing=async function(){invalidateDrawingFileOpen();invalidate();releaseDocuments();return oldOpenDrawing.apply(this,arguments);};
 
   // Base rendering is bounded in memory. Zoom detail is cropped to the visible region,
   // so even a large A0 sheet at 800% never needs a giant full-page bitmap.
-  renderPdfPage=async function(pageNo){
-    const doc=pdfDoc;if(!doc)return;
+  renderPdfPage=async function(pageNo,options={}){
+    const doc=pdfDoc;if(!doc)return false;ownedDocument=doc;
     pageNo=Number(pageNo);
-    if(!Number.isInteger(pageNo) || pageNo<1 || pageNo>doc.numPages)return;
+    if(!Number.isInteger(pageNo) || pageNo<1 || pageNo>doc.numPages)return false;
     const stamp=invalidate(),id=activeDrawingId;
     if(typeof resetTouchGesture==='function')resetTouchGesture();
     setLoading(true);status('表示：PDFを読み込み中…');
     let buffer=null,task=null;
     try{
       const page=await doc.getPage(pageNo);
-      if(stamp!==epoch || doc!==pdfDoc || id!==activeDrawingId)return;
+      if(stamp!==epoch || doc!==pdfDoc || id!==activeDrawingId)return false;
       const intrinsic=normalizeRotation(page.rotate||0);
       const base=page.getViewport({scale:1,rotation:intrinsic});
       // Preserve the legacy logical dimensions, independent of device pixel ratio.
@@ -126,13 +147,19 @@
       task=page.render({canvasContext:context,viewport,
         transform:[pixels.width/state.width,0,0,pixels.height/state.height,0,0],background:'rgb(255,255,255)'});
       baseTask=task;await task.promise;
-      if(stamp!==epoch || doc!==pdfDoc || id!==activeDrawingId)return;
+      if(stamp!==epoch || doc!==pdfDoc || id!==activeDrawingId)return false;
       ctx.clearRect(0,0,canvas.width,canvas.height);ctx.drawImage(buffer,0,0);
       view={epoch:stamp,doc,page,viewport,pageNo,id};
-      updatePageUI();updateScaleStatus();updateRotationUI();render();renderSelectedPhotos();persist();
+      updatePageUI();updateScaleStatus();updateRotationUI();render();renderSelectedPhotos();
+      if(options.persist!==false)persist();
       status('表示：標準 → 高精細に更新');schedule(0);
+      return true;
     }catch(e){
-      if(!cancelled(e) && stamp===epoch){showError('PDFの表示に失敗しました：'+(e.message||e));throw e;}
+      if(!cancelled(e) && stamp===epoch){
+        if(options.opening===true && doc===pdfDoc)releaseDocuments();
+        showError('PDFの表示に失敗しました：'+(e.message||e));throw e;
+      }
+      return false;
     }finally{
       dispose(buffer);if(baseTask===task)baseTask=null;
       if(stamp===epoch)setLoading(false);
@@ -151,6 +178,12 @@
   document.addEventListener('visibilitychange',()=>{if(!document.hidden)schedule(0);});
   window.addEventListener('pagehide',()=>{cancel(detailTask);});
   window.addEventListener('pageshow',()=>schedule(0));
+  window.addEventListener('sentlog-camera-visibility',event=>{
+    if(event.detail?.open){
+      clearTimeout(timer);timer=0;request++;cancel(detailTask);
+      dispose(front);front=null;detailKey='';
+    }else schedule(0);
+  });
   // Test/diagnostic entry point; no app data changes.
   window.sentlogRedrawPdfDetail=()=>schedule(0);
 })();

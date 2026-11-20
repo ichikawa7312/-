@@ -18,6 +18,13 @@ const ok=()=>({status:200,text:async()=>'[]'});
   assert.equal((await api.readSyncResponse('/write',{method:'POST'})).response.status,409);assert.equal(attempts,1);
   attempts=0;handler=()=>({status:401,text:async()=>'unauthorized'});await api.readSyncResponse('/read');assert.equal(attempts,1);
   attempts=0;handler=()=>({status:attempts===1?503:200,text:async()=>'[]'});await api.readSyncResponse('/read');assert.equal(attempts,2);
+  const cancelled=new AbortController();cancelled.abort();attempts=0;
+  await assert.rejects(api.readSyncResponse('/read',{signal:cancelled.signal}),{name:'AbortError'});assert.equal(attempts,0,'cancelled confirmations must not start a request');
+  const active=new AbortController();attempts=0;let actualSignal,bodyStarted;
+  const readingBody=new Promise(resolve=>{bodyStarted=resolve;});
+  handler=async(url,options)=>{actualSignal=options.signal;return {status:200,text:()=>new Promise((resolve,reject)=>{options.signal.addEventListener('abort',()=>reject(options.signal.reason),{once:true});bodyStarted();})};};
+  const pending=api.readSyncResponse('/read',{signal:active.signal});await readingBody;active.abort();
+  await assert.rejects(pending,{name:'AbortError'});assert.equal(actualSignal.aborted,true);assert.equal(attempts,1,'user cancellation cannot trigger a read retry');
   // Exercise the built upload function: matched originals need no per-file
   // request, but every absent/mismatching cache entry is checked freshly.
   const code=fs.readFileSync(__dirname+'/../sentlog/cloud-sync.js','utf8');

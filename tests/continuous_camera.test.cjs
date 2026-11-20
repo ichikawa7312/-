@@ -1,5 +1,5 @@
 const assert=require('node:assert/strict');
-const {createSession,captureStill,prefersVideoFrame}=require('../sentlog/continuous-camera.js');
+const {createSession,captureStill,prefersVideoFrame,createStreamLease}=require('../sentlog/continuous-camera.js');
 const defer=()=>{let resolve,reject;const promise=new Promise((a,b)=>{resolve=a;reject=b;});return {promise,resolve,reject};};
 const target={projectId:'p',drawingId:'d',recordId:'r',ownerId:'owner'};
 function fixture(){
@@ -13,7 +13,43 @@ function fixture(){
   return {session,photos,prepared,registered,canceled,get captureCount(){return captureCount;}};
 }
 async function test(name,fn){await fn();console.log('PASS '+name);}
+function leaseFixture(){
+  let clock=1000,serial=0;const timers=new Map(),stopped=[];
+  const lease=createStreamLease({now:()=>clock,setTimeout(fn,delay){timers.set(++serial,{fn,delay});return serial;},clearTimeout(id){timers.delete(id);}});
+  const track={readyState:'live',enabled:true,muted:false,stop(){this.readyState='ended';stopped.push(this);}};
+  const stream={getTracks:()=>[track],getVideoTracks:()=>[track]};
+  return {lease,stream,track,timers,stopped,advance:ms=>{clock+=ms;}};
+}
 (async()=>{
+  await test('between records the camera lease disables capture and reuses only the same drawing grant',async()=>{
+    const f=leaseFixture();assert.equal(f.lease.park(f.stream,target),true);
+    assert.equal(f.track.enabled,false);assert.equal(f.track.readyState,'live');assert.equal(f.stopped.length,0);
+    assert.equal(f.timers.size,1);assert.equal([...f.timers.values()][0].delay,60000);
+    assert.equal(f.lease.take({...target,recordId:'next-record'}),f.stream);
+    assert.equal(f.track.enabled,true);assert.equal(f.timers.size,0);
+    f.lease.clear();assert.equal(f.track.readyState,'live','taken stream is owned by the active camera');
+  });
+  await test('camera lease expiry fully stops tracks and late timer delivery cannot extend the grant',async()=>{
+    const f=leaseFixture();f.lease.park(f.stream,target);[...f.timers.values()][0].fn();
+    assert.equal(f.track.readyState,'ended');assert.equal(f.timers.size,0);assert.equal(f.lease.take(target),null);
+    const late=leaseFixture();late.lease.park(late.stream,target);late.advance(60001);
+    assert.equal(late.lease.take(target),null);assert.equal(late.track.readyState,'ended');
+  });
+  await test('camera lease never crosses a drawing, project or account boundary',async()=>{
+    for(const key of ['drawingId','projectId','ownerId']){
+      const f=leaseFixture();f.lease.park(f.stream,target);
+      assert.equal(f.lease.take({...target,[key]:'another'}),null,key);
+      assert.equal(f.track.readyState,'ended',key);assert.equal(f.timers.size,0,key);
+    }
+  });
+  await test('interrupted tracks and explicit lifecycle cleanup cannot leave a parked camera behind',async()=>{
+    for(const change of [{muted:true},{readyState:'ended'}]){
+      const f=leaseFixture();Object.assign(f.track,change);
+      assert.equal(f.lease.park(f.stream,target),false);assert.equal(f.track.readyState,'ended');assert.equal(f.timers.size,0);
+    }
+    const f=leaseFixture();f.lease.park(f.stream,target);f.lease.clear();f.lease.clear();
+    assert.equal(f.track.readyState,'ended');assert.equal(f.stopped.length,1);assert.equal(f.lease.take(target),null);
+  });
   await test('each shutter gets a fresh operation and reuses the opening target',async()=>{
     const f=fixture();for(let i=0;i<3;i++)await f.session.capture();
     assert.equal(f.session.snapshot().saved,3);assert.equal(new Set(f.prepared.map(x=>x.operationId)).size,3);
@@ -118,5 +154,12 @@ async function test(name,fn){await fn();console.log('PASS '+name);}
     class InterruptedCapture{async takePhoto(){track.muted=true;throw Error('interrupted');}}
     await assert.rejects(captureStill({videoWidth:100,videoHeight:100,readyState:4},track,InterruptedCapture,
       {createElement(){throw Error('must not save the stale canvas frame');}}),/一時停止/);
+  });
+  await test('disabled camera tracks cannot save a black paused frame or invoke still capture',async()=>{
+    let called=false;
+    class Capture{async takePhoto(){called=true;return new Blob(['black paused frame']);}}
+    await assert.rejects(captureStill({videoWidth:1280,videoHeight:960,readyState:4},
+      {readyState:'live',muted:false,enabled:false},Capture,{}),/一時停止/);
+    assert.equal(called,false);
   });
 })().catch(e=>{console.error(e);process.exitCode=1;});

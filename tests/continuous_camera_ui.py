@@ -237,10 +237,27 @@ def run(page, engine, screenshot_dir=None):
     assert len(set(saved_photo_ids(page, 'memo-plan-a'))) == 3
     assert_controls_fit(page)
     screenshot('three-photos-portrait')
+    page.evaluate("""()=>{
+      cameraMock.originalFit=fit;cameraMock.hiddenFit=0;
+      cameraMock.openView={view:currentView,projectId:activeProjectId,drawingId:activeDrawingId,recordId:selected};
+      fit=function(){if(SentlogContinuousCamera.isOpen())cameraMock.hiddenFit++;return cameraMock.originalFit.apply(this,arguments);};
+    }""")
     page.set_viewport_size({'width': 844, 'height': 390})
+    page.evaluate("""async()=>{
+      window.dispatchEvent(new Event('orientationchange'));
+      await new Promise(resolve=>setTimeout(resolve,350));
+    }""")
     assert_controls_fit(page)
     screenshot('three-photos-landscape')
     page.set_viewport_size({'width': 390, 'height': 844})
+    page.evaluate("""async()=>{
+      window.dispatchEvent(new Event('orientationchange'));
+      await new Promise(resolve=>setTimeout(resolve,350));
+    }""")
+    assert page.evaluate('cameraMock.hiddenFit') == 0, 'rotation must not refit and redraw the covered drawing behind a live camera'
+    assert page.evaluate("""()=>({view:currentView,projectId:activeProjectId,drawingId:activeDrawingId,recordId:selected})""") == page.evaluate('cameraMock.openView')
+    assert page.evaluate('cameraMock.calls') == 1, 'rotation must preserve the already permitted stream'
+    page.evaluate('fit=cameraMock.originalFit')
 
     # An incoming append is accepted during image conversion. A second shutter
     # press while saving cannot capture a duplicate or overwrite the peer photo.
@@ -300,7 +317,7 @@ def run(page, engine, screenshot_dir=None):
     expect(page.locator('#sentlogContinuousCamera')).to_be_visible()
     assert page.locator('[data-camera-photo-id]:visible').count() == 0
 
-    # Done while saving awaits durable attachment before releasing the camera.
+    # Done while saving awaits durable attachment before disabling the camera.
     page.evaluate(HOLD_CONVERSION)
     shutter(page)
     page.wait_for_function('photoCaptureGate.entered')
@@ -311,11 +328,16 @@ def run(page, engine, screenshot_dir=None):
     wait_photos(page, 'memo-plan-a', 6)
     page.wait_for_function('!SentlogContinuousCamera.isOpen()')
     expect(page.locator('#sentlogContinuousCamera')).to_be_hidden()
-    assert page.evaluate('cameraMock.tracks[0].readyState') == 'ended'
+    assert page.evaluate('cameraMock.tracks[0].readyState') == 'live'
+    assert page.evaluate('cameraMock.tracks[0].enabled') is False
+    assert page.evaluate('document.getElementById("slCameraVideo").srcObject') is None
 
     # The destination is bound when the session opens, not when a later shot
     # finishes. Same-ID records on another drawing must never receive this shot.
     open_camera(page)
+    expect(page.locator('#slCameraShutter')).to_be_enabled()
+    assert page.evaluate('cameraMock.calls') == 1, 'returning to this drawing should reuse its disabled stream without another permission request'
+    assert page.evaluate('cameraMock.tracks[0].enabled') is True
     camera_count(page, 0)
     page.evaluate("SentlogFieldRecords.selectRecord('survey-b')")
     page.evaluate(HOLD_CONVERSION)
@@ -332,6 +354,7 @@ def run(page, engine, screenshot_dir=None):
     assert saved_photo_ids(page, 'memo-plan-b') == []
     page.locator('#slCameraDone').click()
     page.wait_for_function('!SentlogContinuousCamera.isOpen()')
+    assert page.evaluate('cameraMock.tracks[0].readyState') == 'ended', 'the old drawing stream must not be retained after navigation'
 
     # Permission denial leaves an explicit route to the existing native camera.
     page.evaluate('cameraMock.deny=true')
@@ -387,6 +410,28 @@ def run(page, engine, screenshot_dir=None):
     page.locator('#slCameraReviewClose').click()
     page.locator('#slCameraDone').click()
     page.wait_for_function('!SentlogContinuousCamera.isOpen()')
+    assert page.evaluate('cameraMock.tracks.every(track=>track.readyState==="ended"||!track.enabled)'), 'closing must disable every retained camera track'
+    assert page.evaluate('document.getElementById("slCameraVideo").srcObject') is None
+
+    # Leaving the drawing releases a parked grant immediately. Backgrounding
+    # the app must release it even while the camera dialog is already closed.
+    page.evaluate("showDrawings(memoFixture.pid)")
+    assert all(row == 'ended' for row in page.evaluate('cameraMock.tracks.map(track=>track.readyState)'))
+    page.evaluate("""async()=>{
+      await openDrawing(memoFixture.pid,'memo-plan-b');SentlogFieldRecords.selectRecord('survey-a');
+      $('inspector').classList.add('open');
+    }""")
+    open_camera(page)
+    expect(page.locator('#slCameraShutter')).to_be_enabled()
+    page.locator('#slCameraDone').click()
+    page.wait_for_function('!SentlogContinuousCamera.isOpen()')
+    assert page.evaluate('cameraMock.tracks.at(-1).enabled') is False
+    page.evaluate("""()=>{
+      Object.defineProperty(document,'hidden',{configurable:true,value:true});
+      document.dispatchEvent(new Event('visibilitychange'));
+      delete document.hidden;
+      document.dispatchEvent(new Event('visibilitychange'));
+    }""")
     assert all(row == 'ended' for row in page.evaluate('cameraMock.tracks.map(track=>track.readyState)'))
 
     # Ending the session before the permission/start request resolves must
@@ -429,7 +474,7 @@ def run(page, engine, screenshot_dir=None):
     print('PASS '+engine+': three continuous shots, durable per-shot saves, duplicate press guard, '
           'incoming photo/comment preservation, opt-in review, finish waits for save, '
           'fixed destination, permission/video-frame fallback, confirmation layering '
-          'and late-start camera cleanup')
+          'disabled same-drawing stream reuse, navigation/background release and late-start camera cleanup')
 
 
 def run_orientation(page, engine, screenshot_dir=None):
@@ -490,6 +535,9 @@ def run_orientation(page, engine, screenshot_dir=None):
     try:
         for device, navigator, cases in devices:
             set_platform(navigator)
+            # Each platform fixture starts a fresh hardware lifetime. Rotation
+            # within it must keep the same stream for every shot.
+            page.evaluate('window.dispatchEvent(new Event("pagehide"))')
             native_before = page.evaluate('cameraMock.photos')
             frames_before = page.evaluate('cameraMock.canvasPhotos')
             streams_before = page.evaluate('cameraMock.calls')

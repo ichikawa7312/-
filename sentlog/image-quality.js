@@ -10,6 +10,7 @@
   const touch=/iPhone|iPad|iPod/i.test(navigator.userAgent||'') ||
     (navigator.maxTouchPoints>1) || window.matchMedia?.('(pointer:coarse)').matches;
   const SOURCE_PIXELS=4000000,TOUCH_DETAIL_PIXELS=1500000;
+  const cameraOpen=()=>window.SentlogContinuousCamera?.isOpen?.()===true;
   let epoch=0,view=null,front=null,timer=0,frame=0,detailKey='',openingSize=null,drawCount=0,viewport=false;
   const dispose=element=>{if(element){element.remove();element.width=1;element.height=1;}};
   function releaseSource(source){
@@ -65,7 +66,7 @@
     }catch(error){dispose(source);throw error;}
   }
   function schedule(delay=180){
-    if(!view)return;clearTimeout(timer);
+    if(!view || cameraOpen())return;clearTimeout(timer);
     if(touch){
       updateViewport();
       if(!frame)frame=requestAnimationFrame(()=>{frame=0;drawTouchViewport();});
@@ -74,7 +75,7 @@
     timer=setTimeout(()=>{timer=0;drawDetail();},delay);
   }
   function updateViewport(){
-    if(!touch || !current(view) || !(scale>0))return null;
+    if(!touch || !current(view) || !(scale>0) || cameraOpen())return null;
     const r=wrap.getBoundingClientRect();if(r.width<1 || r.height<1)return null;
     viewport=true;
     stage.style.transform='none';stage.style.width=r.width+'px';stage.style.height=r.height+'px';
@@ -91,7 +92,7 @@
     return r;
   }
   function drawTouchViewport(){
-    const v=view;if(!current(v) || document.hidden)return;
+    const v=view;if(!current(v) || document.hidden || cameraOpen())return;
     const r=updateViewport();if(!r)return;
     const pixels=bounded(r.width,r.height,Math.min(2,window.devicePixelRatio||1),TOUCH_DETAIL_PIXELS);
     const key=[epoch,scale,tx,ty,r.width,r.height,pixels.width,pixels.height].join(':');
@@ -128,7 +129,7 @@
   }
   function drawDetail(){
     if(touch){drawTouchViewport();return;}
-    const v=view;if(!current(v) || document.hidden || !(scale>0))return;
+    const v=view;if(!current(v) || document.hidden || !(scale>0) || cameraOpen())return;
     if(activeTouches.size || panStart || labelDrag){schedule(120);return;}
     const r=wrap.getBoundingClientRect();if(r.width<1 || r.height<1)return;
     const pad=24/scale;
@@ -234,4 +235,10 @@
   if('ResizeObserver' in window)new ResizeObserver(()=>schedule()).observe(wrap);
   document.addEventListener('visibilitychange',()=>{if(!document.hidden)schedule(0);});
   window.addEventListener('pageshow',()=>schedule(0));
+  window.addEventListener('sentlog-camera-visibility',event=>{
+    if(event.detail?.open){
+      clearTimeout(timer);timer=0;cancelAnimationFrame(frame);frame=0;
+      dispose(front);front=null;detailKey='';
+    }else schedule(0);
+  });
 })();

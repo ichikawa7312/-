@@ -63,7 +63,7 @@ function fixture(){
   const cp={id:'cloud-p1',client_key:'p1',name:'現場',status:'active'};
   h.cloudProjects=new Map([[cp.id,cp]]);h.otherServers=new Map();
   const ls=new Map([['device','device-id']]),events={};
-  const context={console,Blob,structuredClone,Map,Set,Date:class extends Date{static now(){return time.now();}},setTimeout:time.setTimer,clearTimeout:time.clearTimer,
+  const context={console,Blob,AbortController,structuredClone,Map,Set,Date:class extends Date{static now(){return time.now();}},setTimeout:time.setTimer,clearTimeout:time.clearTimer,
     session:{user:{id:'owner-a'},access_token:'test'},syncing:false,syncNotBefore:0,syncErrorNotBefore:0,mergeBusy:false,
     SUPABASE_URL:'https://example.invalid',SUPABASE_KEY:'public',DEVICE_KEY:'device',WORKSPACE_KEY:WS,DRAWING_KEY_PREFIX:DP,SYNC_META_PREFIX:MP,SYNC_FINGERPRINT_SCHEMA:2,
     document:{hidden:false,addEventListener(type,callback){events[type]=callback;}},navigator:{onLine:true},localStorage:{getItem:k=>ls.get(k)??null,setItem:(k,v)=>ls.set(k,v)},
@@ -202,6 +202,71 @@ test('fresh confirmation rejects unavailable, missing, deferred and switched-acc
   const old=h.context.window.sentlogCollabRefresh('p1').catch(e=>e);await h.time.tick(0);h.context.session={user:{id:'owner-b'}};h.api.reset();hold.resolve();await microtasks();await h.time.tick(0);assert.equal((await old).code,'COLLAB_ACCOUNT_CHANGED');h.stop();
 });
 
+test('two-record 31-photo deletion confirmation bypasses an unrelated held save and never activates delta',async()=>{
+  const h=fixture(),pack=copy(h.base),photos=Array.from({length:31},(_,n)=>({id:'existing-photo-'+n,name:'photo-'+n+'.jpg',size:100+n}));
+  pack.drawings[0].state.shapes=[C.upgrade({id:'r1',kind:'field-record',memo:'',photos}),C.upgrade({id:'r2',kind:'field-record',memo:'保持する記録',photos:[]})];
+  h.server.payload=copy(pack);h.data.set(DP+'d1',JSON.stringify(pack.drawings[0].state));
+  h.data.set(MP+'p1',JSON.stringify({revision:1,fingerprint:stable(pack),fingerprint_schema:2,local_updated_at:1,base_snapshot:pack}));
+  addFixtureProject(h,'p2',{existing:true});editFixtureProject(h,'p2');const hold=deferred();
+  h.restHook=async(path,options)=>{if(options.method&&path.includes('project_id=eq.cloud-p2&'))await hold.promise;};
+  h.api.metadata.request(['p2']);await h.time.tick(0);assert.equal(h.api.metadata.running,true);
+  const calls=h.calls.length,before=h.data.get(DP+'d1');let inspected=0;
+  h.context.window.sentlogDeltaRuntime={inspect:async cp=>{assert.equal(cp.client_key,'p1');inspected++;return {enabled:false,canActivate:true};},sync:()=>{throw Error('Confirmation must not activate delta');}};
+  h.context.projectFilesChanged=()=>{throw Error('Confirmation must not scan file references');};
+  const checked=await h.context.window.sentlogCollabRefresh('p1');
+  assert.equal(checked.fresh,true);assert.equal(inspected,1);assert.equal(h.api.metadata.running,true,'the unrelated upload is still physically blocked');
+  assert.equal(h.data.get(DP+'d1'),before);assert.equal(h.fileCalls.length,0);
+  assert(h.calls.slice(calls).every(c=>!c.options.method),'confirmation performs no snapshot upload');
+  assert(h.calls.slice(calls).filter(c=>c.path.includes('sentlog_project_snapshots')).every(c=>c.path.includes('project_id=eq.cloud-p1&')));
+  hold.resolve();await microtasks();h.stop();
+});
+
+test('fresh receive preserves peer history before confirmation and queues its files separately',async()=>{
+  const h=fixture(),before=C.revisionToken(h.base.drawings[0].state.shapes[0]);
+  h.server.revision=2;h.server.payload.drawings[0].state.shapes[0]=C.appendComment(h.server.payload.drawings[0].state.shapes[0],'削除確認中に届いた追記',{commentId:'peer',revisionId:'peer-r1',at:8});
+  const checked=await h.context.window.sentlogCollabRefresh('p1'),record=JSON.parse(h.data.get(DP+'d1')).shapes[0];
+  assert.equal(checked.revision,2);assert.notEqual(C.revisionToken(record),before);assert.match(record.memo,/削除確認中/);
+  assert.equal(h.commits,1);assert.equal(h.calls.filter(c=>c.options.method).length,0);assert.deepEqual([...h.api.files.pending],['p1']);h.stop();
+});
+
+test('fresh confirmation is bounded and cancellation prevents late read application',async()=>{
+  for(const timeout of [false,true]){
+    const h=fixture(),hold=deferred(),controller=new AbortController();let requestSignal;
+    h.server.revision=2;
+    h.restHook=async(path,options)=>{if(path.includes('sentlog_project_snapshots')){requestSignal=options.signal;await hold.promise;}};
+    const task=h.context.window.sentlogCollabRefresh('p1',{signal:controller.signal}).catch(e=>e);await h.time.tick(0);
+    assert(requestSignal,'the pending read carries its cancellation signal');
+    if(timeout)await h.time.tick(15000);else controller.abort();
+    assert.equal((await task).code,timeout?'COLLAB_CONFIRM_TIMEOUT':'COLLAB_CONFIRM_CANCELLED');assert.equal(requestSignal.aborted,true);
+    hold.resolve();await microtasks();assert.equal(h.commits,0);assert.equal(h.context.getSyncMeta('p1').revision,1);h.stop();
+  }
+});
+
+test('active delta confirmation receives scoped history without a checkpoint and rejects deferred projection',async()=>{
+  for(const deferred of [false,true]){
+    const h=fixture();let receives=0;
+    h.context.window.sentlogDeltaRuntime={inspect:async()=>({enabled:true,canActivate:false}),sync:async(cp,options)=>{
+      assert.equal(cp.client_key,'p1');assert.equal(options.confirmation,true,'only an active journal may confirm');assert.equal(options.activate,undefined);receives++;
+      return {enabled:true,fresh:true,deferred,revision:9};},checkpoint:()=>{throw Error('Confirmation must not create a compatibility checkpoint');}};
+    const task=h.context.window.sentlogCollabRefresh('p1');
+    if(deferred)await assert.rejects(task,/別の変更/);else assert.equal((await task).revision,9);
+    assert.equal(receives,1);assert.equal(h.calls.filter(c=>c.path.includes('sentlog_project_snapshots')).length,0);h.stop();
+  }
+});
+
+test('missing shared history cannot authorize deletion of a previously synchronized project',async()=>{
+  const h=fixture();h.cloudProjects.clear();await assert.rejects(h.context.window.sentlogCollabRefresh('p1'),/共有先を確認できません/);
+  h.cloudProjects.set('cloud-p1',{id:'cloud-p1',client_key:'p1',name:'現場',status:'active'});h.server=null;
+  await assert.rejects(h.context.window.sentlogCollabRefresh('p1'),/保存済みの共有記録/);h.stop();
+});
+test('a journal handover starting during a legacy confirmation requires a new delta receive',async()=>{
+  const h=fixture();let bound=false;
+  h.context.window.sentlogDeltaRuntime={inspect:async()=>({enabled:false,canActivate:true}),sync:()=>{throw Error('No activation from confirmation');}};
+  h.context.window.sentlogDeltaOwnsProject=()=>bound;
+  h.restHook=async path=>{if(path.includes('sentlog_project_snapshots'))bound=true;};
+  await assert.rejects(h.context.window.sentlogCollabRefresh('p1'),/保存方式の切替/);assert.equal(h.commits,0);h.stop();
+});
+
 function addFixtureProject(h,id,{existing=false}={}){
   const project={id,name:'現場 '+id,updatedAt:2,collaborationVersion:1,drawings:[{id:'drawing-'+id,name:'全景',pageCount:1}]};
   const drawing={sourceType:'pdf',fileName:'図面.pdf',pageCount:1,shapes:[C.upgrade({id:'record-'+id,memo:'初回',photos:[{id:'photo-'+id,name:'写真.jpg',size:10}]})],collabDeletedRecords:[]};
@@ -231,7 +296,10 @@ test('timeout in an existing project does not block a new project registration o
   assert.deepEqual(h.fileCalls,['cloud-p2']);assert.deepEqual(photos,[['cloud-p2','photo-p2']]);
   assert.deepEqual([...h.api.metadata.pending],['p1']);assert.deepEqual([...h.api.files.pending],['p1']);
   assert.equal(h.statuses.at(-1).level,'error');assert.match(h.statuses.at(-1).message,/現場：記録の保存.*時間切れ/);
-  const fresh=h.context.window.sentlogCollabRefresh('p1');await assert.rejects(fresh,/時間切れ/);h.stop();
+  const writes=snapshotWrites(h,'p1').length;
+  const fresh=await h.context.window.sentlogCollabRefresh('p1');assert.equal(fresh.fresh,true);
+  assert.equal(snapshotWrites(h,'p1').length,writes,'read confirmation must not retry the timed-out snapshot write');
+  assert.equal(h.statuses.at(-1).level,'error','confirmation cannot acknowledge the pending background save');h.stop();
 });
 test('permanent history failure remains paused while another existing project synchronizes',async()=>{
   const h=fixture();addFixtureProject(h,'p2',{existing:true});editFixtureProject(h,'p1');editFixtureProject(h,'p2');

@@ -39,6 +39,8 @@ class Cloud(base.FakeCloud):
         self.assets, self.blobs, self.notifications, self.pages = {}, {}, [], []
         self.page_errors = []
         self.hold_upload, self.held_uploads, self.drop_ack = None, [], None
+        self.hold_inspection, self.held_inspections = None, []
+        self.hold_head, self.held_heads = None, []
         self.webkit_sources = {}
         if engine == 'webkit':
             for filename, marker in [('cloud-sync.js', 'async function dbGet(key){'),
@@ -75,6 +77,16 @@ class Cloud(base.FakeCloud):
         if parsed.netloc != 'wiulvaqixphuobdielyy.supabase.co' or request.method == 'OPTIONS':
             return super().route(route, device)
         path, query = unquote(parsed.path), parse_qs(parsed.query)
+        if path.endswith('/rpc/sentlog_delta_inspect_v1') and self.hold_inspection:
+            body = json.loads(request.post_data)
+            if self.hold_inspection == (device, body['p_project_id']):
+                self.held_inspections.append(route)
+                return
+        if (path.endswith('/sentlog_project_snapshots') and request.method == 'GET'
+                and query.get('select') == ['revision,updated_at']
+                and self.hold_head == (device, query.get('project_id', [''])[0].removeprefix('eq.'))):
+            self.held_heads.append((route, query))
+            return
         if '/storage/v1/object/' in path:
             if request.method == 'POST':
                 storage_key = path.split('/storage/v1/object/sentlog-temp/', 1)[1]
@@ -134,6 +146,24 @@ class Cloud(base.FakeCloud):
         for route, storage_key, data in held:
             self.blobs[storage_key] = data
             self.respond(route, {'Key': storage_key})
+
+    def release_inspections(self):
+        self.hold_inspection = None
+        held, self.held_inspections = self.held_inspections, []
+        for route in held:
+            self.respond(route, {'code': 'PGRST202', 'message': 'Legacy fixture has no delta RPC'}, 404)
+
+    def release_heads(self):
+        self.hold_head = None
+        held, self.held_heads = self.held_heads, []
+        for route, query in held:
+            try:
+                self.respond(route, self.rows(self.snapshots.values(), query))
+            except Exception:
+                # The real AbortSignal may already have cancelled this held
+                # request. A late response must never complete the decision.
+                if not route.request.failure:
+                    raise
 
 
 SOCKET = r"""(() => {
@@ -530,6 +560,102 @@ def run(browser, cloud, engine):
     ca.close();cb.close()
 
 
+def run_deletion_confirmation(browser, cloud, engine):
+    context, page, errors = make_page(browser, cloud, A, 390)
+    packs = [base.payload(base.PROJECT, base.DRAWING), base.payload(base.QUIET, 'unrelated-plan')]
+    drawing = packs[0]['drawings'][0]['state']
+    drawing['shapes'] = drawing['shapes'][:2]
+    drawing['shapes'][0]['photos'] = [dict(id='retained-photo' if i == 0 else f'existing-photo-{i}',
+        name=f'existing-{i}.png', type='image/png', size=len(base.photo_png()), createdAt=1) for i in range(31)]
+    for meta in [packs[0]['project']['drawings'][0], packs[0]['drawings'][0]['meta']]:
+        meta.update(shapeCount=2, photoCount=31)
+    encoded = base64.b64encode(base.photo_png()).decode('ascii')
+    baseline = page.evaluate(base.SETUP, dict(packs=packs, encoded=encoded))
+    if engine == 'webkit':
+        probe = page.evaluate(WEBKIT_BLOB_PROBE, encoded)
+        if not probe['ok']:
+            assert probe['name'] in ('UnknownError', 'DataCloneError', 'NotSupportedError'), probe
+            page.evaluate(WEBKIT_BLOB_TRANSPORT)
+    page.evaluate("""async encoded=>{
+      const bytes=Uint8Array.from(atob(encoded),c=>c.charCodeAt(0));
+      for(const photo of state.shapes[0].photos)await SentlogRecords.writeFile('photo:'+activeDrawingId+':'+photo.id,new Blob([bytes],{type:'image/png'}));
+      await SentlogRecords.settled();
+    }""", encoded)
+    cloud.seed(baseline)
+    page.evaluate('async()=>{sentlogImporting=false;await sentlogArchiveSync();await sentlogCloudIdle();}')
+    assert page.evaluate('state.shapes.length') == 2
+    before_photos = page.evaluate('state.shapes[0].photos')
+    retained_record = page.evaluate("state.shapes.find(s=>s.id==='survey-b')")
+
+    # The real metadata worker is awaiting another project's first delta-mode
+    # read. A confirmation must bypass that flight without activating anything.
+    cloud.hold_inspection = (A, base.CLOUD_QUIET)
+    cloud.snapshots[base.CLOUD_QUIET]['revision'] += 1
+    cloud.notifications.append(dict(kind='records', project_id=base.CLOUD_QUIET,
+                                    revision=cloud.snapshots[base.CLOUD_QUIET]['revision']))
+    wait(cloud, page, lambda: bool(cloud.held_inspections), 'unrelated metadata check was not held')
+    page.locator('#deleteBtn').click()
+    remote = cloud.snapshots[base.CLOUD_PROJECT]
+    remote['payload']['drawings'][0]['state']['shapes'][0] = page.evaluate("""record=>
+      SentlogRecordCollaboration.appendComment(record,'確認中の別端末の追記',{
+        commentId:'peer-before-delete',revisionId:'peer-before-delete-r1',at:10,
+        actor:{deviceId:'peer',deviceName:'別端末'}})""", remote['payload']['drawings'][0]['state']['shapes'][0])
+    remote['revision'] += 1  # Deliberately no notification: confirmation itself must receive it.
+    started = time.monotonic()
+    page.locator('.sl-collab-dialog').get_by_role('button', name='削除する', exact=True).click()
+    wait(cloud, page, lambda: 'もう一度' in page.locator('.sl-collab-dialog [data-status]').inner_text(),
+         'fresh delete check did not re-confirm the peer comment while unrelated sync was held', timeout=7)
+    assert page.evaluate('state.shapes.length') == 2
+    assert cloud.held_inspections, 'unrelated sync ended before the fresh-read assertion'
+    page.locator('.sl-collab-dialog').get_by_role('button', name='削除する', exact=True).click()
+    wait(cloud, page, lambda: page.evaluate('state.shapes.length') == 1,
+         'deletion still waits for the unrelated metadata queue', timeout=7)
+    deletion_seconds = time.monotonic() - started
+    assert cloud.held_inspections
+    saved = page.evaluate("""async()=>{
+      await SentlogRecords.settled();SentlogRecords.assertSafe();
+      return {saved:JSON.parse(SentlogRecords.getItem(drawingStorageKey(activeDrawingId))),
+        view:currentView,drawing:activeDrawingId};
+    }""")
+    removed = saved['saved']['collabDeletedRecords'][0]
+    assert removed['id'] == 'survey-a' and len(removed['photos']) == 31
+    assert removed['photos'] == before_photos and '確認中の別端末の追記' in removed['memo']
+    assert saved['saved']['shapes'][0] == retained_record
+    assert saved['view'] == 'editor' and saved['drawing'] == base.DRAWING
+    assert page.evaluate("""async expected=>{
+      const bytes=Uint8Array.from(atob(expected),c=>c.charCodeAt(0));
+      return (await Promise.all(state.collabDeletedRecords[0].photos.map(async photo=>{
+        const blob=await getDBFile('photo:'+activeDrawingId+':'+photo.id);
+        if(!(blob instanceof Blob)||blob.size!==bytes.length)return false;
+        const saved=new Uint8Array(await blob.arrayBuffer());return saved.every((v,i)=>v===bytes[i]);
+      }))).every(Boolean);
+    }""", encoded), 'record deletion changed its retained photo bytes'
+    cloud.release_inspections()
+    wait(cloud, page, lambda: len(cloud.snapshots[base.CLOUD_PROJECT]['payload']['drawings'][0]['state'].get('collabDeletedRecords', [])) == 1,
+         'durable deletion did not synchronize after the unrelated check resumed')
+    page.locator('#undoBtn').click()
+    wait(cloud, page, lambda: len(cloud.snapshots[base.CLOUD_PROJECT]['payload']['drawings'][0]['state']['shapes']) == 2,
+         'deletion undo failed to restore the same record with peer history')
+    page.evaluate('async()=>{await sentlogCloudIdle();}')
+
+    cloud.hold_head = (A, base.CLOUD_PROJECT)
+    page.evaluate("SentlogFieldRecords.selectRecord('survey-a');$('inspector').classList.add('open')")
+    page.locator('#deleteBtn').click()
+    page.locator('.sl-collab-dialog').get_by_role('button', name='削除する', exact=True).click()
+    wait(cloud, page, lambda: bool(cloud.held_heads), 'confirmation read was not held')
+    cancel = page.locator('.sl-collab-dialog').get_by_role('button', name='キャンセル', exact=True)
+    assert cancel.is_enabled(), 'a pending delete disabled its cancel button'
+    cancel.click()
+    assert page.evaluate('state.shapes.length') == 2
+    cloud.release_heads()
+    page.wait_for_timeout(500)
+    assert page.evaluate('state.shapes.length') == 2 and not page.locator('.sl-collab-dialog').is_visible()
+    assert not errors, errors
+    assert not cloud.unexpected, cloud.unexpected
+    print(f'PASS {engine}: 2 records / 31 photos; fresh peer revision, re-confirm and durable delete in {deletion_seconds:.2f}s while unrelated metadata remained held; exact retained photo bytes, sync, undo and cancellable delayed confirmation', flush=True)
+    context.close()
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--engine', choices=('chromium', 'webkit'), default='chromium')
@@ -546,6 +672,8 @@ def main():
             browser = getattr(playwright, args.engine).launch(headless=True)
             try:
                 run(browser, cloud, args.engine)
+                cloud = Cloud(f'http://127.0.0.1:{server.server_port}', args.built_root.resolve(), args.engine)
+                run_deletion_confirmation(browser, cloud, args.engine)
             except Exception:
                 print('Recent synthetic requests:', json.dumps(cloud.requests[-25:], ensure_ascii=False))
                 for i, page in enumerate(cloud.pages):

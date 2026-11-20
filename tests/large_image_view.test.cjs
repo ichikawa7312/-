@@ -4,12 +4,12 @@
 const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
 const part=fs.readFileSync('sentlog/part09.txt','utf8');
 const legacy=part.slice(part.indexOf('async function renderImage('),part.indexOf('\nfunction updatePageUI()'));
-const open=part.slice(part.indexOf('async function openFile('),part.indexOf('\nasync function renderPdfPage('));
+const open=part.slice(part.indexOf('let drawingFileOpenSequence='),part.indexOf('\nasync function renderPdfPage('));
 const setup=fs.readFileSync('sentlog/part07.txt','utf8').match(/function setupStage\(w,h\)\{[^\n]+/)[0];
 
 function fixture({patched=true,naturalWidth=11575,naturalHeight=8031,touch=false,bitmap='supported'}={}){
   const allocations=[],draws=[],timers=new Map(),revoked=[],created=[],errors=[];
-  const images=[],bitmaps=[],elements=[];
+  const images=[],bitmaps=[],elements=[],events=new Map();
   let counter=0,fits=0,persists=0;
   const context={console:{warn(){},error(){}},File,Blob,Math,Promise,queueMicrotask,
     navigator:{userAgent:touch?'iPhone test':'Desktop test',maxTouchPoints:touch?5:0},
@@ -20,7 +20,7 @@ function fixture({patched=true,naturalWidth=11575,naturalHeight=8031,touch=false
     scale:.05,tx:0,ty:0,activeTouches:new Map(),panStart:null,labelDrag:null,devicePixelRatio:3,
     setTimeout:fn=>{const id=++counter;timers.set(id,fn);return id;},clearTimeout:id=>timers.delete(id),
     requestAnimationFrame:fn=>{const id=++counter;timers.set(id,fn);return id;},cancelAnimationFrame:id=>timers.delete(id),
-    addEventListener(){},URL:{createObjectURL:file=>{created.push(file);return 'blob:'+created.length;},revokeObjectURL:url=>revoked.push(url)},
+    addEventListener(name,fn){const handlers=events.get(name)||[];handlers.push(fn);events.set(name,handlers);},URL:{createObjectURL:file=>{created.push(file);return 'blob:'+created.length;},revokeObjectURL:url=>revoked.push(url)},
     fit(){fits++;context.scale=.05;context.tx=5;context.ty=10;},render(){},persist(){persists++;},
     updateScaleStatus(){},updateZoomUI(){},updatePageUI(){},showError:error=>errors.push(error),setLoading:on=>{context.loading.style.display=on?'grid':'none';},
     saveBackgroundFile:async()=>{},applyTransform(){},openDrawing:async()=>{},showProjects(){context.currentView='projects';},showDrawings(){context.currentView='drawings';},
@@ -60,7 +60,8 @@ function fixture({patched=true,naturalWidth=11575,naturalHeight=8031,touch=false
   if(patched)vm.runInContext(fs.readFileSync('sentlog/image-quality.js','utf8'),context);
   const file=new File(['synthetic-jpeg-bytes'],'02.jpg',{type:'image/jpeg'});
   const flush=()=>{const batch=[...timers.values()];timers.clear();for(const fn of batch)fn();};
-  return {context,file,allocations,draws,stage,wrap,errors,revoked,created,images,bitmaps,elements,flush,get fits(){return fits},get persists(){return persists}};
+  const event=(name,detail)=>{for(const fn of events.get(name)||[])fn({detail});};
+  return {context,file,allocations,draws,stage,wrap,errors,revoked,created,images,bitmaps,elements,flush,event,get fits(){return fits},get persists(){return persists}};
 }
 
 (async()=>{
@@ -137,6 +138,29 @@ function fixture({patched=true,naturalWidth=11575,naturalHeight=8031,touch=false
     assert(phone.bitmaps.every(b=>b.closed),'leaving the drawing closes owned bitmaps');
   }
   console.log('PASS touch memory lifecycle: 100 zoom/pan operations reuse one small surface and never read or retain the original decoder; resize fallback/ignored options close safely');
+
+  for(const touch of [false,true]){
+    const camera=fixture({touch});let isOpen=false;
+    camera.context.SentlogContinuousCamera={isOpen:()=>isOpen};
+    await camera.context.openFile(camera.file,false);camera.flush();
+    const state=JSON.stringify(camera.context.state),source=camera.bitmaps[0];
+    const front=camera.stage.children[0];assert(front);
+    isOpen=true;camera.event('sentlog-camera-visibility',{open:true});
+    assert.equal(camera.stage.children.length,0);assert.equal(front.width*front.height,1);
+    const allocations=camera.allocations.length,draws=camera.draws.length;
+    for(let i=0;i<20;i++){
+      camera.context.scale=.4;camera.context.tx=-100-i;
+      camera.context.applyTransform();camera.flush();
+    }
+    assert.equal(camera.allocations.length,allocations,'a covered image must not allocate drawing surfaces');
+    assert.equal(camera.draws.length,draws,'a covered image must not repaint behind the camera');
+    if(source)assert.equal(source.closed,false,'the bounded source stays available without decoding the original again');
+    isOpen=false;camera.event('sentlog-camera-visibility',{open:false});camera.flush();
+    assert.equal(camera.stage.children.length,1);assert.equal(camera.draws.length,draws+1);
+    assert.equal(camera.created.length,1);assert.equal(JSON.stringify(camera.context.state),state);
+    assert.equal(camera.fits,1,'camera visibility alone must not reset drawing zoom');
+  }
+  console.log('PASS camera overlay: drawing detail is released, covered resize work allocates/repaints nothing, and one close redraw retains original source, records and zoom');
 
   for(const failure of ['denyContext','failPaint']){
     const retry=fixture();retry.context[failure]=true;

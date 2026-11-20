@@ -19,6 +19,15 @@ on:
       - 'tests/project_sync_controls*'
       - 'tests/project_sync_ui.py'
       - 'sentlog/continuous-camera.js'
+      - 'sentlog/collaboration-editor.js'
+      - 'sentlog/sync-network-runtime.txt'
+      - 'sentlog/pdf-quality.js'
+      - 'sentlog/image-quality.js'
+      - 'sentlog/page-management.js'
+      - 'sentlog/part07.txt'
+      - 'sentlog/part09.txt'
+      - 'tests/drawing_responsiveness*'
+      - 'tests/large_image_view.test.cjs'
       - 'sentlog/collaboration-photos.js'
       - 'tests/continuous_camera*'
       - 'tests/collaboration_photos*'
@@ -100,6 +109,12 @@ jobs:
       - name: Continuous camera in WebKit
         if: ${{ always() && steps.build.outcome == 'success' && steps.browser_runtime.outcome == 'success' }}
         run: python tests/continuous_camera_ui.py --engine webkit --built-root .
+      - name: Drawing loading, rotation and worker release in Chromium
+        if: ${{ always() && steps.build.outcome == 'success' && steps.browser_runtime.outcome == 'success' }}
+        run: python tests/drawing_responsiveness_ui.py --engine chromium --built-root .
+      - name: Drawing loading, rotation and worker release in WebKit
+        if: ${{ always() && steps.build.outcome == 'success' && steps.browser_runtime.outcome == 'success' }}
+        run: python tests/drawing_responsiveness_ui.py --engine webkit --built-root .
       - name: Photo zoom and release in Chromium
         if: ${{ always() && steps.build.outcome == 'success' && steps.browser_runtime.outcome == 'success' }}
         run: python tests/photo_viewer_ui.py --engine chromium --built-root .
@@ -114,4 +129,5 @@ jobs:
             /tmp/sentlog-collaboration-*.png
             /tmp/sentlog-continuous-camera-*.png
             /tmp/sentlog-project-sync-*.png
+            /tmp/sentlog-drawing-responsiveness-*.png
           if-no-files-found: ignore

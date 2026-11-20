@@ -34,7 +34,7 @@ function fixture({shapes=[shape()],storage=new Map(),savedState,account='account
   const document=dom(),records=new Map(),microtasks=[],timers=new Map();let clock=1000,timerId=0,writes=0,failure=false,user=account;
   const initial=savedState||{currentPage:1,shapes:copy(shapes),collabDeletedRecords:[]};records.set('draw:d1',JSON.stringify(initial));
   class ClockDate extends Date{static now(){return clock;}}
-  const ctx={console,Blob,Date:ClockDate,JSON,Map,Set,Number,Promise,Error,document,navigator:{onLine:true,userAgent:'iPhone',maxTouchPoints:1},crypto:{randomUUID:()=>`uuid-${++generatedIds}`},
+  const ctx={console,Blob,AbortController,Date:ClockDate,JSON,Map,Set,Number,Promise,Error,document,navigator:{onLine:true,userAgent:'iPhone',maxTouchPoints:1},crypto:{randomUUID:()=>`uuid-${++generatedIds}`},
     localStorage:{getItem:k=>storage.get(k)??null,setItem:(k,v)=>storage.set(k,String(v)),removeItem:k=>storage.delete(k)},
     setTimeout:(fn,ms)=>{const i=++timerId;timers.set(i,{at:clock+ms,fn});return i;},clearTimeout:i=>timers.delete(i),queueMicrotask:fn=>microtasks.push(fn),
     SentlogRecords:{getItem:k=>records.get(k)??null,setItem:(k,v)=>records.set(k,v)},drawingStorageKey:id=>'draw:'+id,
@@ -249,6 +249,28 @@ await test('record deletion retains complete history and undo restores that exac
   const f=fixture();f.type('削除前の追記');f.api.flushDraft();await f.document.getElementById('deleteBtn').onclick();await f.click('削除する',f.document.querySelector('.sl-collab-dialog'));
   assert.equal(f.ctx.state.shapes.length,0);assert.equal(f.ctx.state.collabDeletedRecords.length,1);assert(f.ctx.state.collabDeletedRecords[0].memo.includes('削除前の追記'));
   f.ctx.undo();f.drain();assert.equal(f.ctx.state.shapes.length,1);assert.equal(f.ctx.state.collabDeletedRecords.length,0);assert(f.ctx.state.shapes[0].memo.includes('削除前の追記'));
+});
+
+await test('deletion waits for a fresh record token and retains all 31 photos when a peer comment arrives',async()=>{
+  const original=C.upgrade({id:'s1',kind:'field-record',memo:'',photos:Array.from({length:31},(_,n)=>({id:'photo-'+n,name:'写真-'+n+'.jpg',size:100+n}))});
+  const f=fixture({shapes:[original,shape('s2')]});let checks=0;
+  f.ctx.sentlogCollabRefresh=async()=>{if(++checks===1)f.receive(C.appendComment(f.current,'相手の新しい記録',remoteOpts('Peer')));return {fresh:true};};
+  await f.document.getElementById('deleteBtn').onclick();await f.click('削除する',f.document.querySelector('.sl-collab-dialog'));
+  assert.equal(f.ctx.state.shapes.length,2);assert.equal(f.ctx.state.collabDeletedRecords.length,0);assert(f.document.querySelector('[data-status]').textContent.includes('もう一度'));
+  await f.click('削除する',f.document.querySelector('.sl-collab-dialog'));
+  assert.deepEqual(Array.from(f.ctx.state.shapes,r=>r.id),['s2']);const removed=f.ctx.state.collabDeletedRecords[0];
+  assert.equal(removed.photos.length,31);assert.equal(Object.keys(removed.collab.photos).length,31);assert.match(removed.memo,/相手の新しい記録/);assert.equal(C.isDeleted(removed),true);
+});
+
+await test('pending delete keeps cancel usable and a late cancelled result cannot affect the next decision',async()=>{
+  const f=fixture();let resolveFirst,resolveSecond,firstSignal,calls=0;
+  f.ctx.sentlogCollabRefresh=(projectId,{signal})=>new Promise(resolve=>{if(++calls===1){resolveFirst=resolve;firstSignal=signal;}else resolveSecond=resolve;});
+  await f.document.getElementById('deleteBtn').onclick();const first=f.click('削除する',f.document.querySelector('.sl-collab-dialog'));
+  assert.equal(f.buttons('キャンセル',f.document.querySelector('.sl-collab-dialog'))[0].disabled,false);
+  await f.click('キャンセル',f.document.querySelector('.sl-collab-dialog'));assert.equal(firstSignal.aborted,true);assert.equal(f.ctx.state.shapes.length,1);
+  await f.document.getElementById('deleteBtn').onclick();const second=f.click('削除する',f.document.querySelector('.sl-collab-dialog'));
+  resolveFirst({fresh:true});await first;assert.equal(f.ctx.state.shapes.length,1);assert.equal(f.document.querySelector('.sl-collab-dialog').hidden,false);
+  resolveSecond({fresh:true});await second;assert.equal(f.ctx.state.shapes.length,0);assert.equal(f.ctx.state.collabDeletedRecords.length,1);assert.equal(f.writes,1);
 });
 
 await test('legacy textarea disappearance cannot erase existing memo or silently delete a record',async()=>{
