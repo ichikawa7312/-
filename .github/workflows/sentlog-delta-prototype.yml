@@ -18,6 +18,9 @@ on:
       - 'docs/sentlog-delta-v1-schema-prototype.sql'
       - 'docs/sentlog-delta-semantic-validation-prototype.sql'
       - 'docs/sentlog-delta-baseline-prototype.sql'
+      - 'docs/sentlog-delta-transport-prototype.sql'
+      - 'sentlog/collaboration-channel.js'
+      - 'tests/collaboration_channel.test.cjs'
       - 'tests/delta_schema_fixture.sql'
       - 'tests/delta_schema_assertions.sql'
       - 'tests/delta_schema_parallel.sh'
@@ -48,6 +51,10 @@ jobs:
           node --check sentlog/delta-sync-migration.js
           node --check sentlog/delta-sync-legacy-source.js
           node --check sentlog/delta-sync-assets.js
+          node --check sentlog/delta-sync-reconcile.js
+          node --check sentlog/delta-sync-bootstrap.js
+          node --check sentlog/delta-sync-transport.js
+          node --check sentlog/delta-sync-app-bridge.js
       - name: Install pinned in-memory IndexedDB test adapter
         run: npm install --prefix "$RUNNER_TEMP/sentlog-prototype-deps" --ignore-scripts --no-audit --no-fund --save-exact fake-indexeddb@6.2.8
       - name: Offline, concurrency and idempotency scenarios
@@ -61,6 +68,13 @@ jobs:
           node tests/delta_legacy_source.test.cjs
           node tests/delta_migration.test.cjs
           node tests/delta_assets.test.cjs
+          node tests/delta_seed.test.cjs
+          node tests/delta_reconcile.test.cjs
+          node tests/delta_bootstrap.test.cjs
+          node tests/delta_transport.test.cjs
+          node tests/delta_app_bridge.test.cjs
+          node tests/delta_batch_paging.test.cjs
+          node tests/collaboration_channel.test.cjs
           node tests/photo_redelivery_adversarial.test.cjs
       - name: Existing immutable record safety
         run: |
@@ -130,6 +144,7 @@ jobs:
       - name: Check RLS, sequence and retries
         run: psql -v ON_ERROR_STOP=1 -f tests/delta_schema_assertions.sql
       - name: Compare client and SQL payload validation on the same corpus
+        shell: bash
         run: node tests/delta_payload_contract.cjs --sql | psql -X -v ON_ERROR_STOP=1
       - name: Reject malformed events and unsafe legacy writes
         run: psql -v ON_ERROR_STOP=1 -f tests/delta_schema_adversarial.sql
@@ -147,3 +162,12 @@ jobs:
         run: psql -v ON_ERROR_STOP=1 -f tests/delta_baseline_assertions.sql
       - name: Check baseline activation against concurrent old saves and batch retries
         run: bash tests/delta_baseline_races.sh
+      - name: Verify actual PostgreSQL baseline pages through JS reconciliation and SQL replay
+        shell: bash
+        run: psql -XqAt -v ON_ERROR_STOP=1 -f tests/delta_reconcile_sql_fixture.sql | node tests/delta_reconcile_sql_contract.cjs --stdin --sql | psql -X -v ON_ERROR_STOP=1
+      - name: Prepare isolated Realtime policy fixtures
+        run: psql -v ON_ERROR_STOP=1 -f tests/delta_transport_fixture.sql
+      - name: Compile authenticated bounded delta reads and private notification policies
+        run: psql -v ON_ERROR_STOP=1 -f docs/sentlog-delta-transport-prototype.sql
+      - name: Verify registered device, archive and private channel enforcement
+        run: psql -v ON_ERROR_STOP=1 -f tests/delta_transport_assertions.sql

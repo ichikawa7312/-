@@ -291,6 +291,8 @@
         const cursor=await local(()=>state.cursor);
         const rows=await request(signal=>transport.list(projectId,cursor,pageLimit,{signal}));
         assert(Array.isArray(rows)&&rows.length<=pageLimit,'DELTA_SERVER','変更一覧が不正です');
+        assert((rows.hasMore===undefined||typeof rows.hasMore==='boolean')&&(rows.length>0||rows.hasMore!==true),
+          'DELTA_SERVER','変更一覧の続きまたは終端を確認できません');
         if(!rows.length)return {applied,cursor};
         for(const row of rows)await local(async()=>{
           assert(row&&Number.isSafeInteger(row.seq)&&row.seq===state.cursor+1,
@@ -300,7 +302,7 @@
           put(next.records,key,combine(own(next.records,key)?next.records[key]:null,row.event));next.cursor=row.seq;
           await persist(next);visibleConflicts(next.records[key]);applied++;
         });
-        if(rows.length<pageLimit)return {applied,cursor:await local(()=>state.cursor)};
+        if(rows.hasMore===false||(rows.length<pageLimit&&rows.hasMore!==true))return {applied,cursor:await local(()=>state.cursor)};
       }
       throw problem('DELTA_PAGE_LIMIT','変更履歴の件数が多いため、次回の同期に分割します');
     }
@@ -377,6 +379,49 @@
       // independent of network callbacks and remote notifications.
       wakeTimer=schedule(()=>{wakeTimer=null;void sync().catch(()=>{});},0);
     }
+    function captureChange({drawingId,before,after,eventId}){
+      if(before!==null&&before!==undefined)jsonValue(before);jsonValue(after);
+      return {drawingId,eventId,before:before?clone(before):null,after:clone(after)};
+    }
+    function stageChange(next,{drawingId,before,after,eventId}){
+      assert(valid(drawingId)&&valid(after?.id)&&valid(eventId),'DELTA_RECORD','図面・記録・変更IDを確認できません');
+      const pending=next.outbox.find(e=>e.eventId===eventId)||
+        (next.blockedOutbox||[]).find(b=>b.event.eventId===eventId)?.event;
+      if(pending){
+        const repeated=diffRecord(before,after,{eventId,projectId,drawingId,deviceId});
+        assert(C.equal(repeated,pending),'DELTA_COLLISION','同じ変更IDに異なる内容があります');
+        return {eventId,duplicate:true};
+      }
+      const key=keyOf(drawingId,after.id),current=own(next.records,key)?next.records[key]:null;
+      assert((!before&&!current)||(before&&current&&C.equal(C.upgrade(before),C.upgrade(current))),
+        'DELTA_STALE','記録がほかの操作で更新されました。入力内容を保持して再確認してください');
+      const event=diffRecord(current,after,{eventId,projectId,drawingId,deviceId});
+      if(!event)return {unchanged:true};
+      put(next.records,key,C.upgrade(after));
+      const blocked=(next.blockedOutbox||[]).some(b=>sameRecord(b.event,event));
+      if(blocked)next.blockedOutbox.push({event,reason:{code:'DELTA_DEPENDENT_BLOCKED',
+        message:'同じ記録の前の変更を確認するまで送信できません'}});
+      else next.outbox.push(event);
+      return {eventId,changed:true,blocked};
+    }
+    async function commitChanges(changes,expectedSnapshotToken){
+      return local(async()=>{
+        if(expectedSnapshotToken!==undefined)assert(expectedSnapshotToken===snapshotToken,
+          'DELTA_STALE','確認後に記録が変更されています。入力内容を保持して再確認してください');
+        const next=clone(state),results=changes.map(change=>stageChange(next,change));
+        // Every change is validated against this candidate before one durable
+        // write. A stale later item cannot commit an earlier part of a move.
+        if(results.some(result=>result.changed)){
+          await persist(next);
+          const blocked=results.some(result=>result.blocked);
+          status(blocked?'review':'queued',blocked?
+            '確認待ちの記録に追記しました。内容は端末に保護しています':'端末に変更を保存しました');
+        }
+        if(results.some(result=>result.duplicate||(result.changed&&!result.blocked)))wake();
+        return {results:results.map(({changed,blocked,...result})=>result),
+          pending:state.outbox.length,blocked:blockedCount(),snapshotToken};
+      });
+    }
     return {
       async start(){
         await local(()=>{
@@ -390,34 +435,14 @@
         return sync();
       },
       async change({drawingId,before,after,eventId}){
-        // Capture the submitted edit before it waits behind any disk operation.
-        // UI drafts may keep changing while the transaction is queued.
-        if(before!==null&&before!==undefined)jsonValue(before);jsonValue(after);
-        before=before?clone(before):null;after=clone(after);
-        return local(async()=>{
-          assert(valid(drawingId)&&valid(after?.id)&&valid(eventId),'DELTA_RECORD','図面・記録・変更IDを確認できません');
-          const pending=state.outbox.find(e=>e.eventId===eventId)||
-            (state.blockedOutbox||[]).find(b=>b.event.eventId===eventId)?.event;
-          if(pending){const repeated=diffRecord(before,after,{eventId,projectId,drawingId,deviceId});
-            assert(C.equal(repeated,pending),'DELTA_COLLISION','同じ変更IDに異なる内容があります');
-            wake();return {eventId,duplicate:true,pending:state.outbox.length,blocked:blockedCount()};}
-          const key=keyOf(drawingId,after.id),current=own(state.records,key)?state.records[key]:null;
-          assert((!before&&!current)||(before&&current&&C.equal(C.upgrade(before),C.upgrade(current))),
-            'DELTA_STALE','記録がほかの操作で更新されました。入力内容を保持して再確認してください');
-          const event=diffRecord(current,after,{eventId,projectId,drawingId,deviceId});
-          if(!event)return {unchanged:true,pending:state.outbox.length};
-          const next=clone(state);put(next.records,key,C.upgrade(after));
-          const blocked=(next.blockedOutbox||[]).some(b=>sameRecord(b.event,event));
-          if(blocked){
-            next.blockedOutbox.push({event,reason:{code:'DELTA_DEPENDENT_BLOCKED',
-              message:'同じ記録の前の変更を確認するまで送信できません'}});
-          }else next.outbox.push(event);
-          await persist(next);
-          status(blocked?'review':'queued',blocked?
-            '確認待ちの記録に追記しました。内容は端末に保護しています':'端末に変更を保存しました');
-          if(!blocked)wake();
-          return {eventId,pending:state.outbox.length,blocked:blockedCount()};
-        });
+        const result=await commitChanges([captureChange({drawingId,before,after,eventId})]);
+        return {...result.results[0],pending:result.pending,...(result.results[0].unchanged?{}:{blocked:result.blocked})};
+      },
+      async changeBatch({changes,expectedSnapshotToken}={}){
+        assert(Array.isArray(changes)&&changes.length>0&&changes.length<=500,
+          'DELTA_BATCH','まとめて保存する記録の件数が不正です');
+        for(const change of changes)assert(object(change),'DELTA_BATCH','まとめて保存する記録の形式が不正です');
+        return commitChanges(changes.map(captureChange),expectedSnapshotToken);
       },
       sync,
       onOnline(){clear(retryTimer);retryTimer=null;wake();},
@@ -431,7 +456,7 @@
       }
     };
   }
-  const api={version:2,diffRecord,combine,createReplica,keyOf,validateEvent};
+  const api={version:2,diffRecord,combine,createReplica,keyOf,validateEvent,validateState};
   if(typeof module==='object'&&module.exports)module.exports=api;
   else root.SentlogDeltaSyncCore=api;
 })(typeof window!=='undefined'?window:globalThis);

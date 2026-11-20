@@ -62,7 +62,7 @@ CHECKS = r"""async engine=>{
     q.onsuccess=()=>resolve(q.result);q.onerror=()=>reject(q.error);
   });}
   async function test(name,fn){
-    try{await fn();results.push(name);}catch(error){error.message=name+': '+error.message;throw error;}
+    try{await fn();results.push(name);}catch(cause){throw new Error(name+': '+String(cause?.message||cause),{cause});}
   }
   await test('fresh storage is empty and cannot be overwritten without reading',async()=>{
     const s=store(database());
@@ -374,6 +374,18 @@ def main():
             for name in migration_names:
                 print(f'PASS {args.browser} migration: {name}', flush=True)
             report['cases'].extend('migration: ' + name for name in migration_names)
+            seed_names = page.evaluate('async engine => await runDeltaSeedCases(engine)', args.browser)
+            for name in seed_names:
+                print(f'PASS {args.browser} seed: {name}', flush=True)
+            report['cases'].extend('seed: ' + name for name in seed_names)
+            reconcile_names = page.evaluate('async () => await SentlogReconcileTestCases.run({API: SentlogDeltaReconcile, C: SentlogRecordCollaboration, D: SentlogDeltaSyncCore})')
+            for name in reconcile_names:
+                print(f'PASS {args.browser} reconcile: {name}', flush=True)
+            report['cases'].extend('reconcile: ' + name for name in reconcile_names)
+            bootstrap_names = page.evaluate('async engine => await runDeltaBootstrapCases(engine)', args.browser)
+            for name in bootstrap_names:
+                print(f'PASS {args.browser} bootstrap: {name}', flush=True)
+            report['cases'].extend('bootstrap: ' + name for name in bootstrap_names)
 
             second = context.new_page()
             second.goto(url)

@@ -48,6 +48,20 @@ AS $fn$
   SELECT pg_catalog.encode(pg_catalog.sha256(pg_catalog.convert_to(v::text,'UTF8')),'hex')
 $fn$;
 
+-- Preserve the non-record part of the server snapshot as independently
+-- verifiable, bounded pages. Empty drawings and settings must not disappear
+-- merely because the record manifest has no entry for them.
+CREATE OR REPLACE FUNCTION sentlog_delta_private.baseline_metadata(v jsonb)
+RETURNS TABLE(ordinal bigint,kind text,key text,metadata jsonb)
+LANGUAGE sql IMMUTABLE SECURITY INVOKER SET search_path=''
+AS $fn$
+  SELECT 1::bigint,'header'::text,'project'::text,v-'drawings'
+  UNION ALL
+  SELECT d.pos+1,'drawing'::text,d.value#>>'{meta,id}',
+    pg_catalog.jsonb_set(d.value,'{state}',(d.value->'state')-'shapes'-'collabDeletedRecords')
+  FROM pg_catalog.jsonb_array_elements(v->'drawings') WITH ORDINALITY d(value,pos)
+$fn$;
+
 -- Called within the narrowly scoped SECURITY DEFINER functions below. Hold
 -- authorization rows until commit so archive/owner/device changes cannot race.
 CREATE OR REPLACE FUNCTION sentlog_delta_private.baseline_authorize(pid uuid,did uuid)
@@ -68,9 +82,17 @@ RETURNS jsonb LANGUAGE sql STABLE SECURITY INVOKER SET search_path=''
 AS $fn$
  SELECT pg_catalog.jsonb_build_object(
   'schema',1,'baselineId',b.id,'ownerId',b.owner_id,'projectId',b.project_id,
+  'clientProjectId',b.snapshot#>>'{project,id}',
+  'drawingIds',(SELECT coalesce(pg_catalog.jsonb_agg(d.value->'id' ORDER BY d.pos),'[]'::jsonb)
+    FROM pg_catalog.jsonb_array_elements(b.snapshot#>'{project,drawings}') WITH ORDINALITY d(value,pos)),
   'snapshotRevision',b.snapshot_revision,'cursor',0,'recordCount',b.record_count,
   'importedCount',b.imported_count,'snapshotSha256',b.snapshot_sha256,
   'manifestSha256',b.manifest_sha256,'hashFormat','postgres-jsonb-text-sha256-v1',
+  'metadataCount',pg_catalog.jsonb_array_length(b.snapshot->'drawings')+1,
+  'metadataManifestSha256',sentlog_delta_private.json_digest(
+    (SELECT pg_catalog.jsonb_agg(pg_catalog.jsonb_build_object('ordinal',m.ordinal,
+      'kind',m.kind,'key',m.key,'sha256',sentlog_delta_private.json_digest(m.metadata)) ORDER BY m.ordinal)
+     FROM sentlog_delta_private.baseline_metadata(b.snapshot) m)),
   'state',b.state,'deltaEnabled',coalesce((SELECT h.enabled
     FROM sentlog_delta_private.heads h WHERE h.project_id=b.project_id AND h.owner_id=b.owner_id),false),
   'deviceMigrationVerified',false,'assetDeliveryVerified',false)
@@ -229,6 +251,9 @@ BEGIN
     WHERE id=p_baseline_id AND project_id=p_project_id AND owner_id=u;
   IF NOT FOUND OR b.state NOT IN ('verified','active') THEN
     RAISE EXCEPTION 'DELTA_BASELINE_NOT_VERIFIED' USING ERRCODE='55000'; END IF;
+  IF NOT EXISTS(SELECT 1 FROM public.sentlog_projects WHERE id=p_project_id AND owner_id=u
+      AND client_key=b.snapshot#>>'{project,id}') THEN
+    RAISE EXCEPTION 'DELTA_BASELINE_BINDING_CHANGED' USING ERRCODE='55000'; END IF;
   IF p_limit IS NULL OR p_limit NOT BETWEEN 1 AND 100 OR p_after IS NULL OR p_after NOT BETWEEN 0 AND b.record_count THEN
     RAISE EXCEPTION 'DELTA_BASELINE_PAGE_INVALID' USING ERRCODE='22023'; END IF;
   next_ordinal:=p_after;
@@ -250,6 +275,44 @@ BEGIN
     RAISE EXCEPTION 'DELTA_BASELINE_PAGE_TOO_LARGE' USING ERRCODE='54000'; END IF;
   RETURN pg_catalog.jsonb_build_object('receipt',sentlog_delta_private.baseline_receipt(b),
     'records',page,'nextOrdinal',next_ordinal,'hasMore',next_ordinal<b.record_count);
+END $fn$;
+
+CREATE OR REPLACE FUNCTION sentlog_delta_private.read_baseline_metadata_page(
+  p_project_id uuid,p_device_id uuid,p_baseline_id uuid,p_after bigint DEFAULT 0,p_limit integer DEFAULT 100
+) RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path=''
+AS $fn$
+DECLARE
+  u uuid; b sentlog_delta_private.baselines%ROWTYPE; r record;
+  page jsonb:='[]'::jsonb; item jsonb; used_bytes bigint:=0; next_ordinal bigint; n bigint;
+BEGIN
+  u:=sentlog_delta_private.baseline_authorize(p_project_id,p_device_id);
+  SELECT * INTO b FROM sentlog_delta_private.baselines
+    WHERE id=p_baseline_id AND project_id=p_project_id AND owner_id=u;
+  IF NOT FOUND OR b.state NOT IN ('verified','active') THEN
+    RAISE EXCEPTION 'DELTA_BASELINE_NOT_VERIFIED' USING ERRCODE='55000'; END IF;
+  IF NOT EXISTS(SELECT 1 FROM public.sentlog_projects WHERE id=p_project_id AND owner_id=u
+      AND client_key=b.snapshot#>>'{project,id}') THEN
+    RAISE EXCEPTION 'DELTA_BASELINE_BINDING_CHANGED' USING ERRCODE='55000'; END IF;
+  n:=pg_catalog.jsonb_array_length(b.snapshot->'drawings')+1;
+  IF p_limit IS NULL OR p_limit NOT BETWEEN 1 AND 100 OR p_after IS NULL OR p_after NOT BETWEEN 0 AND n THEN
+    RAISE EXCEPTION 'DELTA_BASELINE_PAGE_INVALID' USING ERRCODE='22023'; END IF;
+  next_ordinal:=p_after;
+  FOR r IN SELECT m.*,sentlog_delta_private.json_digest(m.metadata) AS sha256
+      FROM sentlog_delta_private.baseline_metadata(b.snapshot) m
+      WHERE m.ordinal>p_after ORDER BY m.ordinal LIMIT p_limit LOOP
+    item:=pg_catalog.jsonb_build_object('ordinal',r.ordinal,'kind',r.kind,'key',r.key,
+      'metadataJson',r.metadata::text,'sha256',r.sha256,
+      'manifestEntryJson',pg_catalog.jsonb_build_object('ordinal',r.ordinal,
+        'kind',r.kind,'key',r.key,'sha256',r.sha256)::text);
+    IF used_bytes+pg_catalog.octet_length(item::text)>900000 THEN EXIT; END IF;
+    page:=page||pg_catalog.jsonb_build_array(item);
+    used_bytes:=used_bytes+pg_catalog.octet_length(item::text)+2;
+    next_ordinal:=r.ordinal;
+  END LOOP;
+  IF next_ordinal=p_after AND p_after<n THEN
+    RAISE EXCEPTION 'DELTA_BASELINE_PAGE_TOO_LARGE' USING ERRCODE='54000'; END IF;
+  RETURN pg_catalog.jsonb_build_object('receipt',sentlog_delta_private.baseline_receipt(b),
+    'metadata',page,'nextOrdinal',next_ordinal,'hasMore',next_ordinal<n);
 END $fn$;
 
 -- This operation intentionally has NO authenticated grant and NO public RPC.
@@ -303,16 +366,19 @@ BEGIN
 END $fn$;
 
 REVOKE ALL ON FUNCTION sentlog_delta_private.json_digest(jsonb),
+  sentlog_delta_private.baseline_metadata(jsonb),
   sentlog_delta_private.baseline_authorize(uuid,uuid),
   sentlog_delta_private.baseline_receipt(sentlog_delta_private.baselines),
   sentlog_delta_private.prepare_baseline(uuid,uuid,bigint),
   sentlog_delta_private.import_baseline_batch(uuid,uuid,uuid,integer),
   sentlog_delta_private.read_baseline_page(uuid,uuid,uuid,bigint,integer),
+  sentlog_delta_private.read_baseline_metadata_page(uuid,uuid,uuid,bigint,integer),
   sentlog_delta_private.activate_prepared_baseline(uuid,uuid,uuid)
   FROM PUBLIC,anon,authenticated;
 GRANT EXECUTE ON FUNCTION sentlog_delta_private.prepare_baseline(uuid,uuid,bigint),
   sentlog_delta_private.import_baseline_batch(uuid,uuid,uuid,integer),
-  sentlog_delta_private.read_baseline_page(uuid,uuid,uuid,bigint,integer) TO authenticated;
+  sentlog_delta_private.read_baseline_page(uuid,uuid,uuid,bigint,integer),
+  sentlog_delta_private.read_baseline_metadata_page(uuid,uuid,uuid,bigint,integer) TO authenticated;
 
 CREATE OR REPLACE FUNCTION public.sentlog_delta_prepare_baseline_v1(
   p_project_id uuid,p_device_id uuid,p_expected_revision bigint)
@@ -326,11 +392,17 @@ CREATE OR REPLACE FUNCTION public.sentlog_delta_read_baseline_page_v1(
   p_project_id uuid,p_device_id uuid,p_baseline_id uuid,p_after bigint DEFAULT 0,p_limit integer DEFAULT 100)
 RETURNS jsonb LANGUAGE sql SECURITY INVOKER SET search_path=''
 AS $fn$ SELECT sentlog_delta_private.read_baseline_page($1,$2,$3,$4,$5) $fn$;
+CREATE OR REPLACE FUNCTION public.sentlog_delta_read_baseline_metadata_page_v1(
+  p_project_id uuid,p_device_id uuid,p_baseline_id uuid,p_after bigint DEFAULT 0,p_limit integer DEFAULT 100)
+RETURNS jsonb LANGUAGE sql SECURITY INVOKER SET search_path=''
+AS $fn$ SELECT sentlog_delta_private.read_baseline_metadata_page($1,$2,$3,$4,$5) $fn$;
 REVOKE ALL ON FUNCTION public.sentlog_delta_prepare_baseline_v1(uuid,uuid,bigint),
   public.sentlog_delta_import_baseline_batch_v1(uuid,uuid,uuid,integer),
-  public.sentlog_delta_read_baseline_page_v1(uuid,uuid,uuid,bigint,integer) FROM PUBLIC,anon;
+  public.sentlog_delta_read_baseline_page_v1(uuid,uuid,uuid,bigint,integer),
+  public.sentlog_delta_read_baseline_metadata_page_v1(uuid,uuid,uuid,bigint,integer) FROM PUBLIC,anon;
 GRANT EXECUTE ON FUNCTION public.sentlog_delta_prepare_baseline_v1(uuid,uuid,bigint),
   public.sentlog_delta_import_baseline_batch_v1(uuid,uuid,uuid,integer),
-  public.sentlog_delta_read_baseline_page_v1(uuid,uuid,uuid,bigint,integer) TO authenticated;
+  public.sentlog_delta_read_baseline_page_v1(uuid,uuid,uuid,bigint,integer),
+  public.sentlog_delta_read_baseline_metadata_page_v1(uuid,uuid,uuid,bigint,integer) TO authenticated;
 
 COMMIT;
