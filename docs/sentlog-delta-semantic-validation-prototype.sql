@@ -24,7 +24,7 @@ AS $fn$
 DECLARE
   grp text; bucket jsonb; ent record; item jsonb; rows jsonb;
   local_ids text[]; global_ids text[]:=ARRAY[]::text[];
-  parent jsonb; loop_found boolean;
+  loop_found boolean;
 BEGIN
   IF jsonb_typeof(c) IS DISTINCT FROM 'object' OR c->'version' IS DISTINCT FROM '1'::jsonb OR
      jsonb_typeof(c->'comments') IS DISTINCT FROM 'object' OR
