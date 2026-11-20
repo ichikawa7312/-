@@ -217,6 +217,9 @@
       Number.isSafeInteger(retryBaseMs)&&retryBaseMs>0&&Number.isSafeInteger(retryMaxMs)&&retryMaxMs>=retryBaseMs,
       'DELTA_CONFIG','同期の取得件数・待機時間が不正です');
     let localChain=Promise.resolve(),state=null,started=false,closed=false,live=null,pump=null,requested=false;
+    // Runtime-only identity for this exact durable snapshot. A stale UI status
+    // must not certify a later edit or a different replica as fully synced.
+    let snapshotToken=Object.freeze({});
     let wakeTimer=null,reconcileTimer=null,retryTimer=null,retries=0;
     const inflight=new Set();
     function active(){assert(!closed,'DELTA_CLOSED','この同期処理は終了しています');}
@@ -236,12 +239,12 @@
       // Adapter transaction must commit record + cursor + outbox atomically.
       // Network waits never own the local queue. CAS rejection is propagated;
       // stale whole-state writes must not be retried as an overwrite.
-      await store.write(clone(next));active();state=next;
+      await store.write(clone(next));active();state=next;snapshotToken=Object.freeze({});
     }
     function emit(fn,value){if(closed)return;try{fn(value);}catch{/* UI observers cannot undo a committed save. */}}
     function conflictCount(){return state?Object.values(state.records).reduce((n,r)=>n+C.view(r).conflicts.length,0):0;}
     function blockedCount(){return state?.blockedOutbox?.length||0;}
-    function status(level,description){emit(onStatus,{level,message:description,pending:state?.outbox?.length||0,
+    function status(level,description){emit(onStatus,{scope:clone(scope),snapshotToken,level,message:description,pending:state?.outbox?.length||0,
       blocked:blockedCount(),cursor:state?.cursor||0,conflicts:conflictCount()});}
     function visibleConflicts(record){const conflicts=C.view(record).conflicts;
       if(conflicts.length)emit(onConflict,{projectId,recordId:record.id,conflicts:clone(conflicts)});
@@ -420,6 +423,7 @@
       onOnline(){clear(retryTimer);retryTimer=null;wake();},
       onVisible(){if(visible())wake();},
       snapshot(){return local(()=>clone(state));},
+      snapshotWithStatus(){return local(()=>({snapshot:clone(state),snapshotToken}));},
       close(){if(closed)return;closed=true;started=false;requested=false;
         clear(wakeTimer);clear(reconcileTimer);clear(retryTimer);wakeTimer=reconcileTimer=retryTimer=null;
         for(const ticket of inflight)ticket.cancel();

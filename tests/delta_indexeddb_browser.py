@@ -368,6 +368,13 @@ def main():
                 print(f'PASS {args.browser}: {name}', flush=True)
             report['cases'] = names
 
+            # The same migration cases also run with fake-indexeddb in Node.
+            # Here every copy/checkpoint/abort uses the engine's real storage.
+            migration_names = page.evaluate('async engine => await runDeltaMigrationCases(engine)', args.browser)
+            for name in migration_names:
+                print(f'PASS {args.browser} migration: {name}', flush=True)
+            report['cases'].extend('migration: ' + name for name in migration_names)
+
             second = context.new_page()
             second.goto(url)
             setup = """async()=>{

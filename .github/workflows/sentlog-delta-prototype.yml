@@ -17,6 +17,7 @@ on:
       - '.github/workflows/sentlog-delta-prototype.yml'
       - 'docs/sentlog-delta-v1-schema-prototype.sql'
       - 'docs/sentlog-delta-semantic-validation-prototype.sql'
+      - 'docs/sentlog-delta-baseline-prototype.sql'
       - 'tests/delta_schema_fixture.sql'
       - 'tests/delta_schema_assertions.sql'
       - 'tests/delta_schema_parallel.sh'
@@ -31,6 +32,8 @@ jobs:
   simulate:
     runs-on: ubuntu-latest
     timeout-minutes: 8
+    env:
+      NODE_PATH: ${{ runner.temp }}/sentlog-prototype-deps/node_modules
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -44,6 +47,11 @@ jobs:
           node --check sentlog/delta-sync-indexeddb.js
           node --check sentlog/photo-recovery.js
           node --check tests/delta_sync_protocol.test.cjs
+          node --check sentlog/delta-sync-migration.js
+          node --check sentlog/delta-sync-legacy-source.js
+          node --check sentlog/delta-sync-assets.js
+      - name: Install pinned in-memory IndexedDB test adapter
+        run: npm install --prefix "$RUNNER_TEMP/sentlog-prototype-deps" --ignore-scripts --no-audit --no-fund --save-exact fake-indexeddb@6.2.8
       - name: Offline, concurrency and idempotency scenarios
         run: |
           node tests/delta_sync_protocol.test.cjs
@@ -51,6 +59,9 @@ jobs:
           node tests/delta_interleavings.test.cjs
           node tests/delta_rejection_isolation.test.cjs
           node tests/delta_legacy_preflight.test.cjs
+          node tests/delta_legacy_source.test.cjs
+          node tests/delta_migration.test.cjs
+          node tests/delta_assets.test.cjs
           node tests/photo_redelivery_adversarial.test.cjs
       - name: Existing immutable record safety
         run: |
@@ -76,6 +87,9 @@ jobs:
       - name: Check real IndexedDB durability and offline restart
         timeout-minutes: 6
         run: python tests/delta_indexeddb_browser.py --browser ${{ matrix.browser }} --output release-diagnostics/delta-indexeddb-${{ matrix.browser }}.json
+      - name: Verify photo bytes, atomic receipts and incomplete delivery
+        timeout-minutes: 4
+        run: python tests/delta_assets_browser.py --browser ${{ matrix.browser }} --output release-diagnostics/delta-assets-${{ matrix.browser }}.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -126,3 +140,11 @@ jobs:
         run: bash tests/delta_schema_parallel.sh
       - name: Check archive and device-stop races
         run: bash tests/delta_schema_lifecycle_races.sh
+      - name: Prepare isolated legacy snapshot fixtures
+        run: psql -v ON_ERROR_STOP=1 -f tests/delta_baseline_fixture.sql
+      - name: Compile staged server baseline import (prototype only)
+        run: psql -v ON_ERROR_STOP=1 -f docs/sentlog-delta-baseline-prototype.sql
+      - name: Verify resumable baseline import and private activation guards
+        run: psql -v ON_ERROR_STOP=1 -f tests/delta_baseline_assertions.sql
+      - name: Check baseline activation against concurrent old saves and batch retries
+        run: bash tests/delta_baseline_races.sh
