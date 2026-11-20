@@ -7,6 +7,8 @@ on:
       - 'tests/delta_*'
       - 'tests/photo_redelivery_adversarial.test.cjs'
       - 'tests/delta_rejection_isolation.test.cjs'
+      - 'sentlog/delta-sync-legacy-preflight.js'
+      - 'tests/delta_legacy_preflight.test.cjs'
       - 'tests/photo_recovery_pc.test.cjs'
       - 'tests/collaboration_merge.test.cjs'
       - 'docs/sentlog-delta-*.md'
@@ -48,6 +50,7 @@ jobs:
           node tests/delta_sync_adversarial.test.cjs
           node tests/delta_interleavings.test.cjs
           node tests/delta_rejection_isolation.test.cjs
+          node tests/delta_legacy_preflight.test.cjs
           node tests/photo_redelivery_adversarial.test.cjs
       - name: Existing immutable record safety
         run: |
