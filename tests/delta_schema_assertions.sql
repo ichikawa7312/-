@@ -16,6 +16,17 @@ VALUES
  ('11111111-1111-4111-8111-111111111111','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',0,true,now()),
  ('22222222-2222-4222-8222-222222222222','bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',0,true,now()),
  ('33333333-3333-4333-8333-333333333333','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',0,true,now());
+-- The first test project models a VERIFIED legacy migration baseline.
+-- It adds no event to the public stream; no historical user data is deleted.
+INSERT INTO sentlog_delta_private.record_states
+  (project_id,owner_id,drawing_id,record_id,collab,last_seq)
+VALUES
+ ('11111111-1111-4111-8111-111111111111',
+  'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','drawing-1','survey-1',
+  '{"version":1,"comments":{},"fields":{},"photos":{},"deletion":{"revisions":[
+     {"id":"legacy-deletion-root","parents":[],"actor":{"deviceId":null,"deviceName":"verified fixture"},
+      "at":0,"deleted":false,"observed":[]}
+   ]}}'::jsonb,0);
 CREATE OR REPLACE FUNCTION public.test_event(eid text,body text DEFAULT 'A',project text DEFAULT '11111111-1111-4111-8111-111111111111',
   dev text DEFAULT 'aaaaaaaa-0000-4000-8000-000000000001') RETURNS jsonb
 LANGUAGE sql SECURITY INVOKER AS $$
