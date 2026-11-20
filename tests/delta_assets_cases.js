@@ -1,7 +1,16 @@
 /* Shared Node/fake-IndexedDB and real-browser contract tests. Synthetic bytes only. */
 (function(root){
   'use strict';
-  async function run({API,CORE,indexedDB,IDBObjectStore,suffix='node',onPass=()=>{}}){
+  function caseError(name,cause){
+    // DOMException.message is read-only in WebKit. Preserve the actual
+    // browser/storage error instead of throwing a second diagnostic error.
+    const error=new Error(name+': '+(cause?.name||'Error')+': '+String(cause?.message??cause));
+    error.cause=cause;error.caseName=name;
+    error.originalName=cause?.name||'Error';error.originalMessage=String(cause?.message??cause);
+    error.originalCode=cause?.code??null;error.originalStack=String(cause?.stack||'');
+    return error;
+  }
+  async function run({API,CORE,indexedDB,IDBObjectStore,suffix='node',onStart=()=>{},onPass=()=>{}}){
     const results=[],scope={ownerId:'owner-a',projectId:'project-a',deviceId:'device-a'};
     const clone=x=>structuredClone(x),assert=(x,m)=>{if(!x)throw Error(m||'assertion failed');};
     const equal=(a,b,m)=>assert(JSON.stringify(a)===JSON.stringify(b),m||JSON.stringify(a)+' != '+JSON.stringify(b));
@@ -37,8 +46,15 @@
         q.onsuccess=()=>{value=q.result;if(change){value=change(value);store.put(value,key);}};
       });}finally{db.close();}
     }
-    async function test(name,fn){try{await fn();results.push(name);onPass(name);}catch(e){e.message=name+': '+e.message;throw e;}}
+    async function test(name,fn){onStart(name);try{await fn();results.push(name);onPass(name);}catch(e){throw caseError(name,e);}}
 
+    await test('read-only browser exceptions retain their original diagnostic details',async()=>{
+      const original=Object.freeze(new DOMException('synthetic storage failure','TransactionInactiveError'));
+      const wrapped=caseError('test-case',original);
+      equal(original.message,'synthetic storage failure');assert(wrapped.cause===original);
+      equal(wrapped.originalName,'TransactionInactiveError');equal(wrapped.originalMessage,original.message);
+      assert(wrapped.message.includes('test-case: TransactionInactiveError: synthetic storage failure'));
+    });
     await test('unregistered photo references never mean sync complete',async()=>{
       const f=await fixture(),status=await f.queue.status(f.refs);
       equal([status.total,status.untracked,status.pending,status.complete],[1,1,1,false]);equal(f.stats,{downloads:0,acks:0});f.close();

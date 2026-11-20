@@ -38,12 +38,34 @@ def main():
                 context = browser.new_context()
                 page = context.new_page()
                 page.set_default_timeout(120000)
+                page.on("console", lambda message: print(message.text, flush=True))
                 page.goto(f"http://127.0.0.1:{server.server_port}/tests/delta_assets_fixture.html")
-                report["cases"] = page.evaluate("""async engine => SentlogAssetTestCases.run({
-                    API: SentlogDeltaAssets, CORE: SentlogDeltaSyncCore,
-                    indexedDB, IDBObjectStore, suffix: engine
-                })""", args.browser)
-                report["success"] = True
+                outcome = page.evaluate("""async engine => {
+                    const cases=[];let currentCase=null;
+                    try {
+                        await SentlogAssetTestCases.run({
+                            API: SentlogDeltaAssets, CORE: SentlogDeltaSyncCore,
+                            indexedDB, IDBObjectStore, suffix: engine,
+                            onStart: name => {currentCase=name;console.log('RUN '+name);},
+                            onPass: name => {cases.push(name);console.log('PASS '+name);}
+                        });
+                        return {cases, success:true};
+                    } catch(error) {
+                        return {cases, success:false, failed_case:currentCase,
+                            browser_error:{
+                                name:String(error.name||''),message:String(error.message||error),
+                                stack:String(error.stack||''),
+                                original_name:error.originalName||error.name||'',
+                                original_message:error.originalMessage||error.message||'',
+                                original_code:error.originalCode??error.code??null,
+                                original_stack:error.originalStack||error.stack||''
+                            }};
+                    }
+                }""", args.browser)
+                report.update(outcome)
+                if not report["success"]:
+                    details = json.dumps(report["browser_error"], ensure_ascii=False)
+                    raise RuntimeError(f"Photo delivery failed in {report['failed_case']}: {details}")
             finally:
                 browser.close()
     except Exception as error:

@@ -77,7 +77,7 @@ const combined = SentlogDeltaAssets.combinedStatus(latestRecordStatus, photoStat
 
 ## 検証と残る統合
 
-`tests/delta_assets_cases.js` はNode/fake-indexeddbと実Chromium/WebKitで共用する37ケースです。
+`tests/delta_assets_cases.js` はNode/fake-indexeddbと実Chromium/WebKitで共用する38ケースです。
 内容不一致、旧応答、scope変更、参照変更、ack不一致/喪失、403、タイムアウト、
 容量不足、transaction中断、再起動、重複、原本分離、1,002件の未受信参照を含みます。
 
