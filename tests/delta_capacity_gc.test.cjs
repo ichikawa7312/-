@@ -187,7 +187,8 @@ let count=0;async function test(name,fn){await fn();count++;console.log('PASS '+
    const stored=await f.disk(),bindings=await f.disk(CONTROL),rows=[...(await f.disk(LOG)).values()];
    assert.equal(stored.has('background:drawing'),false);assert.equal(stored.has('photo:drawing:p'),false);
    assert.equal(await stored.get('original:camera-photo').text(),'camera-original');
-   const binding=bindings.get('binding:'+localId);assert.equal(binding.phase,'detached');
+   const rawBinding=bindings.get('binding:'+localId),binding=f.records.deltaJournal.bindingFor(localId);assert.equal(binding.phase,'detached');
+   assert.equal(blobBytes(rawBinding),0);assert(rawBinding.cutoff.files.every(file=>typeof file.valueRef==='string'));
    assert.equal(binding.cutoff.files.find(x=>x.key==='background:drawing').value,null);
    assert.equal(await binding.cutoff.files.find(x=>x.key==='photo:drawing:p').value.text(),'older');
    assert(binding.cutoff.snapshot.drawings[0].state.shapes[0].collab);assert.equal((await f.records.deltaJournal.pending({scope,localProjectId:localId})).count,0);

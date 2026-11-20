@@ -21,7 +21,7 @@ from urllib.parse import parse_qs, urlparse
 from playwright.sync_api import sync_playwright
 import collaboration_ui as collaboration
 import edit_sync_ui as base
-from delta_capacity_app_flow import run as run_capacity_flow
+from delta_capacity_app_flow import run as run_capacity_flow, READ_FILES as READ_NATIVE_FILES
 
 ROOT = Path(__file__).resolve().parents[1]
 OWNER, A, B = collaboration.OWNER, collaboration.A, collaboration.B
@@ -33,8 +33,8 @@ CP = dict(id=PID, client_key=base.PROJECT, name='実動作の同期検証', stat
 # wrappers retain the original return values and promises; they never substitute
 # IndexedDB, transport responses, receipt state or the application's scheduler.
 PHOTO_TRACE = r"""(() => {
-  const events=[],probes=[];
-  window.__deltaPhotoDiagnostics={events,probes};
+  const events=[],probes=[],idbErrors=[];
+  window.__deltaPhotoDiagnostics={events,probes,idbErrors};
   const add=(list,value)=>{list.push({at:Date.now(),...value});if(list.length>160)list.shift();};
   const err=e=>({name:e?.name,code:e?.code,message:String(e?.message||e),status:e?.status});
   const blobPaths=(value,path='$',out=[],seen=new WeakSet())=>{
@@ -50,8 +50,9 @@ PHOTO_TRACE = r"""(() => {
       const store=this instanceof IDBObjectStore?this:this.source,stack=new Error().stack;
       const details=()=>({stage:'idb.'+method,event:'error',database:store.transaction?.db?.name,store:store.name,
         key:rest[0]??this.primaryKey,blobs:blobPaths(value),stack});
-      let request;try{request=native.call(this,value,...rest);}catch(error){add(events,{...details(),...err(error)});throw error;}
-      request.addEventListener('error',()=>add(events,{...details(),...err(request.error)}));
+      const failed=error=>{const value={...details(),...err(error)};add(events,value);if(error?.name!=='AbortError')add(idbErrors,value);};
+      let request;try{request=native.call(this,value,...rest);}catch(error){failed(error);throw error;}
+      request.addEventListener('error',()=>failed(request.error));
       return request;
     };
   }
@@ -113,7 +114,7 @@ PHOTO_STATE = r"""async()=>{
       };
     });
   }catch(e){assets={error:String(e)};}
-  return {events:diagnostics?.events,assets,
+  return {events:diagnostics?.events,idbErrors:diagnostics?.idbErrors,assets,
     scopes:diagnostics?.probes.map(probe=>{try{return probe();}catch(e){return {error:String(e)};}}),
     storageBodies:window.__sentlogWebKitStorageBodies,
     ui:[...document.querySelectorAll('[id*="Sync"],[id*="sync"],[id*="Cloud"]')]
@@ -256,6 +257,11 @@ def sync(page):
     return page.evaluate('async cp=>{await SentlogRecords.settled();return sentlogDeltaRuntime.sync(cp)}', CP)
 
 
+def assert_native_writes(page):
+    errors = page.evaluate("()=>window.__deltaPhotoDiagnostics.idbErrors.filter(error=>error.name!=='AbortError')")
+    assert not errors, ('Unexpected native IndexedDB write failure', errors)
+
+
 def run(engine, cloud, root):
     with tempfile.TemporaryDirectory(prefix='delta-app-a-') as pa, tempfile.TemporaryDirectory(prefix='delta-app-b-') as pb:
         ca, a, ea = make_page(engine, pa, cloud, A)
@@ -276,6 +282,21 @@ def run(engine, cloud, root):
             }""")
             b.evaluate(base.SETUP, {**setup, 'packs': baseline})
             b.evaluate('async()=>{for(const [key,value]of editFixture.files)await SentlogRecords.writeFile(key,value);await SentlogRecords.settled();}')
+            # Existing users migrate database-backed Files after reopening the
+            # app, not just the fresh in-memory objects from a file picker.
+            # Keep the real native File/Blob path when creating the cutoff.
+            legacy_keys = ['background:edit-plan', 'photo:edit-plan:retained-photo']
+            for page in (a, b):
+                before_files = page.evaluate(READ_NATIVE_FILES, legacy_keys)
+                assert all(not item.get('missing') for item in before_files), before_files
+                assert_native_writes(page)
+                page.reload(wait_until='domcontentloaded')
+                page.wait_for_function('window.sentlogDeltaRuntime&&SentlogRecords.ready', timeout=45000)
+                page.evaluate('async()=>await sentlogAppReady')
+                after_files = page.evaluate(READ_NATIVE_FILES, legacy_keys)
+                assert after_files == before_files, 'Legacy native files changed across a real page restart before migration'
+                assert page.evaluate("SentlogRecords.deltaJournal.bindingFor('edit-project')===null")
+            print('PASS existing native File/Blob bytes survive restart before protected application migration', flush=True)
             cloud.backend.admin(op='seed', ownerId=OWNER,
                 devices=[dict(id=A,name='検証iPad'),dict(id=B,name='検証iPhone'),dict(id=PC,name='検証PC',type='pc')],
                 projects=[dict(id=PID,client_key=base.PROJECT,payload=baseline[0])],rollout=True)
@@ -307,6 +328,7 @@ def run(engine, cloud, root):
                 page.evaluate('()=>window.__fixtureOffline=true')
                 page.evaluate("""async value=>{await openDrawing('edit-project','edit-plan');
                   state.pageSettings['1'].scale=value;persist();await SentlogRecords.settled();showProjects();}""",value)
+            assert_native_writes(a)
             a.reload(wait_until='domcontentloaded')
             a.wait_for_function('window.sentlogDeltaRuntime&&SentlogRecords.ready',timeout=45000)
             a.evaluate('async()=>await sentlogAppReady')
@@ -351,6 +373,8 @@ def run(engine, cloud, root):
             assert len(certified_record['photos'])>=2
             print('PASS actual application publishes a current PC-compatible certified snapshot',flush=True)
             run_capacity_flow(cloud,a,b,certificate,CP,OWNER,A,B,PC)
+            for page in (a, b):
+                assert_native_writes(page)
             a.screenshot(path=f'/tmp/sentlog-delta-app-{cloud.engine}.png',full_page=True)
             assert not ea and not eb,dict(a=ea,b=eb)
             assert not cloud.unexpected,cloud.unexpected

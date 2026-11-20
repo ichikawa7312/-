@@ -194,12 +194,13 @@
         qk.onsuccess=()=>{keys=qk.result;select();};
       });}finally{release(db);}
     }
-    function protectedCutoff(projectId,input){
+    async function protectedCutoff(projectId,input){
       insist(input?.kind==='sentlog-journal-cutoff'&&input.version===1&&input.localProjectId===projectId&&journal?.version===1&&
         typeof journal.bindingFor==='function'&&typeof journal.assertFence==='function',
         'LEGACY_SOURCE_CUTOFF','同時保存された移行前の控えを確認できません');
       journal.assertFence({scope:input.scope,localProjectId:projectId});
-      const binding=journal.bindingFor(projectId),cutoff=binding?.cutoff;
+      const cutoff=typeof journal.readCutoff==='function'?await journal.readCutoff({scope:input.scope,localProjectId:projectId}):journal.bindingFor(projectId)?.cutoff;
+      journal.assertFence({scope:input.scope,localProjectId:projectId});
       insist(cutoff?.bindingId===input.bindingId&&cutoff.cutoffSeq===input.cutoffSeq&&cutoff.sourceRevision===input.sourceRevision&&
         ['ownerId','projectId','deviceId'].every(k=>cutoff.scope[k]===input.scope[k]),
         'LEGACY_SOURCE_CUTOFF','保存中の移行基準が変わっています');
@@ -329,7 +330,7 @@
     async function capture(projectId,{recordCutoff}={}){
       active();insist(valid(projectId),'LEGACY_SOURCE_PROJECT','確認する案件IDが不正です');
       const issues=[],captureIntentRaw=readIntent();
-      const cutoff=recordCutoff?protectedCutoff(projectId,recordCutoff):null;
+      const cutoff=recordCutoff?await protectedCutoff(projectId,recordCutoff):null;
       const records=cutoff?cutoffRecords(projectId,cutoff,issues):await captureRecords(projectId,issues);
       const drawingIds=new Set(records.drawings.map(d=>d.id));
       const intentIds=captureIntents(captureIntentRaw,projectId,drawingIds,issues);

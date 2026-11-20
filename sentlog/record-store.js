@@ -14,7 +14,7 @@
   let initialized=false, boot=null, flight=null, queued=false, inFlight=0, exclusive=false;
   let migrationInfo=null, operation=false, failure=null;
   const listeners=new Set(), failures=new Map(), fileTasks=new Set(), failedFiles=new Map(), fileWriters=new Map(), fileGenerations=new Map(), fileTaskOwners=new Map();
-  let bindings=new Map();
+  let bindings=new Map(),cutoffFiles=new Map();
   function notify(){for(const fn of listeners){try{fn()}catch(e){console.warn('Storage status',e)}}}
   function report(key,error){failures.set(String(key),error?.message||String(error));notify();}
   function recovered(key){if(failures.delete(String(key)))notify();}
@@ -108,7 +108,7 @@
     }
     for(const [key,value] of disk.map){if(!managed(key)||typeof value!=='string')throw Error('保存記録の形式を確認できません');JSON.parse(value);}
     memory=disk.map;durableMemory=new Map(memory);revision=Number(disk.meta.revision)||0;migrationInfo=disk.meta;
-    {const tx=transaction('readonly'),done=complete(tx),q=tx.objectStore(CONTROL).getAll();q.onsuccess=()=>{bindings=new Map(q.result.filter(x=>x?.kind==='binding').map(x=>[x.localProjectId,x]));};await done;}
+    await ensureCutoffFiles();
     try{localStorage.setItem(MARKER,'1');}catch(_){}
     initialized=true;notify();return true;
   }
@@ -116,6 +116,88 @@
   const copy=value=>structuredClone(value);
   const scopeKeys=['ownerId','projectId','deviceId'];
   const sameScope=(a,b)=>a&&b&&scopeKeys.every(k=>a[k]===b[k]);
+  const cutoffFileKey=(bindingId,index)=>'cutoff-file:'+JSON.stringify([bindingId,index]);
+  function checkedCutoffFile(binding,file,index,rows=cutoffFiles){
+    const id=cutoffFileKey(binding.id,index),row=rows.get(id);
+    if(file.valueRef!==id||!row||row.version!==1||row.kind!=='cutoff-file'||row.id!==id||
+      row.bindingId!==binding.id||row.localProjectId!==binding.localProjectId||!sameScope(row.scope,binding.scope)||
+      row.key!==file.key||!Number.isSafeInteger(row.revision)||row.revision<1||
+      !(row.value instanceof Blob||row.value===null&&row.archiveRelease?.kind==='sentlog-archived-copy'&&
+        sameScope(row.archiveRelease.scope,binding.scope)&&row.archiveRelease.localProjectId===binding.localProjectId&&row.archiveRelease.file?.key===file.key))
+      throw journalError('JOURNAL_CUTOFF_REF','保護した移行前ファイルの参照を確認できません。元の記録を保持しています');
+    return row;
+  }
+  function hydrateBinding(binding,rows=cutoffFiles){
+    if(!binding)return null;const result=copy(binding);
+    if(result.cutoff?.files)result.cutoff.files=result.cutoff.files.map((file,index)=>{
+      if(!Object.prototype.hasOwnProperty.call(file,'valueRef'))return file;
+      const row=checkedCutoffFile(binding,file,index,rows),out={...file,value:copy(row.value)};delete out.valueRef;
+      if(row.archiveRelease)out.archiveRelease=copy(row.archiveRelease);return out;
+    });
+    return result;
+  }
+  function cacheControls(rows){
+    const files=new Map(rows.filter(row=>row?.kind==='cutoff-file').map(row=>[row.id,row]));
+    const next=new Map(rows.filter(row=>row?.kind==='binding').map(row=>[row.localProjectId,row]));
+    for(const binding of next.values())hydrateBinding(binding,files);
+    cutoffFiles=files;bindings=next;
+  }
+  async function readControls(){
+    const tx=transaction('readonly'),done=complete(tx);let rows=[];
+    tx.objectStore(CONTROL).getAll().onsuccess=e=>rows=e.target.result;await done;return rows;
+  }
+  async function readControl(key){
+    const tx=transaction('readonly'),done=complete(tx);let value;
+    tx.objectStore(CONTROL).get(key).onsuccess=e=>value=e.target.result;await done;return value;
+  }
+  async function splitEmbeddedCutoff(binding){
+    const beforeText=archiveReleaseText(binding),files=binding.cutoff?.files||[],refs=new Map();
+    // Old embedded cutoffs are converted once, one file at a time. A crash
+    // leaves the original binding intact and add-only staged rows reusable.
+    for(const [index,file]of files.entries()){
+      if(file.valueRef||!(file.value instanceof Blob))continue;
+      const bytes=await file.value.arrayBuffer();
+      if(bytes.byteLength!==file.value.size)throw journalError('JOURNAL_CUTOFF_BYTES','移行前の控えを読み取れません');
+      const sha256=[...new Uint8Array(await crypto.subtle.digest('SHA-256',bytes))].map(x=>x.toString(16).padStart(2,'0')).join('');
+      const value=typeof File==='function'&&typeof file.value.name==='string'?
+        new File([bytes],file.value.name,{type:file.value.type,lastModified:file.value.lastModified}):new Blob([bytes],{type:file.value.type});
+      const id=cutoffFileKey(binding.id,index),row={version:1,kind:'cutoff-file',id,bindingId:binding.id,
+        localProjectId:binding.localProjectId,scope:copy(binding.scope),key:file.key,revision:1,value,sha256};
+      const expected=archiveReleaseText(row),prior=await readControl(id);
+      if(prior&&(archiveReleaseText(prior)!==expected||!await archiveReleaseMatches(prior.value,{size:value.size,sha256})))
+        throw journalError('JOURNAL_CUTOFF_COLLISION','移行前のファイル控えに異なる内容があります。両方を保持しています');
+      const tx=transaction('readwrite'),done=complete(tx),control=tx.objectStore(CONTROL);let current,existing,waiting=2;
+      const ready=()=>{if(--waiting)return;try{
+        if(archiveReleaseText(current)!==beforeText)throw journalError('JOURNAL_CUTOFF_STALE','移行前の控えが更新されました。保存済みの内容を再確認します');
+        if(existing){if(archiveReleaseText(existing)!==expected)throw journalError('JOURNAL_CUTOFF_COLLISION','保護ファイルの保存先が変更されました');}
+        else control.add(row,id);
+      }catch(error){tx.sentlogJournalError=error;tx.abort();}};
+      control.get('binding:'+binding.localProjectId).onsuccess=e=>{current=e.target.result;ready();};
+      control.get(id).onsuccess=e=>{existing=e.target.result;ready();};await done;
+      refs.set(index,{id,text:expected});
+    }
+    if(!refs.size)return;
+    const next=copy(binding);next.cutoff.files=files.map((file,index)=>{
+      const ref=refs.get(index);if(!ref)return copy(file);const out={...file,valueRef:ref.id};delete out.value;return out;
+    });
+    const tx=transaction('readwrite'),done=complete(tx),control=tx.objectStore(CONTROL);let current,waiting=1+refs.size;const rows=new Map();
+    const ready=()=>{if(--waiting)return;try{
+      if(archiveReleaseText(current)!==beforeText)throw journalError('JOURNAL_CUTOFF_STALE','確認中に移行前の控えが変わりました');
+      for(const ref of refs.values())if(archiveReleaseText(rows.get(ref.id))!==ref.text)
+        throw journalError('JOURNAL_CUTOFF_COLLISION','保護したファイルの控えが変わりました');
+      control.put(next,'binding:'+binding.localProjectId);
+    }catch(error){tx.sentlogJournalError=error;tx.abort();}};
+    control.get('binding:'+binding.localProjectId).onsuccess=e=>{current=e.target.result;ready();};
+    for(const ref of refs.values())control.get(ref.id).onsuccess=e=>{rows.set(ref.id,e.target.result);ready();};await done;
+  }
+  async function ensureCutoffFiles(){
+    for(let attempt=0;attempt<3;attempt++){
+      const rows=await readControls();
+      try{for(const binding of rows.filter(row=>row?.kind==='binding'))await splitEmbeddedCutoff(binding);}
+      catch(error){if(error.code==='JOURNAL_CUTOFF_STALE'&&attempt<2)continue;throw error;}
+      cacheControls(await readControls());return;
+    }
+  }
   function journalError(code,message){return Object.assign(Error(message),{code});}
   function checkedScope(scope){
     if(!scope||!scopeKeys.every(k=>typeof scope[k]==='string'&&scope[k].length>0&&scope[k].length<=512))
@@ -128,7 +210,8 @@
       ...(options.context&&typeof options.context==='object'?{context:copy(options.context)}:{})};
   }
   function journalRows(store){return store.indexNames.contains('kind')?store.index('kind').getAll('sentlog-app-intent'):store.getAll();}
-  function journalControls(store){return store.indexNames.contains('kind')?store.index('kind').getAll():store.getAll();}
+  function journalControls(store){return store.indexNames.contains('kind')?
+    store.index('kind').getAll(IDBKeyRange.bound('binding','claim')):store.getAll();}
   function workspaceOf(raw){const out=raw?JSON.parse(raw):{projects:[]};if(!Array.isArray(out?.projects))throw journalError('JOURNAL_WORKSPACE','案件一覧の形式を確認できません');return out;}
   function affectedProjects(changes,workspaceBefore,workspaceAfter,files=[]){
     const before=workspaceOf(workspaceBefore),after=workspaceOf(workspaceAfter),ids=new Set(),drawingIds=new Set();
@@ -226,7 +309,8 @@
   function committedBindings(tx){for(const binding of tx.sentlogBindingUpdates||[])bindings.set(binding.localProjectId,binding);
     for(const key of tx.sentlogFileKeys||[])fileGenerations.set(key,(fileGenerations.get(key)||0)+1);
     if(tx.sentlogRestoreProof)tx.sentlogRestoreProof.status='committed';
-    if(tx.sentlogArchiveRelease){tx.sentlogArchiveRelease.status='committed';tx.sentlogArchiveRelease.result={
+    if(tx.sentlogArchiveRelease){for(const row of tx.sentlogArchiveRelease.cutoffRows||[])cutoffFiles.set(row.id,row.next);
+      tx.sentlogArchiveRelease.status='committed';tx.sentlogArchiveRelease.result={
       releasedCopies:tx.sentlogArchiveRelease.releasedCopies,releasedBytes:tx.sentlogArchiveRelease.releasedBytes,
       avoidedPreimageCopies:tx.sentlogArchiveRelease.current.size};}}
   function collectJournal(tx,includeFiles,callback){
@@ -287,13 +371,16 @@
     return [...new Uint8Array(digest)].map(x=>x.toString(16).padStart(2,'0')).join('')===file.sha256;
   }
   function archiveReleaseSnapshot(tx,keys,callback,recordKeys=[]){
-    const data={rows:[],binding:null,claim:null,clock:0,meta:null,workspace:null,files:new Map(),raw:new Map(),recordKeys:new Set()},s=tx.objectStore(STORE),c=tx.objectStore(CONTROL);
+    const data={rows:[],binding:null,cutoffRows:new Map(),claim:null,clock:0,meta:null,workspace:null,files:new Map(),raw:new Map(),recordKeys:new Set()},s=tx.objectStore(STORE),c=tx.objectStore(CONTROL);
     let waiting=7+keys.length+recordKeys.length;
     const next=()=>{if(--waiting)return;try{callback(data);}catch(error){tx.sentlogJournalError=error;tx.abort();}};
     s.get(META).onsuccess=e=>{data.meta=e.target.result;next();};
     s.get(PREFIX+WS).onsuccess=e=>{data.workspace=e.target.result;next();};
     c.get('clock').onsuccess=e=>{data.clock=Number(e.target.result)||0;next();};
-    c.get('binding:'+tx.sentlogArchiveProject).onsuccess=e=>{data.binding=e.target.result;next();};
+    c.get('binding:'+tx.sentlogArchiveProject).onsuccess=e=>{
+      data.binding=e.target.result;const refs=(data.binding?.cutoff?.files||[]).filter(file=>file.valueRef);waiting+=refs.length;
+      for(const file of refs)c.get(file.valueRef).onsuccess=event=>{data.cutoffRows.set(file.valueRef,event.target.result);next();};next();
+    };
     c.get('claim:'+tx.sentlogArchiveProject).onsuccess=e=>{data.claim=e.target.result;next();};
     tx.objectStore(JOURNAL).getAll().onsuccess=e=>{data.rows=e.target.result;next();};
     s.getAllKeys(IDBKeyRange.bound(PREFIX,PREFIX+'\uffff')).onsuccess=e=>{data.recordKeys=new Set(e.target.result.map(key=>key.slice(PREFIX.length)));next();};
@@ -333,7 +420,7 @@
       throw journalError('JOURNAL_PENDING','未共有の変更を保持しています');
     const plan={status:'prepared',scope,localProjectId,certificate:copy(certificate),jobId,operationId,mode,files:catalog,current:new Map(),
       clock:data.clock,revision:Number(data.meta.revision),workspace:data.workspace,bindingText:archiveReleaseText(binding),
-      nextBinding:copy(binding),rows:[],validate,releasedCopies:0,releasedBytes:0};
+      nextBinding:copy(binding),cutoffRows:[],rows:[],validate,releasedCopies:0,releasedBytes:0};
     for(const [key,blob]of data.files)if(blob!==undefined&&blob!==null){
       if(!await archiveReleaseMatches(blob,catalog.get(key)))throw journalError('JOURNAL_ARCHIVE_FILE_CHANGED','端末のファイルがPC保管版と一致しません');
       archiveReleaseCheck(validate);plan.current.set(key,{size:blob.size,type:blob.type});
@@ -344,7 +431,13 @@
       archiveReleaseCheck(validate);plan.releasedCopies++;plan.releasedBytes+=entry[field].size;
       entry[field]=null;entry[receiptField]=archiveReleaseReceipt(plan,file);
     }
-    for(const file of plan.nextBinding.cutoff?.files||[])await releaseFile(file,'value',catalog.get(file.key),'archiveRelease');
+    for(const [index,file]of (plan.nextBinding.cutoff?.files||[]).entries()){
+      if(file.valueRef){
+        const row=checkedCutoffFile(binding,file,index,data.cutoffRows),next=copy(row),before=plan.releasedCopies;
+        await releaseFile(next,'value',catalog.get(file.key),'archiveRelease');
+        if(plan.releasedCopies>before){next.revision++;plan.cutoffRows.push({id:row.id,text:archiveReleaseText(row),next});}
+      }else await releaseFile(file,'value',catalog.get(file.key),'archiveRelease');
+    }
     for(const row of data.rows){
       const owners=row.resolvedProjectIds||row.projectIds||[];
       if(!['sentlog-app-intent','sentlog-file-retention'].includes(row.kind)||!Number.isSafeInteger(row.seq)||row.seq<1||row.seq>binding.ackedSeq||
@@ -375,7 +468,10 @@
       const rows=new Map(data.rows.map(row=>[row.seq,row]));
       if(plan.rows.some(row=>archiveReleaseText(rows.get(row.seq))!==row.text))
         throw journalError('JOURNAL_ARCHIVE_CHANGED','確認中に保存控えが更新されました');
+      if(plan.cutoffRows.some(row=>archiveReleaseText(data.cutoffRows.get(row.id))!==row.text))
+        throw journalError('JOURNAL_ARCHIVE_CHANGED','確認中に移行前の保護ファイルが更新されました');
       for(const row of plan.rows)tx.objectStore(JOURNAL).put(row.next,row.seq);
+      for(const row of plan.cutoffRows)tx.objectStore(CONTROL).put(row.next,row.id);
       tx.objectStore(CONTROL).put(plan.nextBinding,'binding:'+plan.localProjectId);
       tx.sentlogArchiveRelease=plan;callback();
     });
@@ -483,16 +579,21 @@
     proveArchiveRestore,validateArchiveRestore,
     archivedReleaseResult(ticket){const plan=archiveReleases.get(ticket);if(!plan||plan.status!=='committed')
       throw journalError('JOURNAL_ARCHIVE_RELEASE','整理処理の完了を確認できません');return copy(plan.result);},
-    bindingFor:localProjectId=>copy(bindings.get(localProjectId)||null),
-    listBindingsSync:()=>copy([...bindings.values()]),
+    bindingFor:localProjectId=>hydrateBinding(bindings.get(localProjectId)),
+    listBindingsSync:()=>[...bindings.values()].map(binding=>hydrateBinding(binding)),
     assertFence({scope,localProjectId}={}){
       const b=bindings.get(localProjectId);
       if(!initialized||!connection||connection.version!==DB_VERSION||!sameScope(b?.scope,scope)||failure)
         throw journalError('JOURNAL_FENCE','変更履歴を同時保存する準備ができていません');
       return true;
     },
-    async listBindings(){assertReady();await connect();const tx=transaction('readonly'),done=complete(tx);let result=[];
-      tx.objectStore(CONTROL).getAll().onsuccess=e=>result=e.target.result.filter(x=>x?.kind==='binding');await done;return copy(result);},
+    async listBindings(){assertReady();await connect();cacheControls(await readControls());return this.listBindingsSync();},
+    async readCutoff({scope:inputScope,localProjectId}={}){
+      const scope=checkedScope(inputScope);await this.listBindings();
+      const binding=bindings.get(localProjectId);
+      if(!binding||!sameScope(binding.scope,scope))throw journalError('JOURNAL_SCOPE','保護した控えの共有先が一致しません');
+      return hydrateBinding(binding).cutoff;
+    },
     async pending({scope:inputScope,localProjectId}={}){
       assertReady();const scope=checkedScope(inputScope);await connect();const tx=transaction('readonly'),done=complete(tx);let result;
       collectJournal(tx,false,data=>{
@@ -538,12 +639,16 @@
           result={version:1,kind:'sentlog-journal-cutoff',bindingId,scope:copy(scope),localProjectId,cutoffSeq,
             sourceRevision:revision,sourceMeta:copy(data.meta),snapshot,rawEntries,files,metadataRecords:{},
             ...(Number.isSafeInteger(serverRevision)&&serverRevision>=1?{serverRevision}:{})};
+          const storedCutoff=copy(result);storedCutoff.files=files.map((file,index)=>{
+            const id=cutoffFileKey(bindingId,index),row={version:1,kind:'cutoff-file',id,bindingId,localProjectId,scope:copy(scope),key:file.key,revision:1,value:file.value};
+            tx.objectStore(CONTROL).add(row,id);return {key:file.key,valueRef:id};
+          });
           const binding={version:1,kind:'binding',id:bindingId,scope:copy(scope),localProjectId,phase:'staging',actor:copy(actor),
-            cutoffSeq,ackedSeq:cutoffSeq,metadataRecords:{},createdAt:Date.now(),cutoff:copy(result)};
+            cutoffSeq,ackedSeq:cutoffSeq,metadataRecords:{},createdAt:Date.now(),cutoff:storedCutoff};
           tx.objectStore(CONTROL).put(binding,'binding:'+localProjectId);
         };
       });
-      await done;const list=await this.listBindings();bindings=new Map(list.map(x=>[x.localProjectId,x]));notify();return copy(result);
+      await done;await this.listBindings();notify();return hydrateBinding(bindings.get(localProjectId)).cutoff;
     },
     async activate({scope:inputScope,localProjectId,baselineId,metadataRecords={},baselineSnapshot,proof}={}){
       const scope=checkedScope(inputScope);if(typeof baselineId!=='string'||!baselineId)throw journalError('JOURNAL_BASELINE','共有の基準を確認できません');
@@ -554,7 +659,7 @@
           metadataRecords:copy(metadataRecords),baselineProof:proof?copy(proof):null};
         if(baselineSnapshot&&!binding.replayBaseline)result.replayBaseline={before:copy(binding.cutoff.snapshot),after:copy(baselineSnapshot)};
         tx.objectStore(CONTROL).put(result,'binding:'+localProjectId);
-      });await done;bindings.set(localProjectId,result);notify();return copy(result);
+      });await done;bindings.set(localProjectId,result);notify();return hydrateBinding(result);
     },
     async claim({scope:inputScope,localProjectId}={}){
       const scope=checkedScope(inputScope);await settled();const tx=transaction('readwrite'),done=complete(tx);let result=null;
@@ -629,7 +734,7 @@
       // Cleanup is another bounded transaction. A failed cleanup cannot undo a
       // verified ACK; its immutable rows remain available for the next pass.
       try{await this.compact();}catch(error){console.warn('Journal retention cleanup deferred',error);}
-      return copy(result);
+      return hydrateBinding(result);
     },
     async compact({limit=256,scanLimit=1024}={}){
       assertReady();if(!Number.isSafeInteger(limit)||limit<1||limit>1024||!Number.isSafeInteger(scanLimit)||scanLimit<limit||scanLimit>8192)

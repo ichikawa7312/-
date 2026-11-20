@@ -115,6 +115,22 @@ compaction keeps the original WAL rows and exact bytes, reports deferred
 maintenance, and does not block an already verified record or its photo
 delivery. Ordinary record-only rows still use the bounded compaction path.
 
+Protected migration cutoff files live in immutable `cutoff-file` rows in the
+existing version-2 control store. The mutable binding contains file references,
+so an ACK, activation, or projection does not serialize every saved Blob/File
+again. The public cutoff API still supplies the original file values. Source
+capture and recheck refresh the referenced durable rows, including releases
+performed by another tab.
+
+An older embedded cutoff is converted one file at a time: fresh bytes are
+hashed, added to a deterministic staging row, and checked again if an interrupted
+conversion resumes. The old binding remains intact until a final metadata CAS
+replaces the embedded values with references; that swap writes no Blob. A
+missing or foreign reference is rejected. Certified cleanup includes each
+selected cutoff row's scope, identity, revision, and release state in the same
+transaction as the final archive operation. It replaces only matching copies
+with a null value and receipt; unmatched historical bytes are not rewritten.
+
 Certified delta capacity cleanup also releases redundant copies from the
 acknowledged file-retention rows, the project's protected migration cutoff,
 sealed migration staging, and the shared-photo store. Each candidate must

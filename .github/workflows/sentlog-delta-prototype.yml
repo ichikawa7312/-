@@ -101,6 +101,7 @@ jobs:
           node tests/delta_metadata_bridge.test.cjs
           node tests/delta_large_operations.test.cjs
           node tests/delta_app_journal.test.cjs
+          node tests/delta_cutoff_files.test.cjs
           node tests/delta_app_mode.test.cjs
           node tests/delta_photo_lease.test.cjs
           node tests/delta_capacity.test.cjs
