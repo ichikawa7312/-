@@ -21,12 +21,86 @@ from urllib.parse import parse_qs, urlparse
 from playwright.sync_api import sync_playwright
 import collaboration_ui as collaboration
 import edit_sync_ui as base
+from delta_capacity_app_flow import run as run_capacity_flow
 
 ROOT = Path(__file__).resolve().parents[1]
 OWNER, A, B = collaboration.OWNER, collaboration.A, collaboration.B
 PID = base.CLOUD_PROJECT
 PC = '77777777-7777-4777-8777-777777777777'
 CP = dict(id=PID, client_key=base.PROJECT, name='実動作の同期検証', status='active')
+
+# Observe the production factories before the application captures them. These
+# wrappers retain the original return values and promises; they never substitute
+# IndexedDB, transport responses, receipt state or the application's scheduler.
+PHOTO_TRACE = r"""(() => {
+  const events=[],probes=[];
+  window.__deltaPhotoDiagnostics={events,probes};
+  const add=(list,value)=>{list.push({at:Date.now(),...value});if(list.length>160)list.shift();};
+  const err=e=>({name:e?.name,code:e?.code,message:String(e?.message||e),status:e?.status});
+  function observe(object,method,label,details=()=>({}),inspect=()=>({})){
+    const native=object[method];
+    object[method]=function(...args){
+      const started=Date.now(),info=details(args);add(events,{stage:label,event:'start',...info});
+      let result;try{result=native.apply(this,args);}catch(e){add(events,{stage:label,event:'error',...info,...err(e),...inspect(args)});throw e;}
+      if(result?.then)result.then(value=>add(events,{stage:label,event:'done',...info,elapsed:Date.now()-started,
+        complete:value?.complete,pending:value?.pending,deferred:value?.deferred,cursor:value?.cursor,issues:value?.issues,
+        assetId:value?.asset?.id,references:value?.references?.map(x=>({assetId:x.assetId,photoId:x.photoId})),
+        assets:Array.isArray(value)?value.map(x=>({id:x.id,key:x.client_key,status:x.status})):undefined}),
+        e=>add(events,{stage:label,event:'error',...info,elapsed:Date.now()-started,...err(e),...inspect(args)}));
+      return result;
+    };
+  }
+  function intercept(name,wrap){
+    Object.defineProperty(window,name,{configurable:true,set(value){
+      Object.defineProperty(window,name,{value,writable:true,configurable:true,enumerable:true});
+      const native=value.createRuntime||value.createTransport,key=value.createRuntime?'createRuntime':'createTransport';
+      value[key]=function(options){return wrap(native.call(this,options),options);};
+    }});
+  }
+  intercept('SentlogDeltaAssetTransport',(transport)=>{
+    for(const method of ['listPhotos','uploadPhoto','download','acknowledge'])observe(transport,method,'transport.'+method,
+      args=>({photoId:args[0]?.photoId,assetId:args[0]?.assetId,size:args[1] instanceof Blob?args[1].size:undefined}));
+    return transport;
+  });
+  intercept('SentlogDeltaAssetRuntime',(runtime,options)=>{
+    const inspect=args=>{try{return {scopeCurrent:!!options.currentScope(),snapshotCurrent:options.currentSnapshotToken()===args[0]?.snapshotToken};}catch(e){return {probeError:String(e)};}};
+    observe(runtime,'sync','assets.sync',()=>({}),inspect);
+    probes.push(()=>({scope:options.scope,scopeCurrent:!!options.currentScope()}));
+    return runtime;
+  });
+  intercept('SentlogDeltaAppRuntime',(runtime)=>{
+    observe(runtime,'photos','application.photos',args=>({projectId:args[0]?.id}));
+    observe(runtime,'sync','application.sync',args=>({projectId:args[0]?.id}));
+    return runtime;
+  });
+})();"""
+
+PHOTO_STATE = r"""async()=>{
+  const diagnostics=window.__deltaPhotoDiagnostics;
+  let assets;
+  try{
+    assets=await new Promise((resolve,reject)=>{
+      const request=indexedDB.open('sentlog-delta-assets-v1');
+      request.onupgradeneeded=()=>{request.transaction.abort();resolve({notOpened:true});};
+      request.onerror=()=>reject(request.error);
+      request.onsuccess=()=>{
+        const db=request.result;
+        try{
+          const tx=db.transaction('assets','readonly'),get=tx.objectStore('assets').getAll();
+          tx.oncomplete=()=>{db.close();resolve(get.result.map(row=>({key:row.key,phase:row.phase,revision:row.revision,
+            reference:row.reference,blob:row.blob instanceof Blob?{size:row.blob.size,type:row.blob.type}:null,
+            localReceipt:row.localReceipt,remoteReceipt:row.remoteReceipt})));};
+          tx.onerror=()=>{db.close();reject(tx.error);};
+        }catch(e){db.close();reject(e);}
+      };
+    });
+  }catch(e){assets={error:String(e)};}
+  return {events:diagnostics?.events,assets,
+    scopes:diagnostics?.probes.map(probe=>{try{return probe();}catch(e){return {error:String(e)};}}),
+    storageBodies:window.__sentlogWebKitStorageBodies,
+    ui:[...document.querySelectorAll('[id*="Sync"],[id*="sync"],[id*="Cloud"]')]
+      .filter(el=>el.offsetParent&&el.innerText&&el.innerText.length<500).map(el=>({id:el.id,text:el.innerText})).slice(-12)};
+}"""
 
 
 class Backend:
@@ -63,6 +137,7 @@ class Cloud(collaboration.Cloud):
     def __init__(self, origin, root, engine, backend):
         super().__init__(origin, root, engine)
         self.backend, self.offline, self.receipts, self.sql_errors = backend, set(), {}, []
+        self.photo_requests = []
         self.webkit_sources = {}  # Serve the exact built application source.
 
     @staticmethod
@@ -87,6 +162,9 @@ class Cloud(collaboration.Cloud):
             return
         path, query = url.path, parse_qs(url.query)
         body = json.loads(request.post_data) if '/storage/' not in path and request.post_data else None
+        if '/storage/' in path or path.endswith(('/sentlog_assets','/sentlog_asset_device_receipts','/rpc/sentlog_ack_photo','/rpc/sentlog_request_photo')):
+            self.photo_requests.append(dict(at=time.time(),device=device,path=path,method=request.method,query=query,
+                assetId=body.get('p_asset_id') if isinstance(body,dict) else None))
         if path.endswith('/sentlog_asset_device_receipts'):
             self.respond(route, self.rows(self.receipts.values(), query))
             return
@@ -126,6 +204,7 @@ def make_page(engine, profile, cloud, device):
                            + "localStorage.setItem('sentlogCloudDeviceV1'," + json.dumps(device) + ');')
     if cloud.engine == 'webkit':
         context.add_init_script(collaboration.WEBKIT_STORAGE_BODY)
+    context.add_init_script(PHOTO_TRACE)
     context.route('**/*', lambda route: cloud.route(route, device))
     page = context.new_page()
     errors = []
@@ -253,6 +332,7 @@ def run(engine, cloud, root):
             assert '切替後もコメントを保存' in certified_record['memo']
             assert len(certified_record['photos'])>=2
             print('PASS actual application publishes a current PC-compatible certified snapshot',flush=True)
+            run_capacity_flow(cloud,a,b,certificate,CP,OWNER,A,B,PC)
             a.screenshot(path=f'/tmp/sentlog-delta-app-{cloud.engine}.png',full_page=True)
             assert not ea and not eb,dict(a=ea,b=eb)
             assert not cloud.unexpected,cloud.unexpected
@@ -266,10 +346,13 @@ def run(engine, cloud, root):
                       pendingPhotos:await SentlogCollaborationPhotos.listPending(),
                       records:JSON.parse(SentlogRecords.getItem('surveyFieldNoteDrawingV1:edit-plan')||'{"shapes":[]}').shapes.map(r=>({id:r.id,photos:(r.photos||[]).map(p=>p.id),memo:r.memo})),
                       live:typeof state==='object'?{selected,drawing:activeDrawingId,records:state.shapes.map(r=>({id:r.id,photos:(r.photos||[]).map(p=>p.id)}))}:null})"""),ensure_ascii=False),flush=True)
+                    print('DELTA_PHOTO_DIAGNOSTICS',i,json.dumps(page.evaluate(PHOTO_STATE),ensure_ascii=False),flush=True)
                     page.screenshot(path=f'/tmp/sentlog-delta-app-{cloud.engine}-{i}.png',full_page=True)
                 except Exception:
                     pass
             print('DELTA_SQL_ERRORS',json.dumps(cloud.sql_errors[-12:],ensure_ascii=False),flush=True)
+            print('DELTA_SERVER_PHOTOS',json.dumps(dict(assets=list(cloud.assets.values()),receipts=list(cloud.receipts.values())),ensure_ascii=False),flush=True)
+            print('DELTA_PHOTO_REQUESTS',json.dumps(cloud.photo_requests[-100:],ensure_ascii=False),flush=True)
             print('DELTA_RECENT_REQUESTS',json.dumps([{key:r.get(key) for key in ('device','path','method')} for r in cloud.requests[-20:]]),flush=True)
             ca.close();cb.close()
 

@@ -10,6 +10,7 @@ on:
       - 'sentlog/record-collaboration.js'
       - 'sentlog/session-guard.js'
       - 'tests/delta_app_*'
+      - 'tests/delta_capacity_app_flow.py'
       - 'tests/collaboration_ui.py'
       - 'tests/edit_sync_ui.py'
       - 'docs/sentlog-delta-*.sql'
