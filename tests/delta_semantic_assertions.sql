@@ -27,7 +27,7 @@ CREATE OR REPLACE FUNCTION public.semantic_patch(eid text,rid text)
 RETURNS jsonb LANGUAGE sql SECURITY INVOKER SET search_path=''
 AS $fn$
  SELECT pg_catalog.jsonb_set(
-   pg_catalog.jsonb_set(public.test_event(eid),'{{projectId}}',
+   pg_catalog.jsonb_set(public.test_event(eid),'{projectId}',
      pg_catalog.to_jsonb('66666666-6666-4666-8666-666666666666'::text)),
    '{drawingId}',pg_catalog.to_jsonb('test-drawing'::text)
  ) || pg_catalog.jsonb_build_object('recordId',rid)
