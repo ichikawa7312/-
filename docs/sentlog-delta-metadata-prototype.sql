@@ -344,8 +344,10 @@ CREATE TRIGGER sentlog_validate_metadata_state BEFORE INSERT OR UPDATE ON sentlo
 
 -- Deferred validation allows an atomic operation to insert an ordinary record
 -- before its new drawing document, while rejecting committed orphan records.
+-- This trigger runs at outer COMMIT after the authenticated RPC has returned.
+-- Retain its private-table read privilege without granting clients that access.
 CREATE OR REPLACE FUNCTION sentlog_delta_private.validate_metadata_membership()
-RETURNS trigger LANGUAGE plpgsql SECURITY INVOKER SET search_path=''
+RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path=''
 AS $fn$
 DECLARE row record; doc jsonb;
 BEGIN

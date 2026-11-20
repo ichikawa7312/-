@@ -98,9 +98,13 @@ jobs:
           node tests/delta_app_bridge.test.cjs
           node tests/delta_metadata.test.cjs
           node tests/delta_metadata_bridge.test.cjs
+          node tests/delta_large_operations.test.cjs
           node tests/delta_app_journal.test.cjs
           node tests/delta_app_mode.test.cjs
+          node tests/delta_photo_lease.test.cjs
           node tests/delta_capacity.test.cjs
+          node tests/delta_capacity_gc.test.cjs
+          node tests/delta_capacity_copies.test.cjs
           node tests/delta_projection_pglite.cjs
           node tests/delta_metadata_pglite.cjs
           node tests/delta_legacy_unicode_pglite.cjs

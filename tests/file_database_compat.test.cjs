@@ -53,6 +53,16 @@ function reader(spec,records){const window={SentlogRecords:records};const contex
  const editor=reader(readers[0],adapter),all=await editor.getAllDBFiles();
  assert.equal(all.find(x=>x.key==='__sentlog_record__:surveyFieldNoteDrawingV1:drawing').value,drawing);
  await equalBlob(all.find(x=>x.key==='background:drawing').value,sourceDxf);pass('backup enumeration still includes exact drawing records and original DXF bytes');
+ // The shipped loader concatenates raw chunks without separators. Compile
+ // and execute that exact save path: a newline inside a split identifier can
+ // still parse successfully while failing only when a real photo is saved.
+ const assembled=Array.from({length:9},(_,i)=>read('sentlog/part0'+(i+1)+'.txt')).join('');
+ const photoStart=assembled.indexOf('function photoDBKey('),photoEnd=assembled.indexOf('function revokePhotoThumbUrls(',photoStart);
+ assert(photoStart>=0&&photoEnd>photoStart);vm.runInContext(assembled.slice(photoStart,photoEnd),editor);
+ editor.activeDrawingId='another-drawing';await editor.savePhotoBlob('captured-photo',sourcePhoto,'drawing');await records.settled();
+ await equalBlob(await editor.getPhotoBlob('captured-photo','drawing'),sourcePhoto);
+ assert.equal(await editor.getPhotoBlob('captured-photo','another-drawing'),undefined);
+ pass('the exact concatenated camera/auto-trace save helper commits bytes to its captured drawing');
  const pdf=reader(readers.find(x=>x.name==='PDF recovery'),adapter);
  await pdf.db('sentlog-pc-sync','kv','root',{name:'synthetic-pc-folder'});
  assert.deepEqual(await pdf.db('sentlog-pc-sync','kv','root'),{name:'synthetic-pc-folder'});

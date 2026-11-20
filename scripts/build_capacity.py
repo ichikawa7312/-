@@ -48,12 +48,14 @@ storage_code=r'''
       function stop(){conflict=true;tx.abort();}
       function commit(){
         if(conflict)return;
-        journalMutation(tx,{writes:updates,fileDeletes:files,expectedFileStates:archiveOptions.expectedFileStates||[],kind:'archive',contexts:[contextOf(archiveOptions)]},()=>{
-          validateArchive();
-          for(const f of files)s.delete(f.key);
-          for(const [k,v] of updates)if(v===null)s.delete(PREFIX+k);else s.put(v,PREFIX+k);
-          s.put({...oldMeta,revision:revision+1,updatedAt:new Date().toISOString()},META);
-        });
+        try{applyArchivedRelease(tx,archiveOptions.retentionRelease,{deleteFiles:files,options:archiveOptions},()=>{
+          journalMutation(tx,{writes:updates,fileDeletes:files,expectedFileStates:archiveOptions.expectedFileStates||[],kind:'archive',contexts:[contextOf(archiveOptions)],archiveRelease:archiveOptions.retentionRelease},()=>{
+            validateArchive();
+            for(const f of files)s.delete(f.key);
+            for(const [k,v] of updates)if(v===null)s.delete(PREFIX+k);else s.put(v,PREFIX+k);
+            s.put({...oldMeta,revision:revision+1,updatedAt:new Date().toISOString()},META);
+          });
+        });}catch(error){tx.sentlogJournalError=error;tx.abort();}
       }
       s.get(META).onsuccess=e=>{
         oldMeta=e.target.result;

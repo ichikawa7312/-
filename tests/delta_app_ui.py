@@ -151,6 +151,10 @@ def saved(page):
     return page.evaluate("JSON.parse(SentlogRecords.getItem('surveyFieldNoteDrawingV1:edit-plan'))")
 
 
+def saved_record(page):
+    return next(record for record in saved(page)['shapes'] if record['id']=='survey-a')
+
+
 def sync(page):
     return page.evaluate('async cp=>{await SentlogRecords.settled();return sentlogDeltaRuntime.sync(cp)}', CP)
 
@@ -196,7 +200,6 @@ def run(engine, cloud, root):
                   if(rotation!==null)state.pageRotations['1']=rotation;
                   persist();await SentlogRecords.settled();showProjects();
                 }""",dict(scale=scale,rotation=rotation))
-            for page in (a,b):sync(page)
             wait(cloud,a,lambda:all(saved(p).get('pageSettings',{}).get('1',{}).get('scale')==125 and saved(p).get('pageRotations',{}).get('1')==90 for p in (a,b)),
                  'Independent drawing setting edits did not merge into both real legacy mirrors')
             print('PASS drawing scale and rotation changed through persist(), journal, atomic delta and renderer',flush=True)
@@ -216,13 +219,11 @@ def run(engine, cloud, root):
             cloud.offline.clear()
             for page in (a,b):
                 page.evaluate("()=>{window.__fixtureOffline=false;sentlogImporting=false;window.dispatchEvent(new Event('online'));}")
-                sync(page)
             wait(cloud,a,lambda:a.locator('#sentlogDeltaMetadataNotice').is_visible(), 'Conflicting scale choices were not shown')
             a.locator('#sentlogDeltaMetadataNotice button').click()
             a.get_by_role('button',name='150 を使う',exact=True).click()
             wait(cloud,a,lambda:'選んだ内容を保存しました' in a.locator('#sentlogDeltaMetadataDialog').inner_text(), 'Explicit settings resolution was not saved')
             a.locator('#sentlogDeltaMetadataDialog').get_by_role('button',name='閉じる',exact=True).click()
-            for page in (a,b):sync(page)
             wait(cloud,a,lambda:all(saved(p)['pageSettings']['1']['scale']==150 for p in (a,b)), 'Chosen scale did not converge')
             print('PASS same-setting candidates remain visible and an explicit UI choice converges',flush=True)
 
@@ -230,26 +231,27 @@ def run(engine, cloud, root):
             collaboration.add_comment(a,'切替後もコメントを保存')
             a.locator('#slCollabDraft').press('Tab')
             collaboration.capture(a,'delta-camera.png')
-            wait(cloud,a,lambda:len(saved(a)['shapes'][0].get('photos',[]))>=2,'Real camera save did not reach the journal')
+            wait(cloud,a,lambda:len(saved_record(a).get('photos',[]))>=2,'Real camera save did not reach the journal')
             a.evaluate('()=>showProjects()')
-            for page in (a,b):sync(page)
-            wait(cloud,a,lambda:len(saved(b)['shapes'][0].get('photos',[]))>=2,'Peer did not receive the camera record')
-            for page in (a,b):
-                result=page.evaluate('cp=>sentlogDeltaRuntime.photos(cp)',CP)
-                assert result['complete'],result.get('issues')
-            reference=next(photo for photo in saved(a)['shapes'][0]['photos'] if photo['id']!='retained-photo')
+            wait(cloud,a,lambda:len(saved_record(b).get('photos',[]))>=2,'Peer did not automatically receive the camera record')
+            reference=next(photo for photo in saved_record(a)['photos'] if photo['id']!='retained-photo')
+            def received_by_both():
+                asset=next((item for item in cloud.assets.values() if item['client_key']=='photo:edit-plan:'+reference['id']),None)
+                return asset and all((asset['id'],device) in cloud.receipts for device in (A,B))
+            wait(cloud,a,received_by_both,'Automatic photo delivery did not produce both exact-byte receipts')
             hashes=[]
             for page in (a,b):
                 hashes.append(page.evaluate("""async id=>{const blob=await getDBFile('photo:edit-plan:'+id);
                   if(!(blob instanceof Blob))return null;return [...new Uint8Array(await crypto.subtle.digest('SHA-256',await blob.arrayBuffer()))].map(x=>x.toString(16).padStart(2,'0')).join('');}""",reference['id']))
             assert hashes[0] and hashes[0]==hashes[1],hashes
-            assert all('切替後もコメントを保存' in saved(p)['shapes'][0]['memo'] for p in (a,b))
+            assert all('切替後もコメントを保存' in saved_record(p)['memo'] for p in (a,b))
             print('PASS actual capture, record comment, native Blob storage and exact peer ACK remain connected',flush=True)
 
             certificate=a.evaluate('cp=>sentlogDeltaRuntime.checkpoint(cp,{force:true})',CP)
             assert certificate['payload']['drawings'][0]['state']['pageSettings']['1']['scale']==150
-            assert '切替後もコメントを保存' in certificate['payload']['drawings'][0]['state']['shapes'][0]['memo']
-            assert len(certificate['payload']['drawings'][0]['state']['shapes'][0]['photos'])>=2
+            certified_record=next(record for record in certificate['payload']['drawings'][0]['state']['shapes'] if record['id']=='survey-a')
+            assert '切替後もコメントを保存' in certified_record['memo']
+            assert len(certified_record['photos'])>=2
             print('PASS actual application publishes a current PC-compatible certified snapshot',flush=True)
             a.screenshot(path=f'/tmp/sentlog-delta-app-{cloud.engine}.png',full_page=True)
             assert not ea and not eb,dict(a=ea,b=eb)
@@ -258,12 +260,17 @@ def run(engine, cloud, root):
         finally:
             for i,page in enumerate((a,b)):
                 try:
-                    print('DELTA_APP_DIAGNOSTICS',i,json.dumps(page.evaluate("""()=>({ready:SentlogRecords.ready,failed:SentlogRecords.failed,
+                    print('DELTA_APP_DIAGNOSTICS',i,json.dumps(page.evaluate("""async()=>({ready:SentlogRecords.ready,failed:SentlogRecords.failed,
                       issues:SentlogRecords.issues,bindings:SentlogRecords.deltaJournal.listBindingsSync().map(b=>({phase:b.phase,ackedSeq:b.ackedSeq})),
-                      message:document.getElementById('sentlogCloudMsg')?.textContent})"""),ensure_ascii=False),flush=True)
+                      message:document.getElementById('sentlogCloudMsg')?.textContent,photoStatus:document.getElementById('photoStatus')?.textContent,
+                      pendingPhotos:await SentlogCollaborationPhotos.listPending(),
+                      records:JSON.parse(SentlogRecords.getItem('surveyFieldNoteDrawingV1:edit-plan')||'{"shapes":[]}').shapes.map(r=>({id:r.id,photos:(r.photos||[]).map(p=>p.id),memo:r.memo})),
+                      live:typeof state==='object'?{selected,drawing:activeDrawingId,records:state.shapes.map(r=>({id:r.id,photos:(r.photos||[]).map(p=>p.id)}))}:null})"""),ensure_ascii=False),flush=True)
+                    page.screenshot(path=f'/tmp/sentlog-delta-app-{cloud.engine}-{i}.png',full_page=True)
                 except Exception:
                     pass
             print('DELTA_SQL_ERRORS',json.dumps(cloud.sql_errors[-12:],ensure_ascii=False),flush=True)
+            print('DELTA_RECENT_REQUESTS',json.dumps([{key:r.get(key) for key in ('device','path','method')} for r in cloud.requests[-20:]]),flush=True)
             ca.close();cb.close()
 
 

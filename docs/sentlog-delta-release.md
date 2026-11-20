@@ -109,21 +109,45 @@ acknowledgement. Per-project cutoffs copy only that project's related shared
 files, including retained drawings; unrelated project bytes remain in their
 original store.
 
-Local file removal deliberately retains exact file preimages. Compacted
-file-retention entries, the protected migration cutoff, migration staging, and
-the immutable shared-photo store can therefore still hold bytes after the
-visible file mirror has been removed. Native camera originals are protected
-separately. PC archive and restoration work with this retention, but the amount
-of physical browser space reclaimed can be smaller than the removed mirror's
-file sizes. The current implementation does not claim complete byte reclamation.
+Certified delta capacity cleanup also releases redundant copies from the
+acknowledged file-retention rows, the project's protected migration cutoff,
+sealed migration staging, and the shared-photo store. Each candidate must
+match the complete archived catalog by file key, asset identity where stored,
+SHA-256, size, owner, project, and device. The operation also requires the
+current archive certificate, a fresh completed PC package verification, and a
+clean local replica/journal. Every selected Blob is hashed before release;
+changing its source revision, file generation, account, or relevant saved
+record stops the final removal.
 
-A separate release operation is needed to reclaim these duplicate bytes. It
-must bind every candidate to the exact archived job and immutable certificate,
-verified PC package/readback provenance, manifest key, SHA-256, size, owner, and
-project. The relevant local file generations and pending intents must be
-rechecked in the deletion transaction. Protected migration copies also require
-the matching durable migration/readback receipt. Release only copies covered
-by that evidence, leaving current or pending bytes, unassigned intents,
-immutable record history, and other projects' references intact. A generic
-`verified: true` flag is insufficient. Camera originals need their own verified
-original-backup policy; a shared-photo receipt cannot authorize their deletion.
+The application pauses photo transfers before taking its final proof. It
+releases redundant copies in the independent migration and photo databases
+while the ordinary local files remain available. If that work is interrupted,
+the operation can retry against the retained release receipts. The records
+database then prunes its matching cutoff and journal copies in the same guarded
+transaction that removes the visible files and records the local clearance
+marker. This transaction does not create another deletion-preimage Blob.
+Pending journal entries, active replay claims, an expired verification, or a
+changed generation prevent that commit.
+
+Record histories, metadata, archive receipts, unassigned intents, other
+projects' copies, and historical files with different content remain intact.
+Native camera originals and original-photo variants are excluded. Migration
+sessions with released shared bytes are marked `archived-copy`; reading one
+as a complete activation source raises an explicit error. Photo-store entries
+retain their identity and receipts with an `archived` state instead of claiming
+that their bytes are still present. The local clearance marker prevents
+automatic photo download after cleanup and after restart. Explicit restoration
+can rehydrate those entries only through the normal verified file and receipt
+path.
+
+The released byte count measures the Blob payloads removed from these stores.
+It is not a promise of an equal immediate reduction in physical disk usage:
+the browser controls storage deduplication and reclamation, and the retained
+originals and different historical bytes still occupy space. The capacity UI
+continues to show the browser's storage estimate separately.
+
+`tests/delta_capacity_gc.test.cjs` exercises the actual records transaction,
+real migration/photo stores, interruption and retry, generation races,
+pending-work rejection, and explicit restoration after release.
+`tests/delta_capacity_copies.test.cjs` verifies the individual stores' hashes,
+compare-and-swap checks, preserved originals, and guarded photo rehydration.

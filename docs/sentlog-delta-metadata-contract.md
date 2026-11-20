@@ -62,6 +62,16 @@ The envelope is excluded from ordinary metadata capture, preventing recursive hi
 
 The bridge uses `projectReplica` for metadata-backed replicas and retains its original synchronous projection API for legacy callers. Drawing creation/removal, settings and ordinary record edits become a single group whenever their effects must be published together. A WAL receipt additionally returns `normalizedAfter`, the canonical local draft before peer merge. The next claim uses that branch, avoiding an accidental reinterpretation of a displayed common ancestor as the author's previous intent.
 
+## Large restoration and drawing deletion
+
+A restore or full-drawing deletion may exceed the existing limit of 500 events or 4 MiB per atomic group. The bridge divides those independent record changes into bounded groups after validating every resulting event and group. It publishes new/restored drawing metadata first, then ordinary records, and drawing-removal metadata last. The server limits and immutable event protocol stay unchanged. Group identifiers bind the operation and their exact event IDs, so a resumed suffix cannot reuse a prior group's identity for different contents.
+
+The WAL claim is acknowledged only after every local segment is durable. A failure retains the complete claim; replay omits the already committed revisions and finishes the remaining changes. Other devices may see completed segments while the operation is still progressing: restored records appear gradually, and a deleted drawing remains visible until its final membership change. Concurrent unseen edits remain in history and can keep a drawing visible with a membership conflict. Certified checkpoints and PC cleanup still require the journal and outbox to be drained.
+
+Actual cross-drawing moves remain one atomic group. A move exceeding the existing count or byte limit is retained without committing either half. An individually oversized event also rejects the whole prepared operation before any segment is written.
+
+Backup restore treats requested older scalar values as new authored revisions, preserves omitted future fields and histories, and reads retained drawing tombstones as valid before states. If a restore arrives before a previous deletion has been projected into the UI, its before state may lack those records. The bridge then preserves the current replica history, applies the explicit restore, and adds a stable alive/deleted revision completing that restore intent in the same record event. Replaying that operation recognizes the saved revision and does not overwrite subsequent peer edits. Newly restored records use the same completion proof so creation retries are idempotent as well.
+
 ## Server validation
 
 The SQL module exposes private helpers only:
@@ -95,5 +105,6 @@ The targeted executable suites are:
 - `tests/delta_reconcile.test.cjs`: old protected baseline behavior plus metadata migration and legacy Unicode display compatibility.
 - `tests/delta_legacy_unicode_pglite.cjs`: unchanged legacy revision payloads, duplicate replay and subsequent SQL/client edits.
 - `tests/delta_capacity.test.cjs`: certified capacity proof, exact row/file guards, restore destinations and generated capacity integration.
+- `tests/delta_large_operations.test.cjs`: 501-record restore/deletion, 4 MiB groups, new/retained drawings, crash replay, prevalidation and indivisible moves.
 
 Full browser flows, authentication, remote file delivery and the release lifecycle are verified separately by the application integration suites. These component results do not themselves enable production synchronization.

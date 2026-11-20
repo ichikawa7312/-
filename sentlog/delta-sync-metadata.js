@@ -215,10 +215,17 @@
     for(const id of [...new Set([...oldSpecs.keys(),...nextSpecs.keys()])].sort(cmp)){
       const old=oldSpecs.get(id),next=nextSpecs.get(id),base=current[id]||null;let value=base?copy(base):null;
       if(!old&&!next)continue;
-      if(!base){assert(!old,'METADATA_BASE_MISSING','編集前の図面設定が保存先にありません');value=await seedDocument(next);}
+      const creationId=!old&&next?await stableId('edit',[operationId,id,'@create']):null;
+      const repeatedCreation=creationId&&base?.collab.deletion.revisions.some(r=>r.id===creationId);
+      if(!base){assert(!old,'METADATA_BASE_MISSING','編集前の図面設定が保存先にありません');value=await seedDocument(next);value=C.restore(value,{expectedToken:C.revisionToken(value),actor,at,revisionId:creationId});}
       else {const doc=await validateDocument(base);assert(doc.identity.localProjectId===before.project.id&&C.equal(doc.identity,(next||old).identity),'METADATA_IDENTITY','編集する設定の所有元が一致しません');}
       const observed=provenance?.[id];if(observed)lineage(await validateDocument(observed).then(x=>x.record),base);
-      if(!next){
+      if(repeatedCreation){
+        // The first create event carries its complete deterministic seed plus
+        // this operation's alive revision. Replaying it must not author a new
+        // edit over peer changes received after that creation.
+        lineage(await seedDocument(next),base);
+      }else if(!next){
         if(operation==='restore')continue;
         assert(id!=='project','METADATA_PROJECT','案件そのものの削除は設定編集で実行できません');
         const deletionId=await stableId('edit',[operationId,id,'@deletion']);

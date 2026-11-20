@@ -76,6 +76,13 @@ await test('drawing order and names sync while independent drawing additions sur
  const b=await change(before,s=>{const meta={id:'drawing-3',name:'三'};s.project.drawings.push(meta);s.drawings.push({meta:copy(meta),state:{shapes:[],scale:50}});},base,'op-add',{actor:actorB});
  const view=await M.project({records:merge(a.records,b.records),template:before});assert.deepEqual(view.project.drawings.map(d=>d.id),['drawing-2','drawing-1','drawing-3']);assert.equal(view.drawings[2].state.scale,50);
 });
+await test('new drawing creation replay preserves later peer settings and rejects changed seed content',async()=>{
+ const after=initial(),before=copy(after);before.project.drawings=[];before.drawings=[];const base=await M.seed(before);
+ const args={before,after,currentRecords:base,operationId:'new-drawing',actor,at:100,operation:'restore'},created=await M.edit(args),display=await M.project({records:created.records,template:after});
+ const peer=await change(display,s=>s.drawings[0].state.pageSettings['1'].scale=125,created.records,'peer-setting',{actor:actorB});
+ const replay=await M.edit({...args,currentRecords:peer.records});assert.equal(replay.changes.length,0);assert.deepEqual(replay.records,peer.records);
+ const altered=copy(after);altered.drawings[0].state.pageSettings['1'].scale=150;await assert.rejects(()=>M.edit({...args,after:altered,currentRecords:peer.records}));
+});
 await test('old backup restore appends changes and retains omitted drawing and field histories',async()=>{
  const before=initial(),base=await M.seed(before),a=await change(before,s=>{s.project.name='new';s.drawings[0].state.newSetting='keep';},base,'op-a');
  const current=await M.project({records:a.records,template:before}),restored=copy(before);delete restored.drawings[0].state.pageSettings['2'];

@@ -1,6 +1,7 @@
-/* Isolated delta-sync photo delivery prototype. NOT loaded by the live app.
+/* Scoped delta-sync photo delivery and certified redundant-copy retention.
  * Each photo's queue item, immutable bytes and verified receipt commit together.
- * Shared images and originals have separate identities. Nothing is deleted.
+ * Shared images and originals have separate identities. A matching shared copy
+ * can be released only with a certified PC archive and an explicit receipt.
  * Transport implementations must authenticate the scope and resolve asset IDs
  * through the server; this module never follows a supplied upload/download URL.
  */
@@ -44,6 +45,33 @@
   }
   function receipt(ref,scope){return {...copy(ref),deviceId:scope.deviceId};}
   function matchesReceipt(value,ref,scope){return same(value,ref)&&value.deviceId===scope.deviceId;}
+  function archivePlan(input,scope){
+    const certificate=input?.certificate;
+    insist(valid(input?.localProjectId)&&valid(input.jobId)&&valid(input.operationId)&&object(certificate)&&
+      certificate.schema===1&&certificate.projectId===scope.projectId&&Number.isSafeInteger(certificate.headSeq)&&certificate.headSeq>=0&&
+      Number.isSafeInteger(certificate.revision)&&certificate.revision>0&&/^[a-f0-9]{64}$/.test(certificate.payloadSha256)&&
+      (!Object.prototype.hasOwnProperty.call(certificate,'checkpointId')||valid(certificate.checkpointId))&&Array.isArray(input.files),
+      'ASSET_ARCHIVE_PROOF','PC保管の証明と対象案件を確認できません');
+    const keys=new Set(),ids=new Set(),files=input.files.map(file=>{
+      insist(object(file)&&valid(file.key)&&valid(file.assetId)&&['drawing','photo'].includes(file.kind)&&
+        file.key.startsWith(file.kind==='photo'?'photo:':'background:')&&/^[a-f0-9]{64}$/.test(file.sha256)&&
+        Number.isSafeInteger(file.size)&&file.size>=0&&valid(file.mimeType)&&!keys.has(file.key)&&!ids.has(file.assetId),
+        'ASSET_ARCHIVE_PROOF','PC保管したファイルの識別情報が不正です');
+      keys.add(file.key);ids.add(file.assetId);return Object.fromEntries(['key','assetId','kind','sha256','size','mimeType'].map(k=>[k,file[k]]));
+    });
+    return copy({version:1,scope,localProjectId:input.localProjectId,jobId:input.jobId,operationId:input.operationId,certificate,files});
+  }
+  function archiveCheck(validate){
+    insist(typeof validate==='function','ASSET_ARCHIVE_CONTEXT','保管対象を再確認する方法が必要です');
+    const result=validate();if(result&&typeof result.then==='function')Promise.resolve(result).catch(()=>{});
+    insist(result===true,'ASSET_ARCHIVE_CONTEXT','確認中に保管対象が変わりました。写真を保持しています');
+  }
+  function matchesArchiveFile(file,ref){return file.kind==='photo'&&ref.variant==='shared'&&file.assetId===ref.assetId&&
+    file.key==='photo:'+ref.drawingId+':'+ref.photoId&&file.sha256===ref.sha256&&file.size===ref.size&&file.mimeType===ref.mimeType;}
+  function validArchiveRelease(release,ref,scope){
+    if(!object(release)||release.version!==1||!sameScope(release.scope,scope)||!object(release.file))return false;
+    try{const plan=archivePlan({...release,files:[release.file]},scope);return matchesArchiveFile(plan.files[0],ref);}catch{return false;}
+  }
   async function verifyBlob(blob,ref){
     insist(typeof root.Blob==='function'&&blob instanceof root.Blob&&blob.size===ref.size,
       'ASSET_CONTENT_MISMATCH','写真のサイズが登録内容と一致しません。元のファイルは保持しています');
@@ -56,11 +84,15 @@
   function validateRow(row,ref,scope){
     if(row===undefined||row===null)return null;
     insist(object(row)&&row.version===1&&sameScope(row.scope,scope)&&same(row.reference,ref)&&
-      Number.isSafeInteger(row.revision)&&row.revision>0&&['waiting','received','acknowledged'].includes(row.phase),
+      Number.isSafeInteger(row.revision)&&row.revision>0&&['waiting','received','acknowledged','archived'].includes(row.phase),
       'ASSET_COLLISION','保存済み写真の識別情報と一致しません。保存先を初期化せず停止しました');
     if(row.phase==='waiting'){
       insist(row.blob===null&&row.localReceipt===null&&row.remoteReceipt===null,
         'ASSET_STORE_INVALID','写真待ちの保存状態を確認できません');
+    }else if(row.phase==='archived'){
+      insist(row.blob===null&&matchesReceipt(row.localReceipt,ref,scope)&&row.localReceipt.verified===true&&
+        (row.remoteReceipt===null||matchesReceipt(row.remoteReceipt,ref,scope)&&row.remoteReceipt.durable===true)&&
+        validArchiveRelease(row.archiveRelease,ref,scope),'ASSET_STORE_INVALID','PC保管した写真の解放記録を確認できません');
     }else{
       insist(row.blob instanceof root.Blob&&row.blob.size===ref.size&&
         matchesReceipt(row.localReceipt,ref,scope)&&row.localReceipt.verified===true,
@@ -82,7 +114,7 @@
       'ASSET_STORE_UNAVAILABLE','写真の端末保存機能を利用できません');
     let db=null,opening=null,closed=false;
     const active=new Map();
-    const key=ref=>JSON.stringify([...SCOPE.map(k=>scope[k]),ref.assetId]);
+    const key=ref=>JSON.stringify([...SCOPE.map(k=>scope[k]),typeof ref==='string'?ref:ref.assetId]);
     function alive(){insist(!closed,'ASSET_CLOSED','写真の保存処理を終了しています');}
     function connect(){
       alive();if(db)return Promise.resolve(db);if(opening)return opening;
@@ -147,10 +179,12 @@
           q.onsuccess=()=>{
             if(settled)return;
             try{
-              check();const current=validateRow(q.result,ref,scope),next=mutate(current);
+              check();const actualRef=typeof ref==='string'&&q.result?reference(q.result.reference,scope):ref;
+              if(typeof ref==='string'&&q.result)insist(actualRef.assetId===ref,'ASSET_COLLISION','保存した写真の識別情報が一致しません');
+              const current=validateRow(q.result,actualRef,scope),next=mutate(current);
               context.result=next;
               if(mode==='readwrite'&&next!==current){
-                validateRow(next,ref,scope);
+                validateRow(next,actualRef,scope);
                 const put=store.put(next,key(ref));put.onerror=()=>{context.error=context.error||put.error;};
                 put.onsuccess=()=>{if(settled)return;try{check();}catch(error){abort(error);}};
               }
@@ -168,12 +202,14 @@
           phase:'waiting',blob:null,localReceipt:null,remoteReceipt:null},validate);
       },
       read(input){const ref=reference(input,scope);alive();return operation(ref,'readonly',row=>row);},
-      async received(input,blob,{validate=()=>{}}={}){
+      async received(input,blob,{validate=()=>{},restoreArchived=false}={}){
+        insist(typeof restoreArchived==='boolean','ASSET_ARCHIVE_CONTEXT','写真復元の指定を確認できません');
         const ref=reference(input,scope);alive();await verifyBlob(blob,ref);alive();
         return operation(ref,'readwrite',row=>{
           insist(row,'ASSET_NOT_QUEUED','写真の受信予定を確認できません');
           // A repeated response cannot roll back an already acknowledged item.
-          if(row.phase!=='waiting')return row;
+          if(row.phase==='archived')insist(restoreArchived,'ASSET_ARCHIVED_COPY','この写真はPCへ保管済みです。復元操作から読み戻してください');
+          else if(row.phase!=='waiting')return row;
           return {...row,revision:nextRevision(row),phase:'received',blob,
             localReceipt:{...receipt(ref,scope),verified:true},remoteReceipt:null};
         },validate);
@@ -183,10 +219,28 @@
         insist(matchesReceipt(ack,ref,scope)&&ack.durable===true,
           'ASSET_ACK_MISMATCH','この端末・写真の受領確認が一致しません');
         return operation(ref,'readwrite',row=>{
-          insist(row&&row.phase!=='waiting','ASSET_NOT_DURABLE','写真本体を端末へ保存する前に完了扱いにはできません');
+          insist(row&&['received','acknowledged'].includes(row.phase),'ASSET_NOT_DURABLE','写真本体を端末へ保存する前に完了扱いにはできません');
           if(row.phase==='acknowledged')return row;
           return {...row,revision:nextRevision(row),phase:'acknowledged',remoteReceipt:ack};
         },validate);
+      },
+      async releaseArchivedCopies(input){
+        const plan=archivePlan(input,scope),validate=input.validate,check=()=>{alive();archiveCheck(validate);},candidates=[];check();
+        for(const file of plan.files){
+          if(file.kind!=='photo')continue;
+          const row=await operation(file.assetId,'readonly',row=>row,check);check();
+          if(!row||row.phase==='waiting'||row.phase==='archived'||!matchesArchiveFile(file,row.reference))continue;
+          await verifyBlob(row.blob,row.reference);check();candidates.push({file,row});
+        }
+        let releasedCopies=0,releasedBytes=0;
+        for(const {file,row:before}of candidates){
+          check();await operation(before.reference,'readwrite',row=>{
+            insist(row&&row.revision===before.revision&&row.phase===before.phase,'ASSET_ARCHIVE_STALE','確認中に写真の保存状態が変わりました');
+            check();return {...row,revision:nextRevision(row),phase:'archived',blob:null,
+              archiveRelease:{version:1,scope:copy(scope),localProjectId:plan.localProjectId,jobId:plan.jobId,operationId:plan.operationId,certificate:copy(plan.certificate),file:copy(file)}};
+          },check);check();releasedCopies++;releasedBytes+=file.size;
+        }
+        return {releasedCopies,releasedBytes};
       },
       close(){
         if(closed)return;
@@ -198,13 +252,13 @@
     return api;
   }
 
-  function createQueue({scope:inputScope,store,transport,currentScope,assertCurrent=()=>{},timeoutMs=30000,maxBytes=22*1024*1024,allowOriginals=false}={}){
+  function createQueue({scope:inputScope,store,transport,currentScope,assertCurrent=()=>{},timeoutMs=30000,maxBytes=22*1024*1024,allowOriginals=false,allowArchivedRestore=false}={}){
     const scope=Object.freeze(Object.fromEntries(SCOPE.map(k=>[k,inputScope?.[k]])));
     insist(SCOPE.every(k=>valid(scope[k]))&&store&&sameScope(store.getScope?.(),scope)&&
       ['ensure','read','received','acknowledged'].every(k=>typeof store[k]==='function')&&
       transport&&['online','download','acknowledge'].every(k=>typeof transport[k]==='function')&&typeof currentScope==='function'&&typeof assertCurrent==='function',
       'ASSET_CONFIG','写真の保存・通信・利用者確認の方法が不足しています');
-    insist(Number.isSafeInteger(timeoutMs)&&timeoutMs>0&&Number.isSafeInteger(maxBytes)&&maxBytes>0&&typeof allowOriginals==='boolean',
+    insist(Number.isSafeInteger(timeoutMs)&&timeoutMs>0&&Number.isSafeInteger(maxBytes)&&maxBytes>0&&typeof allowOriginals==='boolean'&&typeof allowArchivedRestore==='boolean',
       'ASSET_CONFIG','写真の通信上限を確認できません');
     let closed=false,desired=null,generation=0,pump=null,pumpGeneration=null;
     const inflight=new Set();
@@ -236,16 +290,16 @@
     }
     async function status(refs,epoch){
       const result={scope:copy(scope),referenceSignature:JSON.stringify(refs),
-        total:refs.length,untracked:0,waiting:0,received:0,acknowledged:0,complete:false};
+        total:refs.length,untracked:0,waiting:0,received:0,acknowledged:0,archived:0,complete:false};
       for(const ref of refs){
         alive(epoch);const row=await store.read(ref);alive(epoch);
         if(!row)result.untracked++;
         else{
-          if(row.phase!=='waiting'){await verifyBlob(row.blob,ref);alive(epoch);}
+          if(!['waiting','archived'].includes(row.phase)){await verifyBlob(row.blob,ref);alive(epoch);}
           result[row.phase]++;
         }
       }
-      result.pending=result.untracked+result.waiting+result.received;
+      result.pending=result.untracked+result.waiting+result.received+result.archived;
       result.complete=result.pending===0;
       result.message=result.complete?'写真本体の保存・受領確認が完了しました':
         '写真 '+result.pending+' 件を受信・確認待ちです';
@@ -259,12 +313,13 @@
           '原本写真の転送には明示的な指定が必要です。通常同期は共有用写真だけを対象とします');
         insist(ref.size<=maxBytes,'ASSET_TOO_LARGE','写真がこの転送経路の上限を超えています。元の写真と受信待ちを保持しています');
         let row=await store.read(ref);alive(epoch);
-        if(row.phase==='waiting'){
+        if(row.phase==='archived')insist(allowArchivedRestore,'ASSET_ARCHIVED_COPY','この写真はPCへ保管済みです。復元操作から読み戻してください');
+        if(row.phase==='waiting'||row.phase==='archived'){
           const blob=await request(signal=>transport.download(copy(ref),{scope:copy(scope),signal}),epoch);
           // Check again after hashing and before any local mutation. A late
           // response from an old login or old reference set cannot be applied.
           await verifyBlob(blob,ref);alive(epoch);
-          await store.received(ref,blob,{validate:()=>alive(epoch)});alive(epoch);
+          await store.received(ref,blob,{validate:()=>alive(epoch),restoreArchived:allowArchivedRestore});alive(epoch);
           row=await store.read(ref);alive(epoch);
         }
         insist(row&&row.phase!=='waiting','ASSET_NOT_DURABLE','写真の保存完了を確認できません');

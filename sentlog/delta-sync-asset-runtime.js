@@ -64,7 +64,7 @@
   return [...photos.values()].sort((a,b)=>target(a).localeCompare(target(b)));
  }
  function createRuntime({scope:inputScope,transport,store,localFiles,currentScope,currentSnapshotToken,
-  authGeneration,subscribeAuth,onPhotoReceived=()=>{},timeoutMs=30000,maxBytes=22*1024*1024}={}){
+  authGeneration,subscribeAuth,onPhotoReceived=()=>{},timeoutMs=30000,maxBytes=22*1024*1024,allowArchivedRestore=false}={}){
   const scope=Object.freeze(Object.fromEntries(SCOPE.map(k=>[k,inputScope?.[k]])));
   const capabilities=localFiles?.getCapabilities?.();
   insist(A&&T&&SCOPE.every(k=>valid(scope[k]))&&sameScope(scope,transport?.getScope?.())&&sameScope(scope,store?.getScope?.())&&
@@ -72,7 +72,7 @@
    ['ensure','read','received','acknowledged'].every(k=>typeof store?.[k]==='function')&&
    ['read','write','withLock','getCapabilities','assertExclusive'].every(k=>typeof localFiles?.[k]==='function')&&
    [currentScope,currentSnapshotToken,authGeneration,subscribeAuth,onPhotoReceived].every(f=>typeof f==='function')&&
-   capabilities?.guarded===true&&capabilities.onlyIfMissing===true&&Number.isSafeInteger(timeoutMs)&&timeoutMs>0&&Number.isSafeInteger(maxBytes)&&maxBytes>0,
+   capabilities?.guarded===true&&capabilities.onlyIfMissing===true&&Number.isSafeInteger(timeoutMs)&&timeoutMs>0&&Number.isSafeInteger(maxBytes)&&maxBytes>0&&typeof allowArchivedRestore==='boolean',
    'ASSET_RUNTIME_CONFIG','写真の保存・認証・表示対象の確認方法が不足しています');
   let closed=false,pump=null,active=null;
   function alive(){
@@ -137,7 +137,7 @@
      await localFiles.withLock(fileKey(ref),()=>local(ref,false));check();return proof;
     }};
    try{
-    ctx.queue=A.createQueue({scope,store,transport:linked,currentScope,assertCurrent:check,timeoutMs,maxBytes,allowOriginals:false});
+    ctx.queue=A.createQueue({scope,store,transport:linked,currentScope,assertCurrent:check,timeoutMs,maxBytes,allowOriginals:false,allowArchivedRestore});
     check();descriptors=collectPhotos(snapshot);check();let assets=[];
     if(descriptors.length){
      try{assets=await transport.listPhotos(options);check();}

@@ -85,9 +85,14 @@
     }).sort((a,b)=>a.drawingId<b.drawingId?-1:a.drawingId>b.drawingId?1:0);
     return {project,drawings};
   }
-  function recordMap(input){
+  function snapshotDrawings(input,includeRetained=false){
+    if(!includeRetained)return input.drawings;
+    const visible=new Set(input.drawings.map(d=>d.meta.id));
+    return [...input.drawings,...(input.project.deltaMetadata?.retainedDrawings||[]).filter(d=>!visible.has(d.meta.id))];
+  }
+  function recordMap(input,includeRetained=false){
     const result=new Map();
-    for(const drawing of input.drawings)for(const bucket of ['shapes','collabDeletedRecords'])for(const record of drawing.state[bucket]||[]){
+    for(const drawing of snapshotDrawings(input,includeRetained))for(const bucket of ['shapes','collabDeletedRecords'])for(const record of drawing.state[bucket]||[]){
       const key=D.keyOf(drawing.meta.id,record?.id);
       insist(valid(record?.id)&&!result.has(key),'BRIDGE_RECORD','記録の識別情報が重複しています');
       result.set(key,{drawingId:drawing.meta.id,record:copy(record),bucket});
@@ -110,6 +115,26 @@
     return out;
   }
   function issue(code,drawingId,recordId,message){return {code,drawingId,recordId,message};}
+  async function digest(value){return [...new Uint8Array(await root.crypto.subtle.digest('SHA-256',new TextEncoder().encode(JSON.stringify(value))))].map(n=>n.toString(16).padStart(2,'0')).join('');}
+  function restoreCandidate(base,raw,options){
+    const backup=raw.collab?C.upgrade(raw):null,joined=backup?C.mergeRecords(base,backup):{ok:true,record:C.upgrade(base)};
+    insist(joined.ok,'BRIDGE_HISTORY',joined.reason||'バックアップの履歴を統合できません');let observed=joined.record;
+    if(backup&&C.isDeleted(backup)){
+      insist(C.matchesProjection(raw,{allowLegacyOrder:true}),'BRIDGE_DELETED_DRAFT','削除済みのバックアップ記録に未反映の入力があります');
+      return C.isDeleted(observed)?observed:C.markDeleted(observed,{...options,expectedToken:C.revisionToken(observed),revisionId:options.idFactory()});
+    }
+    if(C.isDeleted(observed)||C.view(observed).pendingDelete)observed=C.restore(observed,{...options,expectedToken:C.revisionToken(observed),revisionId:options.idFactory()});
+    for(const photo of raw.photos||[]){const prior=C.view(observed).photos.find(p=>p.id===photo.id);
+      if(prior?.deleted)observed=C.restorePhoto(observed,photo.id,{...options,expectedHeads:prior.headIds,metadata:photo,revisionId:options.idFactory()});}
+    // A restored scalar is a new intended revision. Omitted future fields and
+    // existing comments/photos remain in the merged immutable history.
+    const target={...copy(observed),...copy(raw),collab:copy(observed.collab)};
+    if(C.GEOMETRY_KEYS.some(k=>own(raw,k)))for(const key of C.GEOMETRY_KEYS)if(!own(raw,key))delete target[key];
+    if((backup&&String(raw.memo||'')===backup.memo)||!(String(raw.memo||''))||
+      C.view(observed).comments.some(row=>!row.deleted&&row.text===String(raw.memo||'')))target.memo=observed.memo;
+    const photos=new Map((observed.photos||[]).map(p=>[p.id,copy(p)]));for(const photo of raw.photos||[])photos.set(photo.id,copy(photo));target.photos=[...photos.values()];
+    return C.applyLocalEdit(observed,target,options);
+  }
   function candidate(before,after,options){
     let raw=cleanRecord(after),base=before?cleanRecord(before):null;
     if(base){
@@ -124,11 +149,12 @@
     }
     if(raw.collab&&C.matchesProjection(raw,{allowLegacyOrder:true}))raw=C.upgrade(raw);
     let out;
-    if(raw.collab&&C.isDeleted(C.upgrade(raw))){
+    if(base&&options.operation==='restore')out=restoreCandidate(base,raw,options);
+    else if(raw.collab&&C.isDeleted(C.upgrade(raw))){
       out=C.upgrade(raw);
       insist(C.equal(raw,out),'BRIDGE_DELETED_DRAFT','削除済みの記録に未反映の入力があります。入力を残して確認が必要です');
     }else out=C.applyLocalEdit(base||(raw.collab?C.upgrade(raw):null),raw,options);
-    if(base){
+    if(base&&options.operation!=='restore'){
       // The legacy canvas may omit a photo or clear a textarea. Neither is an
       // authenticated deletion intent; only immutable delete revisions count.
       const ids=new Set((raw.photos||[]).map(p=>p.id));
@@ -143,7 +169,7 @@
     const scope=scopeOf(inputScope),before=copy(snapshot(inputBefore,localProjectId)),after=copy(snapshot(inputAfter,localProjectId));
     insist(object(actor)&&actor.deviceId===scope.deviceId&&typeof actor.deviceName==='string'&&Number.isFinite(at)&&at>=0&&typeof idFactory==='function',
       'BRIDGE_ACTOR','この編集を行った端末を確認できません');
-    const old=recordMap(before),next=recordMap(after),changes=[],issues=[],metadataChanges=[];
+    const includeRetained=operation==='restore',old=recordMap(before,includeRetained),next=recordMap(after,includeRetained),changes=[],issues=[],metadataChanges=[];
     if(!OPERATIONS.includes(operation))issues.push(issue('BRIDGE_OPERATION',null,null,'編集操作の種類が必要です。入力全体を保持しています'));
     const created=[...next.entries()].filter(([key])=>!old.has(key));
     const removed=[...old.entries()].filter(([key])=>!next.has(key));
@@ -181,7 +207,7 @@
     const am=new Map(a.drawings.map(d=>[d.drawingId,d.state])),bm=new Map(b.drawings.map(d=>[d.drawingId,d.state]));
     for(const drawingId of [...new Set([...am.keys(),...bm.keys()])].sort())if(!C.equal(am.get(drawingId),bm.get(drawingId)))
       metadataChanges.push({kind:'drawing',drawingId,before:copy(am.get(drawingId)??null),after:copy(bm.get(drawingId)??null)});
-    const retainedAfter=copy(after),retained=recordMap(retainedAfter);
+    const retainedAfter=copy(after),retained=recordMap(retainedAfter,includeRetained);
     for(const key of [...new Set([...old.keys(),...next.keys()])].sort()){
       const previous=old.get(key),current=next.get(key),drawingId=(current||previous).drawingId,recordId=(current||previous).record.id;
       if(!current){
@@ -197,12 +223,12 @@
       if(previous&&C.equal(cleanRecord(previous.record),cleanRecord(current.record)))continue;
       try{
         const eventId=idFactory();insist(valid(eventId),'BRIDGE_EVENT_ID','編集の識別番号を作成できません');
-        const normalized=candidate(previous?.record||null,current.record,{actor,at,idFactory});
+        const normalized=candidate(previous?.record||null,current.record,{actor,at,idFactory,operation});
         const base=previous?cleanRecord(C.upgrade(cleanRecord(previous.record))):null;
         const event=D.diffRecord(base,normalized,{eventId,projectId:scope.projectId,deviceId:scope.deviceId,drawingId});
         if(!event)continue;
         changes.push({drawingId,before:base,after:normalized,eventId});
-        const d=retainedAfter.drawings.find(d=>d.meta.id===drawingId),r=retained.get(key);
+        const d=snapshotDrawings(retainedAfter,includeRetained).find(d=>d.meta.id===drawingId),r=retained.get(key);
         d.state[r.bucket]=d.state[r.bucket].map(x=>x.id===recordId?withLocalCache(normalized,x):x);
       }catch(error){issues.push(issue(error.code||'BRIDGE_RECORD',drawingId,recordId,error.message));}
     }
@@ -261,16 +287,16 @@
   function replaySnapshots(options){
     const before=copy(options.before),after=copy(options.after),baseline=options.replayBaseline;
     if(!options.replay)return {before,after};
-    const old=recordMap(before),next=recordMap(after),raw=baseline?.before&&recordMap(baseline.before),normalized=baseline?.after&&recordMap(baseline.after);
+    const includeRetained=options.operation==='restore',old=recordMap(before,includeRetained),next=recordMap(after,includeRetained),raw=baseline?.before&&recordMap(baseline.before,includeRetained),normalized=baseline?.after&&recordMap(baseline.after,includeRetained);
     for(const [key,entry]of old){
       const rawBefore=cleanRecord(entry.record),tracked=rawBefore.collab&&C.matchesProjection(rawBefore,{allowLegacyOrder:true});
       const previous=raw?.get(key),normal=normalized?.get(key);
       if(!tracked)insist(previous&&normal&&C.equal(cleanRecord(previous.record),rawBefore),'BRIDGE_REPLAY_BASE','未反映の入力に対応する保存履歴がありません。入力を保持しています');
       if(previous&&normal&&C.equal(cleanRecord(previous.record),rawBefore)){
         const base=cleanRecord(normal.record);insist(base.collab&&C.equal(base,C.upgrade(base)),'BRIDGE_REPLAY_BASE','前回の保存結果の履歴を確認できません');
-        const drawing=before.drawings.find(d=>d.meta.id===entry.drawingId);drawing.state[entry.bucket]=drawing.state[entry.bucket].map(r=>r.id===entry.record.id?withLocalCache(base,r):r);
+        const drawing=snapshotDrawings(before,includeRetained).find(d=>d.meta.id===entry.drawingId);drawing.state[entry.bucket]=drawing.state[entry.bucket].map(r=>r.id===entry.record.id?withLocalCache(base,r):r);
         const current=next.get(key);if(current){
-          const target=after.drawings.find(d=>d.meta.id===current.drawingId),record=copy(current.record);
+          const target=snapshotDrawings(after,includeRetained).find(d=>d.meta.id===current.drawingId),record=copy(current.record);
           if(C.equal(record.collab,entry.record.collab))record.collab=copy(base.collab);
           else {const merged=C.mergeRecords(base,C.upgrade(record));insist(merged.ok,'BRIDGE_REPLAY_BASE',merged.reason||'前回の入力と今回の操作を統合できません');record.collab=copy(merged.record.collab);}
           target.state[current.bucket]=target.state[current.bucket].map(r=>r.id===record.id?record:r);
@@ -278,6 +304,45 @@
       }
     }
     return {before,after};
+  }
+  function canDecompose(plan){
+    if(plan.operation==='move')return false;
+    const regular=plan.changes.filter(c=>c.drawingId!==M?.namespace),created=regular.filter(c=>!c.before);
+    const deleted=regular.filter(c=>c.before&&c.after.collab.deletion.revisions.some(r=>r.deleted&&
+      !c.before.collab.deletion.revisions.some(old=>old.id===r.id)));
+    if(regular.some(c=>c.after.transferOrigin?.operation==='move'&&
+      (!c.before||!C.equal(c.before.transferOrigin,c.after.transferOrigin))))return false;
+    if(created.some(c=>deleted.some(d=>d.drawingId!==c.drawingId&&d.after.id===c.after.id)))return false;
+    const removed=plan.before.project.drawings.some(d=>!plan.submittedAfter.project.drawings.some(next=>next.id===d.id));
+    return plan.operation==='restore'||removed&&created.length===0;
+  }
+  async function restoreOutsideView(value,change,{scope,operationId,actor,at}){
+    // A drawing can be restored before the previous deletion is projected into
+    // the UI. Its records then exist only in the replica. An explicit alive (or
+    // deleted) revision certifies this whole restore intent inside the same
+    // atomic record event; a replay cannot author it again over later peer edits.
+    const identity=await digest([scope,operationId||change.eventId,change.drawingId,change.after]),prefix='bridge-restore:'+identity,completed=prefix+':complete';
+    if(value?.collab.deletion.revisions.some(r=>r.id===completed))return value;
+    let n=0;const options={actor,at,idFactory:()=>prefix+':'+(++n)},restored=value?restoreCandidate(value,change.after,options):change.after;
+    return (C.isDeleted(restored)?C.markDeleted:C.restore)(restored,{actor,at,revisionId:completed,expectedToken:C.revisionToken(restored)});
+  }
+  async function boundedSegments(changes,{scope,operationId,atomic}){
+    const metadata=changes.filter(c=>c.drawingId===M?.namespace),removal=c=>c.before&&c.after.collab.deletion.revisions.some(r=>r.deleted&&!c.before.collab.deletion.revisions.some(old=>old.id===r.id));
+    const ordered=[...metadata.filter(c=>!removal(c)),...changes.filter(c=>c.drawingId!==M?.namespace),...metadata.filter(removal)];
+    const rows=ordered.map(change=>({change,event:D.diffRecord(change.before,change.after,{...change,projectId:scope.projectId,deviceId:scope.deviceId})})).filter(r=>r.event);
+    insist(new Set(rows.map(r=>r.event.eventId)).size===rows.length,'BRIDGE_EVENT_ID','編集の識別番号が重複しています');
+    const segments=[];
+    async function add(part){
+      const groupId='bridge-segment:'+await digest([scope.projectId,operationId,part.map(r=>r.event.eventId)]);
+      try{D.validateGroup({schema:1,kind:'atomic-group',groupId,projectId:scope.projectId,deviceId:scope.deviceId,events:part.map(r=>r.event)});}
+      catch(error){
+        if(error.code==='DELTA_GROUP_TOO_LARGE'&&part.length>1){const middle=Math.ceil(part.length/2);await add(part.slice(0,middle));await add(part.slice(middle));return;}
+        throw error;
+      }
+      segments.push({changes:part.map(r=>copy(r.change)),atomicGroup:atomic,groupId});
+    }
+    for(let start=0;start<rows.length;start+=500)await add(rows.slice(start,start+500));
+    return segments;
   }
   function createBridge({replica,scope:inputScope,localProjectId,currentScope}={}){
     const scope=scopeOf(inputScope);
@@ -296,7 +361,7 @@
       // A record untouched by this particular draft still must be present in
       // the authoritative replica, otherwise projecting a successful save
       // could silently drop it from the editor.
-      for(const [key,entry] of recordMap(plan.before))try{
+      for(const [key,entry] of recordMap(plan.before,options.operation==='restore'))try{
         const base=cleanRecord(entry.record),value=current.snapshot.records[key];
         insist(base.collab&&C.matchesProjection(base,{allowLegacyOrder:true}),'BRIDGE_UNTRACKED_BASE','編集開始時点に履歴へ入っていない記録があります');
         insist(value,'BRIDGE_RECORD_MISSING','編集元の記録が移行先にありません');
@@ -309,6 +374,12 @@
         try{
           const key=D.keyOf(change.drawingId,change.after.id),value=own(current.snapshot.records,key)?current.snapshot.records[key]:null;
           if(!change.before){
+            if(options.operation==='restore'){
+              const after=await restoreOutsideView(value,change,{scope,operationId:options.operationId,actor:options.actor,at:options.at});
+              const restored={...change,before:value?copy(value):null,after:cleanRecord(after)};
+              if(D.diffRecord(restored.before,restored.after,{...restored,projectId:scope.projectId,deviceId:scope.deviceId}))rebased.push(restored);
+              continue;
+            }
             if(!value){rebased.push(change);continue;}
             insist(options.replay,'BRIDGE_RECORD_COLLISION','同じIDの別の記録があります');
             D.diffRecord(change.after,value,{...change,projectId:scope.projectId,deviceId:scope.deviceId});continue;
@@ -330,18 +401,29 @@
         if(metadata.changes.length&&rebased.length>1)plan.atomicGroupRequired=true;
       }catch(error){plan.issues.push(issue(error.code||'BRIDGE_METADATA',null,null,error.message));}
       plan.changes=rebased;
+      if(rebased.length<=500)plan.issues=plan.issues.filter(x=>x.code!=='BRIDGE_BATCH');
       if(plan.atomicGroupRequired&&!plan.issues.some(x=>x.code==='BRIDGE_ATOMIC_GROUP_REQUIRED'))plan.issues.push(issue('BRIDGE_ATOMIC_GROUP_REQUIRED',null,null,'図面設定と記録を一緒に保存する機能を確認できません'));
-      if(plan.atomicGroupRequired&&typeof replica.changeGroup==='function'&&replica.getCapabilities?.().atomicGroups===true){
+      const atomic=typeof replica.changeGroup==='function'&&replica.getCapabilities?.().atomicGroups===true;
+      if((plan.atomicGroupRequired&&atomic)||canDecompose(plan)){
         try{
           const groupId=requestedGroupId??root.crypto.randomUUID();
           insist(valid(groupId),'BRIDGE_GROUP_ID','一括操作の識別番号を確認できません');
           const events=rebased.map(change=>D.diffRecord(change.before,change.after,{...change,projectId:scope.projectId,deviceId:scope.deviceId})).filter(Boolean);
-          if(events.length)D.validateGroup({schema:1,kind:'atomic-group',groupId,projectId:scope.projectId,deviceId:scope.deviceId,events});
-          plan.groupId=groupId;plan.issues=plan.issues.filter(x=>x.code!=='BRIDGE_ATOMIC_GROUP_REQUIRED');
+          let oversized=events.length>500;
+          if(events.length&&!oversized)try{D.validateGroup({schema:1,kind:'atomic-group',groupId,projectId:scope.projectId,deviceId:scope.deviceId,events});}
+          catch(error){if(error.code==='DELTA_GROUP_TOO_LARGE')oversized=true;else throw error;}
+          if(oversized){
+            insist(canDecompose(plan),'BRIDGE_BATCH','この移動操作は一括保存の上限を超えています。移動元と移動先を一緒に保持しています');
+            insist(!plan.atomicGroupRequired||atomic,'BRIDGE_ATOMIC_GROUP_REQUIRED','図面と記録を一緒に保存する共有先が必要です');
+            plan.segments=await boundedSegments(rebased,{scope,operationId:options.operationId||groupId,atomic});
+            if(atomic)insist(replica.getCapabilities?.().atomicGroups===true,'BRIDGE_ATOMIC_GROUP_REQUIRED','一括保存の接続確認が変わりました');
+            plan.decomposed=true;plan.issues=plan.issues.filter(x=>x.code!=='BRIDGE_BATCH');
+          }
+          plan.groupId=groupId;if(atomic||!plan.atomicGroupRequired)plan.issues=plan.issues.filter(x=>x.code!=='BRIDGE_ATOMIC_GROUP_REQUIRED');
         }catch(error){plan.issues.push(issue(error.code||'BRIDGE_GROUP_ID',null,null,error.message||'一括操作を確認できません'));}
       }
       plan.ready=plan.issues.length===0&&plan.metadataChanges.length===0;
-      const exposed=copy(plan);plans.set(exposed,{plan:copy(plan),snapshotToken:current.snapshotToken,receipt:null,pending:null});return exposed;
+      const exposed=copy(plan);plans.set(exposed,{plan:copy(plan),snapshotToken:current.snapshotToken,receipt:null,pending:null,nextSegment:0,segmentResults:[]});return exposed;
     }
     async function commit(exposed){
       active();const entry=plans.get(exposed);insist(entry,'BRIDGE_PLAN','この編集接続で作成した計画が必要です');
@@ -350,7 +432,15 @@
       insist(entry.plan.ready,'BRIDGE_REVIEW','図面設定または記録の確認が必要です。入力全体を編集計画に保持しています');
       const task=(async()=>{
         let result;
-        if(entry.plan.changes.length){
+        if(entry.plan.segments){
+          while(entry.nextSegment<entry.plan.segments.length){
+            const segment=entry.plan.segments[entry.nextSegment],input={changes:copy(segment.changes),expectedSnapshotToken:entry.snapshotToken};
+            const committed=segment.atomicGroup?await replica.changeGroup({...input,groupId:segment.groupId}):await replica.changeBatch(input);active();
+            entry.snapshotToken=committed.snapshotToken;entry.segmentResults.push(committed);entry.nextSegment++;
+          }
+          const last=entry.segmentResults[entry.segmentResults.length-1];
+          if(last)result={...last,results:entry.segmentResults.flatMap(r=>r.results||[]),segmented:true,segments:entry.plan.segments.length};
+        }else if(entry.plan.changes.length){
           const input={changes:copy(entry.plan.changes),expectedSnapshotToken:entry.snapshotToken};
           result=entry.plan.atomicGroupRequired?await replica.changeGroup({...input,groupId:entry.plan.groupId}):await replica.changeBatch(input);active();
         }

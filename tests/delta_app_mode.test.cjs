@@ -28,8 +28,10 @@ function fixture({code='PGRST202',status=404,bound=false}={}){
   console.log('PASS bound, forbidden, missing-table and server-error projects never fall back to the legacy writer');
   const paused=fixture();try{
     const first=await paused.runtime.suspendPhotos(cp),second=await paused.runtime.suspendPhotos(cp);
+    assert.equal(first.validate(),true);assert.equal(second.validate(),true);
     assert.equal((await paused.runtime.photos(cp)).skipped,true);first();first();
-    assert.equal((await paused.runtime.photos(cp)).skipped,true);second();
+    assert.throws(()=>first.validate(),error=>error.code==='DELTA_PHOTOS_LEASE');
+    assert.equal(second.validate(),true);assert.equal((await paused.runtime.photos(cp)).skipped,true);second();
     globalThis.SentlogCapacity={isCleared:id=>id===cp.id};
     assert.equal((await paused.runtime.photos(cp)).skipped,true);assert.equal(paused.calls.length,0);
     console.log('PASS capacity leases and persisted cleanup markers prevent automatic photo redelivery');

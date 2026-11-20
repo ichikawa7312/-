@@ -159,11 +159,33 @@ change(capacity, "      }else freshRecordCheck(info,cp,'files');", "      }")
 change(capacity, "await S.archiveAtomic({writes,deleteFiles:[],expectedWorkspace:wsText,origin:'device'});",
        "await restoreProof.validate();\n      await S.archiveAtomic({writes,deleteFiles:[],expectedWorkspace:wsText,expectedRecords:restoreProof.expectedRecords,expectedFileStates:restoreProof.expectedFileStates,validate:restoreProof.validateSync,origin:'device',operation:'restore'});")
 
+# Capacity cleanup releases only byte-identical, certified archived copies.
+# Stop photograph tasks before taking the final proof so a delayed transfer
+# cannot immediately recreate files or invalidate the deletion transaction.
+confirmation = "          if(!window.confirm('会社PCに案件一式があることを再確認済みです。\\nこの端末から'+(mode==='files'?'PDF・写真だけを外しますか？':'案件の記録・PDF・写真を外しますか？')+'\\n会社PCやほかの端末の資料は変更しません。')){confirm.disabled=false;return;}"
+change(capacity, confirmation + '\n', '')
+change(capacity, '        confirm.disabled=true;view.locked(true);\n        try{',
+       '        confirm.disabled=true;view.locked(true);let resumePhotos=null;\n        try{')
+change(capacity, '          const currentInfo=await ensureServerArchive(cp,opId);',
+       '          const currentInfo=await ensureServerArchive(cp,opId);\n' + confirmation +
+       '\n          resumePhotos=await window.sentlogDeltaSuspendPhotos(cp);')
+change(capacity, "await S.archiveAtomic({writes,deleteFiles:counter2.deletions,expectedWorkspace:before.raw,expectedRecords:before.expectedRecords,expectedFileStates:before.expectedFileStates,validate:before.validateSync,origin:'device',operation:'archive-local',context:{localArchive:true,mode,projectId:cp.client_key,jobId:currentInfo.job.id,deltaCheckpoint:currentInfo.job.delta_checkpoint||null}});",
+       """const released=await window.SentlogDeltaCapacityGC.release({records:S,cloudProject:cp,info:currentInfo,proof:before,
+            getScope:()=>({ownerId:session()?.user?.id,deviceId:device()}),validateScope:resumePhotos.validate,
+            apply:retentionRelease=>S.archiveAtomic({writes,deleteFiles:counter2.deletions,expectedWorkspace:before.raw,
+              expectedRecords:before.expectedRecords,expectedFileStates:before.expectedFileStates,
+              validate:()=>before.validateSync()&&resumePhotos.validate(),retentionRelease,origin:'device',operation:'archive-local',
+              context:{localArchive:true,mode,projectId:cp.client_key,jobId:currentInfo.job.id,deltaCheckpoint:currentInfo.job.delta_checkpoint||null}})});""")
+change(capacity, "'件／合計'+bytes(counter2.bytes)+'。'+",
+       "'件／合計'+bytes(counter2.bytes)+'。'+(released.releasedCopies?'同じ保管済みファイルの端末内コピーも整理しました。':'')+")
+change(capacity, '        finally{view.locked(false);}',
+       '        finally{resumePhotos?.();view.locked(false);}')
+
 modules = ['delta-sync-core', 'delta-sync-indexeddb', 'delta-sync-legacy-preflight', 'delta-sync-legacy-source',
            'delta-sync-migration', 'delta-sync-metadata', 'delta-sync-reconcile', 'delta-sync-bootstrap',
            'delta-sync-transport', 'delta-sync-app-bridge', 'delta-sync-assets', 'delta-sync-asset-transport',
            'delta-sync-asset-runtime', 'delta-sync-app-journal', 'delta-sync-app-migration',
-           'delta-sync-app-runtime', 'delta-sync-metadata-ui', 'delta-sync-capacity']
+           'delta-sync-app-runtime', 'delta-sync-metadata-ui', 'delta-sync-capacity', 'delta-sync-capacity-gc']
 index = 'sentlog/index.html'
 deps = ','.join("['" + name + '.js?v=' + TOKEN + "','" + {
     'delta-sync-indexeddb': 'SentlogDeltaIndexedDB', 'delta-sync-core': 'SentlogDeltaSyncCore'

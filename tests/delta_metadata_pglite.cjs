@@ -49,6 +49,24 @@ async function edited(base,mutate,id,extra={}){const after=copy(input);mutate(af
  const newDoc=await M.seedDocument((await M.documentSpecs({project:{...input.project,drawings:[{id:'new-drawing',name:'new'}]},drawings:[{meta:{id:'new-drawing',name:'new'},state:{shapes:[]}}]})).get(await M.drawingRecordId('new-drawing')));
  await db.exec('BEGIN');await db.query(insert,[pid,owner,'new-drawing','ordinary',JSON.stringify(ordinary.collab)]);await db.query(insert,[pid,owner,M.namespace,newDoc.id,JSON.stringify(newDoc.collab)]);await db.exec('COMMIT');checks++;
  console.log('PASS metadata baseline seed, identity trigger and deferred atomic drawing membership');
+ assert.equal((await db.query("SELECT prosecdef AND proconfig @> ARRAY['search_path=\"\"']::text[] AS guarded FROM pg_catalog.pg_proc WHERE oid='sentlog_delta_private.validate_metadata_membership()'::regprocedure")).rows[0].guarded,true);checks++;
+ // Deferred triggers run when the outer authenticated request commits, after
+ // the SECURITY DEFINER append call has already returned to its caller.
+ const append=(drawingId,id)=>{
+   const event=D.diffRecord(null,C.upgrade({id,memo:'outer transaction',photos:[]}),{eventId:id,projectId:pid,deviceId:did,drawingId});
+   return db.query('SELECT public.sentlog_delta_append_v1($1,$2,$3,$4,$5,$6::jsonb)',[pid,did,id,drawingId,id,JSON.stringify(event)]);
+ };
+ await db.exec('BEGIN; SET LOCAL ROLE authenticated');await append(input.drawings[0].meta.id,'authenticated-commit');await db.exec('COMMIT');
+ assert.equal((await db.query("SELECT count(*)::int AS count FROM sentlog_delta_private.record_states WHERE project_id=$1 AND record_id='authenticated-commit'",[pid])).rows[0].count,1);checks++;
+ const headBefore=(await db.query('SELECT last_seq FROM sentlog_delta_private.heads WHERE project_id=$1',[pid])).rows[0].last_seq;
+ await db.exec('BEGIN; SET LOCAL ROLE authenticated');await append('missing-at-commit','authenticated-orphan');
+ await assert.rejects(db.exec('COMMIT'),e=>e.code==='23514'&&e.message.includes('DELTA_METADATA_DRAWING_MISSING'));await db.exec('ROLLBACK');
+ assert.equal((await db.query('SELECT last_seq FROM sentlog_delta_private.heads WHERE project_id=$1',[pid])).rows[0].last_seq,headBefore);
+ assert.equal((await db.query("SELECT count(*)::int AS count FROM sentlog_delta_private.record_states WHERE project_id=$1 AND record_id='authenticated-orphan'",[pid])).rows[0].count,0);checks++;
+ console.log('PASS authenticated outer COMMIT validates membership and rolls back orphan writes');
+ await db.exec('SET ROLE authenticated');
+ await assert.rejects(db.query('SELECT * FROM sentlog_delta_private.record_states'),e=>e.code==='42501');
+ await assert.rejects(db.query('SELECT sentlog_delta_private.validate_metadata_membership()'),e=>e.code==='42501');checks++;
  await db.exec('SET ROLE authenticated');await assert.rejects(db.query('SELECT sentlog_delta_private.materialize_metadata_document($1,$2::jsonb)',[Object.values(baseline)[0].id,JSON.stringify(Object.values(baseline)[0].collab)]),e=>e.code==='42501');checks++;
  console.log('PASS metadata SQL/JS parity: '+checks+' checks');
 }finally{await db.close();}})().catch(e=>{console.error(e);process.exitCode=1;});

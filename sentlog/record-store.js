@@ -150,7 +150,7 @@
   // Read preimages, append the immutable intent, and mutate the legacy view in
   // ONE transaction. A completed canvas save therefore always has a replayable
   // intent, even if the process dies before the independent replica is written.
-  function journalMutation(tx,{writes=[],fileWrites=[],fileDeletes=[],expectedFileStates=[],kind='batch',contexts=[]}={},mutate){
+  function journalMutation(tx,{writes=[],fileWrites=[],fileDeletes=[],expectedFileStates=[],kind='batch',contexts=[],archiveRelease=null}={},mutate){
     const s=tx.objectStore(STORE),control=tx.objectStore(CONTROL),log=tx.objectStore(JOURNAL);
     const recordKeys=[...new Set(writes.map(x=>x[0]))],fileKeys=[...new Set([...fileWrites.map(x=>x.key),...fileDeletes.map(x=>typeof x==='string'?x:x.key)])];
     const archiveContext=contexts.find(x=>x.operation==='archive-local'&&x.context?.localArchive===true);
@@ -164,8 +164,14 @@
           expected.sequence<0||fileStates.get(expected.key)!==expected.sequence)
           throw journalError('JOURNAL_FILE_CHANGED','確認中にファイルが変更されました。削除せず保持しています');
         const changes=writes.map(([key,after])=>({key,before:before.get(key)??null,after})).filter(x=>x.before!==x.after);
-        const fileChanges=fileKeys.map(key=>({key,before:oldFiles.get(key)??null,
-          after:fileWrites.find(x=>x.key===key)?.value??null}));
+        const release=archiveRelease?archiveReleases.get(archiveRelease):null;
+        if(archiveRelease&&(!release||release.status!=='committing'||tx.sentlogArchiveRelease!==release))
+          throw journalError('JOURNAL_ARCHIVE_RELEASE','保管済みコピーの解放証明を確認できません');
+        const fileChanges=fileKeys.map(key=>{
+          const before=oldFiles.get(key)??null,after=fileWrites.find(x=>x.key===key)?.value??null;
+          if(release?.current.has(key)&&after===null)return {key,before:null,after:null,releasedBefore:archiveReleaseReceipt(release,release.files.get(key))};
+          return {key,before,after};
+        });
         const workspaceChange=changes.find(x=>x.key===WS),workspaceAfter=workspaceChange?workspaceChange.after:workspaceBefore;
         const affected=affectedProjects(changes,workspaceBefore,workspaceAfter,fileChanges),bound=allBindings.filter(x=>x?.kind==='binding');
         if(archiveContext){
@@ -216,7 +222,10 @@
       s.getAllKeys(IDBKeyRange.bound(PREFIX,PREFIX+'\uffff')).onsuccess=e=>{rawKeys=new Set(e.target.result.map(key=>key.slice(PREFIX.length)));ready();};}
   }
   function committedBindings(tx){for(const binding of tx.sentlogBindingUpdates||[])bindings.set(binding.localProjectId,binding);
-    for(const key of tx.sentlogFileKeys||[])fileGenerations.set(key,(fileGenerations.get(key)||0)+1);}
+    for(const key of tx.sentlogFileKeys||[])fileGenerations.set(key,(fileGenerations.get(key)||0)+1);
+    if(tx.sentlogArchiveRelease){tx.sentlogArchiveRelease.status='committed';tx.sentlogArchiveRelease.result={
+      releasedCopies:tx.sentlogArchiveRelease.releasedCopies,releasedBytes:tx.sentlogArchiveRelease.releasedBytes,
+      avoidedPreimageCopies:tx.sentlogArchiveRelease.current.size};}}
   function collectJournal(tx,includeFiles,callback){
     const data={raw:new Map(),rows:[],controls:[],meta:null,files:[]},s=tx.objectStore(STORE);
     let keys=[],values=[],allKeys=[],allValues=[],waiting=includeFiles?7:5;
@@ -256,8 +265,121 @@
     if(!binding||!sameScope(binding.scope,scope))throw journalError('JOURNAL_SCOPE','案件の共有先が変わっています');return binding;
   }
   const replayProofs=new WeakMap();
+  // A ticket is minted only after hashing immutable copy bytes. The final
+  // removal uses the same records transaction as archiveAtomic: a failure
+  // cannot delete the live file and leave its deletion preimage behind.
+  const archiveReleases=new WeakMap();
+  function archiveReleaseCheck(validate){
+    if(typeof validate!=='function')throw journalError('JOURNAL_ARCHIVE_RELEASE','保管直前の確認が必要です');
+    const result=validate();if(result&&typeof result.then==='function')Promise.resolve(result).catch(()=>{});
+    if(result!==true||result&&typeof result.then==='function')throw journalError('JOURNAL_ARCHIVE_CHANGED','保管対象が更新されました。削除せず中止しました');
+  }
+  function archiveReleaseText(value){return JSON.stringify(value,(key,item)=>item instanceof Blob?
+    {sentlogImmutableBlob:{size:item.size,type:item.type,name:item.name??null,lastModified:item.lastModified??null}}:item);}
+  function archiveReleaseReceipt(plan,file){return {version:1,kind:'sentlog-archived-copy',scope:copy(plan.scope),
+    localProjectId:plan.localProjectId,jobId:plan.jobId,operationId:plan.operationId,certificate:copy(plan.certificate),file:copy(file)};}
+  async function archiveReleaseMatches(blob,file){
+    if(!(blob instanceof Blob)||blob.size!==file.size)return false;
+    const digest=await crypto.subtle.digest('SHA-256',await blob.arrayBuffer());
+    return [...new Uint8Array(digest)].map(x=>x.toString(16).padStart(2,'0')).join('')===file.sha256;
+  }
+  function archiveReleaseSnapshot(tx,keys,callback){
+    const data={rows:[],binding:null,claim:null,clock:0,meta:null,workspace:null,files:new Map()},s=tx.objectStore(STORE),c=tx.objectStore(CONTROL);
+    let waiting=6+keys.length;
+    const next=()=>{if(--waiting)return;try{callback(data);}catch(error){tx.sentlogJournalError=error;tx.abort();}};
+    s.get(META).onsuccess=e=>{data.meta=e.target.result;next();};
+    s.get(PREFIX+WS).onsuccess=e=>{data.workspace=e.target.result;next();};
+    c.get('clock').onsuccess=e=>{data.clock=Number(e.target.result)||0;next();};
+    c.get('binding:'+tx.sentlogArchiveProject).onsuccess=e=>{data.binding=e.target.result;next();};
+    c.get('claim:'+tx.sentlogArchiveProject).onsuccess=e=>{data.claim=e.target.result;next();};
+    tx.objectStore(JOURNAL).getAll().onsuccess=e=>{data.rows=e.target.result;next();};
+    for(const key of keys)s.get(key).onsuccess=e=>{data.files.set(key,e.target.result);next();};
+  }
+  async function prepareArchivedRelease({scope:inputScope,localProjectId,certificate,jobId,operationId,mode,files,validate}={}){
+    assertReady();await settled();window.SentlogRecords.assertSafe();archiveReleaseCheck(validate);
+    const scope=checkedScope(inputScope);
+    if(typeof localProjectId!=='string'||!localProjectId||typeof jobId!=='string'||!jobId||typeof operationId!=='string'||!operationId||
+      !['files','project'].includes(mode)||certificate?.schema!==1||certificate.projectId!==scope.projectId||!Number.isSafeInteger(certificate.headSeq)||certificate.headSeq<0||
+      !Number.isSafeInteger(certificate.revision)||certificate.revision<1||!/^[a-f0-9]{64}$/.test(certificate.payloadSha256||'')||!Array.isArray(files))
+      throw journalError('JOURNAL_ARCHIVE_RELEASE','保管版・ファイルの対応を確認できません');
+    const catalog=new Map(),assetIds=new Set();
+    for(const file of files){
+      if(!file||typeof file.key!=='string'||catalog.has(file.key)||
+        typeof file.assetId!=='string'||!file.assetId||assetIds.has(file.assetId)||typeof file.mimeType!=='string'||!file.mimeType||
+        !(file.kind==='drawing'&&file.key.startsWith('background:')||file.kind==='photo'&&file.key.startsWith('photo:'))||
+        !Number.isSafeInteger(file.size)||file.size<=0||!/^[a-f0-9]{64}$/.test(file.sha256||''))
+        throw journalError('JOURNAL_ARCHIVE_RELEASE','照合済み共有ファイルだけを整理できます');
+      catalog.set(file.key,copy(file));assetIds.add(file.assetId);
+    }
+    const pendingState=await deltaJournal.pending({scope,localProjectId});archiveReleaseCheck(validate);
+    if(pendingState.count||pendingState.claimId||pendingState.detached)throw journalError('JOURNAL_PENDING','未共有の変更を先に保存・送信してください');
+    await connect();const tx=transaction('readonly'),done=complete(tx);let data;
+    tx.sentlogArchiveProject=localProjectId;archiveReleaseSnapshot(tx,[...catalog.keys()],result=>data=result);await done;archiveReleaseCheck(validate);
+    const binding=data.binding;
+    if(!binding||!sameScope(binding.scope,scope)||binding.phase!=='active'||!binding.baselineId||data.claim||Number(data.meta?.revision)!==revision)
+      throw journalError('JOURNAL_ARCHIVE_CHANGED','引継ぎ済み記録と保管対象の対応が変わりました');
+    const ownProject=workspaceOf(data.workspace).projects.find(p=>p.id===localProjectId),ids=new Set([
+      ...(ownProject?.drawings||[]),...(ownProject?.deltaMetadata?.retainedDrawings||[]).map(d=>d.meta)].map(d=>d.id));
+    if(!ownProject||workspaceOf(data.workspace).projects.some(p=>p.id!==localProjectId&&
+      [...(p.drawings||[]),...(p.deltaMetadata?.retainedDrawings||[]).map(d=>d.meta)].some(d=>ids.has(d?.id))))
+      throw journalError('JOURNAL_ARCHIVE_CHANGED','別案件と図面の保存先が重複しています');
+    if(data.rows.some(row=>row.kind==='sentlog-app-intent'&&row.seq>binding.ackedSeq&&
+      ((row.projectIds||[]).includes(localProjectId)||(row.drawingIds||[]).some(id=>ids.has(id)))))
+      throw journalError('JOURNAL_PENDING','未共有の変更を保持しています');
+    const plan={status:'prepared',scope,localProjectId,certificate:copy(certificate),jobId,operationId,mode,files:catalog,current:new Map(),
+      clock:data.clock,revision:Number(data.meta.revision),workspace:data.workspace,bindingText:archiveReleaseText(binding),
+      nextBinding:copy(binding),rows:[],validate,releasedCopies:0,releasedBytes:0};
+    for(const [key,blob]of data.files)if(blob!==undefined&&blob!==null){
+      if(!await archiveReleaseMatches(blob,catalog.get(key)))throw journalError('JOURNAL_ARCHIVE_FILE_CHANGED','端末のファイルがPC保管版と一致しません');
+      archiveReleaseCheck(validate);plan.current.set(key,{size:blob.size,type:blob.type});
+    }
+    async function releaseFile(entry,field,file,receiptField){
+      if(!(entry[field] instanceof Blob)||!file)return;
+      if(!await archiveReleaseMatches(entry[field],file))return;
+      archiveReleaseCheck(validate);plan.releasedCopies++;plan.releasedBytes+=entry[field].size;
+      entry[field]=null;entry[receiptField]=archiveReleaseReceipt(plan,file);
+    }
+    for(const file of plan.nextBinding.cutoff?.files||[])await releaseFile(file,'value',catalog.get(file.key),'archiveRelease');
+    for(const row of data.rows){
+      const owners=row.resolvedProjectIds||row.projectIds||[];
+      if(!['sentlog-app-intent','sentlog-file-retention'].includes(row.kind)||!Number.isSafeInteger(row.seq)||row.seq<1||row.seq>binding.ackedSeq||
+        !Array.isArray(owners)||owners.length!==1||owners[0]!==localProjectId||!Array.isArray(row.files)||
+        row.kind==='sentlog-file-retention'&&(!Array.isArray(row.proofs)||row.proofs.length!==1||
+          !row.proofs.every(p=>p?.localProjectId===localProjectId&&sameScope(p.scope,scope))))continue;
+      const next=copy(row),before=plan.releasedCopies;
+      for(const file of next.files||[]){await releaseFile(file,'before',catalog.get(file.key),'releasedBefore');await releaseFile(file,'after',catalog.get(file.key),'releasedAfter');}
+      if(plan.releasedCopies>before)plan.rows.push({seq:row.seq,text:archiveReleaseText(row),next});
+    }
+    archiveReleaseCheck(validate);const ticket=Object.freeze({});archiveReleases.set(ticket,plan);return ticket;
+  }
+  function applyArchivedRelease(tx,ticket,{deleteFiles,options},callback){
+    if(!ticket){callback();return;}
+    const plan=archiveReleases.get(ticket),context=options?.context;
+    if(!plan||plan.status!=='prepared'||options.operation!=='archive-local'||context?.localArchive!==true||
+      context.projectId!==plan.localProjectId||context.jobId!==plan.jobId||context.mode!==plan.mode||
+      archiveReleaseText(context.deltaCheckpoint)!==archiveReleaseText(plan.certificate)||
+      deleteFiles.length!==plan.current.size||deleteFiles.some(file=>plan.current.get(file.key)?.size!==file.size))
+      throw journalError('JOURNAL_ARCHIVE_RELEASE','整理するファイルと保管証明が一致しません');
+    archiveReleaseCheck(plan.validate);plan.status='committing';tx.sentlogArchiveProject=plan.localProjectId;
+    archiveReleaseSnapshot(tx,[...plan.current.keys()],data=>{
+      archiveReleaseCheck(plan.validate);
+      if(data.clock!==plan.clock||Number(data.meta?.revision)!==plan.revision||data.workspace!==plan.workspace||data.claim||
+        archiveReleaseText(data.binding)!==plan.bindingText||
+        [...plan.current].some(([key,expected])=>!(data.files.get(key) instanceof Blob)||data.files.get(key).size!==expected.size||data.files.get(key).type!==expected.type))
+        throw journalError('JOURNAL_ARCHIVE_CHANGED','確認中に記録・ファイル・共有待ちが変わりました');
+      const rows=new Map(data.rows.map(row=>[row.seq,row]));
+      if(plan.rows.some(row=>archiveReleaseText(rows.get(row.seq))!==row.text))
+        throw journalError('JOURNAL_ARCHIVE_CHANGED','確認中に保存控えが更新されました');
+      for(const row of plan.rows)tx.objectStore(JOURNAL).put(row.next,row.seq);
+      tx.objectStore(CONTROL).put(plan.nextBinding,'binding:'+plan.localProjectId);
+      tx.sentlogArchiveRelease=plan;callback();
+    });
+  }
   const deltaJournal={
     version:1,
+    prepareArchivedRelease,
+    archivedReleaseResult(ticket){const plan=archiveReleases.get(ticket);if(!plan||plan.status!=='committed')
+      throw journalError('JOURNAL_ARCHIVE_RELEASE','整理処理の完了を確認できません');return copy(plan.result);},
     bindingFor:localProjectId=>copy(bindings.get(localProjectId)||null),
     listBindingsSync:()=>copy([...bindings.values()]),
     assertFence({scope,localProjectId}={}){

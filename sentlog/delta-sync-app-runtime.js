@@ -150,6 +150,10 @@
           c.assetTransport=make.assetTransport({url,key,scope:c.scope,localProjectId:c.localProjectId,session,ensureSession,
             subscribeAuth,authGeneration,currentScope:currentPhotos,fetch:fetcher,network});
           c.assets=make.assets({scope:c.scope,store:c.assetStore,transport:c.assetTransport,currentScope:currentPhotos,
+            // A cleared device can restore shared bytes only after the explicit
+            // restore flow removes its marker. currentPhotos also fences a
+            // new cleanup or identity change while any request is in flight.
+            allowArchivedRestore:true,
             currentSnapshotToken:()=>c.assetExpectedRaw?.every(([key,value])=>records.getItem(key)===value)?c.snapshotToken:null,
             authGeneration,subscribeAuth,onPhotoReceived,
             localFiles:{read:readFile,write:(key,blob,opts)=>records.writeFile(key,blob,{...opts,ownerToken:fileOwners.get(key)}),
@@ -165,13 +169,17 @@
       })();c.assetsFlight=task;try{return await task;}finally{if(c.assetsFlight===task)c.assetsFlight=null;}
     }
     async function suspendPhotos(cp){
-      const c=await context(cp);check(c);c.photoPauses++;c.photoGeneration++;
+      const c=await context(cp);check(c);if(++c.photoPauses===1)c.photoGeneration++;
+      const epoch=c.photoGeneration;
       for(const name of ['assets','assetTransport','assetStore'])try{c[name]?.close?.();}catch{}
       try{if(c.assetsFlight)await c.assetsFlight.catch(()=>{});check(c);}
       catch(error){c.photoPauses--;throw error;}
       finally{c.assets=null;c.assetTransport=null;c.assetStore=null;}
       let released=false;
-      return ()=>{if(released)return;released=true;c.photoPauses=Math.max(0,c.photoPauses-1);};
+      const resume=()=>{if(released)return;released=true;c.photoPauses=Math.max(0,c.photoPauses-1);};
+      resume.validate=()=>{check(c);insist(!released&&c.photoPauses>0&&c.photoGeneration===epoch,
+        'DELTA_PHOTOS_LEASE','容量整理の確認状態が変わりました。記録を保持して中止します');return true;};
+      return resume;
     }
     async function checkpoint(cp,{force=false}={}){
       const c=await context(cp);

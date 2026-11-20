@@ -151,11 +151,33 @@ SQL
  pids+=("$!")
 done
 join_processes "${pids[@]}"
+# A valid append already proved that the deferred trigger can run at an
+# authenticated outer COMMIT. It must still reject a missing drawing then,
+# rolling back the event and sequence rather than granting private-table access.
+if "${psql_cmd[@]}" -qAt <<'SQL' >"$checkpoint_race_dir/orphan-commit.log" 2>&1; then
+BEGIN;SET LOCAL ROLE authenticated;
+SELECT set_config('request.jwt.claim.sub','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',true);
+SELECT public.sentlog_delta_append_v1('66000000-0000-4000-8000-000000000001','aaaaaaaa-0000-4000-8000-000000000001',
+ 'orphan-at-commit','missing-drawing','orphan-at-commit',
+ jsonb_set(public.delta_checkpoint_test_event('orphan-at-commit','66000000-0000-4000-8000-000000000001'),'{drawingId}','"missing-drawing"'));
+COMMIT;
+SQL
+ echo 'orphan event passed authenticated outer COMMIT' >&2;exit 1
+fi
+case "$(cat "$checkpoint_race_dir/orphan-commit.log")" in
+ *DELTA_METADATA_DRAWING_MISSING*) ;; *) cat "$checkpoint_race_dir/orphan-commit.log";exit 1;;
+esac
 "${psql_cmd[@]}" -q <<'SQL'
 SELECT set_config('request.jwt.claim.sub','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',false);
 DO $test$
 DECLARE job sentlog_archive_private.jobs%ROWTYPE;proof jsonb;result jsonb;
 BEGIN
+ IF pg_catalog.has_table_privilege('authenticated','sentlog_delta_private.record_states','SELECT') OR
+    pg_catalog.has_function_privilege('authenticated','sentlog_delta_private.validate_metadata_membership()','EXECUTE') OR
+    EXISTS(SELECT 1 FROM public.sentlog_delta_events WHERE event_id='orphan-at-commit') OR
+    EXISTS(SELECT 1 FROM sentlog_delta_private.record_states WHERE record_id='orphan-at-commit') OR
+    (SELECT last_seq FROM sentlog_delta_private.heads WHERE project_id='66000000-0000-4000-8000-000000000001')<>1 THEN
+  RAISE EXCEPTION 'deferred membership validation leaked privileges or retained orphan writes'; END IF;
  IF (SELECT revision FROM public.sentlog_project_snapshots WHERE project_id='66000000-0000-4000-8000-000000000001')<>2 OR
     (SELECT count(*) FROM sentlog_delta_private.checkpoints WHERE project_id='66000000-0000-4000-8000-000000000001')<>1 THEN
   RAISE EXCEPTION 'stale publisher advanced snapshot'; END IF;
@@ -186,4 +208,5 @@ END $test$;
 DROP FUNCTION public.delta_checkpoint_test_event(text,uuid);
 SQL
 echo 'PASS eight publisher retries: one certified revision, no leaked authority'
+echo 'PASS authenticated outer COMMIT validates membership without private-table grants'
 echo 'PASS actual PostgreSQL phone report, PC completion, finalize and reopen'

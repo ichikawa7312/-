@@ -1,7 +1,9 @@
-/* Isolated, non-destructive legacy migration staging. NOT loaded by the app.
+/* Non-destructive legacy migration staging and certified copy retention.
  * A verified copy is NOT an activated replica or a cloud receipt. Old storage,
  * the normal delta outbox and all originals remain untouched. Cross-database
  * activation needs a separate writer fence and server-baseline reconciliation.
+ * Certified PC retention may release matching shared/background copy bytes;
+ * archived-copy status retains their descriptors and explicitly requires restore.
  */
 (function(root){
   'use strict';
@@ -60,6 +62,34 @@
     insist(root.crypto?.subtle?.digest,'MIGRATION_HASH_UNAVAILABLE','内容の照合機能がありません');
     const bytes=typeof value==='string'?new TextEncoder().encode(value):await value.arrayBuffer();
     return [...new Uint8Array(await root.crypto.subtle.digest('SHA-256',bytes))].map(x=>x.toString(16).padStart(2,'0')).join('');
+  }
+  function archivePlan(input,scope){
+    const certificate=input?.certificate;
+    insist(valid(input?.localProjectId)&&valid(input.jobId)&&valid(input.operationId)&&object(certificate)&&
+      certificate.schema===1&&certificate.projectId===scope.projectId&&Number.isSafeInteger(certificate.headSeq)&&certificate.headSeq>=0&&
+      Number.isSafeInteger(certificate.revision)&&certificate.revision>0&&digest(certificate.payloadSha256)&&
+      (!own(certificate,'checkpointId')||valid(certificate.checkpointId))&&Array.isArray(input.files),
+      'MIGRATION_ARCHIVE_PROOF','PC保管の証明と控えの対象案件を確認できません');
+    const keys=new Set(),ids=new Set(),files=input.files.map(file=>{
+      insist(object(file)&&valid(file.key)&&valid(file.assetId)&&['drawing','photo'].includes(file.kind)&&
+        file.key.startsWith(file.kind==='photo'?'photo:':'background:')&&digest(file.sha256)&&
+        Number.isSafeInteger(file.size)&&file.size>=0&&valid(file.mimeType)&&!keys.has(file.key)&&!ids.has(file.assetId),
+        'MIGRATION_ARCHIVE_PROOF','PC保管した控えのファイル識別情報が不正です');
+      keys.add(file.key);ids.add(file.assetId);return Object.fromEntries(['key','assetId','kind','sha256','size','mimeType'].map(k=>[k,file[k]]));
+    });
+    return copy({version:1,scope,localProjectId:input.localProjectId,jobId:input.jobId,operationId:input.operationId,certificate,files});
+  }
+  function archiveCheck(validate){
+    insist(typeof validate==='function','MIGRATION_ARCHIVE_CONTEXT','保管した控えを再確認する方法が必要です');
+    const result=validate();if(result&&typeof result.then==='function')Promise.resolve(result).catch(()=>{});
+    insist(result===true,'MIGRATION_ARCHIVE_CONTEXT','確認中に保管対象が変わりました。控えを保持しています');
+  }
+  function archiveFile(descriptor,files){
+    if(descriptor?.type!=='blob')return null;
+    let identity;try{identity=JSON.parse(descriptor.key);}catch{return null;}
+    if(!Array.isArray(identity)||identity.length!==2||!['background','photo'].includes(identity[0])||JSON.stringify(identity)!==descriptor.key)return null;
+    const file=files.get(identity[1]);return file&&file.kind===(identity[0]==='background'?'drawing':'photo')&&
+      file.size===descriptor.size&&file.sha256===descriptor.sha256&&file.mimeType===descriptor.mimeType?file:null;
   }
   function createStore(options={}){
     const scope=Object.freeze(Object.fromEntries(fields.map(k=>[k,options[k]])));
@@ -137,8 +167,12 @@
       insist(object(row)&&row.version===1&&row.id===id&&same(row.scope,scope)&&digest(row.bundleHash)&&
         digest(row.sourceFingerprint)&&valid(row.localProjectId)&&Array.isArray(row.manifest)&&
         Number.isSafeInteger(row.next)&&row.next>=0&&row.next<=row.manifest.length&&
-        ['copying','verified-copy','needs-review'].includes(row.status)&&row.readyForActivation===false&&row.readyForCloudSync===false,
+        ['copying','verified-copy','needs-review','archived-copy'].includes(row.status)&&row.readyForActivation===false&&row.readyForCloudSync===false,
         'MIGRATION_STORE_SCHEMA','移行控えの保存状態を確認できません');
+      if(row.status==='archived-copy'){
+        insist(Array.isArray(row.archiveReleases)&&row.archiveReleases.length>0,'MIGRATION_STORE_SCHEMA','控えを解放した保管記録がありません');
+        for(const release of row.archiveReleases){insist(release.version===1&&same(release.scope,scope)&&release.localProjectId===row.localProjectId,'MIGRATION_STORE_SCHEMA','控えの保管先が一致しません');archivePlan(release,scope);}
+      }
       return row;
     }
     function status(id){return transact('readonly',(sessions,items,ctx,abort)=>{
@@ -211,6 +245,7 @@
         const q=sessions.get(key(id));q.onsuccess=()=>{if(ctx.settled)return;try{
           const row=decode(q.result,id);insist(row&&row.bundleHash===bundleHash&&row.next===row.manifest.length,
             'MIGRATION_INCOMPLETE','全部の内容を保存するまで控えを確定できません');
+          insist(row.status!=='archived-copy','MIGRATION_ARCHIVED_COPY','この控えの写真はPCへ保管済みです');
           row.status=savedIssues.some(x=>x.blocking!==false)?'needs-review':'verified-copy';
           row.issues=savedIssues;ctx.result=row;sessions.put(row,key(id));
         }catch(e){abort(e);}};
@@ -219,7 +254,55 @@
     function close(){if(closed)return;closed=true;
       for(const ctx of [...active.values()])ctx.cancel(error('MIGRATION_CLOSED','控えの保存処理を終了しました'));
       closeWhenIdle();}
-    return {begin,status,append,readItems,finish,close,getScope:()=>copy(scope)};
+    async function releaseArchivedCopies(input){
+      const plan=archivePlan(input,scope),validate=input.validate,files=new Map(plan.files.map(file=>[file.key,file])),check=()=>{open();archiveCheck(validate);};check();
+      const sealed=await transact('readonly',(sessions,items,ctx,abort)=>{
+        ctx.result=[];const q=sessions.openCursor();q.onsuccess=()=>{if(ctx.settled)return;try{
+          check();const cursor=q.result;if(!cursor)return;
+          if(Array.isArray(cursor.key)&&cursor.key[0]===prefix){const row=decode(cursor.value,cursor.key[1]);
+            if(row.localProjectId===plan.localProjectId&&['verified-copy','archived-copy'].includes(row.status)&&row.next===row.manifest.length)ctx.result.push(row);}
+          cursor.continue();
+        }catch(e){abort(e);}};
+      });check();
+      const candidates=[];
+      for(const session of sealed){
+        const selected=session.manifest.map(descriptor=>({descriptor,file:archiveFile(descriptor,files)})).filter(entry=>entry.file);
+        if(!selected.length)continue;
+        const captured=await transact('readonly',(sessions,items,ctx,abort)=>{
+          const q=sessions.get(key(session.id));q.onsuccess=()=>{if(ctx.settled)return;try{
+            check();const row=decode(q.result,session.id);insist(canonical(row)===canonical(session),'MIGRATION_ARCHIVE_STALE','確認中に移行控えが変更されました');ctx.result=[];
+            for(const {descriptor,file}of selected){const r=items.get([prefix,session.id,descriptor.index]);r.onsuccess=()=>{if(ctx.settled)return;try{
+              check();const item=r.result;insist(item&&item.index===descriptor.index&&canonical(item.descriptor)===canonical(descriptor),'MIGRATION_ITEM_MISSING','保管対象の控えを照合できません');
+              if(item.value===null){const release=item.archiveRelease;
+                insist(release?.version===1&&same(release.scope,scope)&&release.localProjectId===plan.localProjectId&&release.file,'MIGRATION_STORE_SCHEMA','控えの解放記録がありません');
+                const prior=archivePlan({...release,files:[release.file]},scope);insist(archiveFile(descriptor,new Map(prior.files.map(f=>[f.key,f]))),'MIGRATION_STORE_SCHEMA','解放済み控えの内容が一致しません');return;
+              }
+              insist(item.value instanceof root.Blob&&item.value.size===descriptor.size&&item.value.type===descriptor.mimeType,'MIGRATION_VERIFY','控えの写真の保存状態が不正です');ctx.result.push({item,file});
+            }catch(e){abort(e);}};}
+          }catch(e){abort(e);}};
+        });check();
+        for(const {item,file}of captured){insist(await hash(item.value)===file.sha256,'MIGRATION_VERIFY','保管対象の控えの写真が一致しません');check();}
+        if(captured.length)candidates.push({session,items:captured});
+      }
+      let releasedCopies=0,releasedBytes=0;
+      for(const candidate of candidates){
+        check();await transact('readwrite',(sessions,items,ctx,abort)=>{
+          const q=sessions.get(key(candidate.session.id));q.onsuccess=()=>{if(ctx.settled)return;try{
+            check();const row=decode(q.result,candidate.session.id);insist(canonical(row)===canonical(candidate.session),'MIGRATION_ARCHIVE_STALE','確認中に移行控えが変更されました');let remaining=candidate.items.length;
+            for(const {item:before,file}of candidate.items){const r=items.get([prefix,row.id,before.index]);r.onsuccess=()=>{if(ctx.settled)return;try{
+              check();const item=r.result;insist(item&&item.index===before.index&&canonical(item.descriptor)===canonical(before.descriptor)&&item.value instanceof root.Blob&&item.value.size===before.value.size&&item.value.type===before.value.type&&!item.archiveRelease,
+                'MIGRATION_ARCHIVE_STALE','確認中に控えの写真が変更されました');
+              const archiveRelease={version:1,scope:copy(scope),localProjectId:plan.localProjectId,jobId:plan.jobId,operationId:plan.operationId,certificate:copy(plan.certificate),file:copy(file)};
+              const put=items.put({...item,value:null,archiveRelease},[prefix,row.id,item.index]);put.onsuccess=()=>{if(ctx.settled)return;try{check();}catch(e){abort(e);}};
+              if(--remaining===0){row.status='archived-copy';row.archiveReleases=[...(row.archiveReleases||[]),{...copy(plan),files:candidate.items.map(entry=>copy(entry.file))}];
+                const saved=sessions.put(row,key(row.id));saved.onsuccess=()=>{if(ctx.settled)return;try{check();}catch(e){abort(e);}};ctx.result=true;}
+            }catch(e){abort(e);}};}
+          }catch(e){abort(e);}};
+        });check();releasedCopies+=candidate.items.length;releasedBytes+=candidate.items.reduce((n,entry)=>n+entry.file.size,0);
+      }
+      return {releasedCopies,releasedBytes};
+    }
+    return {begin,status,append,readItems,finish,releaseArchivedCopies,close,getScope:()=>copy(scope)};
   }
   function createCoordinator({source,store,localProjectId,currentScope,onProgress=()=>{},batchItems=16,batchBytes=8*1024*1024}={}){
     insist(source?.capture&&source?.recheck&&store?.getScope&&valid(localProjectId)&&typeof currentScope==='function',
@@ -254,6 +337,7 @@
       return {snapshot,items,header:{id,scope,localProjectId,manifest,bundleHash,sourceFingerprint:snapshot.fingerprint}};
     }
     async function verify(row){
+      insist(row.status!=='archived-copy','MIGRATION_ARCHIVED_COPY','この控えの写真はPCへ保管済みです。PC保管から復元してください');
       insist(row.localProjectId===localProjectId,'MIGRATION_SCOPE','別の旧案件の控えは読み込めません');
       const expectedBundle=await hash(canonical({scope,localProjectId,manifest:row.manifest,sourceFingerprint:row.sourceFingerprint}));check();
       insist(expectedBundle===row.bundleHash,'MIGRATION_VERIFY','控えの構成が一致しません');
@@ -300,6 +384,7 @@
         flight=run(id).finally(()=>{flight=null;});return flight;},
       async readCopy(id){
         check();const row=await store.status(id);check();
+        insist(row?.status!=='archived-copy','MIGRATION_ARCHIVED_COPY','この控えの写真はPCへ保管済みです。PC保管から復元してください');
         insist(row&&row.next===row.manifest.length,'MIGRATION_INCOMPLETE','控えのコピーが完了していません');await verify(row);
         const first=(await store.readItems(id,0,1))[0];check();
         insist(first.descriptor.encoding==='sentlog-value-v1','MIGRATION_FORMAT','控えの復元形式が未対応です');
