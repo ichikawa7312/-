@@ -214,6 +214,10 @@ def run(page, engine, screenshot_dir=None):
     page.evaluate(SETUP, encoded)
     page.evaluate(CAMERA_MOCK, encoded)
     page.evaluate('cameraMock.imageReady')
+    assert page.evaluate("""()=>{
+      window.cameraRefreshProbe={native:0,superseded:0,latest:0,closedAtFlush:[]};
+      return SentlogContinuousCamera.deferEditorRefresh(()=>{cameraRefreshProbe.superseded++;});
+    }""") is False, 'a closed camera must leave editor repaint to the caller'
 
     # Three photographs keep one camera stream open and save one durable photo
     # per press. The normal view has only the count, with review opt-in.
@@ -335,8 +339,15 @@ def run(page, engine, screenshot_dir=None):
     expect(page.locator('#slCameraShutter')).to_be_disabled()
     expect(page.locator('#slCameraNative')).to_be_visible()
     expect(page.locator('#slCameraStatus')).to_contain_text('許可')
+    assert page.evaluate("""()=>SentlogContinuousCamera.deferEditorRefresh(()=>{
+      cameraRefreshProbe.native++;
+      cameraRefreshProbe.closedAtFlush.push(!SentlogContinuousCamera.isOpen());
+      throw Error('Synthetic editor repaint failure');
+    })"""), 'the open camera should own one pending editor refresh'
     with page.expect_file_chooser() as chooser:
         page.locator('#slCameraNative').click()
+    assert page.evaluate('cameraRefreshProbe.native') == 1
+    assert page.evaluate('cameraRefreshProbe.closedAtFlush') == [True]
     chooser.value.set_files({'name': 'native-fallback.png', 'mimeType': 'image/png', 'buffer': photo_png()})
     wait_photos(page, 'memo-plan-b', 1)
     page.wait_for_function('!SentlogContinuousCamera.isOpen()')
@@ -384,8 +395,22 @@ def run(page, engine, screenshot_dir=None):
     page.evaluate('()=>{cameraMock.startGate=new Promise(resolve=>{cameraMock.releaseStart=resolve;});}')
     open_camera(page)
     expect(page.locator('#slCameraShutter')).to_be_disabled()
+    assert page.evaluate("""()=>{
+      const first=SentlogContinuousCamera.deferEditorRefresh(()=>{cameraRefreshProbe.superseded++;});
+      const latest=SentlogContinuousCamera.deferEditorRefresh(()=>{
+        cameraRefreshProbe.latest++;
+        cameraRefreshProbe.closedAtFlush.push(!SentlogContinuousCamera.isOpen());
+      });
+      return first&&latest;
+    }"""), 'successive refresh requests must be coalesced while the camera is open'
     page.locator('#slCameraDone').click()
     page.wait_for_function('!SentlogContinuousCamera.isOpen()')
+    assert page.evaluate('cameraRefreshProbe') == {
+        'native': 1, 'superseded': 0, 'latest': 1, 'closedAtFlush': [True, True]
+    }
+    assert page.evaluate('SentlogContinuousCamera.close()') is True
+    assert page.evaluate('cameraRefreshProbe.latest') == 1, 'closing again must not replay the cleared callback'
+    assert page.evaluate('SentlogContinuousCamera.deferEditorRefresh(()=>{cameraRefreshProbe.latest++;})') is False
     page.evaluate('cameraMock.releaseStart();cameraMock.startGate=null')
     page.wait_for_function('n=>cameraMock.tracks.length===n+1&&cameraMock.tracks.at(-1).readyState==="ended"', arg=previous_tracks)
     expect(page.locator('#sentlogContinuousCamera')).to_be_hidden()

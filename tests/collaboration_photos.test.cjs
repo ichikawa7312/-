@@ -24,7 +24,8 @@ function fixture(previous){
         photos:[],memo:'Memo '+id,autoLabel:'Record '+id}]}));
   }
   const control={failOriginal:false,failShared:false,failConvert:false,failJournal:false,exclusive:false,makeGate:null,
-    makeEntered:null,decodes:0,maxDecodes:0,conversions:0,originalWrites:0,attachmentEvents:0,history:[],metaReads:0,metaScopes:[],digests:0,journalWrites:0};
+    makeEntered:null,decodes:0,maxDecodes:0,conversions:0,originalWrites:0,attachmentEvents:0,history:[],metaReads:0,metaScopes:[],digests:0,journalWrites:0,
+    renders:0,photoListRenders:0};
   const listeners=new Set(),inputs={},windowListeners={},documentListeners={};let serial=0;
   for(const id of ['cameraInput','photoInput'])inputs[id]={id,files:[],value:'',listeners:{},
     addEventListener(type,fn){(this.listeners[type]||=([])).push(fn);},
@@ -91,7 +92,7 @@ function fixture(previous){
     SentlogCollaboration:{actor:()=>({deviceId:'synthetic-device',deviceName:'iPhone'}),recordHistory:(a,b)=>control.history.push([clone(a),clone(b)])},
     activeProjectId:'project-a',activeDrawingId:'drawing-a',selected:'same-record',
     workspace:JSON.parse(data.records.get(WS)),state:JSON.parse(data.records.get(DRAW+'drawing-a')),
-    sentlogAppReady:Promise.resolve(),render(){},renderSelectedPhotos(){},addPhotosToSelected(){},
+    sentlogAppReady:Promise.resolve(),render(){control.renders++;},renderSelectedPhotos(){control.photoListRenders++;},addPhotosToSelected(){},
     async getPhotoBlob(id,did){return data.shared.get(did+':'+id)||null;},
     async savePhotoBlob(id,blob,did){if(control.failShared)throw Error('Synthetic shared-store failure');data.shared.set(did+':'+id,blob);},
     CustomEvent:class{constructor(type,options){this.type=type;this.detail=options?.detail;}},
@@ -368,6 +369,68 @@ async function test(name,fn){await fn();passed++;console.log('PASS '+name);}
     assert.equal(f.saved().shapes[0].photos[0].name,'capture_2.jpg');
     assert.equal(f.data.meta.get('drawing-a:'+result[0].photoId).exportName,'capture_2.png');
     for(const row of rows)assert.deepEqual(f.data.meta.get(row.key),row);
+  });
+
+  await test('camera repaint deferral keeps every attachment durable and paints the latest live state once',async()=>{
+    const f=fixture();await tick();let refresh,queued=0,painted;
+    f.context.SentlogContinuousCamera={deferEditorRefresh(callback){refresh=callback;queued++;return true;}};
+    for(let index=0;index<2;index++){
+      const result=await f.api.register([file('deferred-'+index+'.png')],f.api.prepareCapture(f.api.captureTarget()));
+      assert.equal(result[0].status,'attached');assert.equal(result[0].originalSaved,true);
+    }
+    assert.equal(queued,2);assert.equal(f.control.renders,0);assert.equal(f.control.photoListRenders,0);
+    assert.equal(f.saved().shapes[0].photos.length,2);assert.equal(f.context.state.shapes[0].photos.length,2);
+    assert.equal(f.context.workspace.projects[0].drawings[0].photoCount,2);
+    assert.equal(f.control.history.length,2);assert.equal(f.control.attachmentEvents,2);
+    assert.equal(f.data.originals.size,2);assert.equal(f.api.pendingSnapshot().length,0);
+    // A received update may replace the entire live drawing before Done. The
+    // deferred callback must render that current object, never its old photo.
+    const incoming=f.saved();incoming.shapes[0].memo='received after the second shutter';
+    incoming.shapes[0].photos.push({id:'peer-later',name:'peer.jpg'});f.replace('a',incoming);
+    f.context.render=()=>{f.control.renders++;painted=clone(f.context.state);};
+    refresh();
+    assert.equal(f.control.renders,1);assert.equal(f.control.photoListRenders,1);
+    assert.equal(painted.shapes[0].memo,'received after the second shutter');
+    assert.equal(painted.shapes[0].photos.length,3);assert.equal(painted.shapes[0].photos.at(-1).id,'peer-later');
+    assert.equal(f.control.history.length,2);assert.equal(f.control.attachmentEvents,2);
+  });
+
+  await test('deferred repaint rechecks project, drawing, selection and view at flush time',async()=>{
+    for(const change of [
+      {field:'activeProjectId',value:'project-b',renders:0},
+      {field:'activeDrawingId',value:'drawing-b',renders:0},
+      {field:'selected',value:'other-record',renders:1},
+      {field:'currentView',value:'projects',renders:0}
+    ]){
+      const f=fixture();await tick();let refresh;
+      f.context.SentlogContinuousCamera={deferEditorRefresh(callback){refresh=callback;return true;}};
+      await f.api.register([file()],f.api.prepareCapture(f.api.captureTarget()));
+      f.context[change.field]=change.value;refresh();
+      assert.equal(f.control.renders,change.renders,change.field);assert.equal(f.control.photoListRenders,0,change.field);
+      assert.equal(f.saved().shapes[0].photos.length,1);assert.equal(f.control.attachmentEvents,1);
+    }
+  });
+
+  await test('photo repaint stays immediate with an absent, older or closed camera',async()=>{
+    for(const camera of [undefined,{isOpen:()=>true},{deferEditorRefresh:()=>false}]){
+      const f=fixture();await tick();f.context.SentlogContinuousCamera=camera;
+      const result=await f.api.register([file()],f.api.prepareCapture(f.api.captureTarget()));
+      assert.equal(result[0].status,'attached');assert.equal(f.control.renders,1);assert.equal(f.control.photoListRenders,1);
+    }
+  });
+
+  await test('a failed shared save queues no repaint and a successful retry defers only its paint',async()=>{
+    const f=fixture();await tick();let refresh,queued=0;
+    f.context.SentlogContinuousCamera={deferEditorRefresh(callback){refresh=callback;queued++;return true;}};
+    f.control.failShared=true;
+    const pending=await f.api.register([file()],f.api.prepareCapture(f.api.captureTarget()));
+    assert.equal(pending[0].status,'pending');assert.equal(pending[0].originalSaved,true);assert.equal(queued,0);
+    f.control.failShared=false;const result=await f.api.retryPending(pending[0].photoId);
+    assert.equal(result[0].status,'attached');assert.equal(result[0].photoId,pending[0].photoId);
+    assert.equal(queued,1);assert.equal(f.control.renders,0);assert.equal(f.control.photoListRenders,0);
+    assert.equal(f.context.state.shapes[0].photos[0].id,pending[0].photoId);
+    assert.equal(f.control.attachmentEvents,1);assert.equal(f.control.history.length,1);
+    refresh();assert.equal(f.control.renders,1);assert.equal(f.control.photoListRenders,1);
   });
 
   await test('pending UI snapshots do not scan originals or mutate authoritative capture state',async()=>{

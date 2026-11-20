@@ -10,6 +10,8 @@ This isolates photo/UI costs on an offline legacy project. Delta binding/GC
 scaling has its own regression and is not inferred from this workload. Wall
 times are diagnostic only. Durable records, original hashes and photo IDs are
 asserted; request/row/byte counts provide hardware-independent work evidence.
+Closing the camera is measured separately, including the final visible
+thumbnail refresh, so deferred repaint work remains visible in the report.
 """
 import argparse
 import base64
@@ -252,7 +254,7 @@ VERIFY = r"""async ({before,expectedTotal})=>{
 }"""
 
 
-def profile_case(playwright, engine, built_root, workload, encoded, shots, *, expect_scoped_meta=False):
+def profile_case(playwright, engine, built_root, workload, encoded, shots, *, candidate=False):
     class Handler(SimpleHTTPRequestHandler):
         def log_message(self, *args):
             pass
@@ -305,15 +307,35 @@ def profile_case(playwright, engine, built_root, workload, encoded, shots, *, ex
                     assert not result['idbErrors'], result
                     assert result['canvasEncodes'] >= 2 and result['maxCanvasPixels'] == WIDTH*HEIGHT, result
                     assert result['digests']['calls'] >= 2, 'Trace must include generated and stored shared-photo hashes'
-                    if expect_scoped_meta:
+                    if candidate:
                         scan = result['idb']['sentlog-original-photos-v1/meta/getAll']
                         assert scan['unboundedCalls'] == 0 and scan['boundedCalls'] == 1, scan
                         assert scan['rows'] == workload['selectedPhotos']+index, scan
+                        assert result['renderCalls'] == result['photoListRenders'] == 0, result
+                        assert page.evaluate('SentlogContinuousCamera.isOpen()'), 'Deferred repaint requires the covering camera to remain open'
                     result['durableOriginalBytes'] = proof['originalBytes']
                     result['durableSharedBytes'] = proof['sharedBytes']
                     results.append(result);proofs.append(proof)
+                visible_photos = page.evaluate("""()=>JSON.parse(SentlogRecords.getItem(drawingStorageKey('memo-plan-a')))
+                  .shapes.find(row=>row.id==='survey-a').photos.map(photo=>({id:photo.id,name:photo.name||'変状写真'}))""")
+                page.evaluate('label=>photoPerformance.start(label)', workload['name']+'-close')
                 page.locator('#slCameraDone').click()
                 page.wait_for_function('!SentlogContinuousCamera.isOpen()')
+                page.wait_for_function("""expected=>{
+                  const thumbnails=[...document.querySelectorAll('#photoGrid .photo-thumb')];
+                  return thumbnails.length===expected.length&&thumbnails.every((item,index)=>{
+                    const image=item.querySelector('img');
+                    return item.title===expected[index].name&&image?.alt===expected[index].name&&
+                      image.complete&&image.naturalWidth>0;
+                  });
+                }""", arg=visible_photos)
+                expect(page.locator('#photoGrid')).to_be_visible()
+                close_result = page.evaluate('photoPerformance.stop()')
+                assert not close_result['idbErrors'], close_result
+                if candidate:
+                    assert close_result['renderCalls'] == close_result['photoListRenders'] == 1, close_result
+                assert saved_photo_ids(page, 'memo-plan-a') == [photo['id'] for photo in visible_photos]
+                close_result['visiblePhotoIds'] = [photo['id'] for photo in visible_photos]
                 assert page.evaluate('SentlogCollaborationPhotos.listPending()') == []
                 retained = page.evaluate("""async()=>({
                   originals:(await SentlogOriginalPhotos.listMeta()).length,
@@ -330,9 +352,10 @@ def profile_case(playwright, engine, built_root, workload, encoded, shots, *, ex
                     assert digest == proof['originalSha256']
                 # Run boundary checks after timing so candidate-only query
                 # validation does not warm the measured storage workload.
-                scoped_proof = page.evaluate(SCOPED_METADATA) if expect_scoped_meta else None
+                scoped_proof = page.evaluate(SCOPED_METADATA) if candidate else None
                 assert not errors, errors
-                return {'workload': workload, 'shots': results, 'durableProofs': proofs, 'scopedMetadataProof': scoped_proof}
+                return {'workload': workload, 'shots': results, 'close': close_result,
+                        'durableProofs': proofs, 'scopedMetadataProof': scoped_proof}
             finally:
                 context.close()
     finally:
@@ -341,6 +364,7 @@ def profile_case(playwright, engine, built_root, workload, encoded, shots, *, ex
 
 def summarize(case):
     shots = case['shots']
+    close = case['close']
     def scans(shot):
         return sum(value['rows'] for name, value in shot['idb'].items()
                    if name == 'sentlog-original-photos-v1/meta/getAll')
@@ -355,7 +379,13 @@ def summarize(case):
             'imageLoads': sum(s['imageLoads'] for s in shots),
             'renderCalls': sum(s['renderCalls'] for s in shots),
             'photoListRenders': sum(s['photoListRenders'] for s in shots),
-            'maxFrameGapMs': round(max(s['maxFrameGapMs'] for s in shots), 2)}
+            'maxFrameGapMs': round(max(s['maxFrameGapMs'] for s in shots), 2),
+            'cameraCloseMs': round(close['elapsedMs'], 2),
+            'closeRenderCalls': close['renderCalls'],
+            'closePhotoListRenders': close['photoListRenders'],
+            'closeImageLoads': close['imageLoads'],
+            'closeMaxFrameGapMs': round(close['maxFrameGapMs'], 2),
+            'captureAndCloseMs': round(sum(s['elapsedMs'] for s in shots)+close['elapsedMs'], 2)}
 
 
 def main():
@@ -383,7 +413,7 @@ def main():
                 versions.reverse()
             for version, root in versions:
                 result = profile_case(playwright, args.engine, root.resolve(), workload, encoded, args.shots,
-                                      expect_scoped_meta=version == 'candidate')
+                                      candidate=version == 'candidate')
                 report['results'].setdefault(version, {})[workload['name']] = result
                 print('PHOTO_PERFORMANCE '+json.dumps({'engine': args.engine, 'version': version,
                       'workload': workload['name'], **summarize(result)}, ensure_ascii=False), flush=True)

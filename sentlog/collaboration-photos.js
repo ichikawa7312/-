@@ -357,8 +357,16 @@
     const base=!live.collab&&savedRecord?.collab?{...live,collab:clone(savedRecord.collab)}:live;
     const updated=addPhoto(base,photo,entry,root.SentlogRecordCollaboration);
     live.photos=updated.photos;if(updated.collab)live.collab=updated.collab;
-    if(typeof render==='function')render();
-    if(typeof selected!=='undefined'&&selected===target.recordId&&typeof renderSelectedPhotos==='function')renderSelectedPhotos();
+    // The full-screen camera covers the editor. Keep its model current now,
+    // and paint the latest live view once when that camera is dismissed.
+    const refresh=()=>{
+      if(typeof activeProjectId==='undefined'||typeof activeDrawingId==='undefined'||
+        activeProjectId!==target.projectId||activeDrawingId!==target.drawingId||
+        typeof currentView!=='undefined'&&currentView!=='editor')return;
+      if(typeof render==='function')render();
+      if(typeof selected!=='undefined'&&selected===target.recordId&&typeof renderSelectedPhotos==='function')return renderSelectedPhotos();
+    };
+    if(root.SentlogContinuousCamera?.deferEditorRefresh?.(refresh)!==true)void refresh();
     root.dispatchEvent(new CustomEvent('sentlog-photo-attached',{detail:{projectId:target.projectId,drawingId:target.drawingId,recordId:target.recordId,photoId:photo.id}}));
   }
   async function attach(target,photo,entry){
