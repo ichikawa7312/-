@@ -249,11 +249,18 @@
         front.width=1;front.height=1;detailKey='';
       }
     }else{
-      if(touch && front && current(view) && scale>0 && detailKey){
-        const r=wrap.getBoundingClientRect();
-        if(r.width>0 && r.height>0 && touchViewportArea(r).key===detailKey)return;
-      }
-      schedule(0);
+      const closingView=view,stamp=epoch;
+      // Closing first unhides the editor, then refreshes its annotations in
+      // the same turn. Read geometry afterwards so the old annotation tree
+      // does not require a separate layout immediately before that refresh.
+      queueMicrotask(()=>{
+        if(cameraOpen() || document.hidden || stamp!==epoch || view!==closingView || !current(closingView))return;
+        if(touch && front && scale>0 && detailKey){
+          const r=wrap.getBoundingClientRect();
+          if(r.width>0 && r.height>0 && touchViewportArea(r).key===detailKey)return;
+        }
+        schedule(0);
+      });
     }
   });
 })();

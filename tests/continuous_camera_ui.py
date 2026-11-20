@@ -59,16 +59,16 @@ def orientation_photo(width, height, *, exif=None, turn=None):
     return buffer.getvalue()
 
 
-IMAGE_PIXELS = r"""async image=>{
-  await image.decode();
+IMAGE_PIXELS = r"""async (image,{decoded=false}={})=>{
+  if(!decoded)await image.decode();
   const width=image.naturalWidth,height=image.naturalHeight;
   if(!width||!height)throw Error('Orientation fixture did not decode');
   const canvas=document.createElement('canvas');canvas.width=width;canvas.height=height;
   try{
     const context=canvas.getContext('2d');context.drawImage(image,0,0,width,height);
-    const corners=[[.25,.25],[.75,.25],[.75,.75],[.25,.75]].map(([x,y])=>
-      [...context.getImageData(Math.floor(x*width),Math.floor(y*height),1,1).data].slice(0,3));
-    return {width,height,corners};
+    const rgba=[[.25,.25],[.75,.25],[.75,.75],[.25,.75]].map(([x,y])=>
+      [...context.getImageData(Math.floor(x*width),Math.floor(y*height),1,1).data]);
+    return {width,height,corners:rgba.map(pixel=>pixel.slice(0,3)),rgba};
   }finally{canvas.width=1;canvas.height=1;}
 }"""
 
@@ -498,6 +498,40 @@ def run_orientation(page, engine, screenshot_dir=None):
         ratio = min(1, 1600/max(width, height))
         return round(width*ratio), round(height*ratio)
 
+    def review_pixels(photo_id):
+        # Keep the actual review node throughout loading and painting. A
+        # locator that resolves again could silently select a replacement.
+        image = page.locator(f'#slCameraReviewList [data-camera-photo-id="{photo_id}"] img').element_handle()
+        assert image is not None, ('Missing review image', photo_id)
+        image.scroll_into_view_if_needed()
+        page.wait_for_function("""({image,photoId})=>{
+          if(!image.isConnected||image.closest('[data-camera-photo-id]')?.dataset.cameraPhotoId!==photoId)
+            throw Error('Review image changed while loading');
+          return !!image.currentSrc&&image.complete&&image.naturalWidth>0&&image.naturalHeight>0;
+        }""", arg={'image': image, 'photoId': photo_id}, timeout=5000)
+        return image.evaluate(r"""async (image,photoId)=>{
+          const source=image.currentSrc;
+          const current=()=>image.isConnected&&image.currentSrc===source&&image.complete&&
+            image.closest('[data-camera-photo-id]')?.dataset.cameraPhotoId===photoId;
+          if(!source||!current())throw Error('Review image is no longer current');
+          await image.decode();
+          // The review uses lazy, asynchronous image decoding. Give the
+          // visible image a paint opportunity before sampling it in canvas;
+          // never retry a failed pixel/color assertion.
+          let deadline;
+          try{
+            await Promise.race([
+              new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))),
+              new Promise((_,reject)=>{deadline=setTimeout(()=>reject(Error('Review paint did not finish')),5000);})
+            ]);
+          }finally{clearTimeout(deadline);}
+          if(!current())throw Error('Review image changed before pixel verification');
+          const pixels=await (""" + IMAGE_PIXELS + r""")(image,{decoded:true});
+          if(!current())throw Error('Review image changed during pixel verification');
+          return {...pixels,ready:{connected:image.isConnected,complete:image.complete,
+            source,loading:image.loading,decoding:image.decoding,viewport:[innerWidth,innerHeight]}};
+        }""", photo_id)
+
     def grid_pixels(photo_id):
         # Observe the automatic close/attachment refresh. Forcing another
         # redraw here revokes every thumbnail URL while that real refresh may
@@ -532,6 +566,7 @@ def run_orientation(page, engine, screenshot_dir=None):
                          'platform': 'MacIntel', 'maxTouchPoints': 5},
          [('portrait', 1920, 2560, 90), ('landscape', 2560, 1920, 270)])
     ]
+    current_orientation = 'not started'
     try:
         for device, navigator, cases in devices:
             set_platform(navigator)
@@ -543,6 +578,7 @@ def run_orientation(page, engine, screenshot_dir=None):
             streams_before = page.evaluate('cameraMock.calls')
             checked = []
             for shot, (direction, width, height, turn) in enumerate(cases, 1):
+                current_orientation = device+' '+direction
                 page.set_viewport_size({'width': 390, 'height': 844} if height > width else {'width': 844, 'height': 390})
                 preview = orientation_photo(width, height)
                 wrong_still = orientation_photo(width, height, turn=turn)
@@ -566,9 +602,7 @@ def run_orientation(page, engine, screenshot_dir=None):
                 assert page.evaluate('cameraMock.canvasPhotos') == frames_before+shot
 
                 page.locator('#slCameraCount').click()
-                image = page.locator(f'#slCameraReviewList [data-camera-photo-id="{photo_id}"] img')
-                image.scroll_into_view_if_needed()
-                assert_orientation(image.evaluate(IMAGE_PIXELS), shared_width, shared_height, device+' '+direction+' review')
+                assert_orientation(review_pixels(photo_id), shared_width, shared_height, device+' '+direction+' review')
                 if screenshot_dir and shot == 1:
                     screenshot_dir.mkdir(parents=True, exist_ok=True)
                     page.screenshot(path=str(screenshot_dir / f'sentlog-continuous-camera-{engine}-{device}-orientation.png'))
@@ -582,6 +616,25 @@ def run_orientation(page, engine, screenshot_dir=None):
                 assert_orientation(grid_pixels(photo_id), *shared_size(width, height), device+' photo list')
                 assert saved_pixels(photo_id, original=True)['sha256'] == digest, 'display must not rewrite the retained original'
             print('PASS '+engine+': '+device+' preview pixels and full stream dimensions survive capture, shared conversion, review and photo list')
+    except Exception:
+        # Capture the failing orientation before finally restores portrait.
+        # The outer failure screenshot alone cannot establish the earlier
+        # landscape paint state because that cleanup triggers another resize.
+        try:
+            print('Camera orientation before cleanup:', current_orientation, page.evaluate("""()=>({
+              viewport:[innerWidth,innerHeight],reviewHidden:document.getElementById('slCameraReview')?.hidden,
+              images:[...document.querySelectorAll('#slCameraReviewList [data-camera-photo-id] img')].map(image=>({
+                photoId:image.closest('[data-camera-photo-id]').dataset.cameraPhotoId,
+                source:image.currentSrc,connected:image.isConnected,complete:image.complete,
+                size:[image.naturalWidth,image.naturalHeight],loading:image.loading,decoding:image.decoding
+              }))
+            })"""))
+            if screenshot_dir:
+                screenshot_dir.mkdir(parents=True, exist_ok=True)
+                page.screenshot(path=str(screenshot_dir / f'sentlog-continuous-camera-{engine}-orientation-failure.png'))
+        except Exception as diagnostic_error:
+            print('Camera orientation diagnostic failed:', diagnostic_error)
+        raise
     finally:
         set_platform(platform)
         page.set_viewport_size({'width': 390, 'height': 844})

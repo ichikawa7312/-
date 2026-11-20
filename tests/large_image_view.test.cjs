@@ -163,7 +163,17 @@ function fixture({patched=true,naturalWidth=11575,naturalHeight=8031,touch=false
     assert.equal(camera.allocations.length,allocations,'a covered image must not allocate drawing surfaces');
     assert.equal(camera.draws.length,draws,'a covered image must not repaint behind the camera');
     if(source)assert.equal(source.closed,false,'the bounded source stays available without decoding the original again');
-    isOpen=false;camera.event('sentlog-camera-visibility',{open:false});camera.flush();
+    const readRect=camera.wrap.getBoundingClientRect;let layoutReads=0,editorRefreshed=false;
+    camera.wrap.getBoundingClientRect=()=>{
+      assert(editorRefreshed,'camera close must wait for the synchronous editor refresh before reading layout');
+      layoutReads++;return readRect();
+    };
+    isOpen=false;camera.event('sentlog-camera-visibility',{open:false});
+    assert.equal(layoutReads,0,'the close event itself performs no drawing geometry read');
+    // finishClose invokes its deferredEditorRefresh after dispatching this
+    // event, synchronously so native camera input keeps user activation.
+    editorRefreshed=true;await Promise.resolve();camera.flush();
+    assert(layoutReads>0,'the changed viewport is measured after editor refresh');
     assert.equal(camera.stage.children.length,1);assert.equal(camera.draws.length,draws+1);
     assert.equal(camera.stage.children[0],front,'a changed camera viewport restores into the same canvas node');
     if(touch){
@@ -177,7 +187,10 @@ function fixture({patched=true,naturalWidth=11575,naturalHeight=8031,touch=false
     const plainDraws=camera.draws.length,plainAllocations=camera.allocations.length;
     for(let i=0;i<10;i++){
       isOpen=true;camera.event('sentlog-camera-visibility',{open:true});camera.flush();
-      isOpen=false;camera.event('sentlog-camera-visibility',{open:false});camera.flush();
+      editorRefreshed=false;const previousReads=layoutReads;
+      isOpen=false;camera.event('sentlog-camera-visibility',{open:false});
+      assert.equal(layoutReads,previousReads,'plain closes also defer layout until the editor refresh completes');
+      editorRefreshed=true;await Promise.resolve();camera.flush();
     }
     assert.equal(camera.draws.length,plainDraws+(touch?0:10),
       'an unchanged touch camera close needs no image repaint; desktop reconstructs its released raster once');
@@ -187,15 +200,24 @@ function fixture({patched=true,naturalWidth=11575,naturalHeight=8031,touch=false
     assert.equal(camera.stage.insertions,insertions);assert.equal(camera.stage.removals,removals);
     assert.equal(camera.created.length,1);assert.equal(JSON.stringify(camera.context.state),state);
     assert.equal(await camera.file.text(),'synthetic-jpeg-bytes');
-    isOpen=true;camera.event('sentlog-camera-visibility',{open:true});camera.context.showProjects();
+    isOpen=true;camera.event('sentlog-camera-visibility',{open:true});
+    isOpen=false;camera.event('sentlog-camera-visibility',{open:false});
+    isOpen=true;camera.event('sentlog-camera-visibility',{open:true});
+    const reopenedReads=layoutReads,reopenedDraws=camera.draws.length,reopenedAllocations=camera.allocations.length;
+    await Promise.resolve();camera.flush();
+    assert.equal(layoutReads,reopenedReads,'a queued close cannot measure a drawing covered by a reopened camera');
+    assert.equal(camera.draws.length,reopenedDraws);assert.equal(camera.allocations.length,reopenedAllocations);
+    // Queue another close, then leave before its microtask runs. A stale
+    // callback must not read or recreate the released drawing viewport.
+    isOpen=false;camera.event('sentlog-camera-visibility',{open:false});camera.context.showProjects();
     assert.equal(camera.stage.children.length,0);assert.equal(front.width*front.height,1);
     if(source)assert.equal(source.closed,true,'leaving the drawing still releases the bounded source');
     const afterLeave=camera.allocations.length,afterDraw=camera.draws.length;
-    isOpen=false;camera.event('sentlog-camera-visibility',{open:false});camera.flush();
+    isOpen=false;camera.event('sentlog-camera-visibility',{open:false});await Promise.resolve();camera.flush();
     assert.equal(camera.stage.children.length,0);assert.equal(camera.allocations.length,afterLeave);
     assert.equal(camera.draws.length,afterDraw,'a late camera close cannot resurrect the departed drawing');
   }
-  console.log('PASS camera overlay: bounded touch raster retained, desktop pixels released, zero covered drawing work, same-node changed-view redraw, ten plain touch closes allocate/repaint nothing, and leaving releases every surface');
+  console.log('PASS camera overlay: close layout waits for editor refresh, bounded touch raster retained, desktop pixels released, zero covered drawing work, same-node changed-view redraw, ten plain touch closes allocate/repaint nothing, reopened/left views reject stale close work');
 
   for(const failure of ['denyContext','failPaint']){
     const retry=fixture();retry.context[failure]=true;

@@ -125,6 +125,9 @@ TRACE = r"""()=>{
     observe(SentlogOriginalPhotos,method,'originals.'+method);
   for(const method of ['settled','writeFile','batch'])observe(SentlogRecords,method,'records.'+method);
   observe(SentlogCollaborationPhotos,'register','photos.register');
+  // Include forced-layout/focus time around camera close, outside render().
+  observe(document.getElementById('stageWrap'),'getBoundingClientRect','ui.drawingRect');
+  observe(HTMLElement.prototype,'focus','ui.focus');
   for(const [name,counter]of [['render','renderCalls'],['renderSelectedPhotos','photoListRenders']]){
     const native=window[name];if(typeof native!=='function')continue;
     window[name]=function(...args){
@@ -384,6 +387,8 @@ def summarize(case):
             'closeRenderCalls': close['renderCalls'],
             'closePhotoListRenders': close['photoListRenders'],
             'closeImageLoads': close['imageLoads'],
+            'closeDrawingRect': close['stages'].get('ui.drawingRect', {'calls': 0, 'ms': 0, 'maxMs': 0}),
+            'closeFocus': close['stages'].get('ui.focus', {'calls': 0, 'ms': 0, 'maxMs': 0}),
             'closeMaxFrameGapMs': round(close['maxFrameGapMs'], 2),
             'captureAndCloseMs': round(sum(s['elapsedMs'] for s in shots)+close['elapsedMs'], 2)}
 
