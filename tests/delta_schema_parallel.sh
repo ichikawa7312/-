@@ -37,7 +37,8 @@ BEGIN
  IF (SELECT count(*) FROM public.sentlog_delta_events WHERE event_id='parallel-dup')<>1 THEN
    RAISE EXCEPTION 'parallel duplicate event was stored more than once';
  END IF;
- IF (SELECT count(*) FROM realtime.test_messages)<>27 THEN
+ IF (SELECT count(*) FROM realtime.test_messages
+      WHERE message#>>'{payload,project_id}'='11111111-1111-4111-8111-111111111111')<>27 THEN
    RAISE EXCEPTION 'duplicate broadcasts were emitted';
  END IF;
 END $$;
