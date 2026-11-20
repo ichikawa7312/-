@@ -59,7 +59,9 @@ let count=0;async function test(name,fn){await fn();count++;console.log('PASS '+
    const program="from pathlib import Path\nroot=Path.cwd()\ntext=(root/'sentlog/archive-capacity.js').read_text()\ntext=text.replace('expectedWorkspace:before.raw});',\"expectedWorkspace:before.raw,origin:'device'});\").replace('expectedWorkspace:wsText});',\"expectedWorkspace:wsText,origin:'device'});\")\ndef change(path,old,new,count=1):\n global text\n assert text.count(old)==count,old\n text=text.replace(old,new)\nbuilder=(root/'scripts/build_delta_sync.py').read_text()\nexec(builder[builder.index(\"capacity = 'sentlog/archive-capacity.js'\"):builder.index('\\nmodules = ')])\nprint(text)";
    built=execFileSync('python',['-c',program],{cwd:root,encoding:'utf8'});
   }
-  new vm.Script(built);assert(built.includes('expectedRecords:before.expectedRecords'));assert(built.includes('expectedFileStates:before.expectedFileStates'));assert(built.includes('validate:before.validateSync'));assert(built.includes('await before.validate()'));assert(built.includes('const restoredFiles=await countLocal(info.files)'));assert(built.includes('expectedRecords:restoreProof.expectedRecords'));assert(built.includes('expectedFileStates:restoreProof.expectedFileStates'));
+  new vm.Script(built);assert(built.includes('expectedRecords:before.expectedRecords'));assert(built.includes('expectedFileStates:before.expectedFileStates'));assert(built.includes('validate:()=>before.validateSync()&&resumePhotos.validate()'));assert(built.includes('await before.validate()'));assert(built.includes('const restoredFiles=await countLocal(info.files)'));assert(built.includes('expectedRecords:restoreProof.expectedRecords'));assert(built.includes('expectedFileStates:restoreProof.expectedFileStates'));
+  assert(built.includes('await S.writeFile(f.key,named,fileOptions)'));assert(built.includes('restorationProof:restoreProof.restorationProof'));
+  assert(built.includes('validate:()=>restoreProof.validateSync()&&resumePhotos.validate()'));
  });
  console.log('PASS delta capacity: '+count+' checks');
 })().catch(error=>{console.error(error);process.exitCode=1;});

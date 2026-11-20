@@ -2,7 +2,7 @@
 // Disposable IndexedDB only. Exercises the actual canvas writer and durable
 // replay controller, including crashes between its two database transactions.
 const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
-const {webcrypto}=require('node:crypto'),{IDBFactory,IDBKeyRange,IDBObjectStore}=require('fake-indexeddb');
+const {webcrypto}=require('node:crypto'),{IDBFactory,IDBKeyRange,IDBObjectStore,IDBCursor}=require('fake-indexeddb');
 const C=require('../sentlog/record-collaboration.js'),D=require('../sentlog/delta-sync-core.js');
 const B=require('../sentlog/delta-sync-app-bridge.js'),J=require('../sentlog/delta-sync-app-journal.js');
 const M=require('../sentlog/delta-sync-metadata.js'),Source=require('../sentlog/delta-sync-legacy-source.js');
@@ -69,7 +69,7 @@ function runtimeFixture(f,e,options={}){
       metadataRecords:M.metadataRecords(e.read().records)});enabled=true;},
     applyProjection:async(cp,projection,context)=>{if(options.beforeProjection)await options.beforeProjection();return projectionWriter(f)(projection,context);},
     readFile:async key=>(await f.disk()).get(key),withFileLock:async(key,fn)=>fn(),
-    factories:{provider:()=>({}),transport:()=>transport,store:()=>store}});
+    factories:{provider:()=>({}),transport:()=>transport,store:()=>store,...options.factories}});
   return {runtime,cp,published,get installedRevision(){return installedRevision;},switchAuth(){user='other-owner';generation++;for(const fn of auth)fn();}};
 }
 async function installerFixture(f,{onRead}={}){
@@ -233,6 +233,58 @@ await test('actual app runtime auth switch during asynchronous projection retain
   const work=r.runtime.sync(r.cp);await started.promise;r.switchAuth();release.resolve();await assert.rejects(()=>work,e=>['JOURNAL_CLOSED','JOURNAL_SCOPE','DELTA_APP_SCOPE'].includes(e.code));
   assert.equal(JSON.parse(f.records.getItem(DRAW+'drawing-1')).shapes[0].memo,'ログイン切替前の入力');assert.equal(f.records.deltaJournal.bindingFor(localProjectId).scope.ownerId,scope.ownerId);r.runtime.close();
 });
+await test('photo snapshot cancellation retries after the actual guarded file transaction rolls back',async()=>{
+  const f=await app(),e=await bind(f,{metadata:true}),tokens=[],key='photo:drawing-1:retry',blob=new Blob(['retry-photo']);let attempts=0;
+  const r=runtimeFixture(f,e,{factories:{assetStore:()=>({close(){}}),assetTransport:()=>({close(){}}),assets:options=>({close(){},async sync(state){
+    attempts++;tokens.push(state.snapshotToken);assert.equal(options.currentSnapshotToken(),state.snapshotToken);
+    let checks=0;
+    await options.localFiles.withLock(key,()=>options.localFiles.write(key,blob,{onlyIfMissing:true,validate:()=>{
+      if(attempts===1&&++checks===6)edit(f,'写真の処理中の追記');
+      if(options.currentSnapshotToken()!==state.snapshotToken)throw Object.assign(Error('snapshot changed'),{code:'ASSET_SNAPSHOT_CHANGED'});
+      return true;
+    }}));
+    assert(state.snapshot.records[D.keyOf('drawing-1','record-1')].memo.includes('写真の処理中の追記'));
+    return {complete:true,pending:0,issues:[]};
+  }})}});
+  try{
+    assert.equal((await r.runtime.photos(r.cp)).complete,true);assert.equal(attempts,2);assert.notEqual(tokens[0],tokens[1]);
+    await f.records.settled();assert.equal(f.records.failed,false);assert.equal(f.records.writerState(key).failed,false);assert.equal(f.records.writerState(key).pending,0);
+    assert.equal(await (await f.disk()).get(key).text(),'retry-photo');
+    assert(e.read().records[D.keyOf('drawing-1','record-1')].memo.includes('写真の処理中の追記'));assert.equal(e.read().outbox.length,1);
+    const fileRows=[...(await f.disk(LOG)).values()].filter(row=>row.files?.some(file=>file.key===key));assert.equal(fileRows.length,1);
+  }finally{r.runtime.close();}
+});
+await test('photo snapshot recovery stops after three cancellations and keeps the final durable intent',async()=>{
+  const f=await app(),e=await bind(f,{metadata:true});let attempts=0,lastError;
+  const r=runtimeFixture(f,e,{factories:{assetStore:()=>({close(){}}),assetTransport:()=>({close(){}}),assets:options=>({close(){},async sync(state){
+    attempts++;assert.equal(options.currentSnapshotToken(),state.snapshotToken);
+    if(attempts<=3){edit(f,'写真取消中の追記 '+attempts);await f.records.settled();lastError=Object.assign(Error('snapshot changed '+attempts),{code:'ASSET_SNAPSHOT_CHANGED'});throw lastError;}
+    return {complete:true,pending:0,issues:[]};
+  }})}});
+  try{
+    await assert.rejects(()=>r.runtime.photos(r.cp),error=>error===lastError);assert.equal(attempts,3);
+    assert.equal(JSON.parse(f.records.getItem(DRAW+'drawing-1')).shapes[0].memo,'写真取消中の追記 3');
+    assert((await f.records.deltaJournal.pending({scope,localProjectId})).count>0);
+    assert.equal((await r.runtime.photos(r.cp)).complete,true);assert.equal(attempts,4);
+    assert(e.read().records[D.keyOf('drawing-1','record-1')].memo.includes('写真取消中の追記 3'));
+    assert.equal((await f.records.deltaJournal.pending({scope,localProjectId})).count,0);
+  }finally{r.runtime.close();}
+});
+await test('photo recovery never retries authentication or storage errors and fences an expired scope',async()=>{
+  for(const mode of ['ASSET_AUTH_CHANGED','ASSET_QUOTA','scope-after-cancellation']){
+    const f=await app(),e=await bind(f,{metadata:true});let attempts=0,original;
+    const r=runtimeFixture(f,e,{factories:{assetStore:()=>({close(){}}),assetTransport:()=>({close(){}}),assets:()=>({close(){},async sync(){
+      attempts++;edit(f,'失敗時も残す入力');await f.records.settled();
+      if(mode!=='ASSET_QUOTA')r.switchAuth();
+      original=Object.assign(Error(mode),{code:mode==='scope-after-cancellation'?'ASSET_SNAPSHOT_CHANGED':mode});throw original;
+    }})}});
+    try{
+      await assert.rejects(()=>r.runtime.photos(r.cp),error=>mode==='scope-after-cancellation'?error.code==='DELTA_APP_SCOPE':error===original);
+      assert.equal(attempts,1);assert.equal(JSON.parse(f.records.getItem(DRAW+'drawing-1')).shapes[0].memo,'失敗時も残す入力');
+      assert((await f.records.deltaJournal.pending({scope,localProjectId})).count>0);assert.equal(f.records.deltaJournal.bindingFor(localProjectId).scope.ownerId,scope.ownerId);
+    }finally{r.runtime.close();}
+  }
+});
 await test('missing active replica cannot turn the existing canvas into an empty projection',async()=>{
   const f=await app(),e=await bind(f,{metadata:true}),before=f.records.getItem(DRAW+'drawing-1'),r=runtimeFixture(f,e,{missing:true});
   await assert.rejects(()=>r.runtime.sync(r.cp),e=>e.code==='DELTA_APP_LOCAL_STATE');assert.equal(f.records.getItem(DRAW+'drawing-1'),before);r.runtime.close();
@@ -276,6 +328,53 @@ await test('compaction retains exact file preimages but removes acknowledged raw
   assert.equal(rows.length,2);assert(rows.every(row=>row.kind==='sentlog-file-retention'&&!row.changes&&!row.workspaceBefore&&!row.workspaceAfter));
   assert.equal(await rows[1].files[0].before.text(),'first');assert.equal(await rows[1].files[0].after.text(),'second');assert.equal((await f.records.deltaJournal.pending({scope,localProjectId})).count,0);
   await f.records.deltaJournal.compact();assert.equal((await f.disk(LOG)).size,2);c.close();
+});
+await test('file replay claims pin original WAL bytes without copying native Blobs into control rows',async()=>{
+  const f=await app(),e=await bind(f,{metadata:true}),key='photo:drawing-1:camera';
+  await f.records.writeFile(key,new Blob(['original-camera-bytes']));edit(f,'写真付きの記録');await f.records.settled();
+  const put=IDBObjectStore.prototype.put,containsBlob=value=>value instanceof Blob||value&&typeof value==='object'&&Object.values(value).some(containsBlob);
+  let copiedBlobs=0;
+  IDBObjectStore.prototype.put=function(value,...rest){
+    if(this.name===CONTROL&&value?.kind==='claim'&&containsBlob(value)){
+      copiedBlobs++;throw Object.assign(Error('Error preparing Blob/File data to be stored in object store'),{name:'UnknownError'});
+    }
+    return put.call(this,value,...rest);
+  };
+  try{
+    const claim=await f.records.deltaJournal.claim({scope,localProjectId}),rows=[...(await f.disk(LOG)).values()];
+    assert.equal(copiedBlobs,0);assert.equal(containsBlob(claim),false);assert.equal(claim.fileReferences.length,1);
+    const reference=claim.fileReferences[0],row=rows.find(item=>item.id===reference.rowId);
+    assert.equal(reference.seq,row.seq);assert.equal(reference.key,key);assert(claim.rowIds.includes(row.id));
+    assert.equal(await row.files[reference.index].after.text(),'original-camera-bytes');
+    const reopened=await app({factory:f.factory,local:f.local});f.records=reopened.records;f.capture=reopened.capture;
+    const resumed=await f.records.deltaJournal.claim({scope,localProjectId});assert.equal(resumed.id,claim.id);assert.deepEqual(resumed.fileReferences,claim.fileReferences);
+    const c=e.controller();try{await c.controller.drain();assert(e.read().records[D.keyOf('drawing-1','record-1')].memo.includes('写真付きの記録'));}
+    finally{c.close();}
+    assert.equal(await (await f.disk()).get(key).text(),'original-camera-bytes');assert.equal(copiedBlobs,0);
+  }finally{IDBObjectStore.prototype.put=put;}
+});
+await test('native Blob compaction failure preserves WAL and does not block verified photo work',async()=>{
+  const f=await app(),e=await bind(f,{metadata:true}),key='photo:drawing-1:camera';await f.records.writeFile(key,new Blob(['durable-camera-bytes']));
+  const before=[...(await f.disk(LOG)).values()],update=IDBCursor.prototype.update;
+  const blobError=Object.assign(Error('Error preparing Blob/File data to be stored in object store'),{name:'UnknownError'});
+  let aborted=0,photoCalls=0;
+  IDBCursor.prototype.update=function(value){
+    const result=update.call(this,value);
+    if(value?.kind==='sentlog-file-retention'){
+      const tx=this.source.transaction;
+      result.addEventListener('success',()=>{aborted++;tx.sentlogJournalError=blobError;tx.abort();});
+    }
+    return result;
+  };
+  const c=e.controller(),r=runtimeFixture(f,e,{factories:{assetStore:()=>({close(){}}),assetTransport:()=>({close(){}}),
+    assets:()=>({close(){},async sync(){photoCalls++;return {complete:true,pending:0,issues:[]};}})}});
+  try{
+    await c.controller.drain();assert.equal(c.controller.status().retentionError.code,'UnknownError');assert(aborted>=2);
+    assert.deepEqual([...(await f.disk(LOG)).values()],before);assert.equal((await f.records.deltaJournal.pending({scope,localProjectId})).count,0);
+    assert.equal(f.records.failed,false);assert.equal((await r.runtime.photos(r.cp)).complete,true);assert.equal(photoCalls,1);
+    assert.equal(await (await f.disk()).get(key).text(),'durable-camera-bytes');assert.equal(await (await f.disk(LOG)).values().next().value.files[0].after.text(),'durable-camera-bytes');
+  }finally{IDBCursor.prototype.update=update;c.close();r.runtime.close();}
+  await f.records.deltaJournal.compact();assert.equal((await f.disk(LOG)).values().next().value.kind,'sentlog-file-retention');
 });
 await test('project cutoff does not duplicate unrelated project or unassigned photo blobs',async()=>{
   const f=await app(),workspace=JSON.parse(f.records.getItem(WS)),other={id:'other-local',name:'別案件',drawings:[{id:'other-drawing',name:'別図面'}]};

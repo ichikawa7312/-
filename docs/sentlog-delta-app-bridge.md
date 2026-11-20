@@ -1,5 +1,7 @@
 # 差分同期と実アプリ保存経路の接続
 
+> 2026-11-20更新: この文書は部品開発時の設計・検証記録です。実アプリのwriter、共有metadata、写真、PC保管への接続は、その後のapp runtimeと最終builderで実装しました。本文の「未接続」「未実装」は当時の状態を示します。現在の検証結果と公開判断は[本番反映判断](sentlog-delta-production-readiness.md)と[リリース手順](sentlog-delta-release.md)を参照してください。
+
 ## 現在できることと切替条件
 
 `sentlog/delta-sync-app-bridge.js` は、実アプリの案件・図面状態を、既存の共同編集履歴を保った記録差分に変換する専用モジュールである。`SentlogRecords` のメモリ控えから編集前後を取得し、差分 replica に存在する全記録の系譜を照合してから、複数記録を **1 回の端末保存**に渡す。通常編集には `core.changeBatch()`、移動には認証済み transport が対応を確認した `core.changeGroup()` を使う。受信済みの追記や別記録も含め、保存後の replica から画面用の状態を再構成する。

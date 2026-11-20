@@ -44,7 +44,7 @@
   let closed=false,epoch=0,verified=null;const pending=new Set();
   const unsubscribe=subscribeAuth(()=>{epoch++;verified=null;for(const ticket of pending)if(ticket.phase!=='session')ticket.abort('ASSET_AUTH_CHANGED');});
   function alive(){insist(!closed,'ASSET_CLOSED','写真通信を終了しました');insist(sameScope(scope,currentScope()),'ASSET_SCOPE','写真通信中に利用者・案件・端末が変わりました');}
-  function run(options,action){
+  function run(options,action,allowArchived=false){
    options=options||{};alive();const controller=new AbortController();let phase='session',timer,cancel;
    const cancelled=new Promise((resolve,reject)=>cancel=reject);
    const ticket={get phase(){return phase;},abort(code){controller.abort();cancel(error(code,'写真通信を中止しました。保存済みの写真は保持しています'));}};
@@ -72,9 +72,10 @@
      json('/rest/v1/sentlog_projects?id=eq.'+scope.projectId+'&owner_id=eq.'+scope.ownerId+'&select=id,owner_id,status,client_key',{},ctx),
      json('/rest/v1/sentlog_devices?id=eq.'+scope.deviceId+'&owner_id=eq.'+scope.ownerId+'&select=id,owner_id,active,device_type',{},ctx)]);check();
     insist(Array.isArray(projects)&&projects.length===1&&projects[0].id===scope.projectId&&projects[0].owner_id===scope.ownerId&&
-     projects[0].status==='active'&&projects[0].client_key===localProjectId,'ASSET_PROJECT_FORBIDDEN','共有写真の対象案件を確認できません');
+     (projects[0].status==='active'||allowArchived&&projects[0].status==='archived')&&projects[0].client_key===localProjectId,'ASSET_PROJECT_FORBIDDEN','共有写真の対象案件を確認できません');
     insist(Array.isArray(devices)&&devices.length===1&&devices[0].id===scope.deviceId&&devices[0].owner_id===scope.ownerId&&devices[0].active===true,
      'ASSET_DEVICE_FORBIDDEN','写真を受け渡す登録端末を確認できません');
+    ctx.projectStatus=projects[0].status;
     const value=await action(ctx);check();return value;
    })();
    return Promise.race([task,cancelled]).finally(()=>{clearTimeout(timer);pending.delete(ticket);options.signal?.removeEventListener('abort',external);});
@@ -111,6 +112,7 @@
    return parts.map(encodeURIComponent).join('/');
   }
   async function request(ref,ctx){
+   insist(ctx.projectStatus==='active','ASSET_ARCHIVED_RESTORE_REQUIRED','保管済みの写真をPCから取り戻すには、保管フォルダの「PCからこの端末に復旧」を使ってください');
    const result=await json('/rest/v1/rpc/sentlog_request_photo',{method:'POST',body:{p_asset_id:ref.assetId,p_device_id:scope.deviceId}},ctx);
    insist(result?.requested===true&&result.asset_id===ref.assetId,'ASSET_REDELIVERY_UNAVAILABLE','PCまたは別端末の写真供給を確認できません。写真待ちの状態を保持しています');
    return {requested:true,assetId:ref.assetId,reference:copy(ref)};
@@ -133,7 +135,7 @@
      for(const row of rows){insist(uuid(row.id)&&row.id>after,'ASSET_PAGING','写真一覧に欠落または重複があります');referenceFromAsset(row,scope);after=row.id;out.push(copy(row));}
      insist(out.length<=20000,'ASSET_PAGING','一度に確認する写真数の上限を超えています');
     }
-   });},
+   },true);},
    download(input,options){const ref=checkReference(input);return run(options,async ctx=>{
     insist(ref.size<=maxBytes,'ASSET_TOO_LARGE','写真の転送上限を超えています。元の写真は保持しています');const row=await asset(ref,ctx);
     if(row.status==='storage_deleted'){await request(ref,ctx);throw error('ASSET_REDELIVERY_WAIT','PCまたは別端末から共有写真を再取得しています');}
@@ -142,7 +144,7 @@
      throw error('ASSET_HTTP_'+r.status,'共有写真を取得できません。再取得待ちを保持しています',r.status);}
     const length=r.headers?.get?.('content-length');if(length!==null&&length!==undefined)insist(Number(length)===ref.size,'ASSET_CONTENT_MISMATCH','受信する写真のサイズが登録内容と異なります');
     const blob=await r.blob();ctx.check();await A.verifyBlob(blob,ref);ctx.check();await asset(ref,ctx);return blob;
-   });},
+   },true);},
    acknowledge(input,options){const ref=checkReference(input);return run(options,async ctx=>{
     insist(same(options?.receipt,ref)&&options.receipt.deviceId===scope.deviceId&&options.receipt.verified===true,
      'ASSET_NOT_DURABLE','端末への写真保存を確認する前に受領通知は送れません');
@@ -155,7 +157,7 @@
      String(rows[0].sha256).toLowerCase()===ref.sha256&&Number(rows[0].byte_size)===ref.size&&typeof rows[0].received_at==='string'&&Number.isFinite(Date.parse(rows[0].received_at)),
      'ASSET_ACK_MISMATCH','サーバーに保存された受領記録が対象の写真・端末と一致しません');
     await asset(ref,ctx);return {...copy(ref),deviceId:scope.deviceId,durable:true,serverReceivedAt:rows[0].received_at,source:'sentlog_asset_device_receipts'};
-   });},
+   },true);},
    requestPhoto(input,options){const ref=checkReference(input);return run(options,async ctx=>{await asset(ref,ctx);return request(ref,ctx);});},
    uploadPhoto(descriptor,blob,options){
     const item=copy(descriptor);insist(valid(item?.drawingId)&&valid(item?.photoId)&&(!item.variant||item.variant==='shared')&&blob instanceof root.Blob&&blob.size>0,

@@ -37,6 +37,24 @@ PHOTO_TRACE = r"""(() => {
   window.__deltaPhotoDiagnostics={events,probes};
   const add=(list,value)=>{list.push({at:Date.now(),...value});if(list.length>160)list.shift();};
   const err=e=>({name:e?.name,code:e?.code,message:String(e?.message||e),status:e?.status});
+  const blobPaths=(value,path='$',out=[],seen=new WeakSet())=>{
+    if(out.length>=32||!value||typeof value!=='object'||seen.has(value))return out;
+    seen.add(value);
+    if(value instanceof Blob){out.push({path,size:value.size,type:value.type,file:value instanceof File,name:value.name});return out;}
+    for(const [key,item]of Object.entries(value))blobPaths(item,path+'.'+key,out,seen);
+    return out;
+  };
+  for(const [prototype,methods]of [[IDBObjectStore.prototype,['put','add']],[IDBCursor.prototype,['update']]])for(const method of methods){
+    const native=prototype[method];
+    prototype[method]=function(value,...rest){
+      const store=this instanceof IDBObjectStore?this:this.source,stack=new Error().stack;
+      const details=()=>({stage:'idb.'+method,event:'error',database:store.transaction?.db?.name,store:store.name,
+        key:rest[0]??this.primaryKey,blobs:blobPaths(value),stack});
+      let request;try{request=native.call(this,value,...rest);}catch(error){add(events,{...details(),...err(error)});throw error;}
+      request.addEventListener('error',()=>add(events,{...details(),...err(request.error)}));
+      return request;
+    };
+  }
   function observe(object,method,label,details=()=>({}),inspect=()=>({})){
     const native=object[method];
     object[method]=function(...args){

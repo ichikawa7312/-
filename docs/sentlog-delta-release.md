@@ -109,6 +109,12 @@ acknowledgement. Per-project cutoffs copy only that project's related shared
 files, including retained drawings; unrelated project bytes remain in their
 original store.
 
+Replay claims store file references to their protected WAL row IDs instead of
+duplicating native Blob/File objects in the control store. A failed optional
+compaction keeps the original WAL rows and exact bytes, reports deferred
+maintenance, and does not block an already verified record or its photo
+delivery. Ordinary record-only rows still use the bounded compaction path.
+
 Certified delta capacity cleanup also releases redundant copies from the
 acknowledged file-retention rows, the project's protected migration cutoff,
 sealed migration staging, and the shared-photo store. Each candidate must
@@ -139,6 +145,18 @@ that their bytes are still present. The local clearance marker prevents
 automatic photo download after cleanup and after restart. Explicit restoration
 can rehydrate those entries only through the normal verified file and receipt
 path.
+
+Whole-project restoration writes missing verified files while keeping the
+project detached. Those writes retain their scoped restoration provenance and
+remain unacknowledged in the journal. An opaque proof of the complete catalog,
+archive certificate, exact destination snapshot, and unchanged file generations
+authorizes the final records transaction; unrelated orphan files and normal
+edits cannot use that proof. After commit, cache hydration is acknowledged only
+when the restored record and metadata histories exactly match the existing
+durable replica at the certified cursor with no pending outbox. It creates no
+new edit history, so an archived project can remain archived. A later editor
+change is replayed separately, and ordinary user backup restores keep their
+existing explicit-edit semantics.
 
 The released byte count measures the Blob payloads removed from these stores.
 It is not a promise of an equal immediate reduction in physical disk usage:

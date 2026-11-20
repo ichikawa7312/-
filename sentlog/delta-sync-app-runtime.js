@@ -142,6 +142,12 @@
       const epoch=c.photoGeneration,currentPhotos=()=>!c.photoPauses&&epoch===c.photoGeneration&&!root.SentlogCapacity?.isCleared(cp.id)?current(c):null;
       const checkPhotos=()=>{check(c);insist(currentPhotos(),'DELTA_PHOTOS_PAUSED','容量整理のため写真の同期を停止しています');};
       const task=(async()=>{
+       // A concurrent journal projection can invalidate an otherwise healthy
+       // photo batch. Reconcile the new records while retaining this exact
+       // authentication/cleanup lease; never reuse the cancelled snapshot.
+       for(let attempt=0;attempt<3;attempt++){
+        checkPhotos();
+        try{
         const result=await sync(cp);checkPhotos();if(result.detached)return {enabled:true,detached:true,skipped:true,complete:true,issues:[],message:'端末から外した案件の写真は取得しません'};
         insist(c.controller,'DELTA_APP_INSTALL','写真の同期前に記録の切替が必要です');
         if(!c.assets){
@@ -166,6 +172,11 @@
         const currentState=await c.replica.snapshotWithStatus();checkPhotos();c.snapshotToken=currentState.snapshotToken;
         c.assetExpectedRaw=B.captureProject({records,localProjectId:c.localProjectId}).rawEntries;
         const synced=await c.assets.sync(currentState);checkPhotos();return synced;
+        }catch(error){
+          if(error?.code!=='ASSET_SNAPSHOT_CHANGED'||attempt===2)throw error;
+          checkPhotos();
+        }
+       }
       })();c.assetsFlight=task;try{return await task;}finally{if(c.assetsFlight===task)c.assetsFlight=null;}
     }
     async function suspendPhotos(cp){
@@ -204,7 +215,7 @@
       insist(after.snapshotToken===s.snapshotToken,'DELTA_APP_CHANGED','確認中に記録が更新されました。最新の内容で再確認します');
       c.checkpoint=copy(certificate);c.lastCheckpointAt=Date.now();return copy(certificate);
     }
-    async function archiveProof(cp,job){
+    async function archiveProof(cp,job,{restorationProof}={}){
       const c=await context(cp),certificate=job?.delta_checkpoint;
       insist(certificate?.schema===1&&certificate.projectId===cp.id&&certificate.revision===job.revision&&
         Number.isSafeInteger(certificate.headSeq)&&/^[a-f0-9]{64}$/.test(certificate.payloadSha256||''),
@@ -218,7 +229,13 @@
         check(c);insist(absent(),'DELTA_APP_CHANGED','確認中に端末の記録が変更されました');
         if(records.deltaJournal.bindingFor(cp.client_key)){
           const pending=await records.deltaJournal.pending({scope:c.scope,localProjectId:c.localProjectId});check(c);
-          insist(pending.detached&&!pending.count&&!pending.claimId,'DELTA_ARCHIVE_PENDING','端末から外した案件に未共有の変更があります。入力を保持しています');
+          insist(pending.detached&&!pending.claimId,'DELTA_ARCHIVE_PENDING','端末から外した案件に未共有の変更があります。入力を保持しています');
+          if(!restorationProof)insist(!pending.count,'DELTA_ARCHIVE_PENDING','端末から外した案件に未共有の変更があります。入力を保持しています');
+        }
+        if(restorationProof){
+          insist(typeof records.deltaJournal.validateArchiveRestore==='function','DELTA_ARCHIVE_PENDING','PC復旧の照合機能を確認できません');
+          await records.deltaJournal.validateArchiveRestore(restorationProof,{scope:c.scope,localProjectId:c.localProjectId,
+            certificate,jobId:job.id});check(c);
         }
         insist(absent(),'DELTA_APP_CHANGED','確認中に端末の記録が変更されました');
       }

@@ -1,5 +1,7 @@
 # 差分同期の初期データ照合
 
+> 2026-11-20更新: この文書は部品開発時の設計・検証記録です。実アプリのwriter、共有metadata、写真、PC保管への接続は、その後のapp runtimeと最終builderで実装しました。本文の「未接続」「未実装」は当時の状態を示します。現在の検証結果と公開判断は[本番反映判断](sentlog-delta-production-readiness.md)と[リリース手順](sentlog-delta-release.md)を参照してください。
+
 `sentlog/delta-sync-reconcile.js` は、サーバーで検証済みの baseline と、旧端末の保存内容を保護した `sentlog-legacy-source` を照合する純粋な planner である。旧ストア、IndexedDB、新 replica、クラウドへ書き込まない。実行する I/O は呼び出し側が渡す読み取り専用のページ取得関数だけである。
 
 ## 入力と出力

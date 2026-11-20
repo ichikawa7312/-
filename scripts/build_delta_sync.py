@@ -64,6 +64,17 @@ change(cloud, "        stage='写真の送信';for(const item of collaborationCo
           if(!photos.complete)throw Object.assign(Error(photos.message+(photos.issues.length?'：'+photos.issues[0].message:'')),{code:'DELTA_PHOTOS_PENDING'});
         }
         stage='写真の送信';for(const item of (window.sentlogDeltaOwnsProject(cp.id)?[]:collaborationCollectPhotos(latest))){""")
+change(cloud, "        if(cp.status==='archived'){collaborationFileFailures.delete(id);continue;}",
+       """        if(cp.status==='archived'){
+          // archive.canSync has already required an explicit manual action.
+          // Verified reads and device ACKs remain valid while edits/uploads
+          // and ordinary active-project redelivery stay prohibited.
+          if(window.sentlogDeltaOwnsProject(cp.id)){
+            stage='保管済み写真の保存・受領確認';const photos=await sentlogDeltaApp.photos(cp);context.assertCurrent();
+            if(!photos.complete)throw Object.assign(Error(photos.message+(photos.issues.length?'：'+photos.issues[0].message:'')),{code:'DELTA_PHOTOS_PENDING'});
+          }
+          collaborationFileFailures.delete(id);continue;
+        }""")
 change(cloud, 'function collaborationSessionChanged(){', 'function collaborationSessionChanged(){\n  sentlogDeltaApp.reset();sentlogDeltaStatuses.clear();sentlogDeltaCheckpointTimes.clear();')
 change(cloud, 'function collaborationWake(){', 'function collaborationWake(){sentlogDeltaApp.wake();')
 
@@ -136,11 +147,11 @@ capacity_check = """  function freshRecordCheck(info,cp,mode){
     if(isWholeRemoved(cp.id))throw Error('案件全体を端末から外しています。先に復旧してください。');
     return {raw,ws,p};
   }"""
-change(capacity, capacity_check, """  async function freshRecordCheck(info,cp,mode){
+change(capacity, capacity_check, """  async function freshRecordCheck(info,cp,mode,validateScope){
     if(!window.SentlogDeltaCapacity?.createProof)throw Error('容量整理の照合機能を読み込めません');
     return window.SentlogDeltaCapacity.createProof({records:S,cloudProject:cp,info,
       archiveProof:window.sentlogDeltaArchiveProof,getScope:()=>({ownerId:session()?.user?.id,deviceId:device()}),
-      snapshotText:C.snapshotText,isWholeRemoved,mode:mode==='restore-project'?'restore-project':'cleanup'});
+      snapshotText:C.snapshotText,isWholeRemoved,validateScope,mode:mode==='restore-project'?'restore-project':'cleanup'});
   }""")
 change(capacity, 'const local=freshRecordCheck(info,cp,mode),counter=await countLocal(info.files);',
        'const local=await freshRecordCheck(info,cp,mode),counter=await countLocal(info.files);await local.validate();')
@@ -152,12 +163,26 @@ change(capacity, "for(const d of before.p.drawings||[])writes.push([PREFIX+d.id,
 change(capacity, "await S.archiveAtomic({writes,deleteFiles:counter2.deletions,expectedWorkspace:before.raw,origin:'device'});",
        "await before.validate();\n          await S.archiveAtomic({writes,deleteFiles:counter2.deletions,expectedWorkspace:before.raw,expectedRecords:before.expectedRecords,expectedFileStates:before.expectedFileStates,validate:before.validateSync,origin:'device',operation:'archive-local',context:{localArchive:true,mode,projectId:cp.client_key,jobId:currentInfo.job.id,deltaCheckpoint:currentInfo.job.delta_checkpoint||null}});")
 change(capacity, "if(restoreMode==='files')freshRecordCheck(info,cp,'files');",
-       "if(restoreMode==='files')await freshRecordCheck(info,cp,'files');")
+       "if(restoreMode==='files')await freshRecordCheck(info,cp,'files',resumePhotos.validate);")
 change(capacity, "      const wsText=S.getItem(WORKSPACE);\n      let ws=JSON.parse(wsText||'{\"projects\":[]}');",
-       "      const restoreProof=await freshRecordCheck(info,cp,restoreMode==='project'?'restore-project':'files');\n      const restoredFiles=await countLocal(info.files);\n      if(restoredFiles.missing.length)throw Error('復旧後のファイルが不足しています。記録を変更せず停止しました');\n      await restoreProof.validate();\n      const wsText=restoreProof.raw;\n      let ws=restoreProof.ws;")
+       "      const restoreProof=await freshRecordCheck(info,cp,restoreMode==='project'?'restore-project':'files',resumePhotos.validate);\n      const restoredFiles=await countLocal(info.files);\n      if(restoredFiles.missing.length)throw Error('復旧後のファイルが不足しています。記録を変更せず停止しました');\n      await restoreProof.validate();\n      const wsText=restoreProof.raw;\n      let ws=restoreProof.ws;")
 change(capacity, "      }else freshRecordCheck(info,cp,'files');", "      }")
 change(capacity, "await S.archiveAtomic({writes,deleteFiles:[],expectedWorkspace:wsText,origin:'device'});",
-       "await restoreProof.validate();\n      await S.archiveAtomic({writes,deleteFiles:[],expectedWorkspace:wsText,expectedRecords:restoreProof.expectedRecords,expectedFileStates:restoreProof.expectedFileStates,validate:restoreProof.validateSync,origin:'device',operation:'restore'});")
+       "await restoreProof.validate();\n      await S.archiveAtomic({writes,deleteFiles:[],expectedWorkspace:wsText,expectedRecords:restoreProof.expectedRecords,expectedFileStates:restoreProof.expectedFileStates,restorationProof:restoreProof.restorationProof,validate:()=>restoreProof.validateSync()&&resumePhotos.validate(),origin:'device',operation:'restore'});")
+
+# A restore is tied to one authentication generation from its first request
+# through the final record transaction. Only its exact certified file writes
+# may be proven while a whole-project binding is detached.
+change(capacity, 'if(active)return;active=true;let view,opId=null,finished=false;',
+       'if(active)return;active=true;let view,opId=null,finished=false,resumePhotos=null;')
+change(capacity, "      const mark=current(cp.id),wsStart=JSON.parse(S.getItem(WORKSPACE)||'{\"projects\":[]}');",
+       "      resumePhotos=await window.sentlogDeltaSuspendPhotos(cp);\n      const mark=current(cp.id),wsStart=JSON.parse(S.getItem(WORKSPACE)||'{\"projects\":[]}');")
+change(capacity, "      let received=0;\n      for(const f of info.files){",
+       "      const fileOptions=window.SentlogDeltaCapacity.restoreFileOptions({cloudProject:cp,info,getScope:()=>({ownerId:session()?.user?.id,deviceId:device()}),validateScope:resumePhotos.validate});\n      let received=0;\n      for(const f of info.files){\n        resumePhotos.validate();")
+change(capacity, '        await S.writeFile(f.key,named);',
+       '        await S.writeFile(f.key,named,fileOptions);')
+change(capacity, '    }finally{if(view)view.locked(false);active=false;}',
+       '    }finally{resumePhotos?.();if(view)view.locked(false);active=false;}')
 
 # Capacity cleanup releases only byte-identical, certified archived copies.
 # Stop photograph tasks before taking the final proof so a delayed transfer

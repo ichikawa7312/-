@@ -194,6 +194,8 @@
           const row={version:1,kind:'sentlog-app-intent',id:'wal:'+crypto.randomUUID(),seq,at:Date.now(),
             sourceRevision:revision,mutationKind:kind,contexts:copy(contexts),changes,files:fileChanges,
             workspaceBefore,workspaceAfter,...affected};
+          if(tx.sentlogRestoreProof){const proof=tx.sentlogRestoreProof;
+            row.archiveRestore={version:1,scope:copy(proof.scope),localProjectId:proof.localProjectId,jobId:proof.jobId,certificate:copy(proof.certificate)};}
           log.add(row,seq);
         }
         const archived=archiveContext;
@@ -223,6 +225,7 @@
   }
   function committedBindings(tx){for(const binding of tx.sentlogBindingUpdates||[])bindings.set(binding.localProjectId,binding);
     for(const key of tx.sentlogFileKeys||[])fileGenerations.set(key,(fileGenerations.get(key)||0)+1);
+    if(tx.sentlogRestoreProof)tx.sentlogRestoreProof.status='committed';
     if(tx.sentlogArchiveRelease){tx.sentlogArchiveRelease.status='committed';tx.sentlogArchiveRelease.result={
       releasedCopies:tx.sentlogArchiveRelease.releasedCopies,releasedBytes:tx.sentlogArchiveRelease.releasedBytes,
       avoidedPreimageCopies:tx.sentlogArchiveRelease.current.size};}}
@@ -283,9 +286,9 @@
     const digest=await crypto.subtle.digest('SHA-256',await blob.arrayBuffer());
     return [...new Uint8Array(digest)].map(x=>x.toString(16).padStart(2,'0')).join('')===file.sha256;
   }
-  function archiveReleaseSnapshot(tx,keys,callback){
-    const data={rows:[],binding:null,claim:null,clock:0,meta:null,workspace:null,files:new Map()},s=tx.objectStore(STORE),c=tx.objectStore(CONTROL);
-    let waiting=6+keys.length;
+  function archiveReleaseSnapshot(tx,keys,callback,recordKeys=[]){
+    const data={rows:[],binding:null,claim:null,clock:0,meta:null,workspace:null,files:new Map(),raw:new Map(),recordKeys:new Set()},s=tx.objectStore(STORE),c=tx.objectStore(CONTROL);
+    let waiting=7+keys.length+recordKeys.length;
     const next=()=>{if(--waiting)return;try{callback(data);}catch(error){tx.sentlogJournalError=error;tx.abort();}};
     s.get(META).onsuccess=e=>{data.meta=e.target.result;next();};
     s.get(PREFIX+WS).onsuccess=e=>{data.workspace=e.target.result;next();};
@@ -293,7 +296,9 @@
     c.get('binding:'+tx.sentlogArchiveProject).onsuccess=e=>{data.binding=e.target.result;next();};
     c.get('claim:'+tx.sentlogArchiveProject).onsuccess=e=>{data.claim=e.target.result;next();};
     tx.objectStore(JOURNAL).getAll().onsuccess=e=>{data.rows=e.target.result;next();};
+    s.getAllKeys(IDBKeyRange.bound(PREFIX,PREFIX+'\uffff')).onsuccess=e=>{data.recordKeys=new Set(e.target.result.map(key=>key.slice(PREFIX.length)));next();};
     for(const key of keys)s.get(key).onsuccess=e=>{data.files.set(key,e.target.result);next();};
+    for(const key of recordKeys)s.get(PREFIX+key).onsuccess=e=>{data.raw.set(key,e.target.result??null);next();};
   }
   async function prepareArchivedRelease({scope:inputScope,localProjectId,certificate,jobId,operationId,mode,files,validate}={}){
     assertReady();await settled();window.SentlogRecords.assertSafe();archiveReleaseCheck(validate);
@@ -375,9 +380,107 @@
       tx.sentlogArchiveRelease=plan;callback();
     });
   }
+  // A PC restoration may write its verified files while the project remains
+  // detached. Those file-only intents stay in the WAL until the restored
+  // records have undergone ordinary replica replay; this ticket is not an ACK.
+  const archiveRestorations=new WeakMap();
+  function restorationContext(row,plan){
+    const context=row.contexts?.length===1&&row.contexts[0],proof=context?.context?.archiveRestore;
+    return context?.origin==='device'&&context.operation==='archive-file-restore'&&proof?.version===1&&
+      sameScope(proof.scope,plan.scope)&&proof.localProjectId===plan.localProjectId&&proof.jobId===plan.jobId&&
+      typeof proof.operationId==='string'&&proof.operationId&&
+      archiveReleaseText(proof.certificate)===archiveReleaseText(plan.certificate);
+  }
+  function restorationPending(data,binding){
+    const owners=new Set(workspaceOf(data.workspace).projects.flatMap(p=>(p.drawings||[]).map(d=>d.id)));
+    return data.rows.filter(row=>row.kind==='sentlog-app-intent'&&(
+      row.seq>Math.max(binding.cutoffSeq,binding.lastLocalArchiveSeq||0)&&!(row.projectIds||[]).length&&
+        (row.drawingIds||[]).some(id=>!owners.has(id)&&(data.recordKeys.has(DRAW+id)||row.files?.length))||
+      row.seq>binding.ackedSeq&&(row.projectIds||[]).includes(binding.localProjectId)));
+  }
+  function assertRestorationSnapshot(plan,data){
+    archiveReleaseCheck(plan.validate);
+    if(data.clock!==plan.clock||Number(data.meta?.revision)!==plan.revision||data.workspace!==plan.workspace||data.claim||
+      archiveReleaseText(data.binding)!==plan.bindingText||[...plan.raw].some(([key,value])=>data.raw.get(key)!==value)||
+      [...plan.current].some(([key,value])=>!(data.files.get(key) instanceof Blob)||data.files.get(key).size!==value.size||data.files.get(key).type!==value.type)||
+      [...plan.generations].some(([key,value])=>(fileGenerations.get(key)||0)!==value||fileWriters.get(key)?.size||failedFiles.has(key))||
+      archiveReleaseText(restorationPending(data,data.binding))!==plan.pendingText)
+      throw journalError('JOURNAL_RESTORE_CHANGED','復旧の確認中に記録・ファイル・共有待ちが変わりました');
+  }
+  async function proveArchiveRestore({scope:inputScope,localProjectId,certificate,jobId,files,snapshot,validate}={}){
+    assertReady();await settled();window.SentlogRecords.assertSafe();archiveReleaseCheck(validate);const scope=checkedScope(inputScope);
+    if(typeof localProjectId!=='string'||!localProjectId||typeof jobId!=='string'||!jobId||certificate?.schema!==1||certificate.projectId!==scope.projectId||
+      !Number.isSafeInteger(certificate.headSeq)||certificate.headSeq<0||!Number.isSafeInteger(certificate.revision)||certificate.revision<1||
+      !/^[a-f0-9]{64}$/.test(certificate.payloadSha256||'')||snapshot?.project?.id!==localProjectId||!Array.isArray(snapshot.drawings)||!Array.isArray(files))
+      throw journalError('JOURNAL_RESTORE_PROOF','復旧する保管版と案件の対応を確認できません');
+    const catalog=new Map(),ids=new Set();
+    for(const file of files){
+      if(!file||typeof file.key!=='string'||catalog.has(file.key)||typeof file.assetId!=='string'||!file.assetId||ids.has(file.assetId)||
+        !(file.kind==='drawing'&&/^background:[^:]+$/.test(file.key)||file.kind==='photo'&&/^photo:[^:]+:[^:]+$/.test(file.key))||
+        !Number.isSafeInteger(file.size)||file.size<0||!/^[a-f0-9]{64}$/.test(file.sha256||'')||typeof file.mimeType!=='string'||!file.mimeType)
+        throw journalError('JOURNAL_RESTORE_PROOF','復旧する共有ファイルの一覧が不正です');
+      catalog.set(file.key,copy(file));ids.add(file.assetId);
+    }
+    const drawingIds=[...new Set([...snapshot.drawings,...(snapshot.project.deltaMetadata?.retainedDrawings||[])].map(d=>d?.meta?.id))];
+    if(drawingIds.some(id=>typeof id!=='string'||!id))throw journalError('JOURNAL_RESTORE_PROOF','復旧する図面を確認できません');
+    const recordKeys=['sentlogArchiveLocalV1',...drawingIds.map(id=>DRAW+id)],tx=transaction('readonly'),done=complete(tx);let data;
+    tx.sentlogArchiveProject=localProjectId;archiveReleaseSnapshot(tx,[...catalog.keys()],value=>data=value,recordKeys);await done;archiveReleaseCheck(validate);
+    const binding=data.binding,workspace=workspaceOf(data.workspace);
+    if(!binding||!sameScope(binding.scope,scope)||binding.phase!=='detached'||data.claim||Number(data.meta?.revision)!==revision||
+      binding.archive?.context?.jobId!==jobId||archiveReleaseText(binding.archive?.context?.deltaCheckpoint)!==archiveReleaseText(certificate)||
+      workspace.projects.some(p=>p.id===localProjectId||[...(p.drawings||[]),...(p.deltaMetadata?.retainedDrawings||[]).map(d=>d.meta)].some(d=>drawingIds.includes(d?.id)))||
+      drawingIds.some(id=>data.raw.get(DRAW+id)!==null))
+      throw journalError('JOURNAL_RESTORE_PENDING','端末から外した案件と復旧先を照合できません。記録を保持しています');
+    const plan={status:'prepared',scope,localProjectId,certificate:copy(certificate),jobId,files:catalog,current:new Map(),validate,
+      clock:data.clock,revision:Number(data.meta.revision),workspace:data.workspace,bindingText:archiveReleaseText(binding),raw:data.raw,
+      snapshot:copy(snapshot),recordKeys,generations:new Map([...catalog.keys()].map(key=>[key,fileGenerations.get(key)||0]))};
+    const rows=restorationPending(data,binding);
+    for(const row of rows){
+      if(!Number.isSafeInteger(row.seq)||row.seq<1||!Array.isArray(row.changes)||row.changes.length||!Array.isArray(row.projectIds)||row.projectIds.length||
+        !Array.isArray(row.files)||!row.files.length||row.workspaceBefore!==data.workspace||row.workspaceAfter!==data.workspace||!restorationContext(row,plan))
+        throw journalError('JOURNAL_RESTORE_PENDING','PC復旧以外の未共有変更があります。入力を保持しています');
+      for(const file of row.files){
+        const expected=catalog.get(file.key);
+        if(!expected||file.before!==null||!await archiveReleaseMatches(file.after,expected))
+          throw journalError('JOURNAL_RESTORE_PENDING','PC復旧以外のファイル変更があります。元の内容を保持しています');
+        archiveReleaseCheck(validate);
+      }
+    }
+    for(const [key,expected]of catalog){
+      const blob=data.files.get(key);if(!await archiveReleaseMatches(blob,expected))
+        throw journalError('JOURNAL_RESTORE_FILE_CHANGED','復旧したファイルがPCの保管版と一致しません');
+      archiveReleaseCheck(validate);plan.current.set(key,{size:blob.size,type:blob.type});
+    }
+    plan.pendingText=archiveReleaseText(rows);archiveReleaseCheck(validate);
+    const ticket=Object.freeze({});archiveRestorations.set(ticket,plan);return ticket;
+  }
+  async function validateArchiveRestore(ticket,{scope,localProjectId,certificate,jobId}={}){
+    const plan=archiveRestorations.get(ticket);
+    if(!plan||plan.status!=='prepared'||!sameScope(plan.scope,scope)||plan.localProjectId!==localProjectId||plan.jobId!==jobId||
+      archiveReleaseText(plan.certificate)!==archiveReleaseText(certificate))throw journalError('JOURNAL_RESTORE_PROOF','復旧の保存証明が一致しません');
+    archiveReleaseCheck(plan.validate);await settled();window.SentlogRecords.assertSafe();
+    const tx=transaction('readonly'),done=complete(tx);tx.sentlogArchiveProject=plan.localProjectId;
+    archiveReleaseSnapshot(tx,[...plan.current.keys()],data=>assertRestorationSnapshot(plan,data),plan.recordKeys);await done;archiveReleaseCheck(plan.validate);return true;
+  }
+  function applyArchiveRestore(tx,ticket,{writes,deleteFiles,options},callback){
+    if(!ticket){callback();return;}
+    const plan=archiveRestorations.get(ticket);
+    if(!plan||plan.status!=='prepared'||options.operation!=='restore'||deleteFiles.length)
+      throw journalError('JOURNAL_RESTORE_PROOF','復旧の保存証明を別の操作には使用できません');
+    const expected=new Map(plan.snapshot.drawings.map(d=>[DRAW+d.meta.id,JSON.stringify(d.state)])),before=workspaceOf(plan.workspace);
+    expected.set(WS,JSON.stringify({...before,projects:[...before.projects,plan.snapshot.project]}));
+    const mark=plan.raw.get('sentlogArchiveLocalV1');if(mark!==null){const next=JSON.parse(mark);delete next[plan.scope.projectId];expected.set('sentlogArchiveLocalV1',JSON.stringify(next));}
+    if(writes.length!==expected.size||new Set(writes.map(x=>x[0])).size!==writes.length||writes.some(([key,value])=>expected.get(key)!==value))
+      throw journalError('JOURNAL_RESTORE_PROOF','保管版と異なる記録を復旧しようとしたため停止しました');
+    archiveReleaseCheck(plan.validate);plan.status='committing';tx.sentlogArchiveProject=plan.localProjectId;
+    archiveReleaseSnapshot(tx,[...plan.current.keys()],data=>{
+      assertRestorationSnapshot(plan,data);tx.sentlogRestoreProof=plan;callback();
+    },plan.recordKeys);
+  }
   const deltaJournal={
     version:1,
     prepareArchivedRelease,
+    proveArchiveRestore,validateArchiveRestore,
     archivedReleaseResult(ticket){const plan=archiveReleases.get(ticket);if(!plan||plan.status!=='committed')
       throw journalError('JOURNAL_ARCHIVE_RELEASE','整理処理の完了を確認できません');return copy(plan.result);},
     bindingFor:localProjectId=>copy(bindings.get(localProjectId)||null),
@@ -459,11 +562,17 @@
         const binding=bindingIn(data,localProjectId,scope);if(binding.phase!=='active')return;
         const existing=data.controls.find(x=>x?.kind==='claim'&&x.localProjectId===localProjectId);
         if(existing){if(!sameScope(existing.scope,scope))throw journalError('JOURNAL_SCOPE','処理中の共有先が一致しません');result=existing;return;}
-        const rows=data.rows.filter(x=>x.seq>binding.ackedSeq).sort((a,b)=>a.seq-b.seq);
+        const allRows=data.rows.filter(x=>x.seq>binding.ackedSeq).sort((a,b)=>a.seq-b.seq);
+        const restored=allRows.find(row=>row.archiveRestore?.localProjectId===localProjectId);
+        const rows=restored?allRows.filter(row=>row.seq<=restored.seq):allRows;
         if(!rows.length)return;
-        const beforeRaw=new Map(data.raw);for(const row of [...rows].reverse())for(const change of row.changes)
+        // Hydration is a distinct replay boundary. A later editor write must
+        // be replayed normally after the archived cache has been acknowledged.
+        const afterRaw=new Map(data.raw);if(restored)for(const row of [...allRows].reverse())if(row.seq>restored.seq)for(const change of row.changes)
+          if(change.before===null)afterRaw.delete(change.key);else afterRaw.set(change.key,change.before);
+        const beforeRaw=new Map(afterRaw);for(const row of [...rows].reverse())for(const change of row.changes)
           if(change.before===null)beforeRaw.delete(change.key);else beforeRaw.set(change.key,change.before);
-        const before=projectSnapshot(beforeRaw,localProjectId,binding.cutoff.snapshot),after=projectSnapshot(data.raw,localProjectId,before);
+        const before=projectSnapshot(beforeRaw,localProjectId,binding.cutoff.snapshot),after=projectSnapshot(afterRaw,localProjectId,before);
         const owned=new Set([...before.project.drawings,...after.project.drawings].map(x=>x.id));
         const relevant=rows.filter(row=>row.projectIds.includes(localProjectId)||row.drawingIds.some(id=>owned.has(id)));
         if(!relevant.length)return;
@@ -473,17 +582,24 @@
         result={version:1,kind:'claim',id:'claim:'+crypto.randomUUID(),scope:copy(scope),localProjectId,
           throughSeq:rows[rows.length-1].seq,rowIds:relevant.map(x=>x.id),before,after,expectedRecords,operation,
           actor:copy(binding.actor),at:relevant[relevant.length-1].at,metadataRecords:copy(binding.metadataRecords),
-          replayBaseline:copy(binding.replayBaseline||null),contexts,files:relevant.flatMap(x=>x.files),createdAt:Date.now()};
+          // rowIds pin the immutable WAL bytes until this claim is verified.
+          // Copying native database-backed Blobs into another control row is
+          // unnecessary and can fail on WebKit after a camera File is saved.
+          replayBaseline:copy(binding.replayBaseline||null),contexts,
+          fileReferences:relevant.flatMap(row=>(row.files||[]).map((file,index)=>({rowId:row.id,seq:row.seq,index,key:file.key}))),createdAt:Date.now(),
+          ...(restored?{archiveRestore:copy(restored.archiveRestore)}:{})};
         tx.objectStore(CONTROL).put(result,'claim:'+localProjectId);
       });await done;return copy(result);
     },
-    async verifyReplay({scope:inputScope,claimId,replica,replicaStore,requiredRecords={},projection,normalizedAfter}={}){
+    async verifyReplay({scope:inputScope,claimId,replica,replicaStore,requiredRecords={},projection,normalizedAfter,expectedSnapshotToken}={}){
       const scope=checkedScope(inputScope),D=window.SentlogDeltaSyncCore;
       if(typeof replicaStore?.read!=='function'||typeof replica?.snapshotWithStatus!=='function'||!D?.diffRecord)throw journalError('JOURNAL_PROOF','保存済みの差分履歴を照合する方法がありません');
       let state=null;
       for(let attempt=0;attempt<8;attempt++){
         const before=await replica.snapshotWithStatus(),durable=await replicaStore.read(),after=await replica.snapshotWithStatus();
         if(before.snapshotToken!==after.snapshotToken)continue;
+        if(expectedSnapshotToken!==undefined&&before.snapshotToken!==expectedSnapshotToken)
+          throw journalError('JOURNAL_RESTORE_CHANGED','復旧照合の途中で差分保存が変更されました');
         if(durable?.version!==2||!sameScope(durable.scope,scope)||JSON.stringify(durable)!==JSON.stringify(before.snapshot))
           throw journalError('JOURNAL_PROOF','記録・送信待ち・受信位置が同時に保存されていません');
         state=durable;break;

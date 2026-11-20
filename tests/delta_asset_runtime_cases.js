@@ -27,7 +27,7 @@
    const name=extra.name||'sentlog-delta-assets-test-runtime-'+suffix+'-'+(++serial),files=new Map(extra.files||[]),listeners=new Set();
    const context={scope:clone(scope),token:Object.freeze({}),snapshot:extra.snapshot||snapshot(),auth:0,session:{access_token:'synthetic-token',user:{id:scope.ownerId}}};
    const server={rows:clone(extra.rows===undefined?[base]:extra.rows),objects:new Map(),receipts:new Map(),requests:[],pcReceipts:new Map(),
-    stats:{downloads:0,uploads:0,acks:0,requests:0,assetInserts:0,assetPages:0},hook:null,active:true,online:true,lostUpload:false,ackTamper:false,
+    stats:{downloads:0,uploads:0,acks:0,requests:0,assetInserts:0,assetPages:0},hook:null,active:true,projectStatus:extra.projectStatus||'active',online:true,lostUpload:false,ackTamper:false,
     rotate(event='TOKEN_REFRESHED',next=context.session){context.auth++;context.session=next;for(const listener of [...listeners])listener(event,next);}};
    for(const row of server.rows)if(row.status!=='storage_deleted')server.objects.set(row.storage_path,bytes);
    function filtered(rows,params){
@@ -42,7 +42,7 @@
     const u=new URL(url),path=u.pathname,method=options.method||'GET';
     if(server.hook){const intercepted=await server.hook({url:u,path,method,options,server,context});if(intercepted!==undefined)return intercepted;}
     if(path==='/auth/v1/user')return response({id:scope.ownerId});
-    if(path==='/rest/v1/sentlog_projects')return response([{id:scope.projectId,owner_id:scope.ownerId,status:'active',client_key:'local-project'}]);
+    if(path==='/rest/v1/sentlog_projects')return response([{id:scope.projectId,owner_id:scope.ownerId,status:server.projectStatus,client_key:'local-project'}]);
     if(path==='/rest/v1/sentlog_devices')return response([{id:scope.deviceId,owner_id:scope.ownerId,active:server.active,device_type:'browser',last_seen_at:new Date().toISOString()}]);
     if(path==='/rest/v1/sentlog_assets'){
      if(method==='POST'){
@@ -107,7 +107,7 @@
    const fileAdapter=extra.localFiles||local,events=[];
    const runtime=R.createRuntime({scope,store,transport,localFiles:fileAdapter,currentScope:()=>context.scope,currentSnapshotToken:()=>context.token,
     authGeneration:()=>context.auth,subscribeAuth:fn=>{listeners.add(fn);return()=>listeners.delete(fn);},
-    onPhotoReceived:e=>events.push(e),timeoutMs:extra.timeoutMs||1000});
+    onPhotoReceived:e=>events.push(e),timeoutMs:extra.timeoutMs||1000,allowArchivedRestore:extra.allowArchivedRestore===true});
    return {name,files,local:local,context,server,transport,store,runtime,events,scope:clone(scope),bytes,base:clone(base),
     sync:options=>runtime.sync({snapshot:context.snapshot,snapshotToken:context.token,...options}),
     ref:row=>T.referenceFromAsset(row||base,scope),close(){runtime.close();transport.close();store.close();}};
@@ -160,6 +160,52 @@
   await test('local retained bytes can acknowledge a cloud-deleted asset without an unnecessary PC request',async()=>{
    const f=await fixture({rows:[{...clone(base),status:'storage_deleted'}],files:[['photo:drawing:photo',bytes]]});try{
     assert((await f.sync()).complete);equal([f.server.stats.requests,f.server.stats.downloads,f.server.stats.acks],[0,0,1]);}finally{f.close();}
+  });
+  await test('archived projects can read shared bytes and acknowledge a verified PC-restored archived copy',async()=>{
+   const downloaded=await fixture({projectStatus:'archived'});try{
+    equal((await downloaded.transport.listPhotos()).length,1);assert((await downloaded.sync()).complete);
+    equal([downloaded.server.stats.downloads,downloaded.server.stats.acks,downloaded.server.stats.requests],[1,1,0]);
+    await A.verifyBlob(downloaded.files.get('photo:drawing:photo'),downloaded.ref());
+    equal((await downloaded.store.read(downloaded.ref())).phase,'acknowledged');
+   }finally{downloaded.close();}
+   const restored=await fixture({projectStatus:'archived',allowArchivedRestore:true,rows:[{...clone(base),status:'storage_deleted'}],files:[['photo:drawing:photo',bytes]]});
+   try{
+    const ref=restored.ref();await restored.store.ensure(ref);await restored.store.received(ref,bytes);
+    await restored.store.acknowledged(ref,{...clone(ref),deviceId:scope.deviceId,durable:true});
+    await restored.store.releaseArchivedCopies({scope,localProjectId:'local-project',jobId:'archived-job',operationId:'cleanup-operation',
+     certificate:{schema:1,projectId:scope.projectId,headSeq:0,revision:1,payloadSha256:'f'.repeat(64)},
+     files:[{key:'photo:drawing:photo',assetId:ref.assetId,kind:'photo',sha256:ref.sha256,size:ref.size,mimeType:ref.mimeType}],validate:()=>true});
+    equal((await restored.store.read(ref)).phase,'archived');assert((await restored.sync()).complete);
+    const row=await restored.store.read(ref);equal([row.phase,row.remoteReceipt.source],['acknowledged','sentlog_asset_device_receipts']);
+    assert(row.archiveRelease,'the previous certified release must remain auditable');await A.verifyBlob(row.blob,ref);
+    equal([restored.server.stats.downloads,restored.server.stats.uploads,restored.server.stats.requests,restored.server.stats.acks],[0,0,0,1]);
+   }finally{restored.close();}
+  });
+  await test('archived projects cannot upload or register a new shared photo',async()=>{
+   const f=await fixture({projectStatus:'archived',rows:[],files:[['photo:drawing:photo',bytes]]});try{
+    await expect(()=>f.transport.uploadPhoto({drawingId:'drawing',photoId:'photo',variant:'shared',mimeType:bytes.type},bytes),'ASSET_PROJECT_FORBIDDEN');
+    await expect(()=>f.sync(),'ASSET_PROJECT_FORBIDDEN');
+    equal([f.server.stats.downloads,f.server.stats.uploads,f.server.stats.assetInserts,f.server.stats.acks,f.server.stats.requests],[0,0,0,0,0]);
+    equal(f.server.rows.length,0);await A.verifyBlob(f.files.get('photo:drawing:photo'),f.ref());
+   }finally{f.close();}
+  });
+  await test('archived cloud-deleted bytes direct the user to capacity restore without an ordinary redelivery request',async()=>{
+   const f=await fixture({projectStatus:'archived',rows:[{...clone(base),status:'storage_deleted'}]});try{
+    const result=await f.sync();assert(!result.complete&&result.pending>0);
+    const issue=result.issues.find(item=>item.code==='ASSET_ARCHIVED_RESTORE_REQUIRED');assert(issue&&issue.message.includes('PCからこの端末に復旧'));
+    equal([f.server.stats.downloads,f.server.stats.requests,f.server.stats.acks,f.server.stats.uploads],[0,0,0,0]);
+    equal(f.server.requests.length,0);equal((await f.store.read(f.ref())).phase,'waiting');
+    await expect(()=>f.transport.requestPhoto(f.ref()),'ASSET_PROJECT_FORBIDDEN');equal(f.server.stats.requests,0);
+   }finally{f.close();}
+  });
+  await test('an archived Storage 404 cannot start active-project photo redelivery',async()=>{
+   const f=await fixture({projectStatus:'archived'});try{
+    f.server.objects.clear();const result=await f.sync();assert(!result.complete&&result.pending>0);
+    assert(result.issues.some(item=>item.code==='ASSET_ARCHIVED_RESTORE_REQUIRED'));
+    equal([f.server.stats.downloads,f.server.stats.requests,f.server.stats.acks,f.server.stats.uploads],[1,0,0,0]);
+    equal(f.server.requests.length,0);equal((await f.store.read(f.ref())).phase,'waiting');
+    assert(!f.files.has('photo:drawing:photo'));equal(f.events.length,0);
+   }finally{f.close();}
   });
   await test('deleted photo history remains included even when the current record has no visible photo',async()=>{
    const state=snapshot(),key=D.keyOf('drawing','record'),heads=state.records[key].collab.photos.photo.revisions.map(r=>r.id);
