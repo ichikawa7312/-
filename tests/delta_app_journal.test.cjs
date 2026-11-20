@@ -67,6 +67,7 @@ function runtimeFixture(f,e,options={}){
     authGeneration:()=>generation,subscribeAuth:fn=>{auth.add(fn);return()=>auth.delete(fn);},deviceId:()=>scope.deviceId,actor:()=>copy(actor),
     install:async args=>{installedRevision=args.revision;await f.records.deltaJournal.activate({scope,localProjectId,baselineId:'baseline',baselineSnapshot:e.cutoff.snapshot,
       metadataRecords:M.metadataRecords(e.read().records)});enabled=true;},
+    canProject:options.canProject,
     applyProjection:async(cp,projection,context)=>{if(options.beforeProjection)await options.beforeProjection();return projectionWriter(f)(projection,context);},
     readFile:async key=>(await f.disk()).get(key),withFileLock:async(key,fn)=>fn(),
     factories:{provider:()=>({}),transport:()=>transport,store:()=>store,...options.factories}});
@@ -212,6 +213,41 @@ await test('version-1 reopen is rejected and per-key writer capabilities reflect
   const token={operation:'asset'},task=f.records.writeFile('photo:drawing-1:q',new Blob(['guarded']),{ownerToken:token,validate:()=>f.records.writerState('photo:drawing-1:q',{ownerToken:token}).exclusive});
   assert.equal(f.records.writerState('photo:drawing-1:q').exclusive,false);assert.equal(f.records.writerState('photo:drawing-1:q',{ownerToken:token}).exclusive,true);await task;
 });
+await test('busy UI skips capture and projection computation, then resumes with the latest durable replica',async()=>{
+  const f=await app(),e=await bind(f,{metadata:true});let busy=true;const c=e.controller({canProject:()=>!busy});
+  const originals={capture:B.captureProject,project:c.bridge.project,snapshot:c.replica.snapshotWithStatus},calls={capture:0,project:0,snapshot:0};
+  B.captureProject=(...args)=>{calls.capture++;return originals.capture(...args);};
+  c.bridge.project=(...args)=>{calls.project++;return originals.project(...args);};
+  c.replica.snapshotWithStatus=(...args)=>{calls.snapshot++;return originals.snapshot(...args);};
+  try{
+    for(let index=0;index<3;index++){const result=await c.controller.project();assert.equal(result.deferred,true);assert.equal(result.applied,false);}
+    assert.deepEqual(calls,{capture:0,project:0,snapshot:0});
+    const base=(await c.replica.snapshot()).records[D.keyOf('drawing-1','record-1')];
+    const after=C.applyLocalEdit(base,{...base,type:'待機中に受信した種別'},{actor,at:50,idFactory:()=> 'busy-received-type'});
+    await c.replica.change({drawingId:'drawing-1',before:base,after,eventId:'busy-received-event'});
+    busy=false;assert.equal((await c.controller.project()).applied,true);assert(calls.capture>0);assert(calls.project>0);
+    assert.equal(f.capture().drawings[0].state.shapes[0].type,'待機中に受信した種別');
+  }finally{B.captureProject=originals.capture;c.bridge.project=originals.project;c.replica.snapshotWithStatus=originals.snapshot;c.close();}
+});
+await test('UI becoming busy while records settle skips capture and projection before expensive work',async()=>{
+  const f=await app(),e=await bind(f,{metadata:true}),started=waitPoint(),release=waitPoint();let busy=false;
+  const c=e.controller({canProject:()=>!busy}),originalSettled=f.records.settled,originalCapture=B.captureProject,originalProject=c.bridge.project;
+  let captures=0,projections=0;f.records.settled=async()=>{started.resolve();await release.promise;return originalSettled();};
+  B.captureProject=(...args)=>{captures++;return originalCapture(...args);};c.bridge.project=(...args)=>{projections++;return originalProject(...args);};
+  try{const work=c.controller.project();await started.promise;busy=true;release.resolve();const result=await work;
+    assert.equal(result.deferred,true);assert.equal(captures,0);assert.equal(projections,0);
+  }finally{f.records.settled=originalSettled;B.captureProject=originalCapture;c.bridge.project=originalProject;c.close();}
+});
+await test('busy UI still durably replays and acknowledges local edits before deferring rendering',async()=>{
+  const f=await app(),e=await bind(f,{metadata:true});let busy=true,applied=0;
+  const c=e.controller({canProject:()=>!busy,applyProjection:async(...args)=>{applied++;return projectionWriter(f)(...args);}});
+  try{edit(f,'入力中にも履歴を保存');await f.records.settled();const drained=await c.controller.drain();
+    assert.equal(drained.acknowledged,1);assert.equal(drained.projection.deferred,true);assert.equal(applied,0);
+    assert.equal((await f.records.deltaJournal.pending({scope,localProjectId})).count,0);
+    assert.equal(e.read().outbox.length,1);assert(e.read().records[D.keyOf('drawing-1','record-1')].memo.includes('入力中にも履歴を保存'));
+    busy=false;assert.equal((await c.controller.project()).applied,true);assert.equal(applied,1);
+  }finally{c.close();}
+});
 await test('delayed UI projection cannot overwrite a newer durable replica snapshot',async()=>{
   const f=await app(),e=await bind(f,{metadata:true}),started=waitPoint(),release=waitPoint();let hold=true;
   const c=e.controller({applyProjection:async(projection,options)=>{if(hold){hold=false;started.resolve();await release.promise;}return projectionWriter(f)(projection,options);}});
@@ -220,6 +256,23 @@ await test('delayed UI projection cannot overwrite a newer durable replica snaps
   await c.replica.change({drawingId:'drawing-1',before:base,after,eventId:'received-event'});release.resolve();
   const result=await work;assert.equal(result.applied,false);assert.equal(f.capture().drawings[0].state.shapes[0].type,'腐食');
   assert.equal((await c.controller.project()).applied,true);assert.equal(f.capture().drawings[0].state.shapes[0].type,'新しい種別');c.close();
+});
+await test('actual runtime uses fresh selected binding state, rejects foreign identity, and forwards UI readiness',async()=>{
+  const f=await app(),e=await bind(f,{metadata:true});let busy=true,checks=0,reads=0;
+  const r=runtimeFixture(f,e,{canProject:cp=>{assert.equal(cp.client_key,localProjectId);checks++;return !busy;}}),journal=f.records.deltaJournal;
+  const originalList=journal.listBindings,originalFull=journal.bindingFor,originalRead=journal.readBindingState,originalGetAll=IDBObjectStore.prototype.getAll;
+  journal.listBindings=()=>{throw Error('Routine runtime checks must not scan all bindings');};
+  journal.bindingFor=()=>{throw Error('Routine runtime checks must not hydrate historical cutoffs');};
+  journal.readBindingState=async(...args)=>{reads++;return originalRead.apply(journal,args);};
+  IDBObjectStore.prototype.getAll=function(...args){if(this.name===CONTROL)throw Error('Routine runtime checks must not load all cutoff file rows');return originalGetAll.apply(this,args);};
+  try{assert.equal((await r.runtime.inspect(r.cp)).enabled,true);assert.equal(reads,1);
+    const busyResult=await r.runtime.sync(r.cp);assert.equal(busyResult.deferred,true);assert.equal(busyResult.applied,false);assert(checks>0);assert.equal(reads,3);
+    busy=false;assert.equal((await r.runtime.sync(r.cp)).applied,true);
+    const db=await f.records.openFilesDatabase();try{await new Promise((resolve,reject)=>{const tx=db.transaction(CONTROL,'readwrite'),s=tx.objectStore(CONTROL);
+      s.get('binding:'+localProjectId).onsuccess=event=>{const binding=event.target.result;binding.scope.ownerId='other-owner';binding.cutoff.scope.ownerId='other-owner';s.put(binding,'binding:'+localProjectId);};
+      tx.oncomplete=resolve;tx.onabort=()=>reject(tx.error);});}finally{db.close();}
+    await assert.rejects(()=>r.runtime.inspect(r.cp),error=>error.code==='DELTA_APP_BINDING');
+  }finally{journal.listBindings=originalList;journal.bindingFor=originalFull;journal.readBindingState=originalRead;IDBObjectStore.prototype.getAll=originalGetAll;r.runtime.close();}
 });
 await test('actual app runtime resumes a staged journal against the latest inspected server revision',async()=>{
   const f=await app(),e=await bind(f,{metadata:true,staging:true,serverRevision:7});edit(f,'切替中も保存した入力');await f.records.settled();

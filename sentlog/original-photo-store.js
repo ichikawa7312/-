@@ -55,7 +55,7 @@
   if(!root.document||root.SentlogOriginalPhotos)return;
 
   const DB='sentlog-original-photos-v1', VERSION=1, PHOTOS='photos', META='meta';
-  let connection=null, ui=null, uiBusy=false;
+  let connection=null, ui=null, uiBusy=false, uiRefreshRequested=false;
   const keyFor=(drawingId,photoId)=>`${drawingId}:${photoId}`;
   function openDb(){
     if(connection)return Promise.resolve(connection);
@@ -168,16 +168,16 @@
   function jpegName(name){const {stem}=splitName(safeSegment(name,'photo.jpg'));return stem+'.jpg';}
   async function makeSharedPhoto(file){
     if(!file||!String(file.type||'').startsWith('image/'))throw Error('画像ファイルではありません');
-    const url=URL.createObjectURL(file);let img;
+    const url=URL.createObjectURL(file);let img,canvas;
     try{
       img=await new Promise((resolve,reject)=>{const im=new Image();im.onload=()=>resolve(im);im.onerror=()=>reject(Error('写真を確認用画像に変換できません'));im.src=url;});
       const naturalW=img.naturalWidth||img.width,naturalH=img.naturalHeight||img.height;
       const ratio=Math.min(1,SHARED_MAX_SIDE/Math.max(naturalW,naturalH));
       const w=Math.max(1,Math.round(naturalW*ratio)),h=Math.max(1,Math.round(naturalH*ratio));
-      const canvas=document.createElement('canvas');canvas.width=w;canvas.height=h;const ctx=canvas.getContext('2d');if(!ctx)throw Error('確認用画像を作成できません');
+      canvas=document.createElement('canvas');canvas.width=w;canvas.height=h;const ctx=canvas.getContext('2d');if(!ctx)throw Error('確認用画像を作成できません');
       ctx.drawImage(img,0,0,w,h);
       const blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/jpeg',SHARED_JPEG_QUALITY));if(!(blob instanceof Blob))throw Error('確認用画像を作成できません');return blob;
-    }finally{URL.revokeObjectURL(url);if(img){img.onload=null;img.onerror=null;img.src='';}}
+    }finally{if(canvas){canvas.width=1;canvas.height=1;}URL.revokeObjectURL(url);if(img){img.onload=null;img.onerror=null;img.src='';}}
   }
 
   async function crc32Blob(blob){
@@ -224,12 +224,14 @@
   }
 
   async function refreshUI(){
-    if(!ui||uiBusy)return;uiBusy=true;try{
+    if(!ui||!ui.section.open||ui.section.closest('#sentlogSettingsModal')?.getAttribute('aria-hidden')==='true')return;
+    if(uiBusy){uiRefreshRequested=true;return;}uiBusy=true;try{
       const s=await stats();ui.total.textContent=`原本 ${s.count}枚 / ${bytes(s.bytes)}`;ui.pending.textContent=`未書き出し ${s.unexportedCount}枚 / ${bytes(s.unexportedBytes)}　・　書き出し確認済み ${s.exportedCount}枚`;
       const selected=ui.project.value;ui.project.replaceChildren(new Option('すべての案件',''));
       for(const p of projectOptions())ui.project.append(new Option(p.name,p.id));if([...ui.project.options].some(o=>o.value===selected))ui.project.value=selected;else if(typeof activeProjectId!=='undefined'&&activeProjectId&&[...ui.project.options].some(o=>o.value===activeProjectId))ui.project.value=activeProjectId;
       ui.cleanup.disabled=s.exportedCount===0;
-    }catch(e){ui.message.textContent='原本写真の状態を確認できません：'+(e.message||e);}finally{uiBusy=false;}
+    }catch(e){ui.message.textContent='原本写真の状態を確認できません：'+(e.message||e);}finally{uiBusy=false;
+      if(uiRefreshRequested){uiRefreshRequested=false;void refreshUI();}}
   }
   function installUI(){
     if(ui||document.getElementById('sentlogOriginalPhotosSection'))return;
@@ -239,6 +241,15 @@
     const storage=document.getElementById('sentlogStorageSection'),backup=modal.querySelector('#sentlogBackupSection');if(storage)storage.after(section);else if(backup)backup.before(section);else modal.appendChild(section);
     ui={section,total:section.querySelector('[data-role=total]'),pending:section.querySelector('[data-role=pending]'),project:section.querySelector('[data-role=project]'),message:section.querySelector('[data-role=message]'),cleanup:section.querySelector('[data-role=cleanup]')};
     section.addEventListener('toggle',()=>{if(section.open)refreshUI();});
+    const settings=section.closest('#sentlogSettingsModal');
+    if(settings&&typeof MutationObserver==='function'){
+      let visible=settings.getAttribute('aria-hidden')!=='true';
+      new MutationObserver(()=>{
+        const next=settings.getAttribute('aria-hidden')!=='true';
+        if(next===visible)return;visible=next;
+        if(visible&&section.open)void refreshUI();
+      }).observe(settings,{attributes:true,attributeFilter:['aria-hidden','class']});
+    }
     section.querySelector('[data-role=today]').onclick=()=>exportNext('today','').catch(e=>{ui.message.textContent='書き出しに失敗しました。原本は削除していません：'+(e.message||e);});
     section.querySelector('[data-role=projectExport]').onclick=()=>exportNext('all',ui.project.value).catch(e=>{ui.message.textContent='書き出しに失敗しました。原本は削除していません：'+(e.message||e);});
     ui.cleanup.onclick=async()=>{if(!confirm('書き出し確認済みの原本だけを、この端末から削除します。未書き出し原本は削除しません。よろしいですか？'))return;try{const r=await deleteExported();ui.message.textContent=`${r.count}枚（${bytes(r.bytes)}）の書き出し確認済み原本を端末から削除しました。`;await refreshUI();}catch(e){ui.message.textContent='削除できませんでした：'+(e.message||e);}};

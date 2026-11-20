@@ -12,6 +12,7 @@ const sentlogDeltaApp=window.SentlogDeltaAppRuntime.createRuntime({
   withFileLock:(key,fn)=>window.SentlogSyncTraffic.withFileLock(key,fn),
   onStatus:status=>{sentlogDeltaStatuses.set(status.localProjectId,status);},
   onPhotoReceived:({reference})=>window.sentlogSyncView?.photoReceived(reference.drawingId),
+  canProject:cp=>window.sentlogSyncView?.isBusy?.(cp.client_key)!==true,
   async applyProjection(cp,projection,options){
     const local=workspace().projects.find(p=>p.id===cp.client_key),expectedLocal=JSON.stringify(local||null);
     const result=await window.sentlogSyncView.commit(cp,{payload:projection},expectedLocal,
@@ -23,7 +24,9 @@ const sentlogDeltaApp=window.SentlogDeltaAppRuntime.createRuntime({
 window.sentlogDeltaRuntime=sentlogDeltaApp;
 window.sentlogDeltaOwnsProject=id=>{
   if(sentlogDeltaApp.isActive(id))return true;
-  return window.SentlogRecords.deltaJournal.listBindingsSync().some(b=>b.localProjectId===id||b.scope.projectId===id);
+  const journal=window.SentlogRecords.deltaJournal;
+  return (typeof journal.listBindingStatesSync==='function'?journal.listBindingStatesSync():journal.listBindingsSync())
+    .some(b=>b.localProjectId===id||b.scope.projectId===id);
 };
 window.sentlogDeltaOwnsPhoto=(projectId,drawingId)=>{
   if(projectId&&window.sentlogDeltaOwnsProject(projectId))return true;

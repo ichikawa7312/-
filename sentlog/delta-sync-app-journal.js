@@ -12,7 +12,7 @@
   function problem(code,message){return Object.assign(Error(message),{code});}
   function insist(ok,code,message){if(!ok)throw problem(code,message);}
   function createController({records,scope:inputScope,localProjectId,replica,replicaStore,bridge,metadata,
-    currentScope,onStatus=()=>{},applyProjection,afterReplicaCommit}={}){
+    currentScope,onStatus=()=>{},applyProjection,canProject=()=>true,afterReplicaCommit}={}){
     const scope=Object.freeze(Object.fromEntries(SCOPE.map(k=>[k,inputScope?.[k]]))),journal=records?.deltaJournal;
     insist(B&&D&&scope.projectId&&journal?.version===1&&typeof journal.claim==='function'&&
       typeof replicaStore?.read==='function'&&typeof replica?.snapshotWithStatus==='function'&&typeof replica?.isSnapshotCurrent==='function'&&
@@ -31,11 +31,15 @@
       catch(error){const binding=journal.bindingFor(localProjectId),fallback=binding?.replayBaseline?.after||binding?.cutoff?.snapshot;
         if(!fallback)throw error;return copy(fallback);}
     }
+    const bindingState=()=>typeof journal.bindingStateFor==='function'?journal.bindingStateFor(localProjectId):journal.bindingFor(localProjectId);
+    function projectionDeferred(){if(canProject()!==false)return false;status({deferred:true});return true;}
     async function project(){
       active();if(projectFlight)return projectFlight;
-      if(journal.bindingFor(localProjectId)?.phase==='detached'){status({deferred:true,phase:'detached'});return {applied:false,deferred:true,detached:true};}
+      if(bindingState()?.phase==='detached'){status({deferred:true,phase:'detached'});return {applied:false,deferred:true,detached:true};}
+      if(projectionDeferred())return {applied:false,deferred:true};
       projectFlight=(async()=>{
-        await records.settled();active();const template=observedSnapshot();
+        await records.settled();active();if(projectionDeferred())return {applied:false,deferred:true};
+        const template=observedSnapshot();
         const keys=new Set([WS,...template.project.drawings.map(d=>DRAW+d.id)]),expectedRecords=[...keys].map(k=>[k,records.getItem(k)]);
         const before=await replica.snapshotWithStatus();active();
         const projection=await bridge.project(template);active();
@@ -45,7 +49,7 @@
           !records.pending&&expectedRecords.every(([key,value])=>records.getItem(key)===value);
         if(!validate()){status({deferred:true});return {applied:false,deferred:true};}
         const context={scope:copy(scope),localProjectId,expectedRecords,metadataRecords,validate,
-          throughSeq:journal.bindingFor(localProjectId)?.ackedSeq||0};
+          throughSeq:bindingState()?.ackedSeq||0};
         let result;
         if(applyProjection)result=await applyProjection(copy(projection),context);
         else{

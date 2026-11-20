@@ -136,6 +136,24 @@
     });
     return result;
   }
+  // Ownership and lifecycle checks do not consume migration snapshots or
+  // retained photo bytes. Keep their public value deliberately small; the
+  // full readers below still validate/hydrate cutoffs when they are required.
+  function bindingState(binding){
+    if(!binding)return null;
+    const cutoff=binding.cutoff;
+    if(binding.version!==1||binding.kind!=='binding'||typeof binding.id!=='string'||!binding.id||
+      typeof binding.localProjectId!=='string'||!binding.localProjectId||!['staging','active','detached'].includes(binding.phase)||
+      !Number.isSafeInteger(binding.cutoffSeq)||binding.cutoffSeq<0||!Number.isSafeInteger(binding.ackedSeq)||binding.ackedSeq<binding.cutoffSeq||
+      (binding.baselineId!=null&&(typeof binding.baselineId!=='string'||!binding.baselineId))||
+      (binding.phase!=='staging'&&!binding.baselineId)||cutoff?.version!==1||cutoff.kind!=='sentlog-journal-cutoff'||
+      cutoff.bindingId!==binding.id||cutoff.localProjectId!==binding.localProjectId||cutoff.cutoffSeq!==binding.cutoffSeq||
+      (cutoff.serverRevision!=null&&(!Number.isSafeInteger(cutoff.serverRevision)||cutoff.serverRevision<1))||
+      !sameScope(cutoff.scope,binding.scope))throw journalError('JOURNAL_BINDING','案件の保存接続を確認できません');
+    return {version:1,kind:'sentlog-binding-state',id:binding.id,localProjectId:binding.localProjectId,
+      scope:checkedScope(binding.scope),phase:binding.phase,baselineId:binding.baselineId??null,
+      cutoffSeq:binding.cutoffSeq,ackedSeq:binding.ackedSeq,serverRevision:cutoff.serverRevision};
+  }
   function cacheControls(rows){
     const files=new Map(rows.filter(row=>row?.kind==='cutoff-file').map(row=>[row.id,row]));
     const next=new Map(rows.filter(row=>row?.kind==='binding').map(row=>[row.localProjectId,row]));
@@ -581,6 +599,18 @@
       throw journalError('JOURNAL_ARCHIVE_RELEASE','整理処理の完了を確認できません');return copy(plan.result);},
     bindingFor:localProjectId=>hydrateBinding(bindings.get(localProjectId)),
     listBindingsSync:()=>[...bindings.values()].map(binding=>hydrateBinding(binding)),
+    bindingStateFor:localProjectId=>bindingState(bindings.get(localProjectId)),
+    listBindingStatesSync:()=>[...bindings.values()].map(bindingState),
+    async readBindingState(localProjectId){
+      assertReady();if(typeof localProjectId!=='string'||!localProjectId)
+        throw journalError('JOURNAL_PROJECT','端末内の案件を確認できません');
+      await connect();const binding=await readControl('binding:'+localProjectId);
+      if(binding!==undefined&&(!binding||binding.localProjectId!==localProjectId))
+        throw journalError('JOURNAL_BINDING','案件の保存接続を確認できません');
+      const state=bindingState(binding);
+      if(binding)bindings.set(localProjectId,binding);else bindings.delete(localProjectId);
+      return state;
+    },
     assertFence({scope,localProjectId}={}){
       const b=bindings.get(localProjectId);
       if(!initialized||!connection||connection.version!==DB_VERSION||!sameScope(b?.scope,scope)||failure)
