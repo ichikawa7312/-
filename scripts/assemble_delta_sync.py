@@ -141,6 +141,10 @@ BEGIN
   IF missing IS NOT NULL THEN
     RAISE EXCEPTION 'DELTA_RELEASE_LEGACY_TABLES_REQUIRED: %',missing USING ERRCODE='55000';
   END IF;
+  IF NOT EXISTS(SELECT 1 FROM pg_catalog.pg_class
+    WHERE oid=pg_catalog.to_regclass('realtime.messages') AND relrowsecurity) THEN
+    RAISE EXCEPTION 'DELTA_RELEASE_REALTIME_RLS_REQUIRED' USING ERRCODE='55000';
+  END IF;
   IF pg_catalog.to_regprocedure('auth.uid()') IS NULL OR
      pg_catalog.to_regprocedure('realtime.send(jsonb,text,text,boolean)') IS NULL OR
      pg_catalog.to_regprocedure('realtime.topic()') IS NULL OR
@@ -163,6 +167,10 @@ READINESS = r"""
 DO $sentlog_release_readiness$
 DECLARE item record;
 BEGIN
+  IF NOT EXISTS(SELECT 1 FROM pg_catalog.pg_class
+    WHERE oid=pg_catalog.to_regclass('realtime.messages') AND relrowsecurity) THEN
+    RAISE EXCEPTION 'DELTA_RELEASE_REALTIME_RLS_REQUIRED' USING ERRCODE='55000';
+  END IF;
   FOR item IN SELECT p.oid,p.proname,p.prosecdef FROM pg_catalog.pg_proc p
     JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
     WHERE n.nspname='public' AND p.proname LIKE 'sentlog_delta_%'

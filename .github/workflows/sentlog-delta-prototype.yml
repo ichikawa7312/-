@@ -113,6 +113,7 @@ jobs:
           node tests/delta_checkpoint_pglite.cjs
           node tests/delta_app_backend.test.cjs
           node tests/delta_release_pglite.cjs
+          node tests/delta_realtime_privileges.cjs
           node tests/delta_batch_paging.test.cjs
           node tests/delta_group_sync.test.cjs
           node tests/delta_group_contract.cjs
@@ -214,6 +215,9 @@ jobs:
         run: psql -XqAt -v ON_ERROR_STOP=1 -f tests/delta_reconcile_sql_fixture.sql | node tests/delta_reconcile_sql_contract.cjs --stdin --sql | psql -X -v ON_ERROR_STOP=1
       - name: Prepare isolated Realtime policy fixtures
         run: psql -v ON_ERROR_STOP=1 -f tests/delta_transport_fixture.sql
+      - name: Verify managed Realtime RLS without table-owner privileges
+        shell: bash
+        run: node tests/delta_realtime_privileges.cjs --sql | psql -X -v ON_ERROR_STOP=1
       - name: Compile authenticated bounded delta reads and private notification policies
         run: psql -v ON_ERROR_STOP=1 -f docs/sentlog-delta-transport-prototype.sql
       - name: Verify registered device, archive and private channel enforcement

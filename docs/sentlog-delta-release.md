@@ -73,6 +73,17 @@ statement timeout. It ends with privilege/guard readiness checks and
 a failed installation leaves no partial release. The notification follows
 [Supabase's schema refresh guidance](https://supabase.com/kb/troubleshooting/refresh-postgrest-schema).
 
+Supabase owns `realtime.messages` through its internal
+`supabase_realtime_admin` role. The application migration reads the catalog to
+require that RLS is already enabled; it does not alter the managed table.
+The three delta authorization policies remain unchanged. Supabase delegates
+policy management to `postgres` through `supautils`, but does not delegate
+`ALTER TABLE`. This follows the official
+[Realtime ownership error guidance](https://supabase.com/kb/troubleshooting/realtime-must-be-owner-of-table-messages)
+and the [managed schema restriction](https://supabase.com/changelog/realtime-schema-locked-down-against-modification).
+The isolated Realtime fixtures enable RLS when they create their substitute
+table, matching the prerequisite on the hosted service.
+
 ## Deployment order and preconditions
 
 1. Confirm that the target has the actual installed legacy protocols and the

@@ -1,6 +1,8 @@
 -- Local fixture for Supabase Realtime's authorization probe, not a live table.
 CREATE TABLE realtime.messages(id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   extension text NOT NULL, topic text NOT NULL DEFAULT '', payload jsonb);
+-- Hosted Supabase owns this table and enables RLS before application setup.
+ALTER TABLE realtime.messages ENABLE ROW LEVEL SECURITY;
 CREATE FUNCTION realtime.topic() RETURNS text LANGUAGE sql STABLE SECURITY INVOKER SET search_path=''
 AS $$ SELECT nullif(pg_catalog.current_setting('test.realtime.topic',true),'') $$;
 GRANT USAGE ON SCHEMA realtime TO authenticated,anon;

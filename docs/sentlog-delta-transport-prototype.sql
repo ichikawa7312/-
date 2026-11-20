@@ -57,7 +57,16 @@ GRANT EXECUTE ON FUNCTION public.sentlog_delta_list_v1(uuid,uuid,bigint,integer)
 -- The data RPC above still rechecks active project and registered device.
 -- Keep existing records/asset channel policies intact. A restrictive policy
 -- prevents an unrelated broad permissive policy from opening delta topics.
-ALTER TABLE realtime.messages ENABLE ROW LEVEL SECURITY;
+-- Supabase owns this managed table. The migration role may manage its policies
+-- through the platform's delegated policy grants, but cannot ALTER the table.
+-- RLS must already be enabled by Realtime; do not change or bypass that guard.
+DO $sentlog_delta_realtime_rls$
+BEGIN
+  IF NOT EXISTS(SELECT 1 FROM pg_catalog.pg_class
+    WHERE oid=pg_catalog.to_regclass('realtime.messages') AND relrowsecurity) THEN
+    RAISE EXCEPTION 'DELTA_REALTIME_RLS_REQUIRED' USING ERRCODE='55000';
+  END IF;
+END $sentlog_delta_realtime_rls$;
 DROP POLICY IF EXISTS sentlog_delta_receive_own ON realtime.messages;
 CREATE POLICY sentlog_delta_receive_own ON realtime.messages
   FOR SELECT TO authenticated USING (

@@ -64,6 +64,7 @@ const payload=index=>({project:{id:'release-local-'+index,name:'Release project 
     const replacements=manifest.components.filter(x=>x.selection!=='transaction body');
     check('legacy upgrades select only the three required private functions',C.equal(replacements.map(x=>x.selection),[
       'sentlog_archive_private.gateway','sentlog_collaboration_private.guard_snapshot','sentlog_archive_private.capacity_gateway']));
+    check('release does not ALTER the platform-owned Realtime table',! /\bALTER\s+TABLE\s+(?:ONLY\s+)?realtime\.messages\b/i.test(sql));
     await db.exec(read('tests/delta_release_legacy_fixture.sql'));
     for(const file of legacyFiles)await db.exec(read(file));
     const schemaReloads=[];await db.listen('pgrst',payload=>schemaReloads.push(payload));
@@ -88,6 +89,11 @@ const payload=index=>({project:{id:'release-local-'+index,name:'Release project 
     check('legacy management list distinguishes a retired project before deployment',(await archive('list',null)).some(x=>x.id===retired&&x.retired===true));
     await asAdmin();
     const before=await image(businessTables,true),legacyBefore=await legacyDefinitions();
+    await db.exec('ALTER TABLE realtime.messages DISABLE ROW LEVEL SECURITY');
+    await fail('preflight refuses a managed Realtime table with RLS disabled',()=>db.exec(sql),'55000','DELTA_RELEASE_REALTIME_RLS_REQUIRED');
+    await db.exec('ROLLBACK');
+    check('failed Realtime preflight neither enables RLS nor installs any delta object',await value("SELECT NOT relrowsecurity AND to_regnamespace('sentlog_delta_private') IS NULL AS result FROM pg_class WHERE oid='realtime.messages'::regclass"));
+    await db.exec('ALTER TABLE realtime.messages ENABLE ROW LEVEL SECURITY');
     await db.exec('ALTER TABLE public.sentlog_project_snapshots DISABLE TRIGGER sentlog_collaboration_snapshot_guard');
     await fail('preflight refuses an installed but disabled collaboration guard',()=>db.exec(sql),'55000','DELTA_RELEASE_COLLABORATION_GUARD_REQUIRED');
     await db.exec('ROLLBACK');
@@ -104,6 +110,13 @@ const payload=index=>({project:{id:'release-local-'+index,name:'Release project 
     check('successful commit notifies PostgREST of the new RPC signatures',C.equal(schemaReloads,['reload schema']));
     check('successful install preserves every existing business row byte-for-byte',C.equal(before,await image(businessTables,true)));
     check('successful install preserves legacy wrappers, guards, grants and realtime policy',C.equal(legacyBefore,await legacyDefinitions()));
+    check('successful release retains platform RLS and installs both restrictive topic guards',await value(`SELECT
+      (SELECT relrowsecurity FROM pg_class WHERE oid='realtime.messages'::regclass) AND
+      (SELECT count(*)=3 AND count(*) FILTER(WHERE polpermissive)=1 AND
+        bool_and(CASE polname WHEN 'sentlog_delta_receive_own' THEN polpermissive AND polcmd='r'
+          WHEN 'sentlog_delta_topic_guard' THEN NOT polpermissive AND polcmd='r'
+          WHEN 'sentlog_delta_no_client_send' THEN NOT polpermissive AND polcmd='a' ELSE false END)
+       FROM pg_policy WHERE polrelid='realtime.messages'::regclass AND polname LIKE 'sentlog_delta_%') AS result`));
     check('install creates no active heads, rollout grants, baselines or migration receipts',await value(`SELECT
       NOT EXISTS(SELECT 1 FROM sentlog_delta_private.heads) AND NOT EXISTS(SELECT 1 FROM sentlog_delta_private.rollouts)
       AND NOT EXISTS(SELECT 1 FROM sentlog_delta_private.baselines) AND NOT EXISTS(SELECT 1 FROM sentlog_delta_private.device_migrations) AS result`));
