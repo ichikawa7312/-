@@ -608,6 +608,18 @@
       if(binding!==undefined&&(!binding||binding.localProjectId!==localProjectId))
         throw journalError('JOURNAL_BINDING','案件の保存接続を確認できません');
       const state=bindingState(binding);
+      if(binding){
+        // Another tab may have activated this binding after our startup. The
+        // replay/ACK APIs still need its protected file cache when returning a
+        // full binding, so populate that cache once before exposing new refs.
+        let refresh=bindings.get(localProjectId)?.id!==binding.id;
+        if(!refresh)for(const [index,file]of (binding.cutoff.files||[]).entries()){
+          if(!Object.prototype.hasOwnProperty.call(file,'valueRef'))continue;
+          try{checkedCutoffFile(binding,file,index);}
+          catch(error){if(error.code!=='JOURNAL_CUTOFF_REF')throw error;refresh=true;break;}
+        }
+        if(refresh){await this.listBindings();return bindingState(bindings.get(localProjectId));}
+      }
       if(binding)bindings.set(localProjectId,binding);else bindings.delete(localProjectId);
       return state;
     },

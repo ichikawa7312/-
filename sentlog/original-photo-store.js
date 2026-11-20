@@ -131,8 +131,16 @@
     qr.onsuccess=()=>{oldRow=qr.result;finish();};qb.onsuccess=()=>{blob=qb.result;finish();};qn.onsuccess=()=>{existing=qn.result;finish();};qnb.onsuccess=()=>{existingBlob=qnb.result;finish();};
     try{await done;}catch(e){throw error||e;}return result;
   }
-  async function listMeta(){
-    const db=await openDb();return new Promise((resolve,reject)=>{const q=db.transaction(META,'readonly').objectStore(META).getAll();q.onsuccess=()=>resolve(q.result||[]);q.onerror=()=>reject(q.error);});
+  async function listMeta(drawingId){
+    // Existing keys are drawingId + ':' + photoId. A bounded read needs no
+    // schema migration; the exact check excludes drawings sharing that prefix.
+    const scoped=typeof drawingId==='string'&&drawingId.length>0;
+    const range=scoped?IDBKeyRange.bound(drawingId+':',drawingId+';',false,true):undefined;
+    const db=await openDb();return new Promise((resolve,reject)=>{
+      const q=db.transaction(META,'readonly').objectStore(META).getAll(range);
+      q.onsuccess=()=>resolve(scoped?(q.result||[]).filter(row=>row.drawingId===drawingId):(q.result||[]));
+      q.onerror=()=>reject(q.error);
+    });
   }
   async function stats(){const rows=await listMeta();return {bytes:rows.reduce((n,m)=>n+(Number(m.size)||0),0),count:rows.length,unexportedBytes:rows.filter(m=>!m.exportedAt).reduce((n,m)=>n+(Number(m.size)||0),0),unexportedCount:rows.filter(m=>!m.exportedAt).length,exportedCount:rows.filter(m=>!!m.exportedAt).length};}
   async function drawingStats(drawingId){

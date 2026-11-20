@@ -222,7 +222,7 @@
       if(op.photoIds.length&&op.photoIds.length!==incoming.length)
         throw error('CAPTURE_CHANGED','再試行する写真の枚数が元の操作と異なります');
       if(journal.inputs[op.inputId]===op.operationId)delete journal.inputs[op.inputId];
-      const existingOriginals=op.photoIds.length?[]:await originals.listMeta();
+      const existingOriginals=op.photoIds.length?[]:await originals.listMeta(validTarget(op.target)?op.target.drawingId:undefined);
       // A duplicate callback may have allocated this operation during the read.
       if(op.photoIds.length&&op.photoIds.length!==incoming.length)
         throw error('CAPTURE_CHANGED','再試行する写真の枚数が元の操作と異なります');

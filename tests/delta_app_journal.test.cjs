@@ -274,6 +274,36 @@ await test('actual runtime uses fresh selected binding state, rejects foreign id
     await assert.rejects(()=>r.runtime.inspect(r.cp),error=>error.code==='DELTA_APP_BINDING');
   }finally{journal.listBindings=originalList;journal.bindingFor=originalFull;journal.readBindingState=originalRead;IDBObjectStore.prototype.getAll=originalGetAll;r.runtime.close();}
 });
+await test('actual runtime replays a binding activated in another tab without losing cutoff hydration',async()=>{
+  // The writer permits environments without navigator.locks. An already-open
+  // observer must discover both an active binding and its protected files.
+  const seed=await app(),protectedFile=new Blob(['protected PDF before either tab binds'],{type:'application/pdf'});
+  await seed.records.writeFile('background:drawing-1',protectedFile);
+  const observer=await app({factory:seed.factory,local:seed.local});
+  assert.equal(observer.records.deltaJournal.bindingFor(localProjectId),null);
+  const other=await app({factory:seed.factory,local:seed.local}),bound=await bind(other,{metadata:true});
+  assert.equal(bound.cutoff.files.length,1);
+  const r=runtimeFixture(observer,bound,{canProject:()=>false}),originalGetAll=IDBObjectStore.prototype.getAll;
+  let fullControlReads=0;
+  IDBObjectStore.prototype.getAll=function(...args){if(this.name===CONTROL)fullControlReads++;return originalGetAll.apply(this,args);};
+  try{
+    assert.equal((await r.runtime.inspect(r.cp)).enabled,true);
+    const discoveryReads=fullControlReads;
+    const memo='別画面で接続した案件への追記';edit(observer,memo);await observer.records.settled();
+    const synced=await r.runtime.sync(r.cp);
+    assert.equal(synced.enabled,true);assert.equal(synced.deferred,true);assert.equal(synced.pending,1);
+    assert(bound.read().records[D.keyOf('drawing-1','record-1')].memo.includes(memo));
+    const wal=await observer.records.deltaJournal.pending({scope,localProjectId});
+    assert.equal(wal.count,0);assert.equal(wal.claimId,null,'Replica proof must durably acknowledge the local edit');
+    const binding=observer.records.deltaJournal.bindingFor(localProjectId),saved=binding.cutoff.files.find(file=>file.key==='background:drawing-1');
+    assert(binding.ackedSeq>binding.cutoffSeq);assert(saved?.value instanceof Blob);
+    assert.equal(saved.value.type,protectedFile.type);
+    assert.deepEqual(new Uint8Array(await saved.value.arrayBuffer()),new Uint8Array(await protectedFile.arrayBuffer()));
+    assert.equal(discoveryReads,1,'First discovery hydrates the previously unknown cutoff references once');
+    for(let index=0;index<3;index++)assert.equal((await r.runtime.inspect(r.cp)).enabled,true);
+    assert.equal(fullControlReads,1,'Known binding status and ordinary replay must stay on the lightweight path');
+  }finally{IDBObjectStore.prototype.getAll=originalGetAll;r.runtime.close();}
+});
 await test('actual app runtime resumes a staged journal against the latest inspected server revision',async()=>{
   const f=await app(),e=await bind(f,{metadata:true,staging:true,serverRevision:7});edit(f,'切替中も保存した入力');await f.records.settled();
   const r=runtimeFixture(f,e,{staging:true});const result=await r.runtime.sync(r.cp);

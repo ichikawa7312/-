@@ -24,7 +24,7 @@ function fixture(previous){
         photos:[],memo:'Memo '+id,autoLabel:'Record '+id}]}));
   }
   const control={failOriginal:false,failShared:false,failConvert:false,failJournal:false,exclusive:false,makeGate:null,
-    makeEntered:null,decodes:0,maxDecodes:0,conversions:0,originalWrites:0,attachmentEvents:0,history:[],metaReads:0,digests:0,journalWrites:0};
+    makeEntered:null,decodes:0,maxDecodes:0,conversions:0,originalWrites:0,attachmentEvents:0,history:[],metaReads:0,metaScopes:[],digests:0,journalWrites:0};
   const listeners=new Set(),inputs={},windowListeners={},documentListeners={};let serial=0;
   for(const id of ['cameraInput','photoInput'])inputs[id]={id,files:[],value:'',listeners:{},
     addEventListener(type,fn){(this.listeners[type]||=([])).push(fn);},
@@ -48,7 +48,8 @@ function fixture(previous){
       data.meta.set(key,row);return clone(row);
     },
     async getOriginal(did,pid){return data.originals.get(did+':'+pid)||null;},
-    async listMeta(){control.metaReads++;return [...data.meta.values()].map(clone);},
+    async listMeta(drawingId){control.metaReads++;control.metaScopes.push(drawingId??null);
+      return [...data.meta.values()].filter(row=>!drawingId||row.drawingId===drawingId).map(clone);},
     async updatePhotoAssociation(did,pid,association){
       const row=data.meta.get(did+':'+pid);assert(row,'Original must be durable before its association');
       assert.equal(row.photoAssociation.operationId,association.operationId);
@@ -165,8 +166,9 @@ async function test(name,fn){await fn();passed++;console.log('PASS '+name);}
   });
 
   await test('missing chooser intent stages targetUnknown instead of attaching to the current selection',async()=>{
-    const f=fixture();await tick();f.inputs.photoInput.files=[file('unknown.png')];
+    const f=fixture();await tick();f.control.metaScopes.length=0;f.inputs.photoInput.files=[file('unknown.png')];
     await f.inputs.photoInput.emit('change');
+    assert(f.control.metaScopes.length>0&&f.control.metaScopes.every(scope=>scope===null),'Unknown targets retain full filename discovery');
     const rows=await f.api.listPending();assert.equal(rows.length,1);assert.equal(rows[0].target,null);assert(rows[0].originalSaved);
     assert.equal(f.saved().shapes[0].photos.length,0);assert.equal(f.control.conversions,0);
     const photoId=rows[0].photoId;f.select('b');const explicitTarget=f.api.captureTarget();
@@ -349,6 +351,23 @@ async function test(name,fn){await fn();passed++;console.log('PASS '+name);}
     const meta=[...f.data.meta.values()][0],saved=f.saved().shapes[0].photos[0];
     assert.equal(meta.photoAssociation.photo.sha256,saved.sha256);
     assert.equal(saved.sha256.length,64);
+  });
+
+  await test('capture filename checks retain legacy names and read only the target drawing',async()=>{
+    const f=fixture();await tick();
+    const rows=[
+      {key:'drawing-a:legacy',drawingId:'drawing-a',projectId:'project-a',shapeId:'same-record',exportName:'capture.png'},
+      {key:'drawing-a:other-record',drawingId:'drawing-a',projectId:'project-a',shapeId:'other-record',exportName:'capture_2.png'},
+      {key:'drawing-b:other-drawing',drawingId:'drawing-b',projectId:'project-b',shapeId:'same-record',exportName:'capture_2.png'}
+    ];
+    for(const row of rows)f.data.meta.set(row.key,row);
+    f.control.metaScopes.length=0;
+    const result=await f.api.register([file('capture.png')],f.api.prepareCapture(f.api.captureTarget()));
+    assert.equal(result[0].status,'attached');
+    assert.deepEqual(f.control.metaScopes,['drawing-a']);
+    assert.equal(f.saved().shapes[0].photos[0].name,'capture_2.jpg');
+    assert.equal(f.data.meta.get('drawing-a:'+result[0].photoId).exportName,'capture_2.png');
+    for(const row of rows)assert.deepEqual(f.data.meta.get(row.key),row);
   });
 
   await test('pending UI snapshots do not scan originals or mutate authoritative capture state',async()=>{

@@ -67,7 +67,7 @@ async function fixture({two=false,history=false,projectCount=two?2:1,recordCount
    baselineProof:{migrationId:'old-'+id,sourceFingerprint:'a'.repeat(64)},replayBaseline:{before:copy(s),after:copy(s)}};
   oldBindings.set(id,copy(binding));await write(factory,CONTROL,'binding:'+id,binding);
  }
- return {factory,memory,files,snapshots,oldBindings,restart:()=>application(factory,memory)};
+ return {factory,memory,files,snapshots,oldBindings,observer:first,restart:()=>application(factory,memory)};
 }
 function noEmbeddedPuts(extra){
  const originals={put:IDBObjectStore.prototype.put,add:IDBObjectStore.prototype.add},calls=[];
@@ -148,6 +148,20 @@ let passed=0;async function test(name,fn){await fn();passed++;console.log('PASS'
   await hydratedSame(journal.bindingFor('a'),f.oldBindings.get('a'));
   await hydratedSame((await journal.listBindings()).find(row=>row.localProjectId==='b'),f.oldBindings.get('b'));
  });
+ await test('a newly observed cross-tab binding populates its protected cutoff cache once before status becomes visible',async()=>{
+  const f=await fixture({two:true,history:true}),observer=f.observer;assert.equal(observer.records.deltaJournal.bindingFor('a'),null);
+  const writer=f.restart();await writer.records.init();const journal=observer.records.deltaJournal,first=observeBindingReads(observer);
+  try{const state=await journal.readBindingState('a');assert.equal(state.phase,'active');
+   assert.equal(first.counts.gets,1);assert.equal(first.counts.getAll,1);assert.equal(first.counts.cutoffRows,4);
+  }finally{first.close();}
+  await hydratedSame(journal.bindingFor('a'),f.oldBindings.get('a'));
+  await hydratedSame(journal.bindingFor('b'),f.oldBindings.get('b'));
+  const steady=observeBindingReads(observer,{forbidHydration:true});try{
+   for(let index=0;index<3;index++)assert.equal((await journal.readBindingState('a')).phase,'active');
+   assert.deepEqual(steady.counts,{gets:3,getAll:0,rows:3,cutoffRows:0,bindingClones:0,blobClones:0,keys:['binding:a','binding:a','binding:a']});
+  }finally{steady.close();}
+  await replay(observer);await hydratedSame(journal.bindingFor('a'),f.oldBindings.get('a'));
+ });
  await test('fresh binding status observes other-tab changes and rejects malformed identity without replacing the last valid state',async()=>{
   const f=await fixture({two:true}),app=f.restart();await app.records.init();const journal=app.records.deltaJournal,raw=await disk(f.factory);
   const next={...raw.get('binding:a'),phase:'detached',ackedSeq:raw.get('binding:a').ackedSeq+3};
@@ -161,7 +175,11 @@ let passed=0;async function test(name,fn){await fn();passed++;console.log('PASS'
    assert.equal(journal.bindingStateFor('a').phase,'detached');assert(C.equal(journal.bindingStateFor('a').scope,scopeFor('a')));
   }
   const foreign={...next,scope:{...next.scope,ownerId:'another-owner'},cutoff:{...next.cutoff,scope:{...next.scope,ownerId:'another-owner'}}};
-  await write(f.factory,CONTROL,'binding:a',foreign);assert.equal((await journal.readBindingState('a')).scope.ownerId,'another-owner');
+  await write(f.factory,CONTROL,'binding:a',foreign);
+  await assert.rejects(()=>journal.readBindingState('a'),error=>error.code==='JOURNAL_CUTOFF_REF');
+  assert(C.equal(journal.bindingStateFor('a').scope,scopeFor('a')),'a mismatched foreign cutoff cannot replace the valid cache');
+  for(const file of foreign.cutoff.files){const row=raw.get(file.valueRef);await write(f.factory,CONTROL,file.valueRef,{...row,scope:copy(foreign.scope)});}
+  assert.equal((await journal.readBindingState('a')).scope.ownerId,'another-owner');
   const db=await open(f.factory);try{await new Promise((resolve,reject)=>{const tx=db.transaction(CONTROL,'readwrite');
    tx.objectStore(CONTROL).delete('binding:a');tx.oncomplete=resolve;tx.onabort=()=>reject(tx.error);});}finally{db.close();}
   assert.equal(await journal.readBindingState('a'),null);assert.equal(journal.bindingStateFor('a'),null);

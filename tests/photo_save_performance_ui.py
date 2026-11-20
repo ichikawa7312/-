@@ -125,7 +125,13 @@ TRACE = r"""()=>{
   observe(SentlogCollaborationPhotos,'register','photos.register');
   for(const [name,counter]of [['render','renderCalls'],['renderSelectedPhotos','photoListRenders']]){
     const native=window[name];if(typeof native!=='function')continue;
-    window[name]=function(...args){if(active)active[counter]++;return native.apply(this,args);};
+    window[name]=function(...args){
+      const scope=active,started=performance.now();if(scope)scope[counter]++;
+      const result=native.apply(this,args);
+      if(scope&&scope===active)stage('ui.'+name+'.sync',performance.now()-started);
+      if(result?.then)result.then(()=>{if(scope&&scope===active)stage('ui.'+name+'.elapsed',performance.now()-started);},()=>{});
+      return result;
+    };
   }
   const clone=window.structuredClone;
   window.structuredClone=function(value,...rest){if(active){active.cloneCalls++;if(value?.cutoff)active.cutoffClones++;}
@@ -145,11 +151,14 @@ TRACE = r"""()=>{
           (this.objectStore?'index:'+this.name+':':'')+name;
         const started=performance.now();let request;
         try{request=native.apply(this,args);}catch(error){if(scope)scope.idbErrors.push(error.name);throw error;}
-        if(scope){const count=scope.idb[key]||={calls:0,rows:0,cutoffRows:0,ms:0};count.calls++;
+        if(scope){const count=scope.idb[key]||={calls:0,rows:0,cutoffRows:0,unboundedCalls:0,boundedCalls:0,
+          unboundedRows:0,boundedRows:0,ms:0};count.calls++;
+          if(name==='getAll'||name==='openCursor')count[args[0]==null?'unboundedCalls':'boundedCalls']++;
           request.addEventListener('success',()=>{
             if(scope!==active)return;const value=request.result;
             const rows=Array.isArray(value)?value:value==null?[]:name==='openCursor'?[value.value]:[value];
             count.rows+=rows.length;count.cutoffRows+=rows.filter(row=>row?.kind==='cutoff-file').length;
+            if(name==='getAll'||name==='openCursor')count[args[0]==null?'unboundedRows':'boundedRows']+=rows.length;
             count.ms+=performance.now()-started;
           });request.addEventListener('error',()=>scope.idbErrors.push(request.error?.name));}
         return request;
@@ -158,12 +167,18 @@ TRACE = r"""()=>{
   }
   const encode=HTMLCanvasElement.prototype.toBlob;
   HTMLCanvasElement.prototype.toBlob=function(callback,...args){
-    const scope=active,started=performance.now(),pixels=this.width*this.height;
+    const scope=active,started=performance.now(),pixels=this.width*this.height,dimensions=this.width+'x'+this.height;
     if(scope){scope.canvasEncodes++;scope.canvasEncodedPixels+=pixels;scope.maxCanvasPixels=Math.max(scope.maxCanvasPixels,pixels);}
-    return encode.call(this,blob=>{if(scope===active)stage('canvas.toBlob',performance.now()-started);callback(blob);},...args);
+    return encode.call(this,blob=>{if(scope===active){const elapsed=performance.now()-started;
+      stage('canvas.toBlob',elapsed);stage('canvas.toBlob.'+dimensions,elapsed);}callback(blob);},...args);
   };
   const draw=CanvasRenderingContext2D.prototype.drawImage;
-  CanvasRenderingContext2D.prototype.drawImage=function(...args){if(active)active.drawCalls++;return draw.apply(this,args);};
+  CanvasRenderingContext2D.prototype.drawImage=function(...args){
+    const scope=active,started=performance.now();if(scope)scope.drawCalls++;
+    const result=draw.apply(this,args);
+    if(scope&&scope===active)stage('canvas.drawImage.'+(args[0] instanceof HTMLVideoElement?'video':'image'),performance.now()-started);
+    return result;
+  };
   const src=Object.getOwnPropertyDescriptor(HTMLImageElement.prototype,'src');
   Object.defineProperty(HTMLImageElement.prototype,'src',{...src,set(value){if(active&&value)active.imageLoads++;return src.set.call(this,value);}});
   let longTasks=null;
@@ -181,6 +196,34 @@ TRACE = r"""()=>{
       const result=active;result.elapsedMs=performance.now()-result.started;delete result.started;active=null;
       return result;}
   };
+}"""
+
+
+SCOPED_METADATA = r"""async()=>{
+  // Drawing IDs may contain a colon. A key-range neighbor can then share the
+  // prefix, so the public API must also match the row's drawingId exactly.
+  const did='perf:query:target',rows=[
+    {drawingId:did,photoId:'own',exportName:'same.jpg',photoAssociation:{version:1}},
+    {drawingId:did,photoId:'legacy',exportName:'legacy.jpg'},
+    {drawingId:did+':child',photoId:'nested',exportName:'same.jpg'},
+    {drawingId:did+'-neighbor',photoId:'similar',exportName:'same.jpg'},
+    {drawingId:did+'2',photoId:'suffix',exportName:'same.jpg'}
+  ].map(row=>({...row,key:row.drawingId+':'+row.photoId}));
+  const db=await new Promise((resolve,reject)=>{const q=indexedDB.open('sentlog-original-photos-v1');
+    q.onsuccess=()=>resolve(q.result);q.onerror=()=>reject(q.error);});
+  const change=remove=>new Promise((resolve,reject)=>{
+    const tx=db.transaction('meta','readwrite'),store=tx.objectStore('meta');
+    tx.oncomplete=resolve;tx.onabort=()=>reject(tx.error);
+    for(const row of rows)remove?store.delete(row.key):store.put(row);
+  });
+  try{
+    await change(false);
+    const found=await SentlogOriginalPhotos.listMeta(did),ids=found.map(row=>row.photoId).sort();
+    if(JSON.stringify(ids)!==JSON.stringify(['legacy','own']))throw Error('Scoped metadata includes another drawing or loses legacy metadata');
+    const all=await SentlogOriginalPhotos.listMeta();
+    if(rows.some(row=>!all.some(value=>value.key===row.key)))throw Error('Unscoped recovery must retain all drawing metadata');
+    return {exactDrawing:true,colonAndPrefixNeighbors:true,legacyMetadata:true,unscopedRecovery:true};
+  }finally{await change(true);db.close();}
 }"""
 
 
@@ -209,7 +252,7 @@ VERIFY = r"""async ({before,expectedTotal})=>{
 }"""
 
 
-def profile_case(playwright, engine, built_root, workload, encoded, shots):
+def profile_case(playwright, engine, built_root, workload, encoded, shots, *, expect_scoped_meta=False):
     class Handler(SimpleHTTPRequestHandler):
         def log_message(self, *args):
             pass
@@ -262,6 +305,10 @@ def profile_case(playwright, engine, built_root, workload, encoded, shots):
                     assert not result['idbErrors'], result
                     assert result['canvasEncodes'] >= 2 and result['maxCanvasPixels'] == WIDTH*HEIGHT, result
                     assert result['digests']['calls'] >= 2, 'Trace must include generated and stored shared-photo hashes'
+                    if expect_scoped_meta:
+                        scan = result['idb']['sentlog-original-photos-v1/meta/getAll']
+                        assert scan['unboundedCalls'] == 0 and scan['boundedCalls'] == 1, scan
+                        assert scan['rows'] == workload['selectedPhotos']+index, scan
                     result['durableOriginalBytes'] = proof['originalBytes']
                     result['durableSharedBytes'] = proof['sharedBytes']
                     results.append(result);proofs.append(proof)
@@ -281,8 +328,11 @@ def profile_case(playwright, engine, built_root, workload, encoded, shots):
                       await (await SentlogOriginalPhotos.getOriginal('memo-plan-a',id)).arrayBuffer()))]
                       .map(v=>v.toString(16).padStart(2,'0')).join('')""", proof['photoId'])
                     assert digest == proof['originalSha256']
+                # Run boundary checks after timing so candidate-only query
+                # validation does not warm the measured storage workload.
+                scoped_proof = page.evaluate(SCOPED_METADATA) if expect_scoped_meta else None
                 assert not errors, errors
-                return {'workload': workload, 'shots': results, 'durableProofs': proofs}
+                return {'workload': workload, 'shots': results, 'durableProofs': proofs, 'scopedMetadataProof': scoped_proof}
             finally:
                 context.close()
     finally:
@@ -295,7 +345,11 @@ def summarize(case):
         return sum(value['rows'] for name, value in shot['idb'].items()
                    if name == 'sentlog-original-photos-v1/meta/getAll')
     return {'medianSaveMs': round(statistics.median(s['elapsedMs'] for s in shots), 2),
-            'fullOriginalMetadataRows': sum(scans(s) for s in shots),
+            'originalMetadataRows': sum(scans(s) for s in shots),
+            'fullOriginalMetadataRows': sum(s['idb'].get('sentlog-original-photos-v1/meta/getAll', {}).get('unboundedRows', 0) for s in shots),
+            'boundedOriginalMetadataRows': sum(s['idb'].get('sentlog-original-photos-v1/meta/getAll', {}).get('boundedRows', 0) for s in shots),
+            'originalMetadataFullScans': sum(s['idb'].get('sentlog-original-photos-v1/meta/getAll', {}).get('unboundedCalls', 0) for s in shots),
+            'originalMetadataBoundedScans': sum(s['idb'].get('sentlog-original-photos-v1/meta/getAll', {}).get('boundedCalls', 0) for s in shots),
             'digestCalls': sum(s['digests']['calls'] for s in shots),
             'digestBytes': sum(s['digests']['bytes'] for s in shots),
             'imageLoads': sum(s['imageLoads'] for s in shots),
@@ -328,7 +382,8 @@ def main():
             if index % 2:
                 versions.reverse()
             for version, root in versions:
-                result = profile_case(playwright, args.engine, root.resolve(), workload, encoded, args.shots)
+                result = profile_case(playwright, args.engine, root.resolve(), workload, encoded, args.shots,
+                                      expect_scoped_meta=version == 'candidate')
                 report['results'].setdefault(version, {})[workload['name']] = result
                 print('PHOTO_PERFORMANCE '+json.dumps({'engine': args.engine, 'version': version,
                       'workload': workload['name'], **summarize(result)}, ensure_ascii=False), flush=True)
