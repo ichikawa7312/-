@@ -82,17 +82,23 @@ BEGIN
  r:=e#>'{patch,comments,c,revisions,0}';
  p:='{"comments":{},"fields":{"crackWidthMm":{"revisions":[]}},"photos":{},"deletion":[]}';
  p:=jsonb_set(p,'{fields,crackWidthMm,revisions}',jsonb_build_array((r-'text'-'deleted')||'{"value":0.3}'));
+ p:=jsonb_set(p,'{fields,crackWidthMm,revisions,0,id}','"revision:valid-field"');
  INSERT INTO delta_valid_shapes VALUES('field',e||jsonb_build_object('patch',p));
  p:='{"comments":{},"fields":{},"photos":{"photo-1":{"revisions":[]}},"deletion":[]}';
  p:=jsonb_set(p,'{photos,photo-1,revisions}',jsonb_build_array((r-'text')||jsonb_build_object('value',
    jsonb_build_object('id','photo-1','name','写真.jpg','size',12,'sha256',repeat('a',64)))));
+ p:=jsonb_set(p,'{photos,photo-1,revisions,0,id}','"revision:valid-photo"');
  INSERT INTO delta_valid_shapes VALUES('photo',e||jsonb_build_object('patch',p));
  p:='{"comments":{},"fields":{},"photos":{},"deletion":[]}';
  p:=jsonb_set(p,'{deletion}',jsonb_build_array((r-'text')||'{"observed":[]}'));
+ p:=jsonb_set(p,'{deletion,0,id}','"revision:valid-deletion"');
  INSERT INTO delta_valid_shapes VALUES('deletion',e||jsonb_build_object('patch',p));
  p:='{"id":"survey-1","collab":{"version":1,"comments":{},"fields":{},"photos":{},"deletion":{"revisions":[]}}}';
  p:=jsonb_set(p,'{collab,deletion,revisions}',jsonb_build_array((r-'text')||'{"observed":[]}'));
- INSERT INTO delta_valid_shapes VALUES('create',(e-'patch')||jsonb_build_object('kind','create','record',p));
+ p:=jsonb_set(p,'{id}','"survey-valid-create"');
+ p:=jsonb_set(p,'{collab,deletion,revisions,0,id}','"revision:valid-create"');
+ INSERT INTO delta_valid_shapes VALUES('create',
+  jsonb_set((e-'patch')||jsonb_build_object('kind','create','record',p),'{recordId}','"survey-valid-create"'));
 END $test$;
 
 WITH shapes AS (SELECT
@@ -175,7 +181,8 @@ BEGIN
   FOR item IN SELECT name,envelope FROM delta_valid_shapes LOOP
     e:=item.envelope||jsonb_build_object('eventId','valid-'||item.name);
     result:=public.sentlog_delta_append_v1('11111111-1111-4111-8111-111111111111',
-      'aaaaaaaa-0000-4000-8000-000000000001','valid-'||item.name,'drawing-1','survey-1',e);
+      'aaaaaaaa-0000-4000-8000-000000000001','valid-'||item.name,'drawing-1',
+      CASE WHEN item.name='create' THEN 'survey-valid-create' ELSE 'survey-1' END,e);
     IF result->'eventId' IS DISTINCT FROM e->'eventId' OR result->'projectId' IS DISTINCT FROM e->'projectId' OR
       result->'deviceId' IS DISTINCT FROM e->'deviceId' OR result->'drawingId' IS DISTINCT FROM e->'drawingId' OR
       result->'recordId' IS DISTINCT FROM e->'recordId' OR result->'duplicate' IS DISTINCT FROM 'false'::jsonb THEN
