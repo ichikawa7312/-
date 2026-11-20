@@ -104,7 +104,11 @@ SEED = r"""async workload=>{
 
 
 TRACE = r"""()=>{
-  let active=null,lastFrame=performance.now(),closeObserver=null;
+  let active=null,lastFrame=performance.now(),closeObserver=null,readyObserver=null,readyListener=null;
+  const clearCloseObservers=()=>{
+    closeObserver?.disconnect();closeObserver=null;readyObserver?.disconnect();readyObserver=null;
+    if(readyListener)document.removeEventListener('load',readyListener,true);readyListener=null;
+  };
   const closeMark=name=>{
     const phases=active?.closePhases;
     if(phases&&phases.offsetsMs[name]===null)phases.offsetsMs[name]=performance.now()-active.started;
@@ -203,15 +207,33 @@ TRACE = r"""()=>{
     lastFrame=at;requestAnimationFrame(frame);}
   requestAnimationFrame(frame);
   window.photoPerformance={
-    start(label,photoIds=[]){
-      closeObserver?.disconnect();closeObserver=null;
+    start(label,photoIds=[],photoNames=[]){
+      clearCloseObservers();
       active={label,...summary(),started:performance.now()};lastFrame=performance.now();
       if(label.endsWith('-close')){
-        active.closePhases={expectedPhotoIds:[...photoIds],offsetsMs:{click:null,modalHidden:null,
+        active.closePhases={expectedPhotoIds:[...photoIds],offsetsMs:{click:null,modalHidden:null,thumbnailsAvailable:null,
           thumbnailsReady:null,stopCalled:null,stopped:null}};
         const scope=active,modal=document.getElementById('sentlogContinuousCamera');
+        // Observe the same readiness condition in the browser's own image
+        // events, independently of when the automation driver next polls it.
+        const available=()=>{
+          if(active!==scope||!modal.hidden||scope.closePhases.offsetsMs.modalHidden===null)return;
+          const thumbnails=[...document.querySelectorAll('#photoGrid .photo-thumb')];
+          if(thumbnails.length===photoNames.length&&thumbnails.every((item,index)=>{
+            const image=item.querySelector('img');
+            return item.title===photoNames[index]&&image?.alt===photoNames[index]&&
+              image.complete&&image.naturalWidth>0;
+          })){
+            closeMark('thumbnailsAvailable');readyObserver?.disconnect();
+            document.removeEventListener('load',available,true);
+          }
+        };
+        readyListener=available;document.addEventListener('load',available,true);
+        readyObserver=new MutationObserver(available);
+        readyObserver.observe(document.getElementById('photoGrid'),{
+          childList:true,subtree:true,attributes:true,attributeFilter:['src','alt','title']});
         closeObserver=new MutationObserver(()=>{
-          if(active===scope&&modal.hidden){closeMark('modalHidden');closeObserver.disconnect();}
+          if(active===scope&&modal.hidden){closeMark('modalHidden');closeObserver.disconnect();available();}
         });
         closeObserver.observe(modal,{attributes:true,attributeFilter:['hidden']});
       }
@@ -227,10 +249,12 @@ TRACE = r"""()=>{
         result.closePhases.durationsMs={startToClick:delta(times.click),
           clickToModalHidden:delta(times.modalHidden,times.click),
           modalHiddenToThumbnails:delta(times.thumbnailsReady,times.modalHidden),
+          modalHiddenToThumbnailsAvailable:delta(times.thumbnailsAvailable,times.modalHidden),
+          thumbnailsAvailableToObserved:delta(times.thumbnailsReady,times.thumbnailsAvailable),
           thumbnailsToStopCall:delta(times.stopCalled,times.thumbnailsReady),
           stopFrameWait:delta(times.stopped,times.stopCalled)};
       }
-      closeObserver?.disconnect();closeObserver=null;delete result.started;active=null;
+      clearCloseObservers();delete result.started;active=null;
       return result;}
   };
 }"""
@@ -353,8 +377,8 @@ def profile_case(playwright, engine, built_root, workload, encoded, shots, *, ca
                     results.append(result);proofs.append(proof)
                 visible_photos = page.evaluate("""()=>JSON.parse(SentlogRecords.getItem(drawingStorageKey('memo-plan-a')))
                   .shapes.find(row=>row.id==='survey-a').photos.map(photo=>({id:photo.id,name:photo.name||'変状写真'}))""")
-                page.evaluate('({label,photoIds})=>photoPerformance.start(label,photoIds)',
-                              {'label': workload['name']+'-close', 'photoIds': [photo['id'] for photo in visible_photos]})
+                page.evaluate('({label,photos})=>photoPerformance.start(label,photos.map(p=>p.id),photos.map(p=>p.name))',
+                              {'label': workload['name']+'-close', 'photos': visible_photos})
                 page.locator('#slCameraDone').click()
                 page.wait_for_function('!SentlogContinuousCamera.isOpen()')
                 page.wait_for_function("""expected=>{
