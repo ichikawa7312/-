@@ -45,8 +45,8 @@ BEGIN
       IF grp='comments' AND NOT sentlog_delta_private.safe_unsigned(ent.value->'order') THEN
         RAISE EXCEPTION 'DELTA_COMMENT_ORDER_INVALID' USING ERRCODE='22023';
       END IF;
-      SELECT pg_catalog.array_agg(item->>'id') INTO local_ids
-        FROM pg_catalog.jsonb_array_elements(rows) AS r(item);
+      SELECT pg_catalog.array_agg(r.element->>'id') INTO local_ids
+        FROM pg_catalog.jsonb_array_elements(rows) AS r(element);
       FOR item IN SELECT value FROM pg_catalog.jsonb_array_elements(rows) LOOP
         IF NOT sentlog_delta_private.valid_id(item->'id') OR
            item->>'id'=ANY(global_ids) OR
