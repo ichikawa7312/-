@@ -1,7 +1,7 @@
 'use strict';
 const assert=require('node:assert/strict');
 const {webcrypto}=require('node:crypto');
-globalThis.crypto=webcrypto;
+if(!globalThis.crypto?.subtle)Object.defineProperty(globalThis,'crypto',{value:webcrypto,configurable:true});
 const Audit=require('../sentlog/delta-sync-legacy-preflight.js');
 const id='offline-project',drawing='drawing-1';
 const enc=x=>JSON.stringify(x);
