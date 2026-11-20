@@ -8,7 +8,9 @@ const path=require('node:path');
   const db=new PGlite();
   try{
     for(const file of ['tests/delta_schema_fixture.sql','docs/sentlog-delta-v1-schema-prototype.sql',
-      'tests/delta_schema_assertions.sql','tests/delta_schema_adversarial.sql']){
+      'docs/sentlog-delta-semantic-validation-prototype.sql',
+      'tests/delta_schema_assertions.sql','tests/delta_schema_adversarial.sql',
+      'tests/delta_semantic_assertions.sql']){
       const sql=fs.readFileSync(path.resolve(__dirname,'..',file),'utf8')
         .replace(/^\\set[^\n]*$/mg,'');
       // psql sends top-level statements independently. Preserve explicit
