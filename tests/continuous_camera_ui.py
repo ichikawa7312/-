@@ -454,9 +454,29 @@ def run_orientation(page, engine, screenshot_dir=None):
         return round(width*ratio), round(height*ratio)
 
     def grid_pixels(photo_id):
-        page.evaluate('renderSelectedPhotos()')
-        index = saved_photo_ids(page, drawing_id).index(photo_id)
-        return page.locator('#photoGrid .photo-thumb img').nth(index).evaluate(IMAGE_PIXELS)
+        # Observe the automatic close/attachment refresh. Forcing another
+        # redraw here revokes every thumbnail URL while that real refresh may
+        # still be loading, and can sample a discarded image in WebKit.
+        photos = page.evaluate("""id=>JSON.parse(SentlogRecords.getItem(drawingStorageKey(id)))
+          .shapes.find(record=>record.id==='survey-a').photos.map(photo=>({id:photo.id,name:photo.name||'変状写真'}))""", drawing_id)
+        index = next(index for index, photo in enumerate(photos) if photo['id'] == photo_id)
+        page.wait_for_function("""names=>{
+          const items=[...document.querySelectorAll('#photoGrid .photo-thumb')];
+          return items.length===names.length&&items.every((item,index)=>{
+            const image=item.querySelector('img');
+            return item.title===names[index]&&image?.src&&image.complete&&image.naturalWidth>0;
+          });
+        }""", arg=[photo['name'] for photo in photos])
+        image = page.locator('#photoGrid .photo-thumb img').nth(index)
+        image.scroll_into_view_if_needed()
+        return image.evaluate(r"""async image=>{
+          const source=image.currentSrc||image.src;
+          if(!image.isConnected||!source)throw Error('Photo-list image is no longer current');
+          const pixels=await (""" + IMAGE_PIXELS + r""")(image);
+          if(!image.isConnected||(image.currentSrc||image.src)!==source)
+            throw Error('Photo list changed during pixel verification');
+          return pixels;
+        }""")
 
     devices = [
         ('iPhone', {'userAgent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_4 like Mac OS X) AppleWebKit/605.1.15 Version/18.4 Mobile/15E148 Safari/604.1',
