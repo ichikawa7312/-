@@ -115,15 +115,34 @@
         try{try{tx=connection.transaction(STORE,mode,{durability:'strict'});}
           catch(error){if(error.name!=='TypeError')throw error;tx=connection.transaction(STORE,mode);}}
         catch(error){reject(error);return;}
-        const context={error:null,result:null};active.set(tx,context);
-        const abort=error=>{context.error=error;try{tx.abort();}catch(_){active.delete(tx);reject(error);}};
-        tx.oncomplete=()=>{active.delete(tx);resolve(copy(context.result));};
-        tx.onabort=()=>{active.delete(tx);reject(context.error||tx.error||problem('ASSET_STORE_ABORTED','写真の保存が中断されました'));};
+        const context={error:null,result:null};let settled=false,finished=false;
+        const release=()=>{
+          if(finished)return;finished=true;active.delete(tx);
+          // Keep the connection alive until the native transaction finishes;
+          // do not overlap physical closure with pending Blob-abort cleanup.
+          if(closed&&active.size===0&&db){db.close();db=null;}
+        };
+        const finish=error=>{
+          if(settled)return;settled=true;
+          if(error){reject(error);return;}
+          try{resolve(copy(context.result));}catch(copyError){reject(copyError);}
+        };
+        const abort=error=>{
+          context.error=error;
+          try{tx.abort();}catch(_){}
+          // Release the caller even if native abort events are delayed or
+          // missing. A late complete/abort cannot change the settled result.
+          finish(error);
+        };
+        context.cancel=abort;active.set(tx,context);
+        tx.oncomplete=()=>{release();finish(context.error);};
+        tx.onabort=()=>{release();finish(context.error||tx.error||problem('ASSET_STORE_ABORTED','写真の保存が中断されました'));};
         tx.onerror=()=>{};
         try{
           const store=tx.objectStore(STORE),q=store.get(key(ref));
           q.onerror=()=>{context.error=context.error||q.error;};
           q.onsuccess=()=>{
+            if(settled)return;
             try{
               alive();const current=validateRow(q.result,ref,scope),next=mutate(current);
               context.result=next;
@@ -168,9 +187,10 @@
         });
       },
       close(){
+        if(closed)return;
         closed=true;
-        for(const [tx,context]of active){context.error=problem('ASSET_CLOSED','写真の保存を中止しました');try{tx.abort();}catch(_){}}
-        if(db)db.close();db=null;
+        for(const context of active.values())context.cancel(problem('ASSET_CLOSED','写真の保存を中止しました'));
+        if(active.size===0&&db){db.close();db=null;}
       }
     };
     return api;

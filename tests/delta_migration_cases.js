@@ -37,7 +37,29 @@
       try{return await new Promise((resolve,reject)=>{const tx=db.transaction(store,'readwrite');tx.oncomplete=resolve;tx.onabort=()=>reject(tx.error);fn(tx.objectStore(store));});}
       finally{db.close();}
     }
-    async function test(name,fn){try{await fn();results.push(name);}catch(e){e.message=name+': '+e.message;throw e;}}
+    async function test(name,fn){try{await fn();results.push(name);}catch(cause){
+      // DOMException.message may be readonly in WebKit. Preserve the original
+      // failure instead of hiding it behind another assignment TypeError.
+      const failure=new Error(name+': '+(cause?.message||String(cause)));
+      failure.cause=cause;failure.originalName=cause?.name;
+      if(cause?.code!==undefined)failure.code=cause.code;
+      throw failure;
+    }}
+    async function within(task,label){
+      let timer;
+      try{return await Promise.race([task,new Promise((resolve,reject)=>{
+        timer=setTimeout(()=>reject(Error('timed out while '+label)),5000);
+      })]);}finally{clearTimeout(timer);}
+    }
+    async function savedItemKeys(name){
+      const db=await new Promise((resolve,reject)=>{const q=indexedDB.open(name);
+        q.onsuccess=()=>resolve(q.result);q.onerror=()=>reject(q.error);});
+      try{return await new Promise((resolve,reject)=>{
+        const tx=db.transaction('items','readonly');let keys;
+        tx.oncomplete=()=>resolve(keys);tx.onabort=()=>reject(tx.error);
+        tx.objectStore('items').getAllKeys().onsuccess=e=>{keys=e.target.result;};
+      });}finally{db.close();}
+    }
     await test('exact raw records and photo bytes survive staging and reopening',async()=>{
       const f=await fixture(),name=database(),s=openStore(name),m=coordinator(f.source,s);
       const before=copy(f.snapshot),done=await m.stage('one');equal(done.status,'verified-copy');assert(done.verifiedBytes);
@@ -68,6 +90,52 @@
       try{await reject(()=>m.stage('abort'));}finally{IDBObjectStore.prototype.add=native;}
       equal((await s.status('abort')).next,0,'checkpoint survived aborted items');
       equal((await m.stage('abort')).status,'verified-copy');m.close();
+    });
+    for(const target of ['item','checkpoint'])await test('store close during '+target+' enqueue rejects and rolls back the whole chunk',async()=>{
+      const f=await fixture(3),name=database(),s=openStore(name),m=coordinator(f.source,s,{batchItems:4});
+      const nativeAdd=IDBObjectStore.prototype.add,nativePut=IDBObjectStore.prototype.put;let cancelled=false;
+      function wrap(native){return function(value,...args){
+        const q=native.call(this,value,...args);
+        const matches=target==='item'?this.name==='items':this.name==='sessions'&&value.next===4;
+        if(!cancelled&&this.transaction.db.name===name&&matches){cancelled=true;s.close();}
+        return q;
+      };}
+      IDBObjectStore.prototype.add=wrap(nativeAdd);IDBObjectStore.prototype.put=wrap(nativePut);
+      try{await within(reject(()=>m.stage('mid-close'),'MIGRATION_CLOSED'),'waiting for '+target+' close rejection');}
+      finally{IDBObjectStore.prototype.add=nativeAdd;IDBObjectStore.prototype.put=nativePut;}
+      assert(cancelled,'close was never injected');
+      const reopened=openStore(name);
+      const row=await within(reopened.status('mid-close'),'reopening after '+target+' close');
+      equal(row.next,0,'cancelled chunk advanced checkpoint');equal(row.status,'copying');
+      equal(await within(savedItemKeys(name),'reading items after '+target+' close'),[],'aborted chunk retained orphan items');
+      const resumed=coordinator(f.source,reopened);
+      equal((await within(resumed.stage('mid-close'),'resuming after '+target+' close')).status,'verified-copy');
+      equal((await resumed.readCopy('mid-close')).snapshot.files.length,3);resumed.close();m.close();
+    });
+    await test('lost abort event cannot hang cancellation and delayed completion cannot restore success',async()=>{
+      const f=await fixture(3),name=database(),s=openStore(name),m=coordinator(f.source,s,{batchItems:4});
+      const native=IDBObjectStore.prototype.add;let lateComplete,lateAbort,cancelled=false;
+      IDBObjectStore.prototype.add=function(...args){
+        const q=native.apply(this,args);
+        if(!cancelled&&this.transaction.db.name===name&&this.name==='items'){
+          cancelled=true;const tx=this.transaction;lateComplete=tx.oncomplete;lateAbort=tx.onabort;
+          tx.oncomplete=null;tx.onabort=null;s.close();
+        }
+        return q;
+      };
+      let pending;
+      try{pending=m.stage('lost-events');await within(reject(()=>pending,'MIGRATION_CLOSED'),'waiting for cancellation without native events');}
+      finally{IDBObjectStore.prototype.add=native;}
+      assert(cancelled&&lateComplete&&lateAbort,'event loss was not injected');
+      const reopened=openStore(name),row=await within(reopened.status('lost-events'),'reopening after native events were lost');
+      equal(row.next,0);equal(await within(savedItemKeys(name),'checking rollback without abort callbacks'),[]);
+      // Simulate delayed native notifications only after the rollback is known
+      // to be complete; they must never turn the earlier rejection into success.
+      lateComplete();lateAbort();
+      await within(reject(()=>pending,'MIGRATION_CLOSED'),'checking delayed completion remains cancelled');
+      const resumed=coordinator(f.source,reopened);
+      equal((await within(resumed.stage('lost-events'),'resuming the cancelled copy')).status,'verified-copy');
+      equal((await resumed.readCopy('lost-events')).snapshot.files.length,3);resumed.close();m.close();
     });
     await test('quota failure preserves the old source and permits a complete retry',async()=>{
       const f=await fixture(),before=copy(f.snapshot.rawEntries),name=database(),s=openStore(name),m=coordinator(f.source,s);

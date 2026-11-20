@@ -77,12 +77,12 @@ const combined = SentlogDeltaAssets.combinedStatus(latestRecordStatus, photoStat
 
 ## 検証と残る統合
 
-`tests/delta_assets_cases.js` はNode/fake-indexeddbと実Chromium/WebKitで共用する38ケースです。
+`tests/delta_assets_cases.js` はNode/fake-indexeddbと実Chromium/WebKitで共用する39ケースです。
 内容不一致、旧応答、scope変更、参照変更、ack不一致/喪失、403、タイムアウト、
 容量不足、transaction中断、再起動、重複、原本分離、1,002件の未受信参照を含みます。
 
 Node用依存は固定版 `fake-indexeddb@6.2.8` です。ブラウザー試験は既存CIと同じPlaywright版で実行します。
-本体38ケースは既存の移行試験と同じ使い捨てpersistent profileで実行します。
+本体39ケースは既存の移行試験と同じ使い捨てpersistent profileで実行します。
 [Playwrightの公式説明](https://playwright.dev/python/docs/api/class-browsercontext)では、`new_context()`は非永続セッションです。通常の永続保存と、非永続セッションでの保存拒否をそれぞれ検証します。
 さらに1枚を受信・照合・受領確認まで保存してブラウザーprocessを閉じ、同じprofileとoriginで
 新processを起動し、Blobの再ハッシュと受領記録を確認します。再ダウンロード・再ackが0件であることも確認します。

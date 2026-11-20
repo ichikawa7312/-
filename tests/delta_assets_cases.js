@@ -10,7 +10,7 @@
     error.originalCode=cause?.code??null;error.originalStack=String(cause?.stack||'');
     return error;
   }
-  async function run({API,CORE,indexedDB,IDBObjectStore,suffix='node',onStart=()=>{},onPass=()=>{}}){
+  async function run({API,CORE,indexedDB,IDBObjectStore,suffix='node',onStart=()=>{},onPass=()=>{},onStage=()=>{}}){
     const results=[],scope={ownerId:'owner-a',projectId:'project-a',deviceId:'device-a'};
     const clone=x=>structuredClone(x),assert=(x,m)=>{if(!x)throw Error(m||'assertion failed');};
     const equal=(a,b,m)=>assert(JSON.stringify(a)===JSON.stringify(b),m||JSON.stringify(a)+' != '+JSON.stringify(b));
@@ -46,7 +46,24 @@
         q.onsuccess=()=>{value=q.result;if(change){value=change(value);store.put(value,key);}};
       });}finally{db.close();}
     }
-    async function test(name,fn){onStart(name);try{await fn();results.push(name);onPass(name);}catch(e){throw caseError(name,e);}}
+    async function test(name,fn){
+      onStart(name);let deadline;
+      try{
+        await Promise.race([fn(),new Promise((resolve,reject)=>{
+          deadline=setTimeout(()=>reject(Error('photo test exceeded its 60-second deadline')),60000);
+        })]);
+        results.push(name);onPass(name);
+      }catch(e){throw caseError(name,e);}finally{clearTimeout(deadline);}
+    }
+    async function stage(label,fn){
+      onStage(label+' started');let deadline;
+      try{
+        const result=await Promise.race([fn(),new Promise((resolve,reject)=>{
+          deadline=setTimeout(()=>reject(Error(label+' exceeded its 5-second deadline')),5000);
+        })]);
+        onStage(label+' passed');return result;
+      }finally{clearTimeout(deadline);}
+    }
 
     await test('read-only browser exceptions retain their original diagnostic details',async()=>{
       const original=Object.freeze(new DOMException('synthetic storage failure','TransactionInactiveError'));
@@ -196,9 +213,38 @@
       const f=await fixture();await f.queue.ensure([base]);const native=IDBObjectStore.prototype.put;
       IDBObjectStore.prototype.put=function(value,...args){const q=native.call(this,value,...args);
         if(this.transaction.db.name===f.name&&value.phase==='received')f.store.close();return q;};
-      try{await expect(()=>f.queue.sync([base]),'ASSET_CLOSED');}finally{IDBObjectStore.prototype.put=native;}
-      const reopened=makeStore(f.name),row=await reopened.read(base);equal([row.phase,row.blob,row.localReceipt],['waiting',null,null]);
+      try{await stage('close transaction: sync rejection',()=>expect(()=>f.queue.sync([base]),'ASSET_CLOSED'));}
+      finally{IDBObjectStore.prototype.put=native;}
+      const reopened=makeStore(f.name),row=await stage('close transaction: reopened durable read',()=>reopened.read(base));
+      equal([row.phase,row.blob,row.localReceipt],['waiting',null,null]);
       equal(f.stats.acks,0);reopened.close();f.queue.close();
+    });
+    await test('store close rejects even when the browser drops the transaction abort event',async()=>{
+      const f=await fixture();await f.queue.ensure([base]);const native=IDBObjectStore.prototype.put;
+      let lateComplete=null,reopened=null;
+      IDBObjectStore.prototype.put=function(value,...args){const q=native.call(this,value,...args);
+        if(this.transaction.db.name===f.name&&value.phase==='received'){
+          // Simulate delayed or missing native transaction notifications.
+          lateComplete=this.transaction.oncomplete;
+          this.transaction.onabort=null;this.transaction.oncomplete=null;f.store.close();
+        }return q;};
+      try{
+        try{await stage('dropped abort event: sync rejection',()=>expect(()=>f.queue.sync([base]),'ASSET_CLOSED'));}
+        finally{IDBObjectStore.prototype.put=native;}
+        reopened=makeStore(f.name);
+        const row=await stage('dropped abort event: reopened durable read',()=>reopened.read(base));
+        equal([row.phase,row.blob,row.localReceipt,row.remoteReceipt],['waiting',null,null,null]);
+        equal(f.stats.acks,0);assert(typeof lateComplete==='function','missing captured completion handler');
+        // A delayed completion cannot reverse the rejection or publish a receipt.
+        // It also performs the deferred physical connection cleanup.
+        lateComplete();lateComplete=null;
+        const after=await stage('dropped abort event: read after delayed completion',()=>reopened.read(base));
+        equal([after.phase,after.blob,after.localReceipt,after.remoteReceipt],['waiting',null,null,null]);
+        equal(f.stats.acks,0);
+      }finally{
+        IDBObjectStore.prototype.put=native;if(lateComplete)lateComplete();
+        if(reopened)reopened.close();f.close();
+      }
     });
     await test('missing persisted Blob prevents completion even with an acknowledged receipt',async()=>{
       const f=await fixture();await f.queue.sync([base]);await raw(f.name,scope,base,row=>({...row,blob:null}));

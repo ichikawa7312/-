@@ -71,6 +71,7 @@
     let db=null,opening=null,closed=false;
     const active=new Map();
     const open=()=>insist(!closed,'MIGRATION_CLOSED','控えの保存処理を終了しました');
+    function closeWhenIdle(){if(closed&&active.size===0&&db){db.close();db=null;}}
     const key=id=>{insist(valid(id),'MIGRATION_ID','移行番号が不正です');return [prefix,id];};
     function connect(){
       open();if(db)return Promise.resolve(db);if(opening)return opening;
@@ -103,10 +104,30 @@
         try{try{tx=connection.transaction([SESSIONS,ITEMS],mode,{durability:'strict'});}
           catch(e){if(e.name!=='TypeError')throw e;tx=connection.transaction([SESSIONS,ITEMS],mode);}}
         catch(e){reject(e);return;}
-        const ctx={reason:null,result:null};active.set(tx,ctx);
-        const abort=e=>{ctx.reason=e;try{tx.abort();}catch{active.delete(tx);reject(e);}};
-        tx.oncomplete=()=>{active.delete(tx);resolve(copy(ctx.result));};
-        tx.onabort=()=>{active.delete(tx);reject(ctx.reason||tx.error||error('MIGRATION_ABORTED','控えの保存が中断しました'));};
+        const ctx={reason:null,result:null,settled:false,cancel:null};active.set(tx,ctx);
+        function finish(reason){
+          if(ctx.settled)return;
+          ctx.settled=true;
+          if(reason){reject(reason);return;}
+          // A clone failure inside an IDB event must reject the operation rather
+          // than escape the handler and leave its Promise pending forever.
+          try{resolve(copy(ctx.result));}catch(e){reject(e);}
+        }
+        const abort=e=>{
+          if(ctx.settled)return;
+          ctx.reason=ctx.reason||e||error('MIGRATION_ABORTED','控えの保存が中断しました');
+          // Request rollback, but do not depend on a later abort event to settle
+          // cancellation: browser shutdown/close can delay that event indefinitely.
+          try{tx.abort();}catch{/* An already ended tx still cannot revive this cancelled call. */}
+          finish(ctx.reason);
+        };
+        ctx.cancel=abort;
+        // Keep native transaction cleanup separate from Promise settlement.
+        // In particular, db.close() must not interrupt the rollback of a Blob
+        // write. Missing events can retain a connection, never a pending caller.
+        const cleanup=()=>{active.delete(tx);closeWhenIdle();};
+        tx.oncomplete=()=>{finish(ctx.reason||(closed?error('MIGRATION_CLOSED','控えの保存処理を終了しました'):null));cleanup();};
+        tx.onabort=()=>{finish(ctx.reason||tx.error||error('MIGRATION_ABORTED','控えの保存が中断しました'));cleanup();};
         tx.onerror=()=>{};
         try{action(tx.objectStore(SESSIONS),tx.objectStore(ITEMS),ctx,abort);}catch(e){abort(e);}
       });
@@ -121,7 +142,7 @@
       return row;
     }
     function status(id){return transact('readonly',(sessions,items,ctx,abort)=>{
-      const q=sessions.get(key(id));q.onsuccess=()=>{try{ctx.result=decode(q.result,id);}catch(e){abort(e);}};
+      const q=sessions.get(key(id));q.onsuccess=()=>{if(ctx.settled)return;try{ctx.result=decode(q.result,id);}catch(e){abort(e);}};
     });}
     function begin(header){
       const candidate=copy(header);
@@ -130,7 +151,7 @@
         candidate.manifest.every((m,i)=>m.index===i&&['json','blob'].includes(m.type)&&valid(m.key)&&digest(m.sha256)&&
           Number.isSafeInteger(m.size)&&m.size>=0), 'MIGRATION_FORMAT','移行控えの構成が不正です');
       return transact('readwrite',(sessions,items,ctx,abort)=>{
-        const q=sessions.get(key(candidate.id));q.onsuccess=()=>{try{
+        const q=sessions.get(key(candidate.id));q.onsuccess=()=>{if(ctx.settled)return;try{
           const previous=decode(q.result,candidate.id);
           if(previous){
             insist(previous.bundleHash===candidate.bundleHash&&previous.sourceFingerprint===candidate.sourceFingerprint&&
@@ -150,7 +171,7 @@
       insist(Number.isSafeInteger(expectedNext)&&expectedNext>=0&&Array.isArray(rows)&&rows.length>0&&rows.length<=64,
         'MIGRATION_FORMAT','コピーする範囲が不正です');
       return transact('readwrite',(sessions,items,ctx,abort)=>{
-        const q=sessions.get(key(id));q.onsuccess=()=>{try{
+        const q=sessions.get(key(id));q.onsuccess=()=>{if(ctx.settled)return;try{
           const row=decode(q.result,id);insist(row,'MIGRATION_MISSING','移行控えが見つかりません');
           insist(row.next===expectedNext,'MIGRATION_STALE','別の画面で移行が進んでいます');
           insist(row.status==='copying'&&row.next+rows.length<=row.manifest.length,'MIGRATION_STATE','控えの確定状態が一致しません');
@@ -171,10 +192,11 @@
       insist(Number.isSafeInteger(start)&&start>=0&&Number.isSafeInteger(limit)&&limit>0&&limit<=64,
         'MIGRATION_FORMAT','控えを読む範囲が不正です');
       return transact('readonly',(sessions,items,ctx,abort)=>{
-        const q=sessions.get(key(id));q.onsuccess=()=>{try{
+        const q=sessions.get(key(id));q.onsuccess=()=>{if(ctx.settled)return;try{
           const row=decode(q.result,id);insist(row,'MIGRATION_MISSING','移行控えが見つかりません');ctx.result=[];
           for(let i=start;i<Math.min(row.next,start+limit);i++){
             const r=items.get([prefix,id,i]);r.onsuccess=()=>{
+              if(ctx.settled)return;
               if(!r.result){abort(error('MIGRATION_ITEM_MISSING','コピー済みの内容が見つかりません'));return;}
               ctx.result[i-start]=r.result;
             };
@@ -186,7 +208,7 @@
       const savedIssues=copy(issues);
       insist(Array.isArray(savedIssues),'MIGRATION_FORMAT','照合結果が不正です');
       return transact('readwrite',(sessions,items,ctx,abort)=>{
-        const q=sessions.get(key(id));q.onsuccess=()=>{try{
+        const q=sessions.get(key(id));q.onsuccess=()=>{if(ctx.settled)return;try{
           const row=decode(q.result,id);insist(row&&row.bundleHash===bundleHash&&row.next===row.manifest.length,
             'MIGRATION_INCOMPLETE','全部の内容を保存するまで控えを確定できません');
           row.status=savedIssues.some(x=>x.blocking!==false)?'needs-review':'verified-copy';
@@ -194,8 +216,9 @@
         }catch(e){abort(e);}};
       });
     }
-    function close(){closed=true;for(const [tx,ctx]of active){ctx.reason=error('MIGRATION_CLOSED','控えの保存処理を終了しました');try{tx.abort();}catch{}}
-      if(db)db.close();db=null;}
+    function close(){if(closed)return;closed=true;
+      for(const ctx of [...active.values()])ctx.cancel(error('MIGRATION_CLOSED','控えの保存処理を終了しました'));
+      closeWhenIdle();}
     return {begin,status,append,readItems,finish,close,getScope:()=>copy(scope)};
   }
   function createCoordinator({source,store,localProjectId,currentScope,onProgress=()=>{},batchItems=16,batchBytes=8*1024*1024}={}){

@@ -139,7 +139,8 @@ def main():
                                 API: SentlogDeltaAssets, CORE: SentlogDeltaSyncCore,
                                 indexedDB, IDBObjectStore, suffix: engine,
                                 onStart: name => {currentCase=name;console.log('RUN '+name);},
-                                onPass: name => {cases.push(name);console.log('PASS '+name);}
+                                onPass: name => {cases.push(name);console.log('PASS '+name);},
+                                onStage: name => console.log('STAGE '+name)
                             });
                             return {cases, success:true};
                         } catch(error) {
