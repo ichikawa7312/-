@@ -1,5 +1,5 @@
 const assert=require('node:assert/strict');
-const {createSession,captureStill}=require('../sentlog/continuous-camera.js');
+const {createSession,captureStill,prefersVideoFrame}=require('../sentlog/continuous-camera.js');
 const defer=()=>{let resolve,reject;const promise=new Promise((a,b)=>{resolve=a;reject=b;});return {promise,resolve,reject};};
 const target={projectId:'p',drawingId:'d',recordId:'r',ownerId:'owner'};
 function fixture(){
@@ -67,6 +67,40 @@ async function test(name,fn){await fn();console.log('PASS '+name);}
     class Capture{constructor(t){assert.equal(t.readyState,'live');}async takePhoto(){calls++;return original;}}
     const blob=await captureStill({}, {readyState:'live'}, Capture, {createElement(){throw Error('must not downscale');}});
     assert.equal(blob,original);assert.equal(calls,1);
+  });
+  await test('iOS capture saves the upright preview even when native still output is sideways',async()=>{
+    let nativeCalls=0,draws=0;
+    class SidewaysCapture{async takePhoto(){nativeCalls++;return new Blob(['sideways native still'],{type:'image/jpeg'});}}
+    const video={videoWidth:1920,videoHeight:2560,readyState:4};
+    const canvas={width:0,height:0,getContext:()=>({drawImage(source,x,y,w,h){
+      assert.equal(source,video);assert.deepEqual([x,y,w,h],[0,0,1920,2560]);draws++;
+    }}),toBlob(done){done(new Blob(['upright full-resolution preview'],{type:'image/jpeg'}));}};
+    const blob=await captureStill(video,{readyState:'live'},SidewaysCapture,{createElement:()=>canvas},{preferVideoFrame:true});
+    assert.equal(await blob.text(),'upright full-resolution preview');
+    assert.equal(nativeCalls,0);assert.equal(draws,1);
+    assert.equal(canvas.width,1);assert.equal(canvas.height,1);
+  });
+  await test('iOS frame selection includes iPad desktop mode without changing desktop or Android capture',async()=>{
+    for(const navigator of [
+      {userAgent:'Mozilla/5.0 (iPhone; CPU iPhone OS 18_4 like Mac OS X) AppleWebKit/605.1.15 Version/18.4 Mobile/15E148 Safari/604.1',platform:'iPhone',maxTouchPoints:5},
+      {userAgent:'Mozilla/5.0 (iPhone; CPU iPhone OS 18_4 like Mac OS X) AppleWebKit/605.1.15 CriOS/135.0 Mobile/15E148 Safari/604.1',platform:'iPhone',maxTouchPoints:5},
+      {userAgent:'Mozilla/5.0 (iPad; CPU OS 18_4 like Mac OS X) AppleWebKit/605.1.15',platform:'iPad',maxTouchPoints:5},
+      {userAgent:'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15) AppleWebKit/605.1.15 Version/18.4 Safari/605.1.15',platform:'MacIntel',maxTouchPoints:5}
+    ])assert.equal(prefersVideoFrame(navigator),true,JSON.stringify(navigator));
+    for(const navigator of [undefined,{},
+      {userAgent:'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15) AppleWebKit/605.1.15',platform:'MacIntel',maxTouchPoints:0},
+      {userAgent:'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/135.0 Safari/537.36',platform:'Win32',maxTouchPoints:10},
+      {userAgent:'Mozilla/5.0 (Linux; Android 15) AppleWebKit/537.36 Chrome/135.0 Mobile Safari/537.36',platform:'Linux armv8l',maxTouchPoints:5}
+    ])assert.equal(prefersVideoFrame(navigator),false,JSON.stringify(navigator));
+  });
+  await test('iOS never substitutes a differently oriented native still for an unavailable preview',async()=>{
+    let nativeCalls=0;
+    class Capture{async takePhoto(){nativeCalls++;return new Blob(['wrong orientation']);}}
+    await assert.rejects(captureStill({videoWidth:0,videoHeight:0,readyState:0},
+      {readyState:'live'},Capture,{createElement(){throw Error('must await a live frame');}},{preferVideoFrame:true}),/準備中/);
+    await assert.rejects(captureStill({videoWidth:1920,videoHeight:2560,readyState:4},
+      {readyState:'live',muted:true},Capture,{}, {preferVideoFrame:true}),/一時停止/);
+    assert.equal(nativeCalls,0);
   });
   await test('fallback takes the actual stream resolution and releases its canvas',async()=>{
     let dimensions,draws=0;const canvas={width:0,height:0,getContext:()=>({drawImage(v,x,y,w,h){draws++;dimensions=[w,h];}}),toBlob(fn){fn(new Blob(['frame'],{type:'image/jpeg'}));}};

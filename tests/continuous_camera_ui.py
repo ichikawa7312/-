@@ -8,23 +8,100 @@ All external network requests are blocked; no user records are involved.
 import argparse
 import base64
 import functools
+import hashlib
+import io
 import os
 import threading
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from playwright.sync_api import expect, sync_playwright
+from PIL import Image, ImageDraw
 
 from collaboration_photos_ui import HOLD_CONVERSION, WEBKIT_TRANSPORT, release, wait_photos
 from field_record_memo_ui import SETUP, photo_png
 
 ROOT = Path(__file__).resolve().parents[1]
 
+ORIENTATION_COLORS = [(220, 30, 30), (30, 190, 60), (40, 80, 220), (230, 190, 20)]
+
+
+def orientation_photo(width, height, *, exif=None, turn=None):
+    """Four distinct corners detect every quarter-turn and mirror operation.
+
+    EXIF fixtures encode the inverse pixel transform, so all eight tags must
+    decode to the same upright image. Native still fixtures may deliberately
+    disagree with the live preview to model the iOS capture-path discrepancy.
+    """
+    image = Image.new('RGB', (width, height))
+    draw = ImageDraw.Draw(image)
+    for box, color in zip(((0, 0, width//2, height//2),
+                           (width//2, 0, width, height//2),
+                           (width//2, height//2, width, height),
+                           (0, height//2, width//2, height)), ORIENTATION_COLORS):
+        draw.rectangle(box, fill=color)
+    inverse_exif = {2: Image.Transpose.FLIP_LEFT_RIGHT, 3: Image.Transpose.ROTATE_180,
+                    4: Image.Transpose.FLIP_TOP_BOTTOM, 5: Image.Transpose.TRANSPOSE,
+                    6: Image.Transpose.ROTATE_90, 7: Image.Transpose.TRANSVERSE,
+                    8: Image.Transpose.ROTATE_270}
+    if exif in inverse_exif:
+        image = image.transpose(inverse_exif[exif])
+    if turn is not None:
+        image = image.transpose({90: Image.Transpose.ROTATE_90,
+                                 270: Image.Transpose.ROTATE_270}[turn])
+    buffer = io.BytesIO()
+    if exif is None:
+        image.save(buffer, format='PNG')
+    else:
+        tags = Image.Exif()
+        tags[274] = exif
+        image.save(buffer, format='JPEG', quality=95, subsampling=0, exif=tags)
+    return buffer.getvalue()
+
+
+IMAGE_PIXELS = r"""async image=>{
+  await image.decode();
+  const width=image.naturalWidth,height=image.naturalHeight;
+  if(!width||!height)throw Error('Orientation fixture did not decode');
+  const canvas=document.createElement('canvas');canvas.width=width;canvas.height=height;
+  try{
+    const context=canvas.getContext('2d');context.drawImage(image,0,0,width,height);
+    const corners=[[.25,.25],[.75,.25],[.75,.75],[.25,.75]].map(([x,y])=>
+      [...context.getImageData(Math.floor(x*width),Math.floor(y*height),1,1).data].slice(0,3));
+    return {width,height,corners};
+  }finally{canvas.width=1;canvas.height=1;}
+}"""
+
+SAVED_IMAGE_PIXELS = r"""async ({photoId,drawingId,original})=>{
+  const blob=original?await SentlogOriginalPhotos.getOriginal(drawingId,photoId):await getPhotoBlob(photoId,drawingId);
+  if(!blob?.size)throw Error('Saved orientation fixture missing');
+  const url=URL.createObjectURL(blob),image=new Image();image.src=url;
+  try{
+    const pixels=await (""" + IMAGE_PIXELS + r""")(image);
+    const hash=await crypto.subtle.digest('SHA-256',await blob.arrayBuffer());
+    return {...pixels,sha256:[...new Uint8Array(hash)].map(x=>x.toString(16).padStart(2,'0')).join('')};
+  }finally{URL.revokeObjectURL(url);image.src='';}
+}"""
+
+
+def assert_orientation(pixels, width, height, label):
+    assert (pixels['width'], pixels['height']) == (width, height), (label, pixels)
+    for index, (actual, expected) in enumerate(zip(pixels['corners'], ORIENTATION_COLORS)):
+        assert all(abs(a-e) <= 35 for a, e in zip(actual, expected)), (label, index, pixels)
+
 
 CAMERA_MOCK = r"""encoded=>{
-  const bytes=Uint8Array.from(atob(encoded),c=>c.charCodeAt(0));
-  const mock=window.cameraMock={calls:0,photos:0,canvasPhotos:0,stopped:0,deny:false,tracks:[],constraints:[]};
-  const image=new Image();image.src='data:image/png;base64,'+encoded;mock.imageReady=image.decode();
+  let bytes=Uint8Array.from(atob(encoded),c=>c.charCodeAt(0));
+  const mock=window.cameraMock={calls:0,photos:0,canvasPhotos:0,stopped:0,deny:false,tracks:[],constraints:[],
+    width:1280,height:960,stillMime:'image/png',videos:new Set()};
+  let image=new Image();image.src='data:image/png;base64,'+encoded;mock.imageReady=image.decode();
+  mock.setFrame=async fixture=>{
+    const next=new Image();next.src='data:image/png;base64,'+fixture.encoded;await next.decode();
+    image=next;mock.width=fixture.width;mock.height=fixture.height;
+    bytes=Uint8Array.from(atob(fixture.stillEncoded||fixture.encoded),c=>c.charCodeAt(0));
+    mock.stillMime=fixture.stillMime||'image/png';
+    for(const video of mock.videos)video.dispatchEvent(new Event('resize'));
+  };
   const active=new WeakMap();
   // WebKit may expose media members on HTMLVideoElement itself. Override the
   // concrete prototype so an own native member cannot shadow the fixture.
@@ -37,15 +114,15 @@ CAMERA_MOCK = r"""encoded=>{
     configurable:true,get(){return active.has(this)?active.get(this):originalSrc.get.call(this);},
     set(value){
       if(value?.sentlogCameraFixture){
-        active.set(this,value);
-        for(const [key,val] of [['videoWidth',1280],['videoHeight',960],['readyState',4]])
-          Object.defineProperty(this,key,{configurable:true,get:()=>val});
+        active.set(this,value);mock.videos.add(this);
+        for(const [key,get] of [['videoWidth',()=>mock.width],['videoHeight',()=>mock.height],['readyState',()=>4]])
+          Object.defineProperty(this,key,{configurable:true,get});
         queueMicrotask(()=>{
           this.dispatchEvent(new Event('loadedmetadata'));this.dispatchEvent(new Event('canplay'));
         });
       }else{
         if(active.has(this)){
-          active.delete(this);
+          active.delete(this);mock.videos.delete(this);
           for(const key of ['videoWidth','videoHeight','readyState'])delete this[key];
         }
         originalSrc.set.call(this,value);
@@ -72,7 +149,7 @@ CAMERA_MOCK = r"""encoded=>{
     if(mock.deny)throw new DOMException('Synthetic camera permission denied','NotAllowedError');
     if(mock.startGate)await mock.startGate;
     const track={kind:'video',label:'Synthetic back camera',readyState:'live',enabled:true,muted:false,
-      getSettings:()=>({width:1280,height:960,facingMode:'environment',deviceId:'synthetic-back'}),
+      getSettings:()=>({width:mock.width,height:mock.height,facingMode:'environment',deviceId:'synthetic-back'}),
       getCapabilities:()=>({width:{min:320,max:1280},height:{min:240,max:960},facingMode:['environment']}),
       getConstraints:()=>structuredClone(constraints.video||{}),applyConstraints:async()=>{},
       addEventListener(){},removeEventListener(){},
@@ -85,8 +162,9 @@ CAMERA_MOCK = r"""encoded=>{
   window.ImageCapture=class{
     constructor(track){this.track=track;}
     async getPhotoCapabilities(){return {imageWidth:{min:32,max:1280,step:1},imageHeight:{min:32,max:960,step:1}};}
-    async takePhoto(){mock.photos++;return new Blob([bytes],{type:'image/png'});}
+    async takePhoto(){mock.photos++;return new Blob([bytes],{type:mock.stillMime});}
   };
+  mock.ImageCaptureClass=window.ImageCapture;
 }"""
 
 
@@ -329,6 +407,115 @@ def run(page, engine, screenshot_dir=None):
           'and late-start camera cleanup')
 
 
+def run_orientation(page, engine, screenshot_dir=None):
+    drawing_id = 'memo-plan-b'
+    page.evaluate("""async()=>{
+      await openDrawing(memoFixture.pid,'memo-plan-b');SentlogFieldRecords.selectRecord('survey-a');
+      $('inspector').classList.add('open');window.ImageCapture=cameraMock.ImageCaptureClass;
+    }""")
+    platform = page.evaluate("""()=>({userAgent:navigator.userAgent,platform:navigator.platform,
+      maxTouchPoints:navigator.maxTouchPoints})""")
+
+    def set_platform(values):
+        page.evaluate("""values=>{
+          for(const [key,value] of Object.entries(values))Object.defineProperty(navigator,key,{configurable:true,value});
+        }""", values)
+
+    def saved_pixels(photo_id, original=False):
+        return page.evaluate(SAVED_IMAGE_PIXELS, {'photoId': photo_id, 'drawingId': drawing_id, 'original': original})
+
+    def shared_size(width, height):
+        ratio = min(1, 1600/max(width, height))
+        return round(width*ratio), round(height*ratio)
+
+    def grid_pixels(photo_id):
+        page.evaluate('renderSelectedPhotos()')
+        index = saved_photo_ids(page, drawing_id).index(photo_id)
+        return page.locator('#photoGrid .photo-thumb img').nth(index).evaluate(IMAGE_PIXELS)
+
+    devices = [
+        ('iPhone', {'userAgent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_4 like Mac OS X) AppleWebKit/605.1.15 Version/18.4 Mobile/15E148 Safari/604.1',
+                    'platform': 'iPhone', 'maxTouchPoints': 5},
+         [('portrait', 1200, 1600, 90), ('landscape-left', 1600, 1200, 90),
+          ('landscape-right', 1600, 1200, 270), ('portrait-again', 1200, 1600, 270)]),
+        ('iPad-desktop', {'userAgent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15) AppleWebKit/605.1.15 Version/18.4 Safari/605.1.15',
+                         'platform': 'MacIntel', 'maxTouchPoints': 5},
+         [('portrait', 1920, 2560, 90), ('landscape', 2560, 1920, 270)])
+    ]
+    try:
+        for device, navigator, cases in devices:
+            set_platform(navigator)
+            native_before = page.evaluate('cameraMock.photos')
+            frames_before = page.evaluate('cameraMock.canvasPhotos')
+            streams_before = page.evaluate('cameraMock.calls')
+            checked = []
+            for shot, (direction, width, height, turn) in enumerate(cases, 1):
+                page.set_viewport_size({'width': 390, 'height': 844} if height > width else {'width': 844, 'height': 390})
+                preview = orientation_photo(width, height)
+                wrong_still = orientation_photo(width, height, turn=turn)
+                page.evaluate('fixture=>cameraMock.setFrame(fixture)', {
+                    'encoded': base64.b64encode(preview).decode('ascii'), 'width': width, 'height': height,
+                    'stillEncoded': base64.b64encode(wrong_still).decode('ascii')})
+                if shot == 1:
+                    open_camera(page)
+                before = set(saved_photo_ids(page, drawing_id))
+                shutter(page)
+                wait_photos(page, drawing_id, len(before)+1)
+                camera_count(page, shot)
+                added = set(saved_photo_ids(page, drawing_id))-before
+                assert len(added) == 1, (device, direction, added)
+                photo_id = added.pop()
+                original = saved_pixels(photo_id, original=True)
+                assert_orientation(original, width, height, device+' '+direction+' original')
+                shared_width, shared_height = shared_size(width, height)
+                assert_orientation(saved_pixels(photo_id), shared_width, shared_height, device+' '+direction+' shared')
+                assert page.evaluate('cameraMock.photos') == native_before, 'iOS must not use the differently oriented native still'
+                assert page.evaluate('cameraMock.canvasPhotos') == frames_before+shot
+
+                page.locator('#slCameraCount').click()
+                image = page.locator(f'#slCameraReviewList [data-camera-photo-id="{photo_id}"] img')
+                image.scroll_into_view_if_needed()
+                assert_orientation(image.evaluate(IMAGE_PIXELS), shared_width, shared_height, device+' '+direction+' review')
+                if screenshot_dir and shot == 1:
+                    screenshot_dir.mkdir(parents=True, exist_ok=True)
+                    page.screenshot(path=str(screenshot_dir / f'sentlog-continuous-camera-{engine}-{device}-orientation.png'))
+                page.locator('#slCameraReviewClose').click()
+                checked.append((photo_id, width, height, original['sha256']))
+            assert page.evaluate('cameraMock.calls') == streams_before+1, 'rotating the device must not require a new camera stream'
+            page.locator('#slCameraDone').click()
+            page.wait_for_function('!SentlogContinuousCamera.isOpen()')
+            page.evaluate('SentlogRecords.settled()')
+            for photo_id, width, height, digest in checked:
+                assert_orientation(grid_pixels(photo_id), *shared_size(width, height), device+' photo list')
+                assert saved_pixels(photo_id, original=True)['sha256'] == digest, 'display must not rewrite the retained original'
+            print('PASS '+engine+': '+device+' preview pixels and full stream dimensions survive capture, shared conversion, review and photo list')
+    finally:
+        set_platform(platform)
+        page.set_viewport_size({'width': 390, 'height': 844})
+
+    # Native-camera/gallery JPEGs retain their EXIF-bearing originals. The
+    # shared JPEG and the actual photo-list image must apply orientation once.
+    for orientation in range(1, 9):
+        photo = orientation_photo(120, 160, exif=orientation)
+        before = set(saved_photo_ids(page, drawing_id))
+        with page.expect_file_chooser() as chooser:
+            page.locator('#photoAddBtn').click()
+        chooser.value.set_files({'name': f'orientation-{orientation}.jpg', 'mimeType': 'image/jpeg', 'buffer': photo})
+        wait_photos(page, drawing_id, len(before)+1)
+        added = set(saved_photo_ids(page, drawing_id))-before
+        assert len(added) == 1, (orientation, added)
+        photo_id = added.pop()
+        original = saved_pixels(photo_id, original=True)
+        assert original['sha256'] == hashlib.sha256(photo).hexdigest(), ('EXIF original changed', orientation)
+        assert_orientation(original, 120, 160, f'EXIF {orientation} original decode')
+        assert_orientation(saved_pixels(photo_id), 120, 160, f'EXIF {orientation} shared')
+        assert_orientation(grid_pixels(photo_id), 120, 160, f'EXIF {orientation} photo list')
+    assert page.evaluate('SentlogCollaborationPhotos.listPending()') == []
+    ids = saved_photo_ids(page, drawing_id)
+    assert len(ids) == len(set(ids)), 'orientation handling must not duplicate photo IDs'
+    print('PASS '+engine+': EXIF orientations 1–8 decode once in shared photos/list and retain byte-identical originals')
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--engine', choices=('chromium', 'webkit'), default='chromium')
@@ -371,6 +558,7 @@ def main():
                 page.goto(origin+'/sentlog/', wait_until='domcontentloaded')
                 page.wait_for_function('window.sentlogAppReady&&window.SentlogContinuousCamera&&window.SentlogCollaborationPhotos', timeout=45000)
                 run(page, args.engine, args.screenshot_dir)
+                run_orientation(page, args.engine, args.screenshot_dir)
                 assert not errors, errors
             except Exception:
                 if args.screenshot_dir:
