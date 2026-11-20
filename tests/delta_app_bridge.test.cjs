@@ -55,7 +55,7 @@ async function actualApp(snapshot=initial()){
   assert(start>=0&&end>start,'the fixture must execute the actual persist implementation');
   vm.runInContext(part.slice(start,end),ctx,{filename:'actual-app-persist.js'});
   async function disk(){
-    const db=await new Promise((resolve,reject)=>{const q=indexedDB.open('surveyFieldNoteDB',1);q.onsuccess=()=>resolve(q.result);q.onerror=()=>reject(q.error);});
+    const db=await new Promise((resolve,reject)=>{const q=indexedDB.open('surveyFieldNoteDB');q.onsuccess=()=>resolve(q.result);q.onerror=()=>reject(q.error);});
     try{return await new Promise((resolve,reject)=>{const tx=db.transaction('files','readonly'),s=tx.objectStore('files');let keys,values;
       s.getAllKeys().onsuccess=e=>{keys=e.target.result;};s.getAll().onsuccess=e=>{values=e.target.result;};
       tx.oncomplete=()=>resolve(new Map(keys.map((k,i)=>[k,values[i]])));tx.onabort=()=>reject(tx.error);});}

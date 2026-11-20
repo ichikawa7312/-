@@ -3,6 +3,14 @@ on:
   pull_request:
     paths:
       - 'sentlog/delta-sync-*.js'
+      - 'sentlog/delta-sync-*.txt'
+      - 'sentlog/archive-core.js'
+      - 'sentlog/record-collaboration.js'
+      - 'scripts/build_delta_sync.py'
+      - 'scripts/build_capacity.py'
+      - 'scripts/build_management.py'
+      - 'docs/sentlog-delta-*.sql'
+      - 'db/collaboration_v1.sql'
       - 'sentlog/photo-recovery.js'
       - 'sentlog/record-store.js'
       - 'sentlog/session-guard.js'
@@ -84,6 +92,15 @@ jobs:
           node tests/delta_bootstrap.test.cjs
           node tests/delta_transport.test.cjs
           node tests/delta_app_bridge.test.cjs
+          node tests/delta_metadata.test.cjs
+          node tests/delta_metadata_bridge.test.cjs
+          node tests/delta_app_journal.test.cjs
+          node tests/delta_capacity.test.cjs
+          node tests/delta_projection_pglite.cjs
+          node tests/delta_metadata_pglite.cjs
+          node tests/delta_legacy_unicode_pglite.cjs
+          node tests/delta_checkpoint_pglite.cjs
+          node tests/delta_app_backend.test.cjs
           node tests/delta_batch_paging.test.cjs
           node tests/delta_group_sync.test.cjs
           node tests/delta_group_contract.cjs
@@ -203,3 +220,5 @@ jobs:
           psql -v ON_ERROR_STOP=1 -f tests/delta_archive_assertions.sql
       - name: Verify archive and grouped-edit races through separate connections
         run: bash tests/delta_archive_races.sh
+      - name: Verify certified snapshot and real archive races through separate connections
+        run: bash tests/delta_checkpoint_races.sh

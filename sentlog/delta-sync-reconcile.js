@@ -6,6 +6,7 @@
   'use strict';
   const C=root.SentlogRecordCollaboration || (typeof module==='object'&&module.exports?require('./record-collaboration.js'):null);
   const D=root.SentlogDeltaSyncCore || (typeof module==='object'&&module.exports?require('./delta-sync-core.js'):null);
+  const M=root.SentlogDeltaMetadata || (typeof module==='object'&&module.exports?require('./delta-sync-metadata.js'):null);
   if(!C||!D)throw Error('差分同期の照合機能を読み込めません');
   const SCOPE=['ownerId','projectId','deviceId'],GROUPS=['comments','fields','photos'];
   const WS='surveyFieldNoteWorkspaceV1',DRAW='surveyFieldNoteDrawingV1:';
@@ -184,7 +185,7 @@
       'RECONCILE_UNKNOWN_HISTORY_METADATA','未対応の共同編集情報を、元の内容のまま確認待ちに残しました');
     const projected=omit(normalized,['collab']),source=omit(raw,['collab']);
     if(!own(source,'memo'))source.memo='';if(!own(source,'photos'))source.photos=[];
-    insist(C.equal(source,projected),'RECONCILE_UNRECORDED_EDIT','履歴にまだ反映されていない入力を、元の内容のまま確認待ちに残しました');
+    insist(C.equal(source,projected)||C.matchesProjection(raw,{allowLegacyOrder:true}),'RECONCILE_UNRECORDED_EDIT','履歴にまだ反映されていない入力を、元の内容のまま確認待ちに残しました');
     return normalized;
   }
   // jsonb emits a space after separators and expands exponent notation. Count
@@ -200,7 +201,7 @@
     if(object(value))return '{'+Object.entries(value).map(([k,v])=>JSON.stringify(k)+': '+pgText(v)).join(', ')+'}';
     return JSON.stringify(value);
   }
-  function publicProject(value){return {...omit(value,['updatedAt','drawings']),drawings:(value.drawings||[]).map(m=>omit(m,META_LOCAL))};}
+  function publicProject(value){return {...omit(value,['updatedAt','drawings','deltaMetadata']),drawings:(value.drawings||[]).map(m=>omit(m,META_LOCAL))};}
   function publicDrawing(value){return {...value,meta:omit(value.meta,META_LOCAL),state:omit(value.state,VIEW_KEYS)};}
   function review(list,code,message,details={},blocking=true){list.push({code,message,blocking,...clone(details)});}
   function extractLocal(snapshot,reviews){
@@ -229,20 +230,28 @@
     }
     for(const [key,value]of raw)if(key.startsWith(DRAW)&&!seen.has(key.slice(DRAW.length)))
       review(reviews,'RECONCILE_SOURCE_ORPHAN','案件一覧にない図面の保存内容を確認待ちに残しました',{sourceKey:key,rawValue:value});
+    if(project.deltaMetadata)try{
+      M.validateEnvelope(project.deltaMetadata);
+      for(const drawing of project.deltaMetadata.retainedDrawings)for(const bucket of ['shapes','collabDeletedRecords'])for(const record of drawing.state[bucket]||[]){
+        insist(valid(record?.id),'RECONCILE_SOURCE_RECORD','保持した図面の記録IDが不正です');const key=D.keyOf(drawing.meta.id,record.id),group=records.get(key)||[];
+        group.push({drawingId:drawing.meta.id,recordId:record.id,bucket,record:clone(record)});records.set(key,group);
+      }
+    }catch(error){review(reviews,error.code||'RECONCILE_METADATA',error.message,{localMetadata:project.deltaMetadata});}
     return {project,drawings,records,localView};
   }
-  async function plan({scope:inputScope,baseline:inputBaseline,localSnapshot:inputSnapshot,currentScope,signal,groupTransport}={}){
+  async function plan({scope:inputScope,baseline:inputBaseline,localSnapshot:inputSnapshot,currentScope,signal,groupTransport,sharedMetadata=false}={}){
     const scope=scopeOf(inputScope),snapshot=clone(inputSnapshot),baselineInput=clone(inputBaseline),check=()=>guard(scope,currentScope,signal);check();
     insist(snapshot?.version===1&&snapshot.kind==='sentlog-legacy-source'&&valid(snapshot.projectId)&&digest(snapshot.fingerprint)&&
       Array.isArray(snapshot.rawEntries)&&Array.isArray(snapshot.issues),'RECONCILE_SOURCE_FORMAT','保護した旧保存の控えが不正です');
     const baseline=await verifyBaseline(baselineInput,{scope,currentScope,signal}),r=baseline.receipt;
     insist(snapshot.projectId===r.clientProjectId,'RECONCILE_SCOPE','端末とサーバーの案件対応が一致しません');check();
     const reviews=[];
+    const metadataEnabled=!!(M&&(sharedMetadata===true||groupTransport?.getCapabilities?.().sharedMetadata===true));
     for(const issue of snapshot.issues)review(reviews,issue.code||'RECONCILE_SOURCE_REVIEW',issue.message||'旧保存に確認待ちの内容があります',{sourceIssue:issue},issue.blocking!==false);
     if(snapshot.readyForStaging!==true&&!reviews.some(x=>x.blocking))review(reviews,'RECONCILE_SOURCE_UNVERIFIED','旧保存の控えを照合できていません');
     const local=extractLocal(snapshot,reviews),header=baseline.metadata[0].value,serverDrawings=baseline.metadata.slice(1).map(x=>x.value);
     const localByDrawing=new Map(local.drawings.map(d=>[d.meta.id,d])),headerByDrawing=new Map(header.project.drawings.map(d=>[d.id,d]));
-    if(!local.project||!C.equal(publicProject(local.project),publicProject(header.project)))
+    if(!metadataEnabled&&(!local.project||!C.equal(publicProject(local.project),publicProject(header.project))))
       review(reviews,'RECONCILE_PROJECT_METADATA','案件名・図面一覧などの変更を確認待ちに残しました',{serverProject:header.project,localProject:local.project});
     if(Object.keys(header).some(k=>k!=='project'))review(reviews,'RECONCILE_HEADER_METADATA','未対応の案件情報を確認待ちに残しました',{serverHeader:header});
     if(!C.equal(serverDrawings.map(d=>d.meta.id),r.drawingIds))review(reviews,'RECONCILE_BASELINE_DRAWING_METADATA',
@@ -251,7 +260,7 @@
       if(!C.equal(omit(headerByDrawing.get(drawing.meta.id),META_LOCAL),omit(drawing.meta,META_LOCAL)))review(reviews,'RECONCILE_BASELINE_DRAWING_METADATA',
         'サーバーの案件一覧と図面本体で設定が異なります',{drawingId:drawing.meta.id,serverProjectMeta:headerByDrawing.get(drawing.meta.id),serverDrawingMeta:drawing.meta});
       const other=localByDrawing.get(drawing.meta.id);
-      if(!other||!C.equal(publicDrawing(other),publicDrawing(drawing)))review(reviews,'RECONCILE_DRAWING_METADATA',
+      if(!metadataEnabled&&(!other||!C.equal(publicDrawing(other),publicDrawing(drawing))))review(reviews,'RECONCILE_DRAWING_METADATA',
         '図面・用紙・縮尺・回転などの変更を確認待ちに残しました',{drawingId:drawing.meta.id,serverDrawing:drawing,localDrawing:other||null});
     }
     const allowed=new Set(r.drawingIds),state={version:2,scope:clone(scope),cursor:0,records:{},outbox:[],blockedOutbox:[]},server=new Map();
@@ -260,6 +269,40 @@
       try{put(state.records,key,normalizedRecord(row.record));}
       catch(error){review(reviews,error.code||'RECONCILE_BASELINE_RECORD',error.message,{drawingId:row.drawingId,recordId:row.recordId,serverRecord:row.record});}
     }
+    let metadataAtomic=false;
+    if(metadataEnabled)try{
+      insist(local.project,'RECONCILE_SOURCE_PROJECT','端末の案件設定がありません');
+      const app=(project,drawings,rows)=>({version:1,kind:'sentlog-app-project',localProjectId:r.clientProjectId,project:clone(project),drawings:drawings.map(d=>{
+        const state={...clone(d.state),shapes:[],collabDeletedRecords:[]};
+        for(const value of rows)if(value.drawingId===d.meta.id)state[C.isDeleted(value.record)?'collabDeletedRecords':'shapes'].push(clone(value.record));
+        return {meta:clone(d.meta),state};
+      })});
+      const serverApp=app(header.project,serverDrawings,baseline.records),localApp=app(local.project,local.drawings,[...local.records.values()].flat());
+      const seed=await M.seed(serverApp);for(const [key,record]of Object.entries(seed))put(state.records,key,record);
+      // Old backup envelopes retain hidden drawings and all their immutable
+      // record histories. They participate in replay even without visible rows.
+      for(const drawing of header.project.deltaMetadata?.retainedDrawings||[])for(const bucket of ['shapes','collabDeletedRecords'])for(const record of drawing.state[bucket]||[]){
+        const key=D.keyOf(drawing.meta.id,record.id),normalized=normalizedRecord(record);insist(!own(state.records,key)||C.equal(state.records[key].collab,normalized.collab),'RECONCILE_RETAINED_COLLISION','保持した図面の履歴が重複しています');put(state.records,key,normalized);server.set(key,{drawingId:drawing.meta.id,recordId:record.id,record:normalized});
+      }
+      let changes;
+      if(local.project.deltaMetadata){
+        const localDocs=await M.seed(localApp);changes=[];
+        for(const [key,record]of Object.entries(localDocs)){
+          const old=state.records[key]||null,joined=old?C.mergeRecords(old,record):{ok:true,record};insist(joined.ok,'RECONCILE_HISTORY_COLLISION',joined.reason||'設定の変更履歴が一致しません');
+          if(!old||!C.equal(old.collab,joined.record.collab))changes.push({drawingId:M.namespace,before:old,after:joined.record});
+        }
+      }else {
+        const edited=await M.edit({before:serverApp,after:localApp,currentRecords:state.records,operation:'restore',legacyMerge:true,inferProvenance:true,
+          operationId:'migration-metadata:'+await hash(JSON.stringify(C.canonical([scope,snapshot.fingerprint]))),actor:{deviceId:scope.deviceId,deviceName:'移行前の端末'},at:0});changes=edited.changes;
+      }
+      for(const change of changes){
+        const placeholder=D.diffRecord(change.before,change.after,{eventId:'migration:'+'0'.repeat(64),projectId:scope.projectId,drawingId:M.namespace,deviceId:scope.deviceId});
+        if(!placeholder)continue;const event={...placeholder,eventId:'migration:'+await hash(JSON.stringify(C.canonical([scope.ownerId,omit(placeholder,['eventId'])])))};D.validateEvent(event);
+        insist(new TextEncoder().encode(pgText(event)).byteLength<=256*1024,'RECONCILE_EVENT_TOO_LARGE','設定の履歴が一度の送信上限を超えています');
+        put(state.records,D.keyOf(M.namespace,change.after.id),change.after);state.outbox.push(event);metadataAtomic=true;
+      }
+      for(const record of Object.values(M.metadataRecords(state.records))){const doc=await M.materializeDocument(record);if(doc.kind==='drawing')allowed.add(doc.identity.drawingId);}
+    }catch(error){review(reviews,error.code||'RECONCILE_METADATA',error.message||'設定の照合を完了できません');}
     for(const [key,group]of [...local.records].sort(([a],[b])=>a<b?-1:a>b?1:0)){
       check();const first=group[0],old=server.get(key),details={drawingId:first.drawingId,recordId:first.recordId,
         serverRecord:old?.record||null,localRecords:group.map(x=>({bucket:x.bucket,record:x.record}))};
@@ -290,13 +333,13 @@
     // A legacy move must retain its source tombstone and destination in one
     // durable unit. Only an authenticated, capability-checked transport may
     // turn those pending events into a sendable atomic group.
-    const created=state.outbox.filter(e=>e.kind==='create');
+    const created=state.outbox.filter(e=>e.kind==='create'&&e.drawingId!==M?.namespace);
     const deletionIntent=state.outbox.filter(e=>e.kind==='patch'&&e.patch.deletion.some(r=>r.deleted===true));
     const moveMarkers=state.outbox.filter(e=>e.kind==='create'?e.record.transferOrigin?.operation==='move':
       e.patch.fields.transferOrigin?.revisions.some(r=>r.value?.operation==='move'));
     const relocated=created.filter(e=>baseline.records.some(row=>row.recordId===e.recordId&&row.drawingId!==e.drawingId&&
       !local.records.has(D.keyOf(row.drawingId,row.recordId))));
-    if(moveMarkers.length||relocated.length||created.length&&deletionIntent.length){
+    if(moveMarkers.length||relocated.length||created.length&&deletionIntent.length||metadataAtomic&&state.outbox.length>1){
       const identity=e=>({eventId:e.eventId,drawingId:e.drawingId,recordId:e.recordId});
       // A group is an atomic transport boundary, not proof that both halves
       // were captured. A destination-only legacy draft still needs its source
@@ -325,9 +368,14 @@
       }else review(reviews,'RECONCILE_ATOMIC_GROUP_REQUIRED','移動元と移動先を一緒に共有する機能が未接続です。変更全体を保持し、引き継ぎを確定していません',
         {pendingCreates:created.map(identity),pendingDeletions:deletionIntent.map(identity),moveMarkers:moveMarkers.map(identity),relocatedRecords:relocated.map(identity)});
     }
+    if(metadataEnabled)try{
+      const template={project:local.project,drawings:local.drawings.map(d=>({meta:d.meta,state:{...d.state,shapes:[]}}))};
+      const projection=await M.project({records:state.records,template,localProjectId:r.clientProjectId});
+      if(projection.metadataConflicts.length)review(reviews,'RECONCILE_CONCURRENT_EDITS','設定の変更候補を両方保持しました',{conflicts:projection.metadataConflicts},false);
+    }catch(error){review(reviews,error.code||'RECONCILE_METADATA',error.message||'設定を再表示できません');}
     const result={version:1,kind:'sentlog-delta-reconciliation',hashFormat:PLAN_FORMAT,scope:clone(scope),baselineReceipt:clone(r),
       sourceFingerprint:snapshot.fingerprint,localProjectId:snapshot.projectId,state,reviewItems:reviews,
-      metadata:{header:clone(header),drawings:clone(serverDrawings),localView:local.localView},
+      metadata:{header:clone(header),drawings:clone(serverDrawings),localView:local.localView,...(metadataEnabled?{sharedMetadata:true}: {})},
       preservedLocal:{rawEntries:clone(snapshot.rawEntries),source:clone(snapshot.source),originals:clone(snapshot.originals||[]),
         captureIntentRaw:snapshot.captureIntentRaw??null,files:(snapshot.files||[]).map(({blob,...info})=>clone(info)),manifest:clone(snapshot.manifest||[])},
       summary:{baselineRecords:r.recordCount,localRecords:[...local.records.values()].reduce((n,g)=>n+g.length,0),

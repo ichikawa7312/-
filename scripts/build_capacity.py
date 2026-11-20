@@ -23,6 +23,15 @@ storage_code=r'''
     assertReady();await settled();window.SentlogRecords.assertSafe();
     if(exclusive)throw Error('ほかの保存操作が進行しています');
     const updates=[...writes],files=[...deleteFiles];
+    const archiveOptions=arguments[0]||{};
+    function validateArchive(){
+      if(archiveOptions.validate===undefined)return;
+      if(typeof archiveOptions.validate!=='function')throw journalError('JOURNAL_GUARD','保管後の確認方法が不正です');
+      const result=archiveOptions.validate();
+      if(result&&typeof result.then==='function'){Promise.resolve(result).catch(()=>{});throw journalError('JOURNAL_GUARD','削除直前の確認は同期的に行う必要があります');}
+      if(result!==true)throw journalError('JOURNAL_GUARD','確認中に記録またはファイルが変更されました。削除を中止しました');
+    }
+    validateArchive();
     if(typeof expectedWorkspace!=='string'||memory.get(WS)!==expectedWorkspace)
       throw Error('別の操作で案件一覧が更新されています。削除を中止しました。');
     if(updates.some(([k,v])=>!managed(k)||(v!==null&&typeof v!=='string')))
@@ -39,9 +48,12 @@ storage_code=r'''
       function stop(){conflict=true;tx.abort();}
       function commit(){
         if(conflict)return;
-        for(const f of files)s.delete(f.key);
-        for(const [k,v] of updates)if(v===null)s.delete(PREFIX+k);else s.put(v,PREFIX+k);
-        s.put({...oldMeta,revision:revision+1,updatedAt:new Date().toISOString()},META);
+        journalMutation(tx,{writes:updates,fileDeletes:files,expectedFileStates:archiveOptions.expectedFileStates||[],kind:'archive',contexts:[contextOf(archiveOptions)]},()=>{
+          validateArchive();
+          for(const f of files)s.delete(f.key);
+          for(const [k,v] of updates)if(v===null)s.delete(PREFIX+k);else s.put(v,PREFIX+k);
+          s.put({...oldMeta,revision:revision+1,updatedAt:new Date().toISOString()},META);
+        });
       }
       s.get(META).onsuccess=e=>{
         oldMeta=e.target.result;
@@ -62,8 +74,8 @@ storage_code=r'''
         if(conflict)throw Error('確認中にファイルまたは案件情報が変更されました。何も削除せず中止しました。');
         throw e;
       }
-      revision++;
-      for(const [k,v] of updates)if(v===null)memory.delete(k);else memory.set(k,v);
+      committedBindings(tx);revision++;
+      for(const [k,v] of updates)if(v===null){memory.delete(k);durableMemory.delete(k);}else{memory.set(k,v);durableMemory.set(k,v);}
       notify();
     }finally{exclusive=false;operation=false;notify();}
   }

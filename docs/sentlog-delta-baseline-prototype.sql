@@ -77,6 +77,22 @@ BEGIN
   RETURN u;
 END $fn$;
 
+-- Manual recovery may read an archived project's immutable history. Writes,
+-- preparation, import, activation and checkpoint publication retain the active
+-- project guard above; reading never reopens or changes a project's state.
+CREATE OR REPLACE FUNCTION sentlog_delta_private.read_authorize(pid uuid,did uuid)
+RETURNS uuid LANGUAGE plpgsql SECURITY INVOKER SET search_path=''
+AS $fn$
+DECLARE u uuid:=(SELECT auth.uid());
+BEGIN
+  IF u IS NULL THEN RAISE EXCEPTION 'DELTA_LOGIN_REQUIRED' USING ERRCODE='28000'; END IF;
+  PERFORM 1 FROM public.sentlog_projects WHERE id=pid AND owner_id=u AND status IN ('active','archived') FOR SHARE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'DELTA_PROJECT_FORBIDDEN' USING ERRCODE='42501'; END IF;
+  PERFORM 1 FROM public.sentlog_devices WHERE id=did AND owner_id=u AND active=true FOR SHARE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'DELTA_DEVICE_FORBIDDEN' USING ERRCODE='42501'; END IF;
+  RETURN u;
+END $fn$;
+
 CREATE OR REPLACE FUNCTION sentlog_delta_private.baseline_receipt(b sentlog_delta_private.baselines)
 RETURNS jsonb LANGUAGE sql STABLE SECURITY INVOKER SET search_path=''
 AS $fn$
@@ -246,7 +262,7 @@ DECLARE
   r sentlog_delta_private.baseline_records%ROWTYPE;
   page jsonb:='[]'::jsonb; item jsonb; used_bytes bigint:=0; next_ordinal bigint;
 BEGIN
-  u:=sentlog_delta_private.baseline_authorize(p_project_id,p_device_id);
+  u:=sentlog_delta_private.read_authorize(p_project_id,p_device_id);
   SELECT * INTO b FROM sentlog_delta_private.baselines
     WHERE id=p_baseline_id AND project_id=p_project_id AND owner_id=u;
   IF NOT FOUND OR b.state NOT IN ('verified','active') THEN
@@ -285,7 +301,7 @@ DECLARE
   u uuid; b sentlog_delta_private.baselines%ROWTYPE; r record;
   page jsonb:='[]'::jsonb; item jsonb; used_bytes bigint:=0; next_ordinal bigint; n bigint;
 BEGIN
-  u:=sentlog_delta_private.baseline_authorize(p_project_id,p_device_id);
+  u:=sentlog_delta_private.read_authorize(p_project_id,p_device_id);
   SELECT * INTO b FROM sentlog_delta_private.baselines
     WHERE id=p_baseline_id AND project_id=p_project_id AND owner_id=u;
   IF NOT FOUND OR b.state NOT IN ('verified','active') THEN
@@ -345,7 +361,8 @@ BEGIN
     RAISE EXCEPTION 'DELTA_BASELINE_STALE' USING ERRCODE='40001'; END IF;
   IF NOT EXISTS(SELECT 1 FROM pg_catalog.pg_trigger t
     WHERE t.tgrelid='public.sentlog_project_snapshots'::regclass
-      AND t.tgfoid='sentlog_delta_private.reject_legacy_snapshot()'::regprocedure
+      AND (t.tgfoid=pg_catalog.to_regprocedure('sentlog_delta_private.reject_legacy_snapshot()') OR
+           t.tgfoid=pg_catalog.to_regprocedure('sentlog_delta_private.guard_certified_snapshot()'))
       AND t.tgenabled IN ('O','A') AND NOT t.tgisinternal AND t.tgqual IS NULL AND (t.tgtype::integer & 31)=31) THEN
     RAISE EXCEPTION 'DELTA_BASELINE_LEGACY_GUARD_REQUIRED' USING ERRCODE='55000'; END IF;
   IF h.enabled AND b.state='active' THEN RETURN sentlog_delta_private.baseline_receipt(b); END IF;
@@ -368,6 +385,7 @@ END $fn$;
 REVOKE ALL ON FUNCTION sentlog_delta_private.json_digest(jsonb),
   sentlog_delta_private.baseline_metadata(jsonb),
   sentlog_delta_private.baseline_authorize(uuid,uuid),
+  sentlog_delta_private.read_authorize(uuid,uuid),
   sentlog_delta_private.baseline_receipt(sentlog_delta_private.baselines),
   sentlog_delta_private.prepare_baseline(uuid,uuid,bigint),
   sentlog_delta_private.import_baseline_batch(uuid,uuid,uuid,integer),

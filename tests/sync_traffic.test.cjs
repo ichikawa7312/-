@@ -54,7 +54,7 @@ async function receiverTests({saveBroken=false,different=false}={}){
  const read=async key=>local.get(key),write=async(key,blob)=>{calls.write++;if(!saveBroken)local.set(key,blob);};
  const download=async()=>{calls.download++;await new Promise(r=>setImmediate(r));return original;};
  const send=async()=>{calls.ack++;return {received:true};};
- const win={SentlogSyncTraffic:traffic,SentlogRecords:{ready:true,writeFile:write},sentlogSyncView:{photoReceived(){}}};
+ const win={sentlogDeltaOwnsProject:()=>false,sentlogDeltaOwnsPhoto:()=>false,SentlogSyncTraffic:traffic,SentlogRecords:{ready:true,writeFile:write},sentlogSyncView:{photoReceived(){}}};
  const cloud=fs.readFileSync('sentlog/cloud-sync.js','utf8');
  const source=cloud.slice(cloud.indexOf('async function ackAsset('),cloud.indexOf(cloud.includes('collaboration-sync-v1')?'async function syncNow(':'async function pullRemoteProjects('));
  const cloudApi=vm.runInNewContext(source+';({pullProjectAssets})',{collaborationAssetOwner:'',
@@ -63,7 +63,7 @@ async function receiverTests({saveBroken=false,different=false}={}){
  const photos=fs.readFileSync('sentlog/photo-recovery.js','utf8');
  const receiver=photos.slice(photos.indexOf(' async function acknowledgePhoto('),photos.indexOf(' async function provide('));
  const photoApi=vm.runInNewContext(receiver+';({receive})',{
-  Blob,File,Set,Map,Date,window:win,currentPhotoKeys:()=>({keys:new Set(['photo:drawing:photo'])}),activeProjectIds:async()=>new Set(['project']),assetList:async()=>[asset],photoKey:(d,p)=>'photo:'+d+':'+p,localPhoto:read,matches:async(b,a)=>b instanceof Blob&&b.size===a.byte_size&&(await digest(b))===a.sha256,downloaded:download,rpc:send,lastRequested:new Map(),show:m=>messages.push(m)
+  Blob,File,Set,Map,Date,IS_PC:false,window:win,currentPhotoKeys:()=>({keys:new Set(['photo:drawing:photo'])}),activeProjectIds:async()=>new Set(['project']),assetList:async()=>[asset],photoKey:(d,p)=>'photo:'+d+':'+p,localPhoto:read,matches:async(b,a)=>b instanceof Blob&&b.size===a.byte_size&&(await digest(b))===a.sha256,downloaded:download,rpc:send,lastRequested:new Map(),show:m=>messages.push(m)
  });
  const cp={id:'project',client_key:'local-project'};
  const first=await Promise.allSettled([cloudApi.pullProjectAssets(cp,'device'),photoApi.receive('device')]);

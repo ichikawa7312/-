@@ -105,7 +105,7 @@ SELECT pg_temp.group_check((SELECT count(*)=1 FROM sentlog_delta_private.record_
 UPDATE public.sentlog_projects SET status='archived' WHERE id='66666666-1111-4111-8111-111111111111';
 SET LOCAL ROLE authenticated;
 SELECT pg_temp.group_check(pg_temp.group_fails($q$SELECT public.sentlog_delta_append_group_v1('66666666-1111-4111-8111-111111111111','aaaaaaaa-0000-4000-8000-000000000001',(SELECT value FROM group_values WHERE name='move'))$q$,'42501'),'archived project rejects group retries');
-SELECT pg_temp.group_check(pg_temp.group_fails($q$SELECT public.sentlog_delta_list_groups_v1('66666666-1111-4111-8111-111111111111','aaaaaaaa-0000-4000-8000-000000000001',0,100)$q$,'42501'),'archived project rejects group reads');
+SELECT pg_temp.group_check((public.sentlog_delta_list_groups_v1('66666666-1111-4111-8111-111111111111','aaaaaaaa-0000-4000-8000-000000000001',0,100)->>'headSeq')='10','archived project permits complete grouped reads for restoration');
 RESET ROLE;
 UPDATE public.sentlog_projects SET status='active' WHERE id='66666666-1111-4111-8111-111111111111';
 DELETE FROM public.sentlog_delta_events WHERE project_id='66666666-1111-4111-8111-111111111111' AND seq=3;

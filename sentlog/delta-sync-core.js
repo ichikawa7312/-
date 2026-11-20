@@ -552,6 +552,7 @@
       onVisible(){if(visible())wake();},
       snapshot(){return local(()=>clone(state));},
       snapshotWithStatus(){return local(()=>({snapshot:clone(state),snapshotToken}));},
+      isSnapshotCurrent(token){return !closed&&state!==null&&token===snapshotToken;},
       close(){if(closed)return;closed=true;started=false;requested=false;
         clear(wakeTimer);clear(reconcileTimer);clear(retryTimer);wakeTimer=reconcileTimer=retryTimer=null;
         for(const ticket of inflight)ticket.cancel();

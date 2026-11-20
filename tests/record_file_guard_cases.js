@@ -10,7 +10,7 @@
   async function rejected(task,code){let error;try{await task();}catch(e){error=e;}assert(error,'expected failure '+code);
    if(code)assert(error.code===code||error.name===code,'expected '+code+', got '+(error.code||error.name));return error;}
   async function read(k){
-   const db=await new Promise((resolve,reject)=>{const q=indexedDB.open('surveyFieldNoteDB',1);q.onsuccess=()=>resolve(q.result);q.onerror=()=>reject(q.error);});
+   const db=await new Promise((resolve,reject)=>{const q=indexedDB.open('surveyFieldNoteDB');q.onsuccess=()=>resolve(q.result);q.onerror=()=>reject(q.error);});
    try{return await new Promise((resolve,reject)=>{const tx=db.transaction('files','readonly'),q=tx.objectStore('files').get(k);let value;
     q.onsuccess=()=>{value=q.result;};tx.oncomplete=()=>resolve(value);tx.onabort=()=>reject(tx.error);});}finally{db.close();}
   }

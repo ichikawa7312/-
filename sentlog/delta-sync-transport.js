@@ -270,13 +270,43 @@
     return {
       getScope:()=>copy(scope),
       getCapabilities,
+      inspect(options){
+        return rpc('sentlog_delta_inspect_v1',base(),r=>{
+          insist(object(r)&&r.schema===1&&SCOPE.every(k=>r[k]===scope[k])&&typeof r.enabled==='boolean'&&
+            typeof r.canActivate==='boolean'&&count(r.headSeq)&&typeof r.checking==='boolean'&&
+            (r.snapshotRevision===undefined||r.snapshotRevision===null||Number.isSafeInteger(r.snapshotRevision)&&r.snapshotRevision>=1),
+            'DELTA_SERVER','案件の保存方式を確認できません');
+          if(r.enabled){receipt(r.baseline);insist(r.baseline.state==='active','DELTA_SERVER','初期基準の切替状態が一致しません');}
+          else insist(r.baseline===null||object(r.baseline),'DELTA_SERVER','初期基準の情報が不正です');
+        },options);
+      },
+      activateBaseline(baseline,proof,options){
+        baselineId(baseline);
+        insist(object(proof)&&id(proof.migrationId)&&/^[a-f0-9]{64}$/.test(proof.sourceFingerprint||'')&&
+          /^[a-f0-9]{64}$/.test(proof.planSha256||'')&&proof.writerVersion===2,
+          'DELTA_MIGRATION_REQUIRED','旧保存の控えと新しい保存処理の確認が必要です');
+        return rpc('sentlog_delta_activate_baseline_v1',{...base(),p_baseline_id:baseline,p_proof:copy(proof)},r=>{
+          receipt(r,baseline);insist(r.state==='active'&&r.deltaEnabled===true,'DELTA_SERVER','案件の切替結果を確認できません');
+        },options);
+      },
+      publishCheckpoint(expectedHead,requestId,options){
+        insist(count(expectedHead)&&id(requestId),'DELTA_CHECKPOINT','保管用の版と確認番号が不正です');
+        return rpc('sentlog_delta_publish_checkpoint_v1',{...base(),p_expected_head:expectedHead,p_request_id:requestId},r=>{
+          insist(object(r)&&r.schema===1&&r.projectId===scope.projectId&&r.headSeq===expectedHead&&
+            Number.isSafeInteger(r.revision)&&r.revision>=1&&/^[a-f0-9]{64}$/.test(r.payloadSha256||'')&&
+            object(r.payload?.project)&&Array.isArray(r.payload?.drawings),
+            'DELTA_CHECKPOINT','PC保管用の記録を確認できません');
+        },options);
+      },
       async ready(options){
         try{
           await rpc('sentlog_delta_capabilities_v1',base(),r=>{
             insist(object(r)&&r.schema===2&&SCOPE.every(k=>r[k]===scope[k])&&r.atomicGroups===true&&
               r.groupMaxEvents===500&&r.groupMaxBytes===4194304&&r.pageTargetBytes===900000,
               'DELTA_UPGRADE_REQUIRED','一括変更に対応した同期先を確認できません');
-            serverCapabilities={atomicGroups:true,groupMaxEvents:r.groupMaxEvents,groupMaxBytes:r.groupMaxBytes,pageTargetBytes:r.pageTargetBytes};
+            serverCapabilities={atomicGroups:true,groupMaxEvents:r.groupMaxEvents,groupMaxBytes:r.groupMaxBytes,pageTargetBytes:r.pageTargetBytes,
+              ...(r.sharedMetadata===true?{sharedMetadata:true}:{}),...(r.certifiedArchive===true?{certifiedArchive:true}:{}),
+              ...(r.writerJournal===2?{writerJournal:2}:{})};
           },options);
           fresh(verified);return {authenticated:true,scope:copy(scope)};
         }catch(error){

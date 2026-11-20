@@ -37,6 +37,7 @@
     const factory=options.indexedDB||root.indexedDB;
     const storage=options.localStorage||root.localStorage;
     const crypto=options.crypto||root.crypto;
+    const journal=options.journal||root.SentlogRecords?.deltaJournal;
     const name=options.databaseName||DB,originalName=options.originalDatabaseName||ORIGINALS;
     const permitted=(value,expected)=>value===expected||/^sentlog-delta-test-[a-zA-Z0-9_-]{1,120}$/.test(value);
     insist(permitted(name,DB)&&permitted(originalName,ORIGINALS)&&name!==originalName,
@@ -78,7 +79,9 @@
         request.onsuccess=()=>{
           const db=request.result;
           if(ended||closed||missing){db.close();fail(problem('LEGACY_SOURCE_CLOSED','旧保存先の確認を中止しました'));return;}
-          if(db.version!==1||stores.some(s=>!db.objectStoreNames.contains(s))){
+          const supported=db.version===1||(databaseName===name&&db.version===2&&
+            ['sentlog_delta_journal_v1','sentlog_delta_control_v1'].every(s=>db.objectStoreNames.contains(s)));
+          if(!supported||stores.some(s=>!db.objectStoreNames.contains(s))){
             db.close();fail(problem('LEGACY_SOURCE_SCHEMA','旧保存先の版または形式が未対応です。変更せず停止しました'));return;
           }
           connections.add(db);db.onversionchange=()=>{db.close();connections.delete(db);};
@@ -191,6 +194,53 @@
         qk.onsuccess=()=>{keys=qk.result;select();};
       });}finally{release(db);}
     }
+    function protectedCutoff(projectId,input){
+      insist(input?.kind==='sentlog-journal-cutoff'&&input.version===1&&input.localProjectId===projectId&&journal?.version===1&&
+        typeof journal.bindingFor==='function'&&typeof journal.assertFence==='function',
+        'LEGACY_SOURCE_CUTOFF','同時保存された移行前の控えを確認できません');
+      journal.assertFence({scope:input.scope,localProjectId:projectId});
+      const binding=journal.bindingFor(projectId),cutoff=binding?.cutoff;
+      insist(cutoff?.bindingId===input.bindingId&&cutoff.cutoffSeq===input.cutoffSeq&&cutoff.sourceRevision===input.sourceRevision&&
+        ['ownerId','projectId','deviceId'].every(k=>cutoff.scope[k]===input.scope[k]),
+        'LEGACY_SOURCE_CUTOFF','保存中の移行基準が変わっています');
+      // Only the canonical durable binding is used. Caller-owned record or Blob
+      // fields cannot forge a migration cutoff or bypass the source recheck.
+      return cutoff;
+    }
+    function cutoffRecords(projectId,cutoff,issues){
+      const all=new Map(cutoff.rawEntries),fileMap=new Map(cutoff.files.map(x=>[x.key,x.value])),entries=new Map(),blobs=new Map(),states=new Map();
+      const result={present:true,meta:copy(cutoff.sourceMeta),entries,blobs,drawings:[],states,photoRefs:[]};
+      entries.set(WS,all.get(WS)??null);const workspace=parseRaw(all.get(WS),'案件一覧',issues),projects=workspace?.projects?.filter(p=>p?.id===projectId)||[];
+      if(projects.length!==1||!Array.isArray(projects[0].drawings)){
+        issue(issues,'LEGACY_SOURCE_PROJECT','移行前の控えから対象案件を一意に確認できません');return result;
+      }
+      const ids=new Set();
+      for(const drawing of projects[0].drawings){
+        if(!valid(drawing?.id)||ids.has(drawing.id)){issue(issues,'LEGACY_SOURCE_DRAWING_ID','図面IDが不正または重複しています');continue;}
+        ids.add(drawing.id);result.drawings.push(copy(drawing));
+      }
+      const wanted=new Set([SYNC+projectId,'sentlogArchiveLocalV1']);
+      for(const id of ids){wanted.add(DRAW+id);wanted.add('sentlogReplaceBackupV1:'+id);blobs.set('background:'+id,fileMap.get('background:'+id)??null);}
+      for(const key of all.keys())if(key.startsWith('sentlogSyncMergeCheckpointV1:'+projectId+':'))wanted.add(key);
+      for(const [key,value] of fileMap)if([...ids].some(id=>key==='background:'+id||key.startsWith('photo:'+id+':')))blobs.set(key,value);
+      for(const key of wanted){
+        const raw=all.get(key)??null;entries.set(key,raw);
+        if(!key.startsWith(DRAW)){if(raw!==null)parseRaw(raw,key,issues);continue;}
+        const drawingId=key.slice(DRAW.length),state=parseRaw(raw,'図面 '+drawingId,issues);states.set(drawingId,state);
+        if(!Array.isArray(state?.shapes)){issue(issues,'LEGACY_SOURCE_RECORDS','図面の記録一覧を確認できません',{drawingId});continue;}
+        const seen=new Set();
+        for(const record of state.shapes){
+          if(!valid(record?.id)||seen.has(record.id)){issue(issues,'LEGACY_SOURCE_RECORD_ID','記録IDが不正または重複しています',{drawingId});continue;}seen.add(record.id);
+          if(own(record,'photos')&&!Array.isArray(record.photos)){issue(issues,'LEGACY_SOURCE_PHOTOS','写真一覧の形式を確認できません',{drawingId,recordId:record.id});continue;}
+          for(const photo of record.photos||[]){
+            if(!valid(photo?.id)){issue(issues,'LEGACY_SOURCE_PHOTO_ID','写真IDを確認できません',{drawingId,recordId:record.id});continue;}
+            result.photoRefs.push({drawingId,recordId:record.id,photo:copy(photo)});
+            const fileKey='photo:'+drawingId+':'+photo.id;blobs.set(fileKey,fileMap.get(fileKey)??null);
+          }
+        }
+      }
+      return result;
+    }
     function relevant(target,projectId,drawingIds){
       return target?.projectId===projectId||drawingIds.has(target?.drawingId)||drawingIds.has(target?.storageDrawingId);
     }
@@ -276,17 +326,19 @@
         issues:snapshot.issues,readyForStaging:snapshot.readyForStaging,readyForActivation:false};
     }
     async function fingerprint(snapshot){return hash(new Blob([JSON.stringify(canonical(material(snapshot)))]));}
-    async function capture(projectId){
+    async function capture(projectId,{recordCutoff}={}){
       active();insist(valid(projectId),'LEGACY_SOURCE_PROJECT','確認する案件IDが不正です');
       const issues=[],captureIntentRaw=readIntent();
-      const records=await captureRecords(projectId,issues);
+      const cutoff=recordCutoff?protectedCutoff(projectId,recordCutoff):null;
+      const records=cutoff?cutoffRecords(projectId,cutoff,issues):await captureRecords(projectId,issues);
       const drawingIds=new Set(records.drawings.map(d=>d.id));
       const intentIds=captureIntents(captureIntentRaw,projectId,drawingIds,issues);
       const originals=await captureOriginals(projectId,drawingIds,intentIds,issues);
       const snapshot={version:1,kind:'sentlog-legacy-source',projectId,
         source:{databaseName:name,originalDatabaseName:originalName,recordsPresent:records.present,
           recordRevision:records.meta?.revision??null,recordMeta:copy(records.meta),originalsPresent:originals.present,
-          originalCompleteness:'unknown',capturedOriginalCount:0},
+          originalCompleteness:'unknown',capturedOriginalCount:0,...(cutoff?{journalCutoff:{version:1,kind:'sentlog-journal-cutoff',
+            bindingId:cutoff.bindingId,scope:copy(cutoff.scope),localProjectId:projectId,cutoffSeq:cutoff.cutoffSeq,sourceRevision:cutoff.sourceRevision}}:{})},
         rawEntries:sorted([...records.entries].map(([key,value])=>({key,value:copy(value)}))),captureIntentRaw,
         originals:sorted([...originals.metas].map(([key,meta])=>({key,meta:copy(meta)}))),
         files:[],manifest:[],issues,readyForStaging:false,readyForActivation:false};
@@ -370,7 +422,7 @@
         snapshot.source?.databaseName===name&&snapshot.source?.originalDatabaseName===originalName&&
         typeof snapshot.fingerprint==='string','LEGACY_SOURCE_SNAPSHOT','確認する旧保存情報が一致しません');
       insist(await fingerprint(snapshot)===snapshot.fingerprint,'LEGACY_SOURCE_SNAPSHOT_CHANGED','確認用の控えが変更されています');
-      const current=await capture(snapshot.projectId);
+      const current=await capture(snapshot.projectId,snapshot.source.journalCutoff?{recordCutoff:snapshot.source.journalCutoff}:{});
       const unchanged=current.fingerprint===snapshot.fingerprint;
       return {unchanged,sourceChanged:!unchanged,expectedFingerprint:snapshot.fingerprint,
         actualFingerprint:current.fingerprint,issues:current.issues,

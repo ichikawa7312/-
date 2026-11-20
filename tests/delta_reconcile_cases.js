@@ -1,7 +1,7 @@
 /* Contract scenarios shared by Node and disposable browser fixtures. */
 (function(root){
   'use strict';
-  async function run({API,C,D,onPass=()=>{}}){
+  async function run({API,C,D,M,onPass=()=>{}}){
     const results=[],scope={ownerId:'owner-one',projectId:'cloud-project',deviceId:'device-one'},localId='local-project';
     const clone=value=>structuredClone(value),assert=(ok,message)=>{if(!ok)throw Error(message||'assertion failed');};
     const equal=(a,b,message)=>assert(C.equal(a,b),message||JSON.stringify(a)+' != '+JSON.stringify(b));
@@ -340,6 +340,41 @@
       }
       await rejects(()=>API.verifyPlan(p,{scope:{...scope,deviceId:'foreign'}}),'RECONCILE_PLAN');
     });
+    if(M){
+      const capable={pushGroup:async()=>{},getCapabilities:()=>({atomicGroups:true,sharedMetadata:true})};
+      await test('old Unicode display order migrates without inventing comment or photo changes',async()=>{
+        const base=record(),actor={deviceId:'legacy',deviceName:'legacy'},a=C.appendComment(base,'note A',{commentId:'\ue000',revisionId:'a',actor,at:1}),b=C.appendComment(base,'note B',{commentId:'𐀀',revisionId:'b',actor,at:1});
+        let display=C.mergeRecords(a,b).record;for(const id of ['\ue000','𐀀'])display=C.addPhoto(display,{id,name:id},{revisionId:'p:'+id,actor,at:1});
+        display.photos.sort((a,b)=>a.id.localeCompare(b.id));display.memo=C.view(display).comments.sort((a,b)=>a.order-b.order||a.id.localeCompare(b.id)).map(r=>r.text).join('\n\n');display.collab.projection.memo=display.memo;
+        const f=await fixture({server:[drawing('d1',[display])]}),p=await f.plan({groupTransport:capable});assert(p.readyForInstall,JSON.stringify(p.reviewItems));equal(p.state.outbox,[]);equal(p.state.records[D.keyOf('d1',display.id)],C.upgrade(display));
+      });
+      await test('metadata capability seeds the same canonical project and drawing documents without synthetic events',async()=>{
+        const f=await fixture(),p=await f.plan({groupTransport:capable});assert(p.readyForInstall,JSON.stringify(p.reviewItems));equal(p.state.outbox,[]);
+        const expected=await M.seed({project:f.project,drawings:f.server});equal(M.metadataRecords(p.state.records),M.metadataRecords(expected));equal(Object.keys(p.state.records).length,4);await API.verifyPlan(p,{scope});
+      });
+      await test('old differing scale and name are visible concurrent candidates while unrelated records remain installable',async()=>{
+        const f=await fixture({localProject:{name:'端末の名称'}});changeState(f,'d1',s=>s.pageSettings['1'].scale=125);
+        const p=await f.plan({groupTransport:capable});assert(p.readyForInstall,JSON.stringify(p.reviewItems));assert(p.reviewItems.some(r=>!r.blocking&&r.code==='RECONCILE_CONCURRENT_EDITS'));equal(p.state.outbox.length,1);equal(p.state.outbox[0].kind,'atomic-group');
+        const projected=await M.project({records:p.state.records,template:{project:f.project,drawings:f.server}});assert(projected.metadataConflicts.some(c=>c.path.join('.')==='state.pageSettings.1.scale'));assert(projected.metadataConflicts.some(c=>c.path.join('.')==='project.name'));equal(projected.drawings[0].state.shapes[0].memo,f.server[0].state.shapes[0].memo);
+      });
+      await test('new local drawing and record migrate atomically with their actual settings',async()=>{
+        const first=drawing('d1',[record()]),newDrawing=drawing('new',[record('new-record')]);newDrawing.state.pageSettings['1'].scale=75;
+        const f=await fixture({server:[first],local:[first,newDrawing]}),p=await f.plan({groupTransport:capable});assert(p.readyForInstall,JSON.stringify(p.reviewItems));equal(p.state.outbox.length,1);equal(p.state.outbox[0].kind,'atomic-group');
+        const projected=await M.project({records:p.state.records,template:{project:f.localProject,drawings:f.local}});equal(projected.drawings.length,2);equal(projected.drawings[1].state.pageSettings['1'].scale,75);equal(projected.drawings[1].state.shapes[0].id,'new-record');
+      });
+      await test('legacy metadata absence cannot imply a peer drawing or field deletion',async()=>{
+        const first=drawing('d1',[record()]),second=drawing('d2',[record('peer')]),local=clone(first);delete local.state.pageSettings;
+        const f=await fixture({server:[first,second],local:[local]}),p=await f.plan({groupTransport:capable});assert(p.readyForInstall,JSON.stringify(p.reviewItems));equal(p.state.outbox,[]);
+        const projected=await M.project({records:p.state.records,template:{project:f.project,drawings:f.server}});equal(projected.drawings.length,2);equal(projected.drawings[0].state.pageSettings['1'].scale,100);
+      });
+      await test('legacy order differences keep both candidates with stable fallback until explicit choice',async()=>{
+        const first=drawing('d1'),second=drawing('d2'),f=await fixture({server:[first,second],local:[second,first]}),p=await f.plan({groupTransport:capable});assert(p.readyForInstall,JSON.stringify(p.reviewItems));
+        const projected=await M.project({records:p.state.records,template:{project:f.project,drawings:f.server}});equal(projected.metadataConflicts.filter(c=>c.path[0]==='order').length,2);equal(projected.drawings.map(d=>d.meta.id),['d1','d2']);
+      });
+      await test('metadata grouping capability remains a required verified transport property',async()=>{
+        const f=await fixture({localProject:{name:'local'}});changeState(f,'d1',s=>s.pageSettings['1'].scale=125);const p=await f.plan({sharedMetadata:true});review(p,'RECONCILE_ATOMIC_GROUP_REQUIRED');assert(p.state.outbox.length===2);
+      });
+    }
     return results;
   }
   if(typeof module==='object'&&module.exports)module.exports={run};else root.SentlogReconcileTestCases={run};

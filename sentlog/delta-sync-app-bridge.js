@@ -9,6 +9,8 @@
     (typeof module==='object'&&module.exports?require('./record-collaboration.js'):null);
   const D=root.SentlogDeltaSyncCore||
     (typeof module==='object'&&module.exports?require('./delta-sync-core.js'):null);
+  const M=root.SentlogDeltaMetadata||
+    (typeof module==='object'&&module.exports?require('./delta-sync-metadata.js'):null);
   const WS='surveyFieldNoteWorkspaceV1',DRAW='surveyFieldNoteDrawingV1:';
   const SCOPE=['ownerId','projectId','deviceId'];
   // The editor rebuilds both counters from the visible records after every
@@ -73,7 +75,7 @@
       source:'editor-memory',readyForActivation:false},localProjectId);
   }
   function metadataOf(input){
-    const project=copy(input.project);delete project.updatedAt;
+    const project=copy(input.project);delete project.updatedAt;delete project.deltaMetadata;delete project.collaborationVersion;
     project.drawings=project.drawings.map(meta=>{const value=copy(meta);
       for(const k of ['updatedAt','shapeCount','photoCount'])delete value[k];return value;});
     const drawings=input.drawings.map(d=>{
@@ -109,11 +111,18 @@
   }
   function issue(code,drawingId,recordId,message){return {code,drawingId,recordId,message};}
   function candidate(before,after,options){
-    const raw=cleanRecord(after),base=before?cleanRecord(before):null;
+    let raw=cleanRecord(after),base=before?cleanRecord(before):null;
     if(base){
       insist(base.collab,'BRIDGE_UNMIGRATED','旧形式の記録は移行の確認を先に行ってください');
-      insist(C.equal(base,C.upgrade(base)),'BRIDGE_UNTRACKED_BASE','編集開始時点に履歴へ入っていない変更があります');
+      insist(C.matchesProjection(base,{allowLegacyOrder:true}),'BRIDGE_UNTRACKED_BASE','編集開始時点に履歴へ入っていない変更があります');
+      const normalized=C.upgrade(base);
+      if(!C.equal(base,normalized)&&C.equal(base.collab,raw.collab)){
+        if(raw.memo===base.memo)raw.memo=normalized.memo;
+        if(C.equal(raw.photos,base.photos))raw.photos=copy(normalized.photos);
+      }
+      base=normalized;
     }
+    if(raw.collab&&C.matchesProjection(raw,{allowLegacyOrder:true}))raw=C.upgrade(raw);
     let out;
     if(raw.collab&&C.isDeleted(C.upgrade(raw))){
       out=C.upgrade(raw);
@@ -130,7 +139,7 @@
     }
     return cleanRecord(out);
   }
-  function prepare({scope:inputScope,localProjectId,before:inputBefore,after:inputAfter,operation,actor,at=Date.now(),idFactory=()=>root.crypto.randomUUID()}={}){
+  function prepare({scope:inputScope,localProjectId,before:inputBefore,after:inputAfter,operation,actor,at=Date.now(),idFactory=()=>root.crypto.randomUUID(),sharedMetadata=false}={}){
     const scope=scopeOf(inputScope),before=copy(snapshot(inputBefore,localProjectId)),after=copy(snapshot(inputAfter,localProjectId));
     insist(object(actor)&&actor.deviceId===scope.deviceId&&typeof actor.deviceName==='string'&&Number.isFinite(at)&&at>=0&&typeof idFactory==='function',
       'BRIDGE_ACTOR','この編集を行った端末を確認できません');
@@ -154,7 +163,7 @@
     // A source tombstone must never be publishable without its destination.
     // The bound replica can remove the capability issue only after checking
     // its authenticated transport and preparing a whole atomic group.
-    const atomicGroupRequired=operation==='move'||transferMove||relocatedId||
+    let atomicGroupRequired=operation==='move'||transferMove||relocatedId||
       (created.length>0&&(deletionIntent||removed.length>0));
     if(atomicGroupRequired)issues.push(issue('BRIDGE_ATOMIC_GROUP_REQUIRED',null,null,
       '移動元と移動先を一緒に共有する機能が未接続です。操作全体を保持し、どちらも送信していません'));
@@ -175,7 +184,16 @@
     const retainedAfter=copy(after),retained=recordMap(retainedAfter);
     for(const key of [...new Set([...old.keys(),...next.keys()])].sort()){
       const previous=old.get(key),current=next.get(key),drawingId=(current||previous).drawingId,recordId=(current||previous).record.id;
-      if(!current){issues.push(issue('BRIDGE_RECORD_REMOVAL',drawingId,recordId,'削除履歴なしで記録がなくなっています。元の記録を保持しています'));continue;}
+      if(!current){
+        if(operation==='restore')continue;
+        if(sharedMetadata&&!after.project.drawings.some(d=>d.id===drawingId)){
+          try{const base=cleanRecord(C.upgrade(cleanRecord(previous.record))),eventId=idFactory();
+            const normalized=C.markDeleted(base,{expectedToken:C.revisionToken(base),actor,at,revisionId:idFactory()});
+            changes.push({drawingId,before:base,after:normalized,eventId});atomicGroupRequired=true;
+          }catch(error){issues.push(issue(error.code||'BRIDGE_RECORD',drawingId,recordId,error.message));}
+        }else issues.push(issue('BRIDGE_RECORD_REMOVAL',drawingId,recordId,'削除履歴なしで記録がなくなっています。元の記録を保持しています'));
+        continue;
+      }
       if(previous&&C.equal(cleanRecord(previous.record),cleanRecord(current.record)))continue;
       try{
         const eventId=idFactory();insist(valid(eventId),'BRIDGE_EVENT_ID','編集の識別番号を作成できません');
@@ -202,7 +220,9 @@
     // Keep the editor's stable record order. Remote-only records are appended
     // deterministically; the editor can then rebuild its display numbering.
     const ordered=[...old.keys()].filter(key=>own(state.records,key));
-    ordered.push(...Object.keys(state.records).filter(key=>!old.has(key)).sort());
+    ordered.push(...Object.keys(state.records).filter(key=>!old.has(key)).sort((a,b)=>{
+      const x=JSON.parse(a),y=JSON.parse(b),compare=C.compareIds||((a,b)=>a<b?-1:a>b?1:0);return compare(x[0],y[0])||compare(x[1],y[1]);
+    }));
     for(const key of ordered){const value=state.records[key];
       let parts;try{parts=JSON.parse(key);}catch{}
       insist(Array.isArray(parts)&&parts.length===2&&parts.every(valid)&&D.keyOf(...parts)===key&&parts[1]===value?.id,
@@ -232,6 +252,33 @@
     template.source='delta-replica-projection';template.readyForActivation=false;
     return template;
   }
+  async function projectReplica({template,state,scope,localProjectId}){
+    if(!M||!own(state.records,D.keyOf(M.namespace,'project')))return project({template,state,scope,localProjectId});
+    const shared=await M.project({records:state.records,template,localProjectId}),ids=new Set(shared.project.drawings.map(d=>d.id));
+    const visible={};for(const [key,record]of Object.entries(state.records)){const pair=JSON.parse(key);if(ids.has(pair[0]))Object.defineProperty(visible,key,{value:record,enumerable:true});}
+    return project({template:shared,state:{...state,records:visible},scope,localProjectId});
+  }
+  function replaySnapshots(options){
+    const before=copy(options.before),after=copy(options.after),baseline=options.replayBaseline;
+    if(!options.replay)return {before,after};
+    const old=recordMap(before),next=recordMap(after),raw=baseline?.before&&recordMap(baseline.before),normalized=baseline?.after&&recordMap(baseline.after);
+    for(const [key,entry]of old){
+      const rawBefore=cleanRecord(entry.record),tracked=rawBefore.collab&&C.matchesProjection(rawBefore,{allowLegacyOrder:true});
+      const previous=raw?.get(key),normal=normalized?.get(key);
+      if(!tracked)insist(previous&&normal&&C.equal(cleanRecord(previous.record),rawBefore),'BRIDGE_REPLAY_BASE','未反映の入力に対応する保存履歴がありません。入力を保持しています');
+      if(previous&&normal&&C.equal(cleanRecord(previous.record),rawBefore)){
+        const base=cleanRecord(normal.record);insist(base.collab&&C.equal(base,C.upgrade(base)),'BRIDGE_REPLAY_BASE','前回の保存結果の履歴を確認できません');
+        const drawing=before.drawings.find(d=>d.meta.id===entry.drawingId);drawing.state[entry.bucket]=drawing.state[entry.bucket].map(r=>r.id===entry.record.id?withLocalCache(base,r):r);
+        const current=next.get(key);if(current){
+          const target=after.drawings.find(d=>d.meta.id===current.drawingId),record=copy(current.record);
+          if(C.equal(record.collab,entry.record.collab))record.collab=copy(base.collab);
+          else {const merged=C.mergeRecords(base,C.upgrade(record));insist(merged.ok,'BRIDGE_REPLAY_BASE',merged.reason||'前回の入力と今回の操作を統合できません');record.collab=copy(merged.record.collab);}
+          target.state[current.bucket]=target.state[current.bucket].map(r=>r.id===record.id?record:r);
+        }
+      }
+    }
+    return {before,after};
+  }
   function createBridge({replica,scope:inputScope,localProjectId,currentScope}={}){
     const scope=scopeOf(inputScope);
     insist(replica&&typeof replica.snapshotWithStatus==='function'&&typeof replica.changeBatch==='function'&&typeof currentScope==='function'&&valid(localProjectId),
@@ -240,25 +287,32 @@
     function active(){insist(!closed,'BRIDGE_CLOSED','この編集接続は終了しています');
       insist(sameScope(scope,currentScope()),'BRIDGE_SCOPE','利用者・案件・端末が切り替わっています。入力は元の案件に残してください');}
     async function prepareEdit(options={}){
-      active();const requestedGroupId=options.groupId,plan=prepare({...options,scope,localProjectId});
-      const current=await replica.snapshotWithStatus();active();
+      active();const requestedGroupId=options.groupId,current=await replica.snapshotWithStatus();active();
       insist(sameScope(current.snapshot?.scope,scope),'BRIDGE_SCOPE','編集先の保存状態が一致しません');
+      const sharedMetadata=!!(M&&own(current.snapshot.records,D.keyOf(M.namespace,'project')));
+      let normalized;try{normalized=replaySnapshots(options);}catch(error){normalized={before:copy(options.before),after:copy(options.after),error};}
+      const plan=prepare({...options,...normalized,sharedMetadata,scope,localProjectId});
+      if(normalized.error)plan.issues.push(issue(normalized.error.code||'BRIDGE_REPLAY_BASE',null,null,normalized.error.message));
       // A record untouched by this particular draft still must be present in
       // the authoritative replica, otherwise projecting a successful save
       // could silently drop it from the editor.
       for(const [key,entry] of recordMap(plan.before))try{
         const base=cleanRecord(entry.record),value=current.snapshot.records[key];
-        insist(base.collab&&C.equal(base,C.upgrade(base)),'BRIDGE_UNTRACKED_BASE','編集開始時点に履歴へ入っていない記録があります');
+        insist(base.collab&&C.matchesProjection(base,{allowLegacyOrder:true}),'BRIDGE_UNTRACKED_BASE','編集開始時点に履歴へ入っていない記録があります');
         insist(value,'BRIDGE_RECORD_MISSING','編集元の記録が移行先にありません');
         D.diffRecord(base,value,{eventId:'bridge-lineage-check',drawingId:entry.drawingId,projectId:scope.projectId,deviceId:scope.deviceId});
       }catch(error){plan.issues.push(issue(error.code||'BRIDGE_RECORD',entry.drawingId,entry.record.id,error.message));}
-      try{project({template:plan.after,state:current.snapshot,scope,localProjectId});}
+      try{await projectReplica({template:plan.before,state:current.snapshot,scope,localProjectId});}
       catch(error){plan.issues.push(issue(error.code||'BRIDGE_RECORD',null,null,error.message));}
       const rebased=[];
       for(const change of plan.changes){
         try{
           const key=D.keyOf(change.drawingId,change.after.id),value=own(current.snapshot.records,key)?current.snapshot.records[key]:null;
-          if(!change.before){insist(!value,'BRIDGE_RECORD_COLLISION','同じIDの別の記録があります');rebased.push(change);continue;}
+          if(!change.before){
+            if(!value){rebased.push(change);continue;}
+            insist(options.replay,'BRIDGE_RECORD_COLLISION','同じIDの別の記録があります');
+            D.diffRecord(change.after,value,{...change,projectId:scope.projectId,deviceId:scope.deviceId});continue;
+          }
           insist(value,'BRIDGE_RECORD_MISSING','編集元の記録が移行先にありません');
           // The opened draft can be older than a just-received revision, but its
           // immutable ancestors must already exist in the durable replica.
@@ -266,16 +320,23 @@
           const merged=C.mergeRecords(value,change.after,{base:change.before});
           insist(merged.ok,'BRIDGE_HISTORY',merged.reason||'編集内容を統合できません');
           const final={...change,before:copy(value),after:cleanRecord(merged.record)};
-          D.diffRecord(final.before,final.after,{...final,projectId:scope.projectId,deviceId:scope.deviceId});rebased.push(final);
+          if(D.diffRecord(final.before,final.after,{...final,projectId:scope.projectId,deviceId:scope.deviceId}))rebased.push(final);
         }catch(error){plan.issues.push(issue(error.code||'BRIDGE_RECORD',change.drawingId,change.after.id,error.message));}
       }
+      if(sharedMetadata)try{
+        const metadata=await M.edit({before:options.before,after:options.after,beforeRecords:options.beforeRecords||options.metadataRecords,
+          inferProvenance:options.replay===true,currentRecords:current.snapshot.records,operationId:options.operationId||options.groupId||root.crypto.randomUUID(),actor:options.actor,at:options.at,operation:options.operation});
+        rebased.push(...metadata.changes);plan.metadataChanges=[];plan.metadataConflicts=metadata.conflicts;
+        if(metadata.changes.length&&rebased.length>1)plan.atomicGroupRequired=true;
+      }catch(error){plan.issues.push(issue(error.code||'BRIDGE_METADATA',null,null,error.message));}
       plan.changes=rebased;
+      if(plan.atomicGroupRequired&&!plan.issues.some(x=>x.code==='BRIDGE_ATOMIC_GROUP_REQUIRED'))plan.issues.push(issue('BRIDGE_ATOMIC_GROUP_REQUIRED',null,null,'図面設定と記録を一緒に保存する機能を確認できません'));
       if(plan.atomicGroupRequired&&typeof replica.changeGroup==='function'&&replica.getCapabilities?.().atomicGroups===true){
         try{
           const groupId=requestedGroupId??root.crypto.randomUUID();
           insist(valid(groupId),'BRIDGE_GROUP_ID','一括操作の識別番号を確認できません');
           const events=rebased.map(change=>D.diffRecord(change.before,change.after,{...change,projectId:scope.projectId,deviceId:scope.deviceId})).filter(Boolean);
-          D.validateGroup({schema:1,kind:'atomic-group',groupId,projectId:scope.projectId,deviceId:scope.deviceId,events});
+          if(events.length)D.validateGroup({schema:1,kind:'atomic-group',groupId,projectId:scope.projectId,deviceId:scope.deviceId,events});
           plan.groupId=groupId;plan.issues=plan.issues.filter(x=>x.code!=='BRIDGE_ATOMIC_GROUP_REQUIRED');
         }catch(error){plan.issues.push(issue(error.code||'BRIDGE_GROUP_ID',null,null,error.message||'一括操作を確認できません'));}
       }
@@ -298,19 +359,19 @@
           insist(current.snapshotToken===entry.snapshotToken,'DELTA_STALE','確認後に記録が変更されています。入力内容を保持して再確認してください');
           result={results:[],pending:current.snapshot.outbox.length,blocked:current.snapshot.blockedOutbox?.length||0,unchanged:true};
         }
-        const projection=project({template:entry.plan.after,state:current.snapshot,scope,localProjectId});
+        const projection=await projectReplica({template:entry.plan.after,state:current.snapshot,scope,localProjectId});
         // Runtime snapshot tokens are identity proofs, not JSON receipt data.
         // Status/asset confirmation must obtain a fresh token from the replica.
         const {snapshotToken,...summary}=result;
-        const receipt={saved:true,result:copy(summary),projection,readyForActivation:false};entry.receipt=copy(receipt);return receipt;
+        const receipt={saved:true,result:copy(summary),projection,normalizedAfter:copy(entry.plan.after),readyForActivation:false};entry.receipt=copy(receipt);return receipt;
       })();
       entry.pending=task;
       try{return await task;}finally{entry.pending=null;}
     }
-    return {prepare:prepareEdit,commit,project:async template=>{active();const current=await replica.snapshotWithStatus();active();return project({template,state:current.snapshot,scope,localProjectId});},
+    return {prepare:prepareEdit,commit,project:async template=>{active();const current=await replica.snapshotWithStatus();active();return projectReplica({template,state:current.snapshot,scope,localProjectId});},
       close(){closed=true;},getScope:()=>copy(scope)};
   }
-  const api={version:1,captureProject,metadataOf,prepare,project,createBridge};
+  const api={version:1,captureProject,metadataOf,prepare,project,projectReplica,createBridge};
   if(typeof module==='object'&&module.exports)module.exports=api;
   else root.SentlogDeltaAppBridge=api;
 })(typeof window!=='undefined'?window:globalThis);

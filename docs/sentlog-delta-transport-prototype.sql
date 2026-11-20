@@ -4,7 +4,8 @@
 BEGIN;
 
 -- An owner-only table SELECT cannot check which registered device is reading,
--- or whether the project was archived. All client reads now use the RPC below.
+-- or whether its lifecycle permits a read. All client reads use the RPC below;
+-- archived projects remain readable for explicit restoration, but not writable.
 REVOKE SELECT ON public.sentlog_delta_events FROM PUBLIC,anon,authenticated;
 
 CREATE OR REPLACE FUNCTION sentlog_delta_private.list_events(
@@ -18,7 +19,7 @@ DECLARE
 BEGIN
   -- The shared row locks live through the read: archive/device-stop races
   -- cannot authorize against an older lifecycle state midway through the RPC.
-  u:=sentlog_delta_private.baseline_authorize(p_project_id,p_device_id);
+  u:=sentlog_delta_private.read_authorize(p_project_id,p_device_id);
   IF p_after IS NULL OR p_after NOT BETWEEN 0 AND 9007199254740991 OR
      p_limit IS NULL OR p_limit NOT BETWEEN 1 AND 500 THEN
     RAISE EXCEPTION 'DELTA_PAGE_INVALID' USING ERRCODE='22023'; END IF;

@@ -34,13 +34,27 @@
     const project=JSON.parse(JSON.stringify(job.payload.project));
     const drawingStates={};
     for(const d of job.payload.drawings||[])if(d.meta?.id&&d.state)drawingStates[d.meta.id]=d.state;
-    return {format:'sentlog-project-archive',version:1,project_id:job.project_id,job_id:job.id,revision:job.revision,
+    const pack={format:'sentlog-project-archive',version:1,project_id:job.project_id,job_id:job.id,revision:job.revision,
       catalog_hash:job.catalog_hash,workspace:{projects:[project]},drawingStates,
       files:job.manifest.map(f=>({...f,path:paths[f.key]}))};
+    if(job.delta_checkpoint){
+      pack.delta_checkpoint=JSON.parse(JSON.stringify(job.delta_checkpoint));
+      const extras=JSON.parse(JSON.stringify(job.payload));delete extras.project;delete extras.drawings;
+      pack.snapshotExtras=extras;
+    }
+    return pack;
   }
   function validatePack(pack,job){
-    if(pack?.format!=='sentlog-project-archive'||pack.version!==1||pack.job_id!==job.id||pack.catalog_hash!==job.catalog_hash||
+    if(pack?.format!=='sentlog-project-archive'||pack.version!==1||pack.project_id!==job.project_id||pack.job_id!==job.id||pack.catalog_hash!==job.catalog_hash||
        pack.revision!==job.revision||stable(pack.workspace?.projects?.[0])!==stable(job.payload.project)||pack.files?.length!==job.manifest.length)throw Error('PCの控えの案件情報を照合できません。');
+    if(job.delta_checkpoint){
+      const metadata=job.payload.project.deltaMetadata;
+      const extras=JSON.parse(JSON.stringify(job.payload));delete extras.project;delete extras.drawings;
+      if(stable(pack.delta_checkpoint)!==stable(job.delta_checkpoint)||stable(pack.snapshotExtras)!==stable(extras)||
+         metadata?.version!==1||metadata.namespace!=='@sentlog:metadata:v1'||!metadata.records?.project||!Array.isArray(metadata.retainedDrawings))
+        throw Error('PCの差分同期・図面履歴の控えを照合できません。');
+    }else if(pack.delta_checkpoint)throw Error('PCの差分同期の版が保管記録と一致しません。');
+    if(stable(Object.keys(pack.drawingStates||{}).sort())!==stable((job.payload.drawings||[]).map(d=>d.meta.id).sort()))throw Error('PCの図面一覧を照合できません。');
     for(const d of job.payload.drawings||[])if(stable(pack.drawingStates?.[d.meta.id])!==stable(d.state))throw Error('PCの変状記録を照合できません。');
     for(const f of job.manifest){const saved=pack.files.find(x=>x.key===f.key);
       if(!saved||saved.sha256!==f.sha256||saved.byte_size!==f.byte_size||saved.path!=='files/'+f.id)throw Error('PCのファイル一覧を照合できません。');}

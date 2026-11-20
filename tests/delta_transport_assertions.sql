@@ -40,7 +40,7 @@ SELECT pg_temp.check(pg_temp.fails($q$SELECT public.sentlog_delta_list_v1('88888
 SELECT set_config('request.jwt.claim.sub','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',true);
 SELECT pg_temp.check(pg_temp.fails('SELECT * FROM public.sentlog_delta_events','42501'),'table read cannot bypass device checks');
 SELECT pg_temp.check(pg_temp.fails($q$SELECT public.sentlog_delta_list_v1('22222222-2222-4222-8222-222222222222','aaaaaaaa-0000-4000-8000-000000000001',0,100)$q$,'42501'),'foreign project denied');
-SELECT pg_temp.check(pg_temp.fails($q$SELECT public.sentlog_delta_list_v1('33333333-3333-4333-8333-333333333333','aaaaaaaa-0000-4000-8000-000000000001',0,100)$q$,'42501'),'archived project denied');
+SELECT pg_temp.check(pg_temp.fails($q$SELECT public.sentlog_delta_list_v1('33333333-3333-4333-8333-333333333333','aaaaaaaa-0000-4000-8000-000000000001',0,100)$q$,'55000'),'archived legacy project still requires an activated delta head');
 SELECT pg_temp.check(pg_temp.fails($q$SELECT public.sentlog_delta_list_v1('88888888-1111-4111-8111-111111111111','aaaaaaaa-0000-4000-8000-000000000002',0,100)$q$,'42501'),'inactive device denied');
 SELECT pg_temp.check(pg_temp.fails($q$SELECT public.sentlog_delta_list_v1('88888888-1111-4111-8111-111111111111','bbbbbbbb-0000-4000-8000-000000000003',0,100)$q$,'42501'),'foreign device denied');
 SELECT pg_temp.check(pg_temp.fails($q$SELECT public.sentlog_delta_list_v1('88888888-1111-4111-8111-111111111111','aaaaaaaa-0000-4000-8000-000000000099',0,100)$q$,'42501'),'unknown device denied');
@@ -89,7 +89,7 @@ RESET ROLE;
 SELECT pg_temp.check((SELECT count(*)=6 FROM public.sentlog_delta_events WHERE project_id='88888888-1111-4111-8111-111111111111'),'reads do not append or delete events');
 UPDATE public.sentlog_projects SET status='archived' WHERE id='88888888-1111-4111-8111-111111111111';
 SET LOCAL ROLE authenticated;
-SELECT pg_temp.check(pg_temp.fails($q$SELECT public.sentlog_delta_list_v1('88888888-1111-4111-8111-111111111111','aaaaaaaa-0000-4000-8000-000000000001',0,100)$q$,'42501'),'archiving after a prior read prevents the next read');
+SELECT pg_temp.check((public.sentlog_delta_list_v1('88888888-1111-4111-8111-111111111111','aaaaaaaa-0000-4000-8000-000000000001',0,100)->>'headSeq')='6','archived project retains owned registered-device read access for restoration');
 RESET ROLE;
 UPDATE public.sentlog_projects SET status='active' WHERE id='88888888-1111-4111-8111-111111111111';
 UPDATE public.sentlog_devices SET active=false WHERE id='aaaaaaaa-0000-4000-8000-000000000001';

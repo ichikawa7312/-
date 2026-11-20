@@ -22,7 +22,10 @@ from field_record_memo_ui import photo_png
 
 ROOT = Path(__file__).resolve().parents[1]
 PROJECT, DRAWING, QUIET = 'edit-project', 'edit-plan', 'unrelated-project'
-CLOUD_PROJECT, CLOUD_QUIET = 'cloud-edit', 'cloud-unrelated'
+OWNER = '11111111-1111-4111-8111-111111111111'
+IPAD = '33333333-3333-4333-8333-333333333333'
+PHONE = '44444444-4444-4444-8444-444444444444'
+CLOUD_PROJECT, CLOUD_QUIET = '55555555-5555-4555-8555-555555555555', '66666666-6666-4666-8666-666666666666'
 WS = 'surveyFieldNoteWorkspaceV1'
 DRAW = 'surveyFieldNoteDrawingV1:'
 META = 'sentlogCloudProjectSyncV2:'
@@ -151,7 +154,11 @@ class FakeCloud:
         body = json.loads(request.post_data) if request.post_data else None
         entry = dict(device=device, method=request.method, path=url.path, query=query, body=body)
         self.requests.append(entry)
-        if url.path.endswith('/rpc/sentlog_archive_v1') and body.get('p_action') == 'list':
+        if url.path == '/auth/v1/user':
+            self.respond(route, {'id': OWNER})
+        elif url.path.endswith('/rpc/sentlog_delta_inspect_v1'):
+            self.respond(route, {'code': 'PGRST202', 'message': 'Legacy fixture has no delta RPC'}, 404)
+        elif url.path.endswith('/rpc/sentlog_archive_v1') and body.get('p_action') == 'list':
             self.respond(route, self.projects)
         elif url.path.endswith('/sentlog_devices'):
             self.respond(route, [dict(id=device, active=True)])
@@ -212,7 +219,7 @@ def make_page(browser, cloud, device, width):
     context.add_init_script("""(() => {
       window.sentlogImporting=true;
       localStorage.setItem('sentlogCloudSessionV1',JSON.stringify({access_token:'synthetic',
-        expires_at:Date.now()/1000+3600,user:{id:'synthetic-owner',email:'test@example.invalid'}}));
+        expires_at:Date.now()/1000+3600,user:{id:'11111111-1111-4111-8111-111111111111',email:'test@example.invalid'}}));
     })();""" + "localStorage.setItem('sentlogCloudDeviceV1'," + json.dumps(device) + ');')
     context.route('**/*', lambda route: cloud.route(route, device))
     page = context.new_page()
@@ -258,8 +265,8 @@ def intact(page, text):
 
 
 def run(browser, cloud):
-    ca, a, errors_a = make_page(browser, cloud, 'ipad', 820)
-    cb, b, errors_b = make_page(browser, cloud, 'phone', 390)
+    ca, a, errors_a = make_page(browser, cloud, IPAD, 820)
+    cb, b, errors_b = make_page(browser, cloud, PHONE, 390)
     packs = [payload(PROJECT, DRAWING), payload(QUIET, 'unrelated-plan')]
     fixture = dict(packs=packs, encoded=base64.b64encode(photo_png()).decode('ascii'))
     baseline = a.evaluate(SETUP, fixture)
@@ -291,9 +298,9 @@ def run(browser, cloud):
     assert a.evaluate("document.activeElement===$('frRecordMemo')"), 'Typing must not require blur'
     wait_for(a, lambda: len(cloud.writes) > before, 'Committed text was not sent automatically', 8)
     sent = cloud.writes[before:]
-    assert len(sent) == 1 and sent[0]['device'] == 'ipad', sent
+    assert len(sent) == 1 and sent[0]['device'] == IPAD, sent
     scoped = cloud.requests[request_start:]
-    assert not [r for r in scoped if r['device'] == 'ipad' and
+    assert not [r for r in scoped if r['device'] == IPAD and
                 (r['query'].get('project_id') == ['eq.' + CLOUD_QUIET] or
                  r['query'].get('client_key') == ['eq.' + QUIET])], scoped
     wait_memo(b, text)
@@ -323,13 +330,13 @@ def run(browser, cloud):
     a.wait_for_function('p=>JSON.stringify(editFixture.record().point)===JSON.stringify(p)', arg=position, timeout=11000)
     idle(a)
     idle(b)
-    assert len(cloud.writes) == before + 1 and cloud.writes[-1]['device'] == 'phone', cloud.writes[before:]
+    assert len(cloud.writes) == before + 1 and cloud.writes[-1]['device'] == PHONE, cloud.writes[before:]
     for page in (a, b):
         intact(page, text)
 
     # Hold a real POST after its body was captured, then edit while it is active.
     before, attempts = len(cloud.writes), len(cloud.posts)
-    cloud.hold_device = 'ipad'
+    cloud.hold_device = IPAD
     a.locator('#frRecordMemo').fill('送信中にも所見を追記')
     wait_for(a, lambda: bool(cloud.held), 'Automatic snapshot write never reached the barrier', 8)
     text = '送信中にも所見を追記。追加した内容も残す。'
@@ -388,7 +395,7 @@ def run(browser, cloud):
     assert len(cloud.writes) == before, cloud.writes[before:]
     probes = [r for r in cloud.requests if r['path'].endswith('/sentlog_project_snapshots') and
               r['method'] == 'GET' and 'project_id' not in r['query']]
-    assert {r['device'] for r in probes} == {'ipad', 'phone'}, probes
+    assert {r['device'] for r in probes} == {IPAD, PHONE}, probes
     assert all(r['query'] == {'select': ['project_id,revision'], 'limit': ['1001']} for r in probes), probes
     assert cloud.snapshots[CLOUD_QUIET] == quiet, 'Unrelated project must remain unchanged'
     for page in (a, b):

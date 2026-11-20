@@ -104,7 +104,7 @@ DECLARE
   e public.sentlog_delta_events%ROWTYPE; actual jsonb;
   rows jsonb:='[]'::jsonb; item jsonb; bytes bigint:=0; last_number bigint; item_end bigint; units integer:=0;
 BEGIN
-  u:=sentlog_delta_private.baseline_authorize(p_project_id,p_device_id);
+  u:=sentlog_delta_private.read_authorize(p_project_id,p_device_id);
   IF p_after IS NULL OR p_after NOT BETWEEN 0 AND 9007199254740991 OR p_limit IS NULL OR p_limit NOT BETWEEN 1 AND 500 THEN
     RAISE EXCEPTION 'DELTA_PAGE_INVALID' USING ERRCODE='22023'; END IF;
   SELECT * INTO h FROM sentlog_delta_private.heads WHERE project_id=p_project_id AND owner_id=u FOR SHARE;
@@ -151,7 +151,7 @@ RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path=''
 AS $fn$
 DECLARE u uuid;
 BEGIN
-  u:=sentlog_delta_private.baseline_authorize(p_project_id,p_device_id);
+  u:=sentlog_delta_private.read_authorize(p_project_id,p_device_id);
   RETURN pg_catalog.jsonb_build_object('schema',2,'ownerId',u,'projectId',p_project_id,'deviceId',p_device_id,
     'atomicGroups',true,'groupMaxEvents',500,'groupMaxBytes',4194304,'pageTargetBytes',900000);
 END $fn$;

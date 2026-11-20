@@ -109,6 +109,7 @@ jobs:
           python3 scripts/build_collaboration_transfer.py
           python3 scripts/build_continuous_camera.py
           python3 scripts/build_project_sync.py
+          python3 scripts/build_delta_sync.py
           node tests/record_collaboration.test.cjs
           node tests/collaboration_merge.test.cjs
           node tests/collaboration_photos.test.cjs
@@ -237,6 +238,13 @@ jobs:
                  'collaboration-channel.js','collaboration-photos.js','continuous-camera.js','cloud-sync.js',
                  'sync-merge.js','sync-view.js','original-photo-store.js','record-transfer.js',
                  'photo-ledger.js','photo-ledger-visual3.js','photo-viewer.js']
+          names+=['record-store.js','archive.js','archive-core.js','archive-capacity.js',
+                  'delta-sync-core.js','delta-sync-indexeddb.js','delta-sync-legacy-preflight.js',
+                  'delta-sync-legacy-source.js','delta-sync-migration.js','delta-sync-metadata.js',
+                  'delta-sync-reconcile.js','delta-sync-bootstrap.js','delta-sync-transport.js',
+                  'delta-sync-app-bridge.js','delta-sync-assets.js','delta-sync-asset-transport.js',
+                  'delta-sync-asset-runtime.js','delta-sync-app-journal.js','delta-sync-app-migration.js',
+                  'delta-sync-app-runtime.js','delta-sync-metadata-ui.js','delta-sync-capacity.js']
           base=os.environ['SENTLOG_DEPLOYMENT_URL'].rstrip('/')+'/'
           assert base.startswith('https://')
           def verify(name):

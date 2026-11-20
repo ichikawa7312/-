@@ -27,7 +27,8 @@ async function fixture(options={}){
   const data=new Map([[PREFIX+WS,json(workspace)],[PREFIX+DRAW+drawing,json(state)],
     [PREFIX+SYNC+project,json({revision:5,local_updated_at:-1,base_snapshot:{project,drawings:[]}})],
     [META,{schema:1,revision:7}],[`photo:${drawing}:${photoId}`,shared]]);
-  const db=await open(factory,name,options.version||1,db=>db.createObjectStore('files'));
+  const db=await open(factory,name,options.version||1,db=>{db.createObjectStore('files');
+    if(options.journal){db.createObjectStore('sentlog_delta_journal_v1');db.createObjectStore('sentlog_delta_control_v1');}});
   await transaction(db,['files'],'readwrite',tx=>{for(const [k,v]of data)tx.objectStore('files').put(v,k);});db.close();
   const originalMeta={key:`${drawing}:${photoId}`,projectId:project,drawingId:drawing,photoId,size:original.size,
     type:original.type,originalName:'near-original.jpg',exportedAt:null,
@@ -151,6 +152,16 @@ async function readonly(fn){
   const f=await fixture({version:2}),before=await f.factory.databases();
   await assert.rejects(()=>f.source().capture(project),e=>e.code==='LEGACY_SOURCE_SCHEMA');
   assert.deepEqual(await f.factory.databases(),before);
+ });
+ await test('journal-enabled version 2 source remains readonly and preserves exact shared bytes',async()=>{
+  const f=await fixture({version:2,journal:true});
+  await readonly(async()=>{const source=f.source(),s=await source.capture(project);
+    assert.equal(s.readyForStaging,true);assert.equal(s.source.recordRevision,7);assert.equal(await s.files.find(x=>x.kind==='photo').blob.text(),'shared-photo');
+    assert.equal((await source.recheck(s)).unchanged,true);source.close();});
+  assert.equal((await f.factory.databases()).find(x=>x.name===f.name).version,2);
+ });
+ await test('unknown future schema remains rejected even if known journal stores exist',async()=>{
+  const f=await fixture({version:3,journal:true});await assert.rejects(()=>f.source().capture(project),e=>e.code==='LEGACY_SOURCE_SCHEMA');
  });
  await test('unknown original schema version becomes an explicit blocking issue',async()=>{
   const f=await fixture({originalVersion:2}),before=await f.factory.databases();

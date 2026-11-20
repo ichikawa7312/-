@@ -14,6 +14,7 @@ declare
   entry_key text;
   entry_value jsonb;
   candidate_entry jsonb;
+  certified_delta_write boolean := false;
   revision_value jsonb;
   field_key text;
   field_value jsonb;
@@ -26,6 +27,15 @@ declare
   geometry_keys constant text[] := array['kind','recordKind','recordType','memoType','page','point','points','x','y','w','h','width','height','angle','rotation','radius','rx','ry','unit'];
   ignored_field_keys constant text[] := array['id','memo','photos','collab','globalNo','typeNo','autoLabel','recordNo','labelPosEditedAt'];
 begin
+  -- Delta checkpoints are generated from the accepted server revision graph.
+  -- Their authority is an exact, private, transaction-scoped table row; caller
+  -- headers or user-settable GUCs never grant this exemption. The optional
+  -- dynamic lookup leaves legacy-only installations unchanged.
+  if tg_op <> 'DELETE' and to_regprocedure('sentlog_delta_private.checkpoint_authorizes_snapshot(uuid,uuid,bigint,jsonb,uuid)') is not null then
+    execute 'select sentlog_delta_private.checkpoint_authorizes_snapshot($1,$2,$3,$4,$5)'
+      into certified_delta_write using new.project_id,new.owner_id,new.revision,new.payload,new.updated_by_device;
+    if certified_delta_write then return new; end if;
+  end if;
   if tg_op = 'DELETE' then
     if old.payload #> '{project,collaborationVersion}' = '1'::jsonb then
       raise exception 'COLLAB_HISTORY_REQUIRED: 共同編集の履歴を残す削除操作を使ってください。';
