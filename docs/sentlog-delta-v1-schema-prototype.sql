@@ -304,6 +304,11 @@ BEGIN
     RAISE EXCEPTION 'DELTA_SEQUENCE_LIMIT' USING ERRCODE='22003';
   END IF;
   next_number:=h.last_seq+1;
+  -- Under the project lock: validate and atomically materialize the accepted
+  -- record history before the event/sequence can become visible to peers.
+  -- If the semantic supplement is absent, this call fails closed.
+  PERFORM sentlog_delta_private.accept_record_event(
+    p_project_id,u,p_drawing_id,p_record_id,p_envelope,next_number);
   INSERT INTO public.sentlog_delta_events
     (project_id,owner_id,seq,event_id,device_id,drawing_id,record_id,envelope)
     VALUES(p_project_id,u,next_number,p_event_id,p_device_id,p_drawing_id,p_record_id,p_envelope);
