@@ -104,7 +104,14 @@ SEED = r"""async workload=>{
 
 
 TRACE = r"""()=>{
-  let active=null,lastFrame=performance.now();
+  let active=null,lastFrame=performance.now(),closeObserver=null;
+  const closeMark=name=>{
+    const phases=active?.closePhases;
+    if(phases&&phases.offsetsMs[name]===null)phases.offsetsMs[name]=performance.now()-active.started;
+  };
+  document.addEventListener('click',event=>{
+    if(active?.closePhases&&event.target.closest?.('#slCameraDone'))closeMark('click');
+  },true);
   const summary=()=>({stages:{},idb:{},digests:{calls:0,bytes:0,ms:0},
     imageLoads:0,canvasEncodes:0,canvasEncodedPixels:0,maxCanvasPixels:0,
     drawCalls:0,renderCalls:0,photoListRenders:0,frameCount:0,maxFrameGapMs:0,
@@ -196,9 +203,34 @@ TRACE = r"""()=>{
     lastFrame=at;requestAnimationFrame(frame);}
   requestAnimationFrame(frame);
   window.photoPerformance={
-    start(label){active={label,...summary(),started:performance.now()};lastFrame=performance.now();},
-    async stop(){await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
-      const result=active;result.elapsedMs=performance.now()-result.started;delete result.started;active=null;
+    start(label,photoIds=[]){
+      closeObserver?.disconnect();closeObserver=null;
+      active={label,...summary(),started:performance.now()};lastFrame=performance.now();
+      if(label.endsWith('-close')){
+        active.closePhases={expectedPhotoIds:[...photoIds],offsetsMs:{click:null,modalHidden:null,
+          thumbnailsReady:null,stopCalled:null,stopped:null}};
+        const scope=active,modal=document.getElementById('sentlogContinuousCamera');
+        closeObserver=new MutationObserver(()=>{
+          if(active===scope&&modal.hidden){closeMark('modalHidden');closeObserver.disconnect();}
+        });
+        closeObserver.observe(modal,{attributes:true,attributeFilter:['hidden']});
+      }
+    },
+    thumbnailsReady(){closeMark('thumbnailsReady');},
+    async stop(){
+      closeMark('stopCalled');
+      await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+      const result=active;result.elapsedMs=performance.now()-result.started;
+      if(result.closePhases){
+        const times=result.closePhases.offsetsMs;times.stopped=result.elapsedMs;
+        const delta=(end,start=0)=>end===null||start===null?null:end-start;
+        result.closePhases.durationsMs={startToClick:delta(times.click),
+          clickToModalHidden:delta(times.modalHidden,times.click),
+          modalHiddenToThumbnails:delta(times.thumbnailsReady,times.modalHidden),
+          thumbnailsToStopCall:delta(times.stopCalled,times.thumbnailsReady),
+          stopFrameWait:delta(times.stopped,times.stopCalled)};
+      }
+      closeObserver?.disconnect();closeObserver=null;delete result.started;active=null;
       return result;}
   };
 }"""
@@ -321,16 +353,19 @@ def profile_case(playwright, engine, built_root, workload, encoded, shots, *, ca
                     results.append(result);proofs.append(proof)
                 visible_photos = page.evaluate("""()=>JSON.parse(SentlogRecords.getItem(drawingStorageKey('memo-plan-a')))
                   .shapes.find(row=>row.id==='survey-a').photos.map(photo=>({id:photo.id,name:photo.name||'変状写真'}))""")
-                page.evaluate('label=>photoPerformance.start(label)', workload['name']+'-close')
+                page.evaluate('({label,photoIds})=>photoPerformance.start(label,photoIds)',
+                              {'label': workload['name']+'-close', 'photoIds': [photo['id'] for photo in visible_photos]})
                 page.locator('#slCameraDone').click()
                 page.wait_for_function('!SentlogContinuousCamera.isOpen()')
                 page.wait_for_function("""expected=>{
                   const thumbnails=[...document.querySelectorAll('#photoGrid .photo-thumb')];
-                  return thumbnails.length===expected.length&&thumbnails.every((item,index)=>{
+                  const ready=thumbnails.length===expected.length&&thumbnails.every((item,index)=>{
                     const image=item.querySelector('img');
                     return item.title===expected[index].name&&image?.alt===expected[index].name&&
                       image.complete&&image.naturalWidth>0;
                   });
+                  if(ready)photoPerformance.thumbnailsReady();
+                  return ready;
                 }""", arg=visible_photos)
                 expect(page.locator('#photoGrid')).to_be_visible()
                 close_result = page.evaluate('photoPerformance.stop()')
@@ -389,6 +424,7 @@ def summarize(case):
             'closeImageLoads': close['imageLoads'],
             'closeDrawingRect': close['stages'].get('ui.drawingRect', {'calls': 0, 'ms': 0, 'maxMs': 0}),
             'closeFocus': close['stages'].get('ui.focus', {'calls': 0, 'ms': 0, 'maxMs': 0}),
+            'closePhasesMs': close['closePhases']['durationsMs'],
             'closeMaxFrameGapMs': round(close['maxFrameGapMs'], 2),
             'captureAndCloseMs': round(sum(s['elapsedMs'] for s in shots)+close['elapsedMs'], 2)}
 
