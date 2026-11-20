@@ -9,7 +9,7 @@ import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
 ASSET = 'continuous-camera.js'
-TOKEN = '20261119-continuous-camera'
+TOKEN = '20261121-camera-orientation'
 pending = {}
 
 
@@ -48,7 +48,7 @@ for asset, previous_marker, required_api in (
            "['" + asset + "?v=" + TOKEN + "','" + previous_marker + "']",
            "['" + asset + "?v=" + TOKEN + "','" + required_api + "']")
 change('sentlog/index.html', 'const deps=[',
-       "const deps=[['" + ASSET + "?v=" + TOKEN + "','SentlogContinuousCamera'],")
+       "const deps=[['" + ASSET + "?v=" + TOKEN + "','prefersVideoFrame'],")
 
 # Earlier final-pass builders append their scripts by replacing </body> before
 # document.write. Appending this replacement last keeps the camera after both
@@ -62,7 +62,9 @@ match = re.search(r'sentlog-pwa-v(\d+)', worker)
 if not match:
     raise RuntimeError('Continuous camera offline cache revision missing')
 old_cache = match.group(0)
-new_cache = 'sentlog-pwa-v' + str(int(match.group(1)) + 1)
+# Advance beyond the already published camera generation so installed PWAs
+# refresh the camera implementation as part of the complete static resource set.
+new_cache = 'sentlog-pwa-v' + str(int(match.group(1)) + 2)
 pending['sentlog/sw.js'] = worker.replace(old_cache, new_cache)
 
 # Existing release assertions follow the final generated cache/resource names.

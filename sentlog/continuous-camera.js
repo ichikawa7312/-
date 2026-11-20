@@ -69,10 +69,18 @@
       confirmExport(){if(failed)failed.exported=true;notify();}};
   }
 
-  async function captureStill(video,track,ImageCaptureClass,document){
+  function prefersVideoFrame(navigator){
+    return /iPhone|iPad|iPod/i.test(navigator?.userAgent||'')||
+      (navigator?.platform==='MacIntel'&&Number(navigator.maxTouchPoints)>1);
+  }
+  async function captureStill(video,track,ImageCaptureClass,document,options={}){
     if(!track||track.readyState==='ended')throw Error('カメラが停止しています。「カメラを再開」を押してください。');
     if(track.muted)throw Error('カメラの映像が一時停止しています。再開してから撮影してください。');
-    if(ImageCaptureClass){
+    // On iPhone/iPad the still-photo output can use a different orientation
+    // from the preview. Save the already oriented, full-size video frame there;
+    // do not guess a rotation from screen shape or rotate native photo metadata.
+    // The standard camera chooser remains available for native full-quality shots.
+    if(ImageCaptureClass&&!options.preferVideoFrame){
       try{
         const capture=new ImageCaptureClass(track);
         if(typeof capture.takePhoto==='function'){
@@ -94,7 +102,7 @@
     }finally{canvas.width=1;canvas.height=1;}
   }
 
-  const pure={createSession,captureStill};
+  const pure={createSession,captureStill,prefersVideoFrame};
   if(typeof module!=='undefined'&&module.exports){module.exports=pure;return;}
   if(!root.document||root.SentlogContinuousCamera)return;
   const document=root.document;
@@ -216,7 +224,7 @@
     }
   }
   async function takePhoto(){
-    const blob=await captureStill(ui.video,track,root.ImageCapture,document);
+    const blob=await captureStill(ui.video,track,root.ImageCapture,document,{preferVideoFrame:prefersVideoFrame(root.navigator)});
     const ext=/png/i.test(blob.type)?'png':/heic/i.test(blob.type)?'heic':'jpg';
     const stamp=new Date().toISOString().replace(/[-:]/g,'').replace(/\..+$/,'').replace('T','_');
     ui.flash.classList.remove('flash');void ui.flash.offsetWidth;ui.flash.classList.add('flash');
