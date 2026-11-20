@@ -82,6 +82,13 @@ const combined = SentlogDeltaAssets.combinedStatus(latestRecordStatus, photoStat
 容量不足、transaction中断、再起動、重複、原本分離、1,002件の未受信参照を含みます。
 
 Node用依存は固定版 `fake-indexeddb@6.2.8` です。ブラウザー試験は既存CIと同じPlaywright版で実行します。
+本体38ケースは既存の移行試験と同じ使い捨てpersistent profileで実行します。
+[Playwrightの公式説明](https://playwright.dev/python/docs/api/class-browsercontext)では、`new_context()`は非永続セッションです。通常の永続保存と、非永続セッションでの保存拒否をそれぞれ検証します。
+さらに1枚を受信・照合・受領確認まで保存してブラウザーprocessを閉じ、同じprofileとoriginで
+新processを起動し、Blobの再ハッシュと受領記録を確認します。再ダウンロード・再ackが0件であることも確認します。
+別途、非永続（private）contextでも1枚を受信するprobeを行い、Blob保存が拒否された場合は
+写真待ちを保持し、Blob・受領記録を確定せず、サーバーへの受領確認が0件であることを検査します。
+private contextでの成功や保存拒否の結果を、物理iOSの通常利用の結果へ一般化しません。
 
 本番への接続には、認証付き実transport、PC保管済み共有用画像の再供給、実受領API、
 全写真参照を取り出すアプリ側処理、および実機試験が必要です。
