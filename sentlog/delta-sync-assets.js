@@ -108,8 +108,11 @@
       });
       opening=task;task.then(()=>{if(opening===task)opening=null;},()=>{if(opening===task)opening=null;});return task;
     }
-    async function operation(ref,mode,mutate){
-      const connection=await connect();alive();
+    async function operation(ref,mode,mutate,validate=()=>{}){
+      const check=()=>{alive();const result=validate();if(result&&typeof result.then==='function')Promise.resolve(result).catch(()=>{});
+        insist(result!==false&&!(result&&typeof result.then==='function'),
+        'ASSET_CONTEXT','写真の保存対象を同期的に確認できません');};
+      check();const connection=await connect();check();
       return new Promise((resolve,reject)=>{
         let tx;
         try{try{tx=connection.transaction(STORE,mode,{durability:'strict'});}
@@ -125,7 +128,7 @@
         const finish=error=>{
           if(settled)return;settled=true;
           if(error){reject(error);return;}
-          try{resolve(copy(context.result));}catch(copyError){reject(copyError);}
+          try{check();resolve(copy(context.result));}catch(copyError){reject(copyError);}
         };
         const abort=error=>{
           context.error=error;
@@ -144,11 +147,12 @@
           q.onsuccess=()=>{
             if(settled)return;
             try{
-              alive();const current=validateRow(q.result,ref,scope),next=mutate(current);
+              check();const current=validateRow(q.result,ref,scope),next=mutate(current);
               context.result=next;
               if(mode==='readwrite'&&next!==current){
                 validateRow(next,ref,scope);
                 const put=store.put(next,key(ref));put.onerror=()=>{context.error=context.error||put.error;};
+                put.onsuccess=()=>{if(settled)return;try{check();}catch(error){abort(error);}};
               }
             }catch(error){abort(error);}
           };
@@ -158,33 +162,31 @@
     function nextRevision(row){insist(row.revision<Number.MAX_SAFE_INTEGER,'ASSET_STORE_REVISION','写真の保存履歴が上限に達しました');return row.revision+1;}
     const api={
       getScope:()=>copy(scope),
-      ensure(input){
+      ensure(input,{validate=()=>{}}={}){
         const ref=reference(input,scope);alive();
         return operation(ref,'readwrite',row=>row||{version:1,scope:copy(scope),reference:ref,revision:1,
-          phase:'waiting',blob:null,localReceipt:null,remoteReceipt:null});
+          phase:'waiting',blob:null,localReceipt:null,remoteReceipt:null},validate);
       },
       read(input){const ref=reference(input,scope);alive();return operation(ref,'readonly',row=>row);},
       async received(input,blob,{validate=()=>{}}={}){
         const ref=reference(input,scope);alive();await verifyBlob(blob,ref);alive();
         return operation(ref,'readwrite',row=>{
-          validate();
           insist(row,'ASSET_NOT_QUEUED','写真の受信予定を確認できません');
           // A repeated response cannot roll back an already acknowledged item.
           if(row.phase!=='waiting')return row;
           return {...row,revision:nextRevision(row),phase:'received',blob,
             localReceipt:{...receipt(ref,scope),verified:true},remoteReceipt:null};
-        });
+        },validate);
       },
       acknowledged(input,proof,{validate=()=>{}}={}){
         const ref=reference(input,scope),ack=copy(proof);alive();
         insist(matchesReceipt(ack,ref,scope)&&ack.durable===true,
           'ASSET_ACK_MISMATCH','この端末・写真の受領確認が一致しません');
         return operation(ref,'readwrite',row=>{
-          validate();
           insist(row&&row.phase!=='waiting','ASSET_NOT_DURABLE','写真本体を端末へ保存する前に完了扱いにはできません');
           if(row.phase==='acknowledged')return row;
           return {...row,revision:nextRevision(row),phase:'acknowledged',remoteReceipt:ack};
-        });
+        },validate);
       },
       close(){
         if(closed)return;
@@ -196,11 +198,11 @@
     return api;
   }
 
-  function createQueue({scope:inputScope,store,transport,currentScope,timeoutMs=30000,maxBytes=22*1024*1024,allowOriginals=false}={}){
+  function createQueue({scope:inputScope,store,transport,currentScope,assertCurrent=()=>{},timeoutMs=30000,maxBytes=22*1024*1024,allowOriginals=false}={}){
     const scope=Object.freeze(Object.fromEntries(SCOPE.map(k=>[k,inputScope?.[k]])));
     insist(SCOPE.every(k=>valid(scope[k]))&&store&&sameScope(store.getScope?.(),scope)&&
       ['ensure','read','received','acknowledged'].every(k=>typeof store[k]==='function')&&
-      transport&&['online','download','acknowledge'].every(k=>typeof transport[k]==='function')&&typeof currentScope==='function',
+      transport&&['online','download','acknowledge'].every(k=>typeof transport[k]==='function')&&typeof currentScope==='function'&&typeof assertCurrent==='function',
       'ASSET_CONFIG','写真の保存・通信・利用者確認の方法が不足しています');
     insist(Number.isSafeInteger(timeoutMs)&&timeoutMs>0&&Number.isSafeInteger(maxBytes)&&maxBytes>0&&typeof allowOriginals==='boolean',
       'ASSET_CONFIG','写真の通信上限を確認できません');
@@ -209,6 +211,9 @@
     function alive(epoch){
       insist(!closed,'ASSET_CLOSED','写真同期を終了しています');
       insist(sameScope(currentScope(),scope),'ASSET_SCOPE','写真同期中に利用者・案件・端末が変わりました');
+      const current=assertCurrent();if(current&&typeof current.then==='function')Promise.resolve(current).catch(()=>{});
+      insist(current!==false&&!(current&&typeof current.then==='function'),
+        'ASSET_CONTEXT','写真同期の認証・記録の状態を同期的に確認できません');
       if(epoch!==undefined)insist(epoch===generation,'ASSET_REFERENCES_CHANGED','写真一覧が更新されました。保存内容を保持して再確認します');
     }
     function select(input){
@@ -227,7 +232,7 @@
         .then(value=>{alive(epoch);return value;}).finally(()=>{clearTimeout(timer);inflight.delete(ticket);});
     }
     async function ensure(refs,epoch){
-      for(const ref of refs){alive(epoch);await store.ensure(ref);alive(epoch);}
+      for(const ref of refs){alive(epoch);await store.ensure(ref,{validate:()=>alive(epoch)});alive(epoch);}
     }
     async function status(refs,epoch){
       const result={scope:copy(scope),referenceSignature:JSON.stringify(refs),
@@ -301,6 +306,7 @@
     try{
       coversCurrentReferences=object(context)&&SCOPE.every(k=>valid(context.scope?.[k]))&&
         sameScope(context.scope,photoStatus?.scope)&&
+        (!Object.prototype.hasOwnProperty.call(photoStatus,'snapshotToken')||photoStatus.snapshotToken===context.recordSnapshotToken)&&
         JSON.stringify(references(context.references,context.scope))===photoStatus.referenceSignature;
     }catch(_){/* A partial or foreign reference list cannot prove completion. */}
     const photosComplete=coversCurrentReferences&&object(photoStatus)&&photoStatus.complete===true&&photoStatus.pending===0&&

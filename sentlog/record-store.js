@@ -146,18 +146,82 @@
     })();
     return flight;
   }
-  function writeFile(key,value){
+  function writeFile(key,value,options={}){
     assertReady();
     if(exclusive) return Promise.reject(Error('復元中です'));
+    const guarded=Object.keys(options).length>0;
+    const validate=options.validate,onlyIfMissing=options.onlyIfMissing===true,signal=options.signal;
+    function fileError(code,message){return Object.assign(Error(message),{code});}
+    function check(){
+      if(signal?.aborted)throw fileError('FILE_WRITE_ABORTED','ファイルの保存を中止しました');
+      if(validate!==undefined){
+        if(typeof validate!=='function')throw fileError('FILE_WRITE_GUARD','保存する対象を確認できません');
+        const result=validate();
+        if(result&&typeof result.then==='function'){
+          Promise.resolve(result).catch(()=>{});
+          throw fileError('FILE_WRITE_GUARD','保存の直前確認は同期的に行う必要があります');
+        }
+        if(result===false)throw fileError('FILE_WRITE_GUARD','保存する案件・写真が変更されました。上書きを止めました');
+      }
+    }
     let task;
-    task=(async()=>{
+    // Register the task before a synchronous guard can reject it. Otherwise
+    // finally deletes undefined, leaving a rejected task in fileTasks forever.
+    task=Promise.resolve().then(async()=>{
       try{
-        await connect();const tx=transaction('readwrite'),done=complete(tx);
-        tx.objectStore(STORE).put(value,key);await done;
-        failedFiles.delete(key);recovered('file:'+key);
-      }catch(error){failedFiles.set(key,value);report('file:'+key,error);throw error;}
+        check();await connect();check();
+        const result=await new Promise((resolve,reject)=>{
+          let tx;
+          try{tx=transaction('readwrite');}catch(error){reject(error);return;}
+          let reason=null,settled=false,saved;
+          function finish(error){
+            if(settled)return;settled=true;signal?.removeEventListener('abort',cancel);
+            if(error){reject(error);return;}
+            try{check();resolve(saved);}catch(e){reject(e);}
+          }
+          function abort(error){
+            if(settled)return;reason=reason||error;
+            try{tx.abort();}catch{}
+            finish(reason||fileError('FILE_WRITE_ABORTED','ファイルの保存が中断されました'));
+          }
+          function cancel(){abort(fileError('FILE_WRITE_ABORTED','ファイルの保存を中止しました'));}
+          signal?.addEventListener('abort',cancel,{once:true});
+          tx.oncomplete=()=>finish(reason);
+          tx.onabort=()=>finish(reason||tx.error||fileError('FILE_WRITE_ABORTED','ファイルの保存が中断されました'));
+          tx.onerror=()=>{};
+          const store=tx.objectStore(STORE);
+          function put(){
+            if(settled)return;
+            try{
+              check();saved={written:true,value};
+              const q=store.put(value,key);
+              q.onerror=()=>{reason=reason||q.error;};
+              q.onsuccess=()=>{if(settled)return;try{check();}catch(error){abort(error);}};
+            }catch(error){abort(error);}
+          }
+          if(onlyIfMissing){
+            try{
+              check();const q=store.get(key);
+              q.onerror=()=>{reason=reason||q.error;};
+              q.onsuccess=()=>{
+                if(settled)return;
+                try{check();if(q.result!==undefined){saved={written:false,value:q.result};return;}put();}
+                catch(error){abort(error);}
+              };
+            }catch(error){abort(error);}
+          }else put();
+        });
+        if(!guarded||(result.written&&failedFiles.get(key)===value))failedFiles.delete(key);
+        if(!failedFiles.has(key))recovered('file:'+key);
+        return guarded?result:undefined;
+      }catch(error){
+        // A guarded transfer owns its immutable bytes and its retry policy.
+        // Never replay it later under a different account via the legacy queue.
+        if(!guarded){failedFiles.set(key,value);report('file:'+key,error);}
+        throw error;
+      }
       finally{fileTasks.delete(task);notify();}
-    })();fileTasks.add(task);notify();return task;
+    });fileTasks.add(task);notify();return task;
   }
   async function settled(){
     while(fileTasks.size)await Promise.all([...fileTasks]);
@@ -202,6 +266,7 @@
     await done;return totals;
   }
   window.SentlogRecords={init,flush,settled,writeFile,retry,batch,replaceAll,stats,
+    getFileWriteCapabilities:()=>({guarded:true,onlyIfMissing:true}),
     uncommittedFiles:()=>[...failedFiles].map(([key,value])=>({key,value})),
     get ready(){return initialized;},get pending(){return pending.size+inFlight>0||fileTasks.size>0||operation;},get failed(){return failures.size>0;},
     get issues(){return [...failures];},get migration(){return migrationInfo;},

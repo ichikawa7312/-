@@ -75,7 +75,7 @@
         insist(copied?.localProjectId===localProjectId&&same(copied.scope,scope),'BOOTSTRAP_SCOPE','別の案件の移行控えは使用できません');
         const local=await ctx.wait(migration.readCopy(migrationId));
         const initial=await baseline(captured,ctx);
-        progress('reconciling');const plan=await ctx.wait(R.plan({scope,baseline:initial,localSnapshot:local.snapshot,currentScope,signal:ctx.signal}));
+        progress('reconciling');const plan=await ctx.wait(R.plan({scope,baseline:initial,localSnapshot:local.snapshot,currentScope,signal:ctx.signal,groupTransport:transport}));
         const fresh=await ctx.wait(source.recheck(local.snapshot));
         const sourceUnchanged=fresh?.unchanged===true&&fresh.expectedFingerprint===plan.sourceFingerprint&&fresh.actualFingerprint===plan.sourceFingerprint;
         const ready=copied.status==='verified-copy'&&local.status==='verified-copy'&&sourceUnchanged&&plan.readyForInstall;
@@ -102,7 +102,7 @@
         // Re-read authoritative bytes and recompute the plan. A saved plan hash
         // alone is not permission to install an edited or obsolete candidate.
         const initial=await baseline(candidate.baselineReceipt,ctx,fence);
-        const rebuilt=await ctx.wait(R.plan({scope,baseline:initial,localSnapshot:local.snapshot,currentScope,signal:ctx.signal}),fence);
+        const rebuilt=await ctx.wait(R.plan({scope,baseline:initial,localSnapshot:local.snapshot,currentScope,signal:ctx.signal,groupTransport:transport}),fence);
         insist(rebuilt.planSha256===candidate.planSha256&&rebuilt.readyForInstall,'BOOTSTRAP_PLAN_CHANGED',
           '引き継ぐ内容が照合時から変わっています。上書きを止めました');
         const fresh=await ctx.wait(source.recheck(local.snapshot),fence);

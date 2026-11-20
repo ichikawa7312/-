@@ -70,9 +70,11 @@
     metadataCount:metadata.length,snapshotSha256:await hash(pg(server)),manifestSha256:await hash('['+rows.map(r=>r.manifestEntryJson).join(', ')+']'),
     metadataManifestSha256:await hash('['+metadata.map(r=>r.manifestEntryJson).join(', ')+']'),hashFormat:'postgres-jsonb-text-sha256-v1',
     state:'active',deltaEnabled:true,deviceMigrationVerified:false,assetDeliveryVerified:false};
-   const controls={scope:copy(scope),page:null,progress:null,recheck:null,blocked:true},progress=[];
+   const controls={scope:copy(scope),page:null,progress:null,recheck:null,blocked:true,atomicGroups:false},progress=[];
    const storage={getItem:()=>null,setItem(){throw Error('unexpected localStorage write');},removeItem(){throw Error('unexpected localStorage removal');}};
    const transport={
+    getCapabilities:()=>({atomicGroups:controls.atomicGroups}),
+    pushGroup:async()=>{throw Error('bootstrap must not send a pending group');},
     async readBaselinePage(id,after,limit,options){return read('records',rows,id,after,limit,options);},
     async readBaselineMetadataPage(id,after,limit,options){return read('metadata',metadata,id,after,limit,options);}
    };
@@ -142,6 +144,31 @@
     equal(await reopened.replicaStore.readProvenance(),proof);
     const again=D.createReplica({...scope,store:reopened.replicaStore,transport:offline,reconcileIntervalMs:0});
     await again.start();equal(await again.snapshot(),saved);again.close();
+   }finally{reopened.close();}
+  });
+  await test('verified atomic transport preserves a pending move as one durable group through seed and reopen',async()=>{
+   const f=await fixture();f.controls.atomicGroups=true;
+   await f.changeRecord(s=>{
+    const source=s.shapes.shift();
+    s.collabDeletedRecords.push(C.markDeleted(source,{revisionId:'pending-group-move',expectedToken:C.revisionToken(source),at:20}));
+    s.shapes.push(C.upgrade({id:'pending-group-target',kind:'point',page:2,x:2,y:3,memo:'移動先',photos:[],
+     transferOrigin:{drawingId,recordId:source.id,operation:'move'}}));
+   });
+   const h=f.handles();let prepared,saved;
+   try{
+    prepared=await h.prepare();assert(prepared.readyForInstall);
+    equal(prepared.plan.state.outbox.length,1);equal(prepared.plan.state.outbox[0].kind,'atomic-group');
+    D.validateGroup(prepared.plan.state.outbox[0]);
+    f.controls.atomicGroups=false;
+    await rejected(()=>h.install(prepared.plan),'BOOTSTRAP_PLAN_CHANGED');equal(await h.replicaStore.read(),null);
+    f.controls.atomicGroups=true;
+    const installed=await h.install(prepared.plan);saved=installed.state;
+    equal(saved.outbox,prepared.plan.state.outbox);
+    assert(C.isDeleted(saved.records[D.keyOf(drawingId,'record-one')]));
+    assert(saved.records[D.keyOf(drawingId,'pending-group-target')]);
+   }finally{h.close();}
+   const reopened=f.handles();try{
+    const retry=await reopened.install(prepared.plan);assert(retry.idempotent);equal(retry.state,saved);
    }finally{reopened.close();}
   });
   await test('verified but inactive baseline can be prepared but cannot initialize the normal replica',async()=>{

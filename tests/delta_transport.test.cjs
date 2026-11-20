@@ -17,7 +17,11 @@ function event(n=1,projectId=PROJECT){return {schema:1,eventId:'event-'+n,projec
   kind:'create',record:{id:'record-'+n,collab:{version:1,comments:{},fields:{},photos:{},deletion:{revisions:[{
     id:'alive-'+n,parents:[],actor:{deviceId:DEVICE,deviceName:'test'},at:1,deleted:false,observed:[]}]}}}};}
 const ack=e=>({seq:1,duplicate:false,...Object.fromEntries(['eventId','projectId','deviceId','drawingId','recordId'].map(k=>[k,e[k]]))});
-const page=(events=[],{after=0,headSeq=events.length,hasMore=after+events.length<headSeq,scope=SCOPE}={})=>({schema:1,...scope,after,headSeq,events,hasMore});
+const page=(events=[],{after=0,headSeq=events.length,hasMore=after+events.length<headSeq,scope=SCOPE}={})=>({schema:2,...scope,after,headSeq,events,hasMore});
+const capabilities=()=>({schema:2,...SCOPE,atomicGroups:true,groupMaxEvents:500,groupMaxBytes:4194304,pageTargetBytes:900000});
+const group=()=>({schema:1,kind:'atomic-group',groupId:'move-one',projectId:PROJECT,deviceId:DEVICE,events:[event(1),event(2)]});
+const groupAck=g=>({schema:1,groupId:g.groupId,projectId:g.projectId,deviceId:g.deviceId,startSeq:5,endSeq:4+g.events.length,
+  duplicate:false,events:g.events.map((e,i)=>{const row=ack(e);delete row.duplicate;row.seq=5+i;return row;})});
 const receipt=()=>({schema:1,baselineId:BASELINE,ownerId:OWNER,projectId:PROJECT,snapshotRevision:7,cursor:0,
   recordCount:1,importedCount:1,snapshotSha256:'a'.repeat(64),manifestSha256:'b'.repeat(64),
   clientProjectId:'local-project',drawingIds:['drawing','empty-drawing'],metadataCount:1,metadataManifestSha256:'c'.repeat(64),
@@ -29,17 +33,19 @@ const metadataPage=()=>({receipt:receipt(),metadata:[{ordinal:1,kind:'project',k
 const instances=new Set();
 function harness(extra={}){
   let session={access_token:'token-a',user:{id:OWNER}},current=clone(SCOPE),rpcImpl=(name,args)=>({data:name==='sentlog_delta_append_v1'?ack(args.p_envelope):page(),error:null});
-  const calls=[],users=[],subscriptions=[],auth=new Set(),timers=clock();let sessionReads=0,authStops=0;
+  const calls=[],capabilityCalls=[],users=[],subscriptions=[],auth=new Set(),timers=clock();let sessionReads=0,authStops=0;
+  let capabilityImpl=()=>({data:capabilities()});
   const provider={
     getSession:async()=>{sessionReads++;return session;},peekSession:()=>session,
     getUser:async token=>{users.push(token);return {id:OWNER};},
-    rpc:async(name,args,options)=>{calls.push({name,args,options});return rpcImpl(name,args,options);},
+    rpc:async(name,args,options)=>{if(name==='sentlog_delta_capabilities_v1'){capabilityCalls.push({name,args,options});return capabilityImpl();}
+      calls.push({name,args,options});return rpcImpl(name,args,options);},
     subscribeAuth(fn){auth.add(fn);return ()=>{authStops++;auth.delete(fn);};},
     subscribe(options){const sub={options,stops:0};subscriptions.push(sub);return ()=>sub.stops++;}
   };
   Object.assign(provider,extra.provider||{});
   const transport=createTransport({provider,scope:SCOPE,currentScope:()=>current,timers,retryMs:5,requestTimeoutMs:1000,...extra.transport});instances.add(transport);
-  return {transport,provider,calls,users,subscriptions,timers,setRpc:fn=>{rpcImpl=fn;},setScope:s=>{current=s;},
+  return {transport,provider,calls,capabilityCalls,users,subscriptions,timers,setRpc:fn=>{rpcImpl=fn;},setCapabilities:fn=>{capabilityImpl=fn;},setScope:s=>{current=s;},
     getSession:()=>session,setSession(s,emit=true){session=s;if(emit)for(const fn of auth)fn(s?'TOKEN_REFRESHED':'SIGNED_OUT',s);},
     stats:()=>({sessionReads,authStops})};
 }
@@ -83,13 +89,13 @@ test('RPC pages preserve byte-limited continuation and exact committed order',as
   const h=harness();h.setRpc(()=>({data:page([{seq:1,event:event()}],{headSeq:3,hasMore:true})}));
   const rows=await h.transport.list(PROJECT,0,100);assert.equal(rows.length,1);assert.equal(rows.hasMore,true);assert.equal(rows.headSeq,3);
   assert.deepEqual(Object.keys(rows),['0']);assert.deepEqual(h.calls[0].args,{p_project_id:PROJECT,p_device_id:DEVICE,p_after:0,p_limit:100});
-  assert.equal(h.calls[0].name,'sentlog_delta_list_v1');
+  assert.equal(h.calls[0].name,'sentlog_delta_list_groups_v1');
   h.setRpc(()=>({data:page([],{after:3,headSeq:3,hasMore:false})}));assert.equal((await h.transport.list(PROJECT,3,100)).hasMore,false);
 });
 test('foreign, gapped, truncated and malformed pages fail without a cursor result',async()=>{
   const changes=[r=>r.ownerId=OTHER,r=>r.deviceId=OTHER,r=>r.after=9,r=>r.headSeq='1',r=>r.headSeq=0,
     r=>r.events[0].seq=2,r=>r.events[0].event.projectId=PROJECT2,r=>r.events[0].event.kind='invalid',
-    r=>r.hasMore=true,r=>r.events=[],r=>r.schema=2];
+    r=>r.hasMore=true,r=>r.events=[],r=>r.schema=3];
   for(const mutate of changes){const h=harness();h.setRpc(()=>{const value=page([{seq:1,event:event()}]);mutate(value);return {data:value};});
     await assert.rejects(h.transport.list(PROJECT,0,100));h.transport.close();}
   const h=harness();for(const args of [[PROJECT,-1,100],[PROJECT,0,501],[PROJECT,0,0],[PROJECT,Number.MAX_SAFE_INTEGER+1,1],[PROJECT2,0,1]])
@@ -251,6 +257,67 @@ test('REST non-JSON errors retain HTTP retry classification; malformed successes
       text:async()=>url.includes('/auth/')?JSON.stringify({id:OWNER}):'<html>private token</html>'})});
     const transport=createTransport({provider,scope:SCOPE,currentScope:()=>SCOPE});instances.add(transport);
     await assert.rejects(transport.push(event()),e=>{assert.equal(e.retryable,status!==200);if(status!==200)assert.equal(e.status,status);assert(!e.message.includes('private'));return true;});transport.close();}
+});
+
+test('atomic capability is learned from the authorized server, not a caller flag',async()=>{
+  let online=true;const h=harness({transport:{online:()=>online}});
+  assert.equal(h.transport.getCapabilities().atomicGroups,false);await rejects(()=>h.transport.pushGroup(group()),'DELTA_UPGRADE_REQUIRED');
+  assert.equal(h.calls.length,0);await h.transport.ready();assert.equal(h.capabilityCalls.length,1);
+  assert.deepEqual(h.capabilityCalls[0].args,{p_project_id:PROJECT,p_device_id:DEVICE});assert.equal(h.transport.getCapabilities().atomicGroups,true);
+  online=false;assert.equal(h.transport.getCapabilities().atomicGroups,true);
+  h.setScope({...SCOPE,projectId:PROJECT2});assert.equal(h.transport.getCapabilities().atomicGroups,false);
+  h.setScope(SCOPE);assert.equal(h.transport.getCapabilities().atomicGroups,false);
+});
+test('unknown or wrong-scope capability results cannot enable grouped writes',async()=>{
+  for(const change of [r=>r.ownerId=OTHER,r=>r.deviceId=OTHER,r=>r.projectId=PROJECT2,r=>r.schema=1,r=>r.atomicGroups=false,
+    r=>r.groupMaxBytes=1,r=>r.groupMaxEvents=0,r=>delete r.pageTargetBytes]){
+    const h=harness();h.setCapabilities(()=>{const result=capabilities();change(result);return {data:result};});
+    await rejects(()=>h.transport.ready(),'DELTA_UPGRADE_REQUIRED');assert.equal(h.transport.getCapabilities().atomicGroups,false);h.transport.close();}
+  const h=harness();h.setCapabilities(()=>({error:{code:'PGRST202',message:'missing capability RPC'},status:404}));
+  await rejects(()=>h.transport.ready(),'DELTA_UPGRADE_REQUIRED');assert.equal(h.transport.getCapabilities().atomicGroups,false);
+});
+test('temporary capability outages retain offline support but explicit revocation clears it',async()=>{
+  const h=harness();await h.transport.ready();h.setCapabilities(()=>({error:{message:'temporary'},status:503}));
+  await assert.rejects(h.transport.ready(),e=>e.retryable===true);assert.equal(h.transport.getCapabilities().atomicGroups,true);
+  h.setCapabilities(()=>({error:{code:'42501',message:'stopped device'},status:403}));
+  await rejects(()=>h.transport.ready(),'DELTA_FORBIDDEN');assert.equal(h.transport.getCapabilities().atomicGroups,false);
+});
+test('group append sends one immutable envelope and verifies every ordered acknowledgement',async()=>{
+  const h=harness();await h.transport.ready();h.setRpc((name,args)=>({data:groupAck(args.p_group)}));
+  const value=group(),pending=h.transport.pushGroup(value);value.events[0].recordId='changed';
+  assert.deepEqual(await pending,groupAck(group()));assert.equal(h.calls.length,1);assert.equal(h.calls[0].name,'sentlog_delta_append_group_v1');
+  assert.deepEqual(h.calls[0].args,{p_project_id:PROJECT,p_device_id:DEVICE,p_group:group()});
+  const duplicate={...groupAck(group()),duplicate:true};h.setRpc(()=>({data:duplicate}));assert.deepEqual(await h.transport.pushGroup(group()),duplicate);
+});
+test('partial, reordered or foreign group acknowledgements do not release any member',async()=>{
+  for(const change of [r=>r.groupId='another',r=>r.deviceId=OTHER,r=>r.startSeq=0,r=>r.endSeq=5,r=>r.duplicate='true',
+    r=>r.events.pop(),r=>r.events.reverse(),r=>r.events[1].seq=7,r=>r.events[0].drawingId='other',r=>r.events[1].eventId='other',r=>r.schema=2]){
+    const h=harness();await h.transport.ready();h.setRpc(()=>{const result=groupAck(group());change(result);return {data:result};});
+    await rejects(()=>h.transport.pushGroup(group()),'DELTA_NOT_DURABLE');assert.equal(h.calls.length,1);h.transport.close();}
+});
+test('mixed pages keep a complete group as one unit and advance to its end sequence',async()=>{
+  const h=harness(),g=group();h.setRpc(()=>({data:page([{seq:1,event:event(10)},{seq:2,endSeq:3,group:g},{seq:4,event:event(11)}],{headSeq:4,hasMore:false})}));
+  const rows=await h.transport.list(PROJECT,0,3);assert.equal(rows.length,3);assert.equal(rows[1].group.events.length,2);assert.equal(rows[1].endSeq,3);
+  assert.equal(rows.headSeq,4);assert.equal(rows.hasMore,false);assert.deepEqual(rows[1].group,g);
+  h.setRpc(()=>({data:page([{seq:2,endSeq:3,group:g}],{after:1,headSeq:4,hasMore:true})}));
+  const single=await h.transport.list(PROJECT,1,1);assert.equal(single.length,1);assert.equal(single.hasMore,true);assert.equal(single[0].endSeq,3);
+});
+test('invalid group boundaries and truncated mixed pages fail before cursor publication',async()=>{
+  for(const change of [r=>r.events[0].endSeq=1,r=>r.events[0].endSeq=3,r=>r.events[0].seq=2,
+    r=>r.events[0].group.events.pop(),r=>r.events[0].group.projectId=PROJECT2,r=>r.events[0].group.events[1].deviceId=OTHER,
+    r=>r.events[0].event=event(),r=>r.events[0].group.events[1].eventId=r.events[0].group.events[0].eventId,
+    r=>r.hasMore=true,r=>r.schema=1]){
+    const h=harness();h.setRpc(()=>{const result=page([{seq:1,endSeq:2,group:group()}],{headSeq:2,hasMore:false});change(result);return {data:result};});
+    await assert.rejects(h.transport.list(PROJECT,0,100));h.transport.close();}
+});
+test('token refresh preserves confirmed capability while logout invalidates it and aborts a group',async()=>{
+  const h=harness();await h.transport.ready();h.setSession({access_token:'group-refreshed',user:{id:OWNER}});
+  assert.equal(h.transport.getCapabilities().atomicGroups,true);h.setRpc((name,args)=>({data:groupAck(args.p_group)}));
+  await h.transport.pushGroup(group());assert.deepEqual(h.users,['token-a','group-refreshed']);assert.equal(h.calls[0].options.accessToken,'group-refreshed');
+  const wait=deferred();h.setRpc(()=>wait.promise);const pending=h.transport.pushGroup(group());await settle();h.setSession(null);
+  await rejects(()=>pending,'DELTA_AUTH_CHANGED');assert.equal(h.transport.getCapabilities().atomicGroups,false);assert.equal(h.calls[1].options.signal.aborted,true);
+  wait.resolve({data:groupAck(group())});await settle();h.setSession({access_token:'group-returned',user:{id:OWNER}});
+  assert.equal(h.transport.getCapabilities().atomicGroups,false);await h.transport.ready();assert.equal(h.transport.getCapabilities().atomicGroups,true);
 });
 
 (async()=>{let passed=0;for(const {name,fn} of cases){try{await fn();passed++;console.log('PASS '+name);}finally{for(const t of instances)t.close();instances.clear();}}

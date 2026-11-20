@@ -11,7 +11,9 @@
     (typeof module==='object'&&module.exports?require('./delta-sync-core.js'):null);
   const WS='surveyFieldNoteWorkspaceV1',DRAW='surveyFieldNoteDrawingV1:';
   const SCOPE=['ownerId','projectId','deviceId'];
-  const VIEW=['currentPage','width','height','pdfPageInfo','labelSize'];
+  // The editor rebuilds both counters from the visible records after every
+  // create/delete/transfer. They are not independent shared drawing settings.
+  const VIEW=['currentPage','width','height','pdfPageInfo','labelSize','nextGlobalNo','typeCounters'];
   const DERIVED=['globalNo','typeNo','autoLabel','recordNo','labelPosEditedAt'];
   const OPERATIONS=['edit','create','delete','restore','copy','move'];
   const own=(o,k)=>Object.prototype.hasOwnProperty.call(o,k);
@@ -136,26 +138,35 @@
     if(!OPERATIONS.includes(operation))issues.push(issue('BRIDGE_OPERATION',null,null,'編集操作の種類が必要です。入力全体を保持しています'));
     const created=[...next.entries()].filter(([key])=>!old.has(key));
     const removed=[...old.entries()].filter(([key])=>!next.has(key));
-    const deletionIntent=[...next.entries()].some(([key,current])=>{
+    const deletionEntries=[...next.entries()].filter(([key,current])=>{
       const prior=old.get(key);if(!prior)return false;
       if(prior.bucket!=='collabDeletedRecords'&&current.bucket==='collabDeletedRecords')return true;
       const oldRows=prior.record.collab?.deletion?.revisions,newRows=current.record.collab?.deletion?.revisions;
       const previous=new Set((Array.isArray(oldRows)?oldRows:[]).map(r=>r?.id));
       return (Array.isArray(newRows)?newRows:[]).some(r=>r?.deleted===true&&!previous.has(r.id));
     });
+    const deletionIntent=deletionEntries.length>0;
     const transferMove=created.some(([,entry])=>{
       if(entry.record.transferOrigin?.operation==='move')return true;
       try{return C.upgrade(entry.record).transferOrigin?.operation==='move';}catch{return false;}
     });
     const relocatedId=created.some(([,entry])=>removed.some(([,prior])=>prior.record.id===entry.record.id&&prior.drawingId!==entry.drawingId));
-    // The server currently accepts independent events, not an atomic group.
     // A source tombstone must never be publishable without its destination.
-    // Require an explicit operation to catch a partial capture, and reject
-    // ambiguous create+delete batches even if a caller mislabeled the action.
+    // The bound replica can remove the capability issue only after checking
+    // its authenticated transport and preparing a whole atomic group.
     const atomicGroupRequired=operation==='move'||transferMove||relocatedId||
       (created.length>0&&(deletionIntent||removed.length>0));
     if(atomicGroupRequired)issues.push(issue('BRIDGE_ATOMIC_GROUP_REQUIRED',null,null,
       '移動元と移動先を一緒に共有する機能が未接続です。操作全体を保持し、どちらも送信していません'));
+    if(operation==='move'&&(!created.length||!deletionIntent))issues.push(issue('BRIDGE_MOVE_INCOMPLETE',null,null,
+      '移動元と移動先の両方を確認できません。操作全体を保持しています'));
+    for(const [,target]of created){
+      let origin=target.record.transferOrigin;
+      try{origin=origin||C.upgrade(target.record).transferOrigin;}catch{}
+      if(origin?.operation==='move'&&(!valid(origin.drawingId)||!valid(origin.recordId)||
+        !old.has(D.keyOf(origin.drawingId,origin.recordId))||!deletionEntries.some(([key])=>key===D.keyOf(origin.drawingId,origin.recordId))))
+        issues.push(issue('BRIDGE_MOVE_INCOMPLETE',target.drawingId,target.record.id,'この移動先に対応する移動元の削除操作を確認できません'));
+    }
     const a=metadataOf(before),b=metadataOf(after);
     if(!C.equal(a.project,b.project))metadataChanges.push({kind:'project',before:copy(a.project),after:copy(b.project)});
     const am=new Map(a.drawings.map(d=>[d.drawingId,d.state])),bm=new Map(b.drawings.map(d=>[d.drawingId,d.state]));
@@ -202,7 +213,18 @@
       drawing.state[C.isDeleted(record)?'collabDeletedRecords':'shapes'].push(record);
     }
     for(const drawing of drawings.values()){
-      drawing.meta.shapeCount=drawing.state.shapes.length;
+      // Match the editor/merge numbering model, including its memo/dimension
+      // filters. A received addition must not reuse counters from the old view.
+      const counters={};let number=0;
+      for(const record of drawing.state.shapes){
+        if(record.recordKind==='drawing-memo'||record.recordKind==='dimension-line'||record.kind==='dimension')continue;
+        const type=record.type||'腐食',typeNo=(own(counters,type)?counters[type]:0)+1;
+        Object.defineProperty(counters,type,{value:typeNo,writable:true,enumerable:true,configurable:true});
+        record.globalNo=++number;record.typeNo=typeNo;record.autoLabel=type+'-'+typeNo;
+        if(record.recordKind==='field-record')record.recordNo=typeNo;
+      }
+      drawing.state.nextGlobalNo=number+1;drawing.state.typeCounters=counters;
+      drawing.meta.shapeCount=number;
       drawing.meta.photoCount=drawing.state.shapes.reduce((n,r)=>n+(r.photos||[]).length,0);
     }
     template.project.drawings=template.project.drawings.map(meta=>copy(drawings.get(meta.id).meta));
@@ -218,7 +240,7 @@
     function active(){insist(!closed,'BRIDGE_CLOSED','この編集接続は終了しています');
       insist(sameScope(scope,currentScope()),'BRIDGE_SCOPE','利用者・案件・端末が切り替わっています。入力は元の案件に残してください');}
     async function prepareEdit(options={}){
-      active();const plan=prepare({...options,scope,localProjectId});
+      active();const requestedGroupId=options.groupId,plan=prepare({...options,scope,localProjectId});
       const current=await replica.snapshotWithStatus();active();
       insist(sameScope(current.snapshot?.scope,scope),'BRIDGE_SCOPE','編集先の保存状態が一致しません');
       // A record untouched by this particular draft still must be present in
@@ -247,7 +269,17 @@
           D.diffRecord(final.before,final.after,{...final,projectId:scope.projectId,deviceId:scope.deviceId});rebased.push(final);
         }catch(error){plan.issues.push(issue(error.code||'BRIDGE_RECORD',change.drawingId,change.after.id,error.message));}
       }
-      plan.changes=rebased;plan.ready=plan.issues.length===0&&plan.metadataChanges.length===0;
+      plan.changes=rebased;
+      if(plan.atomicGroupRequired&&typeof replica.changeGroup==='function'&&replica.getCapabilities?.().atomicGroups===true){
+        try{
+          const groupId=requestedGroupId??root.crypto.randomUUID();
+          insist(valid(groupId),'BRIDGE_GROUP_ID','一括操作の識別番号を確認できません');
+          const events=rebased.map(change=>D.diffRecord(change.before,change.after,{...change,projectId:scope.projectId,deviceId:scope.deviceId})).filter(Boolean);
+          D.validateGroup({schema:1,kind:'atomic-group',groupId,projectId:scope.projectId,deviceId:scope.deviceId,events});
+          plan.groupId=groupId;plan.issues=plan.issues.filter(x=>x.code!=='BRIDGE_ATOMIC_GROUP_REQUIRED');
+        }catch(error){plan.issues.push(issue(error.code||'BRIDGE_GROUP_ID',null,null,error.message||'一括操作を確認できません'));}
+      }
+      plan.ready=plan.issues.length===0&&plan.metadataChanges.length===0;
       const exposed=copy(plan);plans.set(exposed,{plan:copy(plan),snapshotToken:current.snapshotToken,receipt:null,pending:null});return exposed;
     }
     async function commit(exposed){
@@ -257,7 +289,10 @@
       insist(entry.plan.ready,'BRIDGE_REVIEW','図面設定または記録の確認が必要です。入力全体を編集計画に保持しています');
       const task=(async()=>{
         let result;
-        if(entry.plan.changes.length){result=await replica.changeBatch({changes:copy(entry.plan.changes),expectedSnapshotToken:entry.snapshotToken});active();}
+        if(entry.plan.changes.length){
+          const input={changes:copy(entry.plan.changes),expectedSnapshotToken:entry.snapshotToken};
+          result=entry.plan.atomicGroupRequired?await replica.changeGroup({...input,groupId:entry.plan.groupId}):await replica.changeBatch(input);active();
+        }
         const current=await replica.snapshotWithStatus();active();
         if(!result){
           insist(current.snapshotToken===entry.snapshotToken,'DELTA_STALE','確認後に記録が変更されています。入力内容を保持して再確認してください');

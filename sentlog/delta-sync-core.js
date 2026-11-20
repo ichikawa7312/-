@@ -19,6 +19,8 @@
   const keyOf=(drawingId,recordId)=>JSON.stringify([drawingId,recordId]);
   const scopeKeys=['ownerId','projectId','deviceId'];
   const identityKeys=['projectId','eventId','deviceId','drawingId','recordId'];
+  const isGroup=entry=>entry?.kind==='atomic-group';
+  const eventsOf=entry=>isGroup(entry)?entry.events:[entry];
   const emptyState=scope=>({version:2,scope:clone(scope),cursor:0,records:{},outbox:[]});
   function sameScope(a,b){return object(a)&&scopeKeys.every(k=>a[k]===b[k]);}
   function validateState(state,scope,deep=false){
@@ -28,12 +30,20 @@
       'DELTA_LOCAL_STATE','端末の同期位置を確認できません');
     assert(object(state.records)&&Array.isArray(state.outbox),
       'DELTA_LOCAL_STATE','端末の記録を確認できません');
-    const ids=new Set();
-    for(const e of state.outbox){
-      validateEvent(e);
-      assert(e.projectId===scope.projectId&&e.deviceId===scope.deviceId,
+    const ids=new Set(),groupIds=new Set();
+    function checkEntry(entry){
+      validateOutboxEntry(entry);
+      assert(entry.projectId===scope.projectId&&entry.deviceId===scope.deviceId,
         'DELTA_SCOPE','別の案件・端末の未送信データは送信できません');
-      assert(!ids.has(e.eventId),'DELTA_LOCAL_STATE','未送信の変更IDが重複しています');ids.add(e.eventId);
+      if(isGroup(entry)){
+        assert(!groupIds.has(entry.groupId),'DELTA_LOCAL_STATE','未送信の一括操作IDが重複しています');groupIds.add(entry.groupId);
+      }
+      for(const event of eventsOf(entry)){
+        assert(!ids.has(event.eventId),'DELTA_LOCAL_STATE','未送信の変更IDが重複しています');ids.add(event.eventId);
+      }
+    }
+    for(const e of state.outbox){
+      checkEntry(e);
     }
     // Rejected changes stay durable but are not endlessly retransmitted.
     // Backward compatible with states saved before this optional array existed.
@@ -42,10 +52,7 @@
       for(const block of state.blockedOutbox){
         assert(object(block)&&object(block.reason)&&typeof block.reason.message==='string',
           'DELTA_LOCAL_STATE','確認待ちの理由が不正です');
-        validateEvent(block.event);
-        assert(block.event.projectId===scope.projectId&&block.event.deviceId===scope.deviceId&&
-          !ids.has(block.event.eventId),'DELTA_SCOPE','別案件または重複した確認待ち履歴があります');
-        ids.add(block.event.eventId);
+        checkEntry(block.event);
       }
     }
     if(deep)for(const [key,record]of Object.entries(state.records)){
@@ -129,6 +136,38 @@
     }else assert(seen.size>0,'DELTA_EVENT','変更内容が空です');
     return e;
   }
+  // PostgreSQL jsonb adds separator spaces and expands exponential numbers.
+  // Bound groups using that wire representation, not shorter JS JSON alone.
+  function pgNumber(value){
+    const text=JSON.stringify(value);if(!/[eE]/.test(text))return text;
+    const [,sign,whole,fraction='',power]=text.match(/^(-?)(\d+)(?:\.(\d+))?[eE]([+-]?\d+)$/);
+    const digits=whole+fraction,at=whole.length+Number(power);
+    return sign+(at<=0?'0.'+'0'.repeat(-at)+digits:at>=digits.length?digits+'0'.repeat(at-digits.length):digits.slice(0,at)+'.'+digits.slice(at));
+  }
+  function pgText(value){
+    if(typeof value==='number')return pgNumber(value);
+    if(Array.isArray(value))return '['+value.map(pgText).join(', ')+']';
+    if(object(value))return '{'+Object.entries(value).map(([key,child])=>JSON.stringify(key)+': '+pgText(child)).join(', ')+'}';
+    return JSON.stringify(value);
+  }
+  function validateGroup(group){
+    jsonValue(group);
+    assert(object(group)&&group.schema===1&&group.kind==='atomic-group'&&
+      ['groupId','projectId','deviceId'].every(k=>valid(group[k]))&&Array.isArray(group.events)&&group.events.length>=1&&group.events.length<=500,
+      'DELTA_GROUP','一括操作の識別情報または件数が不正です');
+    assert(Object.keys(group).length===6&&Object.keys(group).every(k=>['schema','kind','groupId','projectId','deviceId','events'].includes(k)),
+      'DELTA_GROUP','一括操作に未対応の情報があります');
+    const ids=new Set();
+    for(const event of group.events){
+      validateEvent(event);
+      assert(event.projectId===group.projectId&&event.deviceId===group.deviceId&&!ids.has(event.eventId),
+        'DELTA_GROUP','一括操作に別案件・別端末または重複した変更があります');ids.add(event.eventId);
+      assert(new TextEncoder().encode(pgText(event)).byteLength<=256*1024,'DELTA_TOO_LARGE','一括操作内の変更が大きすぎます');
+    }
+    assert(new TextEncoder().encode(pgText(group)).byteLength<=4*1024*1024,'DELTA_GROUP_TOO_LARGE','一括操作が一度に保存できる容量を超えています');
+    return group;
+  }
+  function validateOutboxEntry(entry){return isGroup(entry)?validateGroup(entry):validateEvent(entry);}
   function removedOrChanged(before,after){
     const b=new Map((before||[]).map(r=>[r.id,r]));
     const now=new Map((after||[]).map(r=>[r.id,r]));
@@ -245,7 +284,12 @@
     function conflictCount(){return state?Object.values(state.records).reduce((n,r)=>n+C.view(r).conflicts.length,0):0;}
     function blockedCount(){return state?.blockedOutbox?.length||0;}
     function status(level,description){emit(onStatus,{scope:clone(scope),snapshotToken,level,message:description,pending:state?.outbox?.length||0,
+      pendingEvents:state?.outbox?.reduce((n,e)=>n+eventsOf(e).length,0)||0,
       blocked:blockedCount(),cursor:state?.cursor||0,conflicts:conflictCount()});}
+    function capabilities(){
+      let confirmed=false;try{confirmed=transport.getCapabilities?.().atomicGroups===true;}catch{}
+      return {atomicGroups:confirmed&&typeof transport.pushGroup==='function'};
+    }
     function visibleConflicts(record){const conflicts=C.view(record).conflicts;
       if(conflicts.length)emit(onConflict,{projectId,recordId:record.id,conflicts:clone(conflicts)});
     }
@@ -261,8 +305,8 @@
       const code=String(error?.code||''),message=String(error?.message||'');
       // Only explicit application-level record/revision validation errors may
       // be isolated. Network, auth, deployment and ambiguous errors stay queued.
-      const semantic=/\bDELTA_(?:MISSING_BASE|UNKNOWN_PARENT|UNKNOWN_OBSERVED|HISTORY_CYCLE|REVISION_REWRITE|DELETION_REWRITE|RECORD_ALREADY_EXISTS|RECORD_GRAPH_INVALID|RECORD_HISTORY_MISSING|COMMENT_ORDER_CHANGED|DUPLICATE_REVISION_ID|REVISION_COLLISION_OR_INVALID|PARENTS_INVALID|PAYLOAD_INVALID)\b/;
-      return semantic.test(code)||((code==='22023'||Number(error?.status)===400)&&semantic.test(message));
+      const semantic=/\bDELTA_(?:MISSING_BASE|UNKNOWN_PARENT|UNKNOWN_OBSERVED|HISTORY_CYCLE|REVISION_REWRITE|DELETION_REWRITE|RECORD_ALREADY_EXISTS|RECORD_GRAPH_INVALID|RECORD_HISTORY_MISSING|COMMENT_ORDER_CHANGED|DUPLICATE_REVISION_ID|REVISION_COLLISION_OR_INVALID|PARENTS_INVALID|PAYLOAD_INVALID|GROUP_INVALID|GROUP_COLLISION|GROUP_REWRITE|GROUP_TOO_LARGE|GROUP_SCOPE|GROUP_EVENT_DUPLICATE|GROUP_ID_COLLISION|GROUP_EVENT_ALREADY_ACCEPTED)\b/;
+      return semantic.test(code)||((['22023','23505','54000'].includes(code)||Number(error?.status)===400)&&semantic.test(message));
     }
     const sameRecord=(a,b)=>a.drawingId===b.drawingId&&a.recordId===b.recordId;
     function retry(error){
@@ -297,10 +341,22 @@
         for(const row of rows)await local(async()=>{
           assert(row&&Number.isSafeInteger(row.seq)&&row.seq===state.cursor+1,
             'DELTA_SEQUENCE_GAP','未受信の変更があります。同期位置は進めません');
-          assert(row.event?.projectId===projectId,'DELTA_FOREIGN','別案件の変更を受信しました');
-          const key=keyOf(row.event.drawingId,row.event.recordId),next=clone(state);
-          put(next.records,key,combine(own(next.records,key)?next.records[key]:null,row.event));next.cursor=row.seq;
-          await persist(next);visibleConflicts(next.records[key]);applied++;
+          const grouped=own(row,'group');let events,end;
+          if(grouped){
+            assert(!own(row,'event'),'DELTA_SERVER','一括操作と単独変更が混在しています');validateGroup(row.group);
+            assert(row.group.projectId===projectId,'DELTA_FOREIGN','別案件の一括操作を受信しました');
+            events=row.group.events;end=row.endSeq;
+            assert(Number.isSafeInteger(end)&&end===row.seq+events.length-1,'DELTA_SEQUENCE_GAP','一括操作の連続した範囲を確認できません');
+          }else{
+            assert(!own(row,'endSeq')&&!own(row,'groupId'),'DELTA_SERVER','一括操作の一部だけを受信しました');
+            assert(row.event?.projectId===projectId,'DELTA_FOREIGN','別案件の変更を受信しました');events=[row.event];end=row.seq;
+          }
+          const next=clone(state),changed=new Set();
+          for(const event of events){const key=keyOf(event.drawingId,event.recordId);
+            put(next.records,key,combine(own(next.records,key)?next.records[key]:null,event));changed.add(key);}
+          // Validate the whole group before this single durable cursor/state
+          // commit. No intermediate tombstone or destination reaches observers.
+          next.cursor=end;await persist(next);for(const key of changed)visibleConflicts(next.records[key]);applied+=events.length;
         });
         if(rows.hasMore===false||(rows.length<pageLimit&&rows.hasMore!==true))return {applied,cursor:await local(()=>state.cursor)};
       }
@@ -312,7 +368,12 @@
         if(!connected())return {offline:true,pushed};
         const event=await local(()=>clone(state.outbox[0]));if(!event)return {pushed};
         let ack;
-        try{ack=await request(signal=>transport.push(clone(event),{signal}));}
+        try{
+          if(isGroup(event)){
+            assert(capabilities().atomicGroups,'DELTA_UPGRADE_REQUIRED','一括同期の接続を再確認してください。操作全体を端末に保持しています');
+            ack=await request(signal=>transport.pushGroup(clone(event),{signal}));
+          }else ack=await request(signal=>transport.push(clone(event),{signal}));
+        }
         catch(error){
           if(!permanentRecordReject(error))throw error;
           // A rejected create/update cannot be sent again as a later same-
@@ -321,11 +382,13 @@
           await local(async()=>{
             const next=clone(state);
             assert(C.equal(next.outbox[0],event),'DELTA_LOCAL_STATE','送信待ちの記録が変更されています');
-            const remaining=[];
+            const remaining=[],blockedRecords=new Set(eventsOf(event).map(e=>keyOf(e.drawingId,e.recordId)));
             next.blockedOutbox=next.blockedOutbox||[];
-            for(const queued of next.outbox){
-              if(sameRecord(queued,event)){
-                const root=queued.eventId===event.eventId;
+            for(const [index,queued]of next.outbox.entries()){
+              const members=eventsOf(queued);
+              if(members.some(e=>blockedRecords.has(keyOf(e.drawingId,e.recordId)))){
+                for(const e of members)blockedRecords.add(keyOf(e.drawingId,e.recordId));
+                const root=index===0;
                 next.blockedOutbox.push({event:queued,reason:{
                   code:root?String(error.code||'DELTA_REJECTED'):'DELTA_DEPENDENT_BLOCKED',
                   message:root?'この記録の変更内容をサーバーが受け付けませんでした': '前の変更を確認するまで送信できません'
@@ -338,12 +401,18 @@
           status('review','受け付けられない記録を確認待ちに保護し、ほかの記録の同期を続けます');
           continue;
         }
-        assert(ack&&Number.isSafeInteger(ack.seq)&&ack.seq>=1&&identityKeys.every(k=>ack[k]===event[k]),
+        if(isGroup(event)){
+          assert(ack&&ack.schema===1&&['groupId','projectId','deviceId'].every(k=>ack[k]===event[k])&&typeof ack.duplicate==='boolean'&&
+            Number.isSafeInteger(ack.startSeq)&&ack.startSeq>=1&&Number.isSafeInteger(ack.endSeq)&&ack.endSeq===ack.startSeq+event.events.length-1&&
+            Array.isArray(ack.events)&&ack.events.length===event.events.length&&ack.events.every((entry,index)=>
+              entry?.seq===ack.startSeq+index&&identityKeys.every(k=>entry[k]===event.events[index][k])),
+            'DELTA_NOT_DURABLE','一括操作全体のサーバー保存を確認できません');
+        }else assert(ack&&Number.isSafeInteger(ack.seq)&&ack.seq>=1&&identityKeys.every(k=>ack[k]===event[k]),
           'DELTA_NOT_DURABLE','この変更のサーバー保存を確認できません');
         await local(async()=>{
           const next=clone(state);
           assert(C.equal(next.outbox[0],event),'DELTA_LOCAL_STATE','未送信の記録が変更されました');
-          next.outbox.shift();await persist(next);pushed++;
+          next.outbox.shift();await persist(next);pushed+=eventsOf(event).length;
         });
       }
     }
@@ -385,9 +454,9 @@
     }
     function stageChange(next,{drawingId,before,after,eventId}){
       assert(valid(drawingId)&&valid(after?.id)&&valid(eventId),'DELTA_RECORD','図面・記録・変更IDを確認できません');
-      const pending=next.outbox.find(e=>e.eventId===eventId)||
-        (next.blockedOutbox||[]).find(b=>b.event.eventId===eventId)?.event;
+      const pending=[...next.outbox,...(next.blockedOutbox||[]).map(b=>b.event)].find(entry=>eventsOf(entry).some(e=>e.eventId===eventId));
       if(pending){
+        assert(!isGroup(pending),'DELTA_GROUP_MEMBER','一括操作の一部だけを個別に保存できません');
         const repeated=diffRecord(before,after,{eventId,projectId,drawingId,deviceId});
         assert(C.equal(repeated,pending),'DELTA_COLLISION','同じ変更IDに異なる内容があります');
         return {eventId,duplicate:true};
@@ -398,7 +467,7 @@
       const event=diffRecord(current,after,{eventId,projectId,drawingId,deviceId});
       if(!event)return {unchanged:true};
       put(next.records,key,C.upgrade(after));
-      const blocked=(next.blockedOutbox||[]).some(b=>sameRecord(b.event,event));
+      const blocked=(next.blockedOutbox||[]).some(b=>eventsOf(b.event).some(e=>sameRecord(e,event)));
       if(blocked)next.blockedOutbox.push({event,reason:{code:'DELTA_DEPENDENT_BLOCKED',
         message:'同じ記録の前の変更を確認するまで送信できません'}});
       else next.outbox.push(event);
@@ -422,6 +491,41 @@
           pending:state.outbox.length,blocked:blockedCount(),snapshotToken};
       });
     }
+    function capturedChanges(changes){
+      assert(Array.isArray(changes)&&changes.length>0&&changes.length<=500,'DELTA_BATCH','まとめて保存する記録の件数が不正です');
+      for(const change of changes)assert(object(change),'DELTA_BATCH','まとめて保存する記録の形式が不正です');
+      return changes.map(captureChange);
+    }
+    function commitGroup(changes,groupId,expectedSnapshotToken){
+      assert(valid(groupId),'DELTA_GROUP','一括操作の識別情報が必要です');
+      return local(async()=>{
+        assert(capabilities().atomicGroups,'DELTA_UPGRADE_REQUIRED','一括同期の接続を確認してから保存してください。入力は保持しています');
+        if(expectedSnapshotToken!==undefined)assert(expectedSnapshotToken===snapshotToken,'DELTA_STALE','確認後に記録が変更されています。入力を保持して再確認してください');
+        const prior=[...state.outbox,...(state.blockedOutbox||[]).map(b=>b.event)].find(e=>isGroup(e)&&e.groupId===groupId);
+        if(prior){
+          const events=changes.map(({drawingId,before,after,eventId})=>diffRecord(before,after,{drawingId,eventId,projectId,deviceId})).filter(Boolean);
+          const repeated=validateGroup({schema:1,kind:'atomic-group',groupId,projectId,deviceId,events});
+          assert(C.equal(repeated,prior),'DELTA_GROUP_COLLISION','同じ一括操作IDに異なる内容があります');wake();
+          return {groupId,grouped:true,duplicate:true,results:events.map(e=>({eventId:e.eventId,duplicate:true})),
+            pending:state.outbox.length,blocked:blockedCount(),snapshotToken};
+        }
+        const next=clone(state),queued=next.outbox.length,blockedBefore=next.blockedOutbox?.length||0;
+        const results=changes.map(change=>stageChange(next,change));
+        assert(!results.some(r=>r.duplicate),'DELTA_GROUP_COLLISION','既に別の操作に属する変更を一括操作へ移すことはできません');
+        const added=[...next.outbox.slice(queued),...(next.blockedOutbox||[]).slice(blockedBefore).map(b=>b.event)];
+        const events=results.filter(r=>r.changed).map(r=>added.find(e=>e.eventId===r.eventId));
+        if(!events.length)return {groupId,grouped:true,unchanged:true,results:results.map(()=>({unchanged:true})),
+          pending:state.outbox.length,blocked:blockedCount(),snapshotToken};
+        const group=validateGroup({schema:1,kind:'atomic-group',groupId,projectId,deviceId,events}),blocked=results.some(r=>r.blocked);
+        next.outbox=next.outbox.slice(0,queued);
+        if(next.blockedOutbox)next.blockedOutbox=next.blockedOutbox.slice(0,blockedBefore);
+        if(blocked){next.blockedOutbox=next.blockedOutbox||[];next.blockedOutbox.push({event:group,reason:{code:'DELTA_DEPENDENT_BLOCKED',
+          message:'一括操作に含まれる前の変更を確認するまで、操作全体を送信できません'}});}
+        else next.outbox.push(group);
+        await persist(next);status(blocked?'review':'queued',blocked?'一括操作全体を端末に保護しました':'一括操作全体を端末に保存しました');if(!blocked)wake();
+        return {groupId,grouped:true,results:results.map(({changed,blocked,...result})=>result),pending:state.outbox.length,blocked:blockedCount(),snapshotToken};
+      });
+    }
     return {
       async start(){
         await local(()=>{
@@ -439,11 +543,10 @@
         return {...result.results[0],pending:result.pending,...(result.results[0].unchanged?{}:{blocked:result.blocked})};
       },
       async changeBatch({changes,expectedSnapshotToken}={}){
-        assert(Array.isArray(changes)&&changes.length>0&&changes.length<=500,
-          'DELTA_BATCH','まとめて保存する記録の件数が不正です');
-        for(const change of changes)assert(object(change),'DELTA_BATCH','まとめて保存する記録の形式が不正です');
-        return commitChanges(changes.map(captureChange),expectedSnapshotToken);
+        return commitChanges(capturedChanges(changes),expectedSnapshotToken);
       },
+      async changeGroup({changes,groupId,expectedSnapshotToken}={}){return commitGroup(capturedChanges(changes),groupId,expectedSnapshotToken);},
+      getCapabilities:capabilities,
       sync,
       onOnline(){clear(retryTimer);retryTimer=null;wake();},
       onVisible(){if(visible())wake();},
@@ -456,7 +559,7 @@
       }
     };
   }
-  const api={version:2,diffRecord,combine,createReplica,keyOf,validateEvent,validateState};
+  const api={version:2,diffRecord,combine,createReplica,keyOf,validateEvent,validateGroup,validateOutboxEntry,eventsOf,validateState};
   if(typeof module==='object'&&module.exports)module.exports=api;
   else root.SentlogDeltaSyncCore=api;
 })(typeof window!=='undefined'?window:globalThis);

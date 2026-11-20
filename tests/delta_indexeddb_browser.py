@@ -387,6 +387,15 @@ def main():
                 print(f'PASS {args.browser} bootstrap: {name}', flush=True)
             report['cases'].extend('bootstrap: ' + name for name in bootstrap_names)
 
+            group_names = page.evaluate('async engine => await runDeltaGroupCases({engine})', args.browser)
+            for name in group_names:
+                print(f'PASS {args.browser} group: {name}', flush=True)
+            report['cases'].extend('group: ' + name for name in group_names)
+            guard_names = page.evaluate('async () => await runRecordFileGuardCases()')
+            for name in guard_names:
+                print(f'PASS {args.browser} guarded file: {name}', flush=True)
+            report['cases'].extend('guarded file: ' + name for name in guard_names)
+
             second = context.new_page()
             second.goto(url)
             setup = """async()=>{

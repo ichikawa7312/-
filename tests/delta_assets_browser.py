@@ -142,6 +142,36 @@ def main():
                                 onPass: name => {cases.push(name);console.log('PASS '+name);},
                                 onStage: name => console.log('STAGE '+name)
                             });
+                            await runDeltaAssetRuntimeCases({
+                                A: SentlogDeltaAssets, T: SentlogDeltaAssetTransport,
+                                R: SentlogDeltaAssetRuntime, D: SentlogDeltaSyncCore,
+                                C: SentlogRecordCollaboration, indexedDB, IDBObjectStore,
+                                suffix: engine,
+                                actualFiles: async () => {
+                                    const records=SentlogRecords;await records.init();
+                                    // This disposable fixture loads no legacy workers.
+                                    // This assertion is not a production writer fence.
+                                    return {
+                                        assertExclusive:()=>records.uncommittedFiles().length===0,
+                                        getCapabilities:()=>records.getFileWriteCapabilities(),
+                                        write:(...args)=>records.writeFile(...args),
+                                        withLock:async(key,fn)=>fn(),
+                                        async read(key){
+                                            const db=await new Promise((resolve,reject)=>{
+                                                const q=indexedDB.open('surveyFieldNoteDB',1);
+                                                q.onsuccess=()=>resolve(q.result);q.onerror=()=>reject(q.error);
+                                            });
+                                            try{return await new Promise((resolve,reject)=>{
+                                                const tx=db.transaction('files','readonly'),q=tx.objectStore('files').get(key);let value;
+                                                q.onsuccess=()=>{value=q.result;};
+                                                tx.oncomplete=()=>resolve(value);tx.onabort=()=>reject(tx.error);
+                                            });}finally{db.close();}
+                                        }
+                                    };
+                                },
+                                onStart: name => {currentCase='runtime: '+name;console.log('RUN '+currentCase);},
+                                onPass: name => {currentCase='runtime: '+name;cases.push(currentCase);console.log('PASS '+currentCase);}
+                            });
                             return {cases, success:true};
                         } catch(error) {
                             return {cases, success:false, failed_case:currentCase,

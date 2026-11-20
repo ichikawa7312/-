@@ -1,6 +1,6 @@
 /* Test-only offline boot. Its /tests/ scope never controls /sentlog/. */
 'use strict';
-const CACHE='sentlog-delta-indexeddb-fixture-v3';
+const CACHE='sentlog-delta-indexeddb-fixture-v4';
 const FILES=[
   './delta_indexeddb_fixture.html',
   '../sentlog/record-collaboration.js',
@@ -11,6 +11,9 @@ const FILES=[
   '../sentlog/delta-sync-reconcile.js',
   '../sentlog/delta-sync-bootstrap.js',
   '../sentlog/delta-sync-app-bridge.js',
+  '../sentlog/record-store.js',
+  './delta_group_cases.js',
+  './record_file_guard_cases.js',
   './delta_migration_cases.js',
   './delta_seed_cases.js',
   './delta_reconcile_cases.js',

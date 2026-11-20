@@ -188,6 +188,41 @@
       review(p,'RECONCILE_ATOMIC_GROUP_REQUIRED');equal(p.state.outbox.length,2);
       assert(C.isDeleted(p.state.records[D.keyOf('d1',base.id)]));assert(p.state.records[D.keyOf('d2',target.id)]);equal(p.preservedLocal.rawEntries,f.snapshot.rawEntries);
     });
+    await test('a confirmed atomic transport reconciles a pending move into one deterministic durable group',async()=>{
+      const base=record(),deleted=C.markDeleted(base,{revisionId:'group-move-delete',expectedToken:C.revisionToken(base),at:1});
+      const target=C.upgrade({id:'moved-record',kind:'point',x:1,y:2,memo:'移動先',photos:[],transferOrigin:{drawingId:'d1',recordId:base.id,operation:'move'}});
+      const f=await fixture({server:[drawing('d1',[base]),drawing('d2')],local:[drawing('d1',[],[deleted]),drawing('d2',[target])]});
+      const groupTransport={getCapabilities:()=>({atomicGroups:true}),pushGroup:async()=>{throw Error('planning cannot send');}},p=await f.plan({groupTransport});
+      assert(p.readyForInstall);equal(p.state.outbox.length,1);equal(p.state.outbox[0].kind,'atomic-group');equal(p.state.outbox[0].events.length,2);
+      equal(p.summary.pending,1);equal(p.summary.pendingEvents,2);D.validateGroup(p.state.outbox[0]);assert(await API.verifyPlan(p,{scope}));
+      equal((await f.plan({groupTransport})).state.outbox,p.state.outbox);equal(p.preservedLocal.rawEntries,f.snapshot.rawEntries);
+      assert(C.isDeleted(p.state.records[D.keyOf('d1',base.id)]));assert(p.state.records[D.keyOf('d2',target.id)]);
+    });
+    await test('transport capability is rechecked after group hashing and never inferred from a caller boolean',async()=>{
+      const base=record(),deleted=C.markDeleted(base,{revisionId:'capability-delete',expectedToken:C.revisionToken(base),at:1});
+      const target=C.upgrade({id:'moved-record',memo:'移動先',photos:[],transferOrigin:{drawingId:'d1',recordId:base.id,operation:'move'}});
+      const f=await fixture({server:[drawing('d1',[base]),drawing('d2')],local:[drawing('d1',[],[deleted]),drawing('d2',[target])]});
+      review(await f.plan({atomicGroups:true}),'RECONCILE_ATOMIC_GROUP_REQUIRED');
+      review(await f.plan({groupTransport:{getCapabilities:()=>({atomicGroups:true})}}),'RECONCILE_ATOMIC_GROUP_REQUIRED');
+      let checks=0;const p=await f.plan({groupTransport:{pushGroup:async()=>{},getCapabilities:()=>({atomicGroups:++checks===1})}});
+      review(p,'RECONCILE_ATOMIC_GROUP_REQUIRED');equal(p.state.outbox.length,2);equal(p.preservedLocal.rawEntries,f.snapshot.rawEntries);
+    });
+    await test('atomic grouping never approves a destination-only move or a missing source tombstone',async()=>{
+      const base=record(),target=C.upgrade({id:'moved-record',memo:'入力を保持',photos:[],transferOrigin:{drawingId:'d1',recordId:base.id,operation:'move'}});
+      const groupTransport={getCapabilities:()=>({atomicGroups:true}),pushGroup:async()=>{}};
+      const f=await fixture({server:[drawing('d1',[base]),drawing('d2')],local:[drawing('d1',[base]),drawing('d2',[target])]});
+      const p=await f.plan({groupTransport});review(p,'RECONCILE_MOVE_INCOMPLETE');equal(p.state.outbox[0].kind,'atomic-group');equal(p.state.outbox[0].events.length,1);
+      assert(!C.isDeleted(p.state.records[D.keyOf('d1',base.id)]));assert(p.state.records[D.keyOf('d2',target.id)]);
+      const g=await fixture({server:[drawing('d1',[base]),drawing('d2')],local:[drawing('d1'),drawing('d2',[base])]});
+      review(await g.plan({groupTransport}),'RECONCILE_MOVE_INCOMPLETE');
+    });
+    await test('an already deleted baseline source permits completing the pending destination without synthesizing another delete',async()=>{
+      const base=record(),deleted=C.markDeleted(base,{revisionId:'already-deleted',expectedToken:C.revisionToken(base),at:1});
+      const target=C.upgrade({id:'moved-record',memo:'移動先',photos:[],transferOrigin:{drawingId:'d1',recordId:base.id,operation:'move'}});
+      const f=await fixture({server:[drawing('d1',[],[deleted]),drawing('d2')],local:[drawing('d1',[],[deleted]),drawing('d2',[target])]});
+      const p=await f.plan({groupTransport:{getCapabilities:()=>({atomicGroups:true}),pushGroup:async()=>{}}});
+      assert(p.readyForInstall);equal(p.state.outbox.length,1);equal(p.state.outbox[0].events.length,1);equal(p.state.outbox[0].events[0].kind,'create');
+    });
     await test('a destination-only move marker and an unlinked create plus delete both require atomic grouping review',async()=>{
       const marker=C.upgrade({id:'moved-record',memo:'移動先',photos:[],transferOrigin:{drawingId:'other',recordId:'source',operation:'move'}});
       const f=await fixture({local:[drawing('d1',[record(),marker]),drawing('d2')]});review(await f.plan(),'RECONCILE_ATOMIC_GROUP_REQUIRED');

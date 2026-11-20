@@ -31,9 +31,11 @@ await transport.ready();
 
 | メソッド | 処理 |
 | --- | --- |
-| `ready({signal}?)` | 現在のセッションを取得し、Auth の利用者 ID を確認する |
+| `ready({signal}?)` | Auth の利用者 ID と、案件・端末に対するサーバーの atomic group 対応を確認する |
+| `getCapabilities()` | `ready()` で確認済みの機能を返す。未確認・logout・scope 変更・close は `atomicGroups:false` |
 | `push(event,{signal}?)` | append RPC。保存応答の案件・端末・イベント・図面・記録・seq を検証する |
-| `list(projectId,after,limit,{signal}?)` | list RPC。連続する seq と scope を確認して配列を返す |
+| `pushGroup(group,{signal}?)` | group 全体を一つの RPC で保存し、範囲と全 member の ordered ACK を検証する |
+| `list(projectId,after,limit,{signal}?)` | groups list RPC。solo と group を混在で受け、連続する seq と scope を検証する |
 | `subscribe(projectId,callback)` | 通知と接続復帰で差分取得を促す。購読解除関数を返す |
 | `prepareBaseline(revision,{signal}?)` | 指定したサーバー版の baseline を準備する |
 | `importBaselineBatch(id,limit=100,{signal}?)` | baseline の取り込みを進める |
@@ -42,7 +44,11 @@ await transport.ready();
 | `wake()` | 現在の認証状態で再接続を進める |
 | `close()` | 通信・購読・待機処理を終了する。繰り返し呼べる |
 
-list の配列には、列挙対象外の `hasMore` と `headSeq` が付く。1 ページは件数と約 900 KB の両方で制限するため、`rows.length < limit` でも `rows.hasMore === true` なら次ページを取得する。baseline のページは RPC の `{receipt,records|metadata,nextOrdinal,hasMore}` を保持する。transport は scope・形式・順序を検査し、exact JSON の SHA-256 と全 manifest の照合は `delta-sync-reconcile.js` が行う。
+list の配列には、列挙対象外の `hasMore` と `headSeq` が付く。`limit` は solo または group の unit 数。通常は約 900 KB でページを区切るが、先頭の大きい group は最大 4 MiB の envelope を一組のまま返す。`rows.length < limit` でも `rows.hasMore === true` なら次ページを取得する。baseline のページは RPC の `{receipt,records|metadata,nextOrdinal,hasMore}` を保持する。transport は scope・形式・順序を検査し、exact JSON の SHA-256 と全 manifest の照合は `delta-sync-reconcile.js` が行う。
+
+group は `{schema:1,kind:'atomic-group',groupId,projectId,deviceId,events:[soloEvent...]}` の 6 キーを持つ。1～500 events、PostgreSQL の JSONB text を UTF-8 にした長さで 4 MiB 以下、各 event は同じ表現で 256 KiB 以下。JavaScript の compact JSON だけでは区切りの空白や指数数値の展開を数え落とすため、コアの `validateGroup` が PostgreSQL 相当の長さを確認する。
+
+取得 row は従来の `{seq,event}` または `{seq:startSeq,endSeq,group}`。group 内部の cursor は受け付けず、グループをページ間で分割しない。受信コアは全 member と cursor=`endSeq` を一つの端末保存 transaction で確定する。
 
 ## 認証と終了処理
 
@@ -51,6 +57,7 @@ list の配列には、列挙対象外の `hasMore` と `headSeq` が付く。1 
 - logout や token 変更は進行中の RPC と利用者確認を中止する。provider が AbortSignal を無視しても呼び出し元は解放し、遅れて返った結果は採用しない。
 - `close()`、外部 AbortSignal、通信 timeout は未送信内容を削除しない。再送時の重複排除は同じイベント ID と append RPC に任せる。
 - REST の認証通知を渡さない場合も `session()` を操作前後に確認する。アプリは logout / 案件切替時に旧 transport を `close()` し、token 更新やオンライン復帰時に `wake()` する。
+- 確認済みの atomic capability は一時的な通信断や同じ利用者の token 更新でも保持する。サーバーから明示的な権限拒否・未対応の応答を受けた場合は無効化する。送信の認可は各 RPC が改めて確認する。
 
 既存アプリの `refreshSession()` 自体にも、開始時と保存時の認証世代の一致を確認する処理が必要。transport は遅れた同期結果を拒否できるが、外部の refresh 実装が logout 後に古いセッションを書き戻すことまでは取り消せない。この provider の導入だけで既存認証処理が置き換わるわけではない。
 
@@ -62,6 +69,14 @@ REST は HTTPS の origin と公開 API キーだけを受け付ける。アク�
 
 RPC は、現在の利用者が所有する active 案件、有効な登録端末、差分同期を有効化した head を、共有行ロック下で確認する。保管・端末停止・append の途中で確認対象がすり替わらない。cursor が head を越える、履歴が欠ける、seq が飛ぶ場合はエラーにする。JSON の `bigint` は JavaScript の安全な整数範囲に限定する。
 
+その後に `docs/sentlog-delta-atomic-groups-prototype.sql` を適用する。追加する RPC は `sentlog_delta_append_group_v1`、`sentlog_delta_list_groups_v1`、`sentlog_delta_capabilities_v1`。append は案件 head のロックを保持し、全 member に既存の semantic validation と append を実行して、一つの transaction で確定する。途中で失敗した場合は記録状態・event・head・通知・group receipt をすべて rollback する。同じ group ID の retry は envelope 全体の JSONB 一致を必要とする。既に solo として受理された event を、新しい group に後から組み込むことはできない。
+
+旧 `sentlog_delta_list_v1` は、未受信の group がある場合に `DELTA_UPGRADE_REQUIRED` で停止する。古い未送信の solo event は従来の append RPC で送信できる。group SQL は head を有効化せず、旧 snapshot RPC や案件メタデータの保存契約を変更しない。
+
+実 archive protocol がある環境では、activation 前に `docs/sentlog-delta-archive-compat-prototype.sql` も必要。保管確認中の新しい event INSERT を拒否し、append/group の transaction 全体を rollback する。append が保持する project の共有行ロックをそのまま使い、archive の project 更新ロックへ昇格しない。管理者の逆順直接操作は `NOWAIT` で待機循環を避ける。保管確認中の head 有効化も拒否する。archive jobs table の欠落を「保管確認なし」と解釈せず、migration・実行時とも明示エラーにする。
+
+現在は delta head まで追い付いた archive snapshot の証跡がないため、enabled delta 案件では旧 snapshot ベースの archive 開始・完了を `DELTA_ARCHIVE_PROJECTION_REQUIRED` で拒否する。既存の確認を取り消す操作は可能で、取消後は差分の新規保存を再開できる。新しい書込みを伴わない既存 event/group の重複 ACK は従来の受理結果を返し得る。未切替案件の metadata 保存・電話端末確認・PC receipt・保管・再開は従来の gateway を維持する。これは新方式での PC 保管の完成を示すものではない。
+
 Realtime は `sentlog-delta:<owner UUID>` の private topic と `delta` event を使い、通知は `{project_id,seq}` のみ。利用者本人の broadcast 受信だけを許可し、delta topic へのクライアント送信を拒否する restrictive RLS を追加する。既存の広い permissive policy があっても、別利用者や匿名の delta 受信・送信を許可しない。他の topic の policy は維持する。
 
 通知のチャンネルは利用者単位であり、案件・登録端末の現状確認は記録データを取得する RPC が毎回行う。通知から記録を適用したり、seq を保存済み cursor として扱ったりしない。通知が落ちても、再接続・通常の polling が RPC で追いつく。
@@ -72,13 +87,18 @@ Realtime は `sentlog-delta:<owner UUID>` の private topic と `delta` event �
 node tests/delta_transport.test.cjs
 node tests/collaboration_channel.test.cjs
 node tests/delta_transport_pglite.cjs
+node tests/delta_groups_pglite.cjs
+node tests/delta_group_contract.cjs
+node tests/delta_archive_pglite.cjs
 ```
 
-最後の検証には `@electric-sql/pglite` が必要。runner は URL・資格情報を受け取らず、プロセス内 DB に synthetic fixture と SQL を順番に適用する。既存の直接 SELECT を検証する schema テストは、この補足 SQL の適用前に実行する。
+DB の検証には `@electric-sql/pglite` が必要。runner は URL・資格情報を受け取らず、プロセス内 DB に synthetic fixture と SQL を順番に適用する。既存の直接 SELECT を検証する schema テストは transport SQL の適用前に実行する。
 
-ローカル検証結果: transport の Node 契約テスト 23 シナリオ、既存通知と delta 通知の回帰、隔離 DB の 40 assertions が通過。scope・認証確認、late reply、外部中断・timeout・close、refresh 合流、SDK callback 再入回避、複数案件の購読終了、byte 制限ページ、保管案件・停止端末の拒否、広い旧 RLS と組み合わせた通知制限を含む。
+ローカル検証結果: transport の Node 契約テスト 31 シナリオ、既存通知と delta 通知の回帰、transport SQL 40 assertions、group SQL 40 assertions が通過。さらに core・transport・実 PostgreSQL JSONB/RPC を組み合わせた 5 シナリオで、4 MiB と 256 KiB のちょうど／1 byte 超、日本語・絵文字・escape・指数数値、完全な group ページ、旧 solo との混在を検証した。
 
-実 Supabase への適用、実 Realtime サービスとの接続、実端末・実案件の切替は未実施。SQL fixture は Realtime の権限確認を模しており、稼働サービスの接続結果を示すものではない。
+archive 検証は `db/archive_v1.sql` の実 gateway を読み込み、21 assertions と archive 依存欠落時の migration 拒否を確認した。`tests/delta_archive_races.sh` は別 PostgreSQL session の lock 待機と双方の commit 順、同 group の並列再送を検証する CI 用スクリプトであり、PGlite の同時実行で代用しない。適用順は、他の SQL 検証の後に `delta_archive_fixture.sql` → `db/archive_v1.sql` → `delta_archive_setup.sql` → archive-compat SQL → `delta_archive_assertions.sql` → race script。ローカルでは shell 構文検証までで、別 session の実行結果は CI で確認する。
+
+この transport 検証では実 Supabase への適用、実 Realtime 接続、HTTP gateway 経由の 4 MiB 送受信、実端末・実案件の切替を扱っていない。SQL fixture は Realtime の権限確認を模しており、稼働サービスの接続結果を示すものではない。
 
 ## 参照した公式契約
 

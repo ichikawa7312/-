@@ -30,12 +30,14 @@ function seeded(snapshot){
   const records={};for(const d of snapshot.drawings)for(const r of [...d.state.shapes,...(d.state.collabDeletedRecords||[])])records[D.keyOf(d.meta.id,r.id)]=C.upgrade(r);
   return {version:2,scope:copy(scope),cursor:0,records,outbox:[]};
 }
-function environment(snapshot=initial(),mutate=()=>{}){
+function environment(snapshot=initial(),mutate=()=>{},capability={atomicGroups:false}){
   let durable=seeded(snapshot),writes=0,attempts=0,fail=0,hook=null,currentScope=copy(scope);mutate(durable);
   const store={read:async()=>copy(durable),write:async next=>{attempts++;if(hook)await hook(next);if(fail){fail--;throw Error('端末の保存容量不足');}durable=copy(next);writes++;}};
-  const replica=D.createReplica({...scope,store,transport:{online:()=>false,push:async()=>{throw Error('network must not be used');},list:async()=>[]}});
+  const transport={online:()=>false,push:async()=>{throw Error('network must not be used');},pushGroup:async()=>{throw Error('network must not be used');},
+    list:async()=>[],getCapabilities:()=>({atomicGroups:capability.atomicGroups===true})};
+  const replica=D.createReplica({...scope,store,transport});
   const bridge=B.createBridge({replica,scope,localProjectId,currentScope:()=>currentScope});
-  return {replica,bridge,get writes(){return writes;},get attempts(){return attempts;},current:()=>copy(durable),
+  return {replica,bridge,transport,get writes(){return writes;},get attempts(){return attempts;},current:()=>copy(durable),
     failOnce(){fail++;},onWrite(fn){hook=fn;},changeScope(value){currentScope=value;},close(){bridge.close();replica.close();}};
 }
 async function actualApp(snapshot=initial()){
@@ -76,7 +78,19 @@ function actualSharedSnapshot(snapshot){
   const comparison=JSON.parse(ctx.snapshotText(G.normalizeSnapshotPayload(payload)));
   return {payload,comparison};
 }
-async function reconcileActualSnapshots(before,after){
+function actualRenumber(snapshot){
+  const part08=fs.readFileSync(path.join(__dirname,'../sentlog/part08.txt'),'utf8'),part09=fs.readFileSync(path.join(__dirname,'../sentlog/part09.txt'),'utf8');
+  const memos=fs.readFileSync(path.join(__dirname,'../sentlog/drawing-memos.js'),'utf8');
+  const labelStart=part08.includes('function formatTypeNo(')?part08.indexOf('function formatTypeNo('):part08.indexOf('function circledNo(');
+  const code=part08.slice(labelStart,part08.indexOf('function formatGlobalNo('))+
+    part09.slice(part09.indexOf('function rebuildNumberingState(){'),part09.indexOf('function shapeAnchorPoint(s){'))+
+    memos.slice(memos.indexOf('function isDimension(s){'),memos.indexOf('function memoType(s){'))+
+    memos.slice(memos.indexOf('function withoutMemos('),memos.indexOf('const originalSelect='));
+  const ctx={state:null,updateActiveMeta:()=>{}};vm.createContext(ctx);vm.runInContext(code,ctx,{filename:'actual-numbering-and-memo-filters.js'});
+  for(const drawing of snapshot.drawings){ctx.state=drawing.state;ctx.rebuildNumberingState();}
+  return snapshot;
+}
+async function reconcileActualSnapshots(before,after,groupTransport){
   const payload=actualSharedSnapshot(before).payload,records=[],metadata=[],hash=text=>createHash('sha256').update(text).digest('hex');
   for(const d of payload.drawings)for(const record of [...d.state.shapes,...(d.state.collabDeletedRecords||[])]){
     const row={ordinal:records.length+1,drawingId:d.meta.id,recordId:record.id,recordJson:json(record),sha256:hash(json(record))};
@@ -97,7 +111,7 @@ async function reconcileActualSnapshots(before,after){
     rawEntries,issues:[],fingerprint:hash(json(rawEntries)),readyForStaging:true};
   const baseline=await R.readBaseline({receipt,scope,readPage:async()=>({receipt,records,nextOrdinal:records.length,hasMore:false}),
     readMetadataPage:async()=>({receipt,metadata,nextOrdinal:metadata.length,hasMore:false})});
-  return R.plan({scope,baseline,localSnapshot});
+  return R.plan({scope,baseline,localSnapshot,groupTransport});
 }
 async function draft(env,before,after,prefix='edit',operation='edit'){return env.bridge.prepare({before,after,operation,...options(prefix)});}
 const issues=plan=>plan.issues.map(i=>i.code);
@@ -132,6 +146,47 @@ await test('the actual exported batch captures a move intact and blocks it until
   assert(migrationPlan.reviewItems.some(x=>x.code==='RECONCILE_ATOMIC_GROUP_REQUIRED'&&x.blocking));
   assert.equal(migrationPlan.state.outbox.length,2,'pending legacy move stays inspectable without authorization to install or send');env.close();
 });
+await test('actual transfer plus numbering and record-store batch commits a complete move through confirmed atomic groups',async()=>{
+  const f=await actualApp(actualRenumber(initial())),before=f.capture(),env=environment(before,()=>{},{atomicGroups:true}),origin=row(before);
+  const moved=T.makeTransferPlan(before.drawings[0].state,before.drawings[1].state,['record-1'],{...options('confirmed-transfer'),collaborative:true,
+    operation:'move',sourceDrawingId:'drawing-1',targetDrawingId:'drawing-2',targetPage:2,sx:2,sy:3,
+    idFactory:()=> 'moved-record',photoIdFactory:()=> 'moved-photo',revisionIdFactory:options('confirmed-revision').idFactory});
+  const pending=copy(before);pending.drawings[0].state=moved.sourceState;pending.drawings[1].state=moved.targetState;actualRenumber(pending);
+  f.records.batch([[DRAW+'drawing-1',json(pending.drawings[0].state)],[DRAW+'drawing-2',json(pending.drawings[1].state)],[WS,json({projects:[pending.project]})]]);
+  const after=f.capture();await f.records.settled();
+  const p=await env.bridge.prepare({before,after,operation:'move',groupId:'actual-move-group',...options('confirmed-events')});
+  assert.equal(p.ready,true,json(p.issues));assert.equal(p.atomicGroupRequired,true);assert.deepEqual(p.metadataChanges,[]);
+  const receipt=await env.bridge.commit(p),saved=env.current();assert.equal(env.writes,1);assert.equal(saved.outbox.length,1);
+  assert.equal(saved.outbox[0].kind,'atomic-group');assert.equal(saved.outbox[0].groupId,'actual-move-group');assert.equal(saved.outbox[0].events.length,2);D.validateGroup(saved.outbox[0]);
+  assert(C.isDeleted(row(receipt.projection)));assert.deepEqual(row(receipt.projection,'moved-record').collab.comments,origin.collab.comments);
+  assert.equal(row(receipt.projection,'moved-record').photos[0].transferSource.photoId,'photo-1');
+  assert.equal(receipt.projection.drawings[0].state.nextGlobalNo,1);assert.deepEqual(receipt.projection.drawings[0].state.typeCounters,{});
+  assert.equal(receipt.projection.drawings[1].state.nextGlobalNo,2);assert.deepEqual(receipt.projection.drawings[1].state.typeCounters,{腐食:1});
+  const migration=await reconcileActualSnapshots(before,after,env.transport),again=await reconcileActualSnapshots(before,after,env.transport);
+  assert.equal(migration.readyForInstall,true,json(migration.reviewItems));assert.equal(migration.state.outbox.length,1);
+  assert.equal(migration.state.outbox[0].kind,'atomic-group');assert.equal(migration.state.outbox[0].events.length,2);
+  assert.deepEqual(migration.state.outbox,again.state.outbox);assert(await R.verifyPlan(migration,{scope}));
+  assert.equal(migration.summary.pendingEvents,2);env.close();
+});
+await test('confirmed group transport cannot approve a partially captured move or escape a later capability revocation',async()=>{
+  for(const half of ['source','target']){
+    const before=initial(),after=copy(before),env=environment(before,()=>{},{atomicGroups:true}),source=row(before);
+    if(half==='source'){
+      after.drawings[0].state.shapes=after.drawings[0].state.shapes.filter(r=>r.id!==source.id);
+      after.drawings[0].state.collabDeletedRecords.push(C.markDeleted(source,{...options('partial-delete'),expectedToken:C.revisionToken(source)}));
+    }else after.drawings[1].state.shapes.push(C.upgrade({id:'partial-target',memo:'入力を保持',photos:[],
+      transferOrigin:{drawingId:'drawing-1',recordId:source.id,operation:'move'}}));
+    const p=await draft(env,before,after,'partial-events','move');assert.equal(p.ready,false);assert(issues(p).includes('BRIDGE_MOVE_INCOMPLETE'));
+    await assert.rejects(()=>env.bridge.commit(p),e=>e.code==='BRIDGE_REVIEW');assert.equal(env.writes,0);env.close();
+  }
+  const before=initial(),after=copy(before),flag={atomicGroups:true},env=environment(before,()=>{},flag);
+  const moved=T.makeTransferPlan(before.drawings[0].state,before.drawings[1].state,['record-1'],{...options('revoke'),collaborative:true,
+    operation:'move',sourceDrawingId:'drawing-1',targetDrawingId:'drawing-2',idFactory:()=> 'revoke-target',photoIdFactory:()=> 'revoke-photo',revisionIdFactory:options('revoke-revision').idFactory});
+  after.drawings[0].state=moved.sourceState;after.drawings[1].state=moved.targetState;
+  const p=await draft(env,before,after,'revoke-events','move');assert.equal(p.ready,true);flag.atomicGroups=false;
+  await assert.rejects(()=>env.bridge.commit(p),e=>e.code==='DELTA_UPGRADE_REQUIRED');assert.equal(env.writes,0);
+  assert(row(p.submittedAfter,'revoke-target'));flag.atomicGroups=true;await env.bridge.commit(p);assert.equal(env.writes,1);env.close();
+});
 await test('explicit operation is mandatory and a partially captured move cannot be sent as an ordinary edit',async()=>{
   const before=initial(),after=copy(before),env=environment(before);row(after).memo='途中まで捕捉された入力';
   const missing=await env.bridge.prepare({before,after,...options('missing-operation')});assert(issues(missing).includes('BRIDGE_OPERATION'));
@@ -164,7 +219,7 @@ await test('copy operations keep the source and its complete history without bei
     operation:'copy',sourceDrawingId:'drawing-1',targetDrawingId:'drawing-2',targetPage:2,idFactory:()=> 'copied-record',photoIdFactory:()=> 'copied-photo',revisionIdFactory:options('copy-revision').idFactory});
   after.drawings[0].state=copyPlan.sourceState;after.drawings[1].state=copyPlan.targetState;
   const p=await draft(env,before,after,'copy-event','copy');assert.equal(p.ready,true);assert.equal(p.atomicGroupRequired,false);
-  const r=await env.bridge.commit(p);assert(C.equal(row(r.projection),origin));assert.deepEqual(row(r.projection,'copied-record').collab.comments,origin.collab.comments);
+  const r=await env.bridge.commit(p);assert.deepEqual(row(r.projection).collab,origin.collab);assert.deepEqual(row(r.projection,'copied-record').collab.comments,origin.collab.comments);
   assert.equal(env.writes,1);env.close();
 });
 await test('ordinary edits to an already imported moved record remain possible',async()=>{
@@ -186,6 +241,21 @@ await test('raw new records are normalized while pre-authored copied histories a
   const p=await draft(env,before,after,'create');assert.equal(p.ready,true);const r=await env.bridge.commit(p);
   const created=row(r.projection,'new-record');assert(created.collab);assert.equal(created.memo,'新しい記録');
   assert.equal(C.view(created).comments[0].heads[0].actor.deviceId,scope.deviceId);env.close();
+});
+await test('actual numbering during create and type changes remains saveable and projection rebuilds stale counters after peer additions',async()=>{
+  const before=actualRenumber(initial()),after=copy(before),env=environment(before);
+  after.drawings[0].state.shapes.push({id:'numbered-new',kind:'field-record',recordKind:'field-record',recordType:'survey',type:'腐食',memo:'新規',photos:[]});
+  actualRenumber(after);const p=await draft(env,before,after,'numbered-create','create');assert.equal(p.ready,true);assert.deepEqual(p.metadataChanges,[]);
+  const receipt=await env.bridge.commit(p);assert.equal(receipt.projection.drawings[0].state.nextGlobalNo,3);
+  assert.deepEqual(receipt.projection.drawings[0].state.typeCounters,{腐食:2});assert.equal(row(receipt.projection,'numbered-new').recordNo,2);
+  const changed=copy(receipt.projection);row(changed,'numbered-new').type='漏水';actualRenumber(changed);
+  const edit=await draft(env,receipt.projection,changed,'numbered-type'),r=await env.bridge.commit(edit);assert.equal(edit.ready,true);
+  assert.deepEqual(r.projection.drawings[0].state.typeCounters,{腐食:1,漏水:1});
+  const current=env.current();current.records[D.keyOf('drawing-1','peer-new')]=baseRecord('peer-new');
+  const projected=B.project({template:r.projection,state:current,scope,localProjectId});
+  assert.equal(projected.drawings[0].state.nextGlobalNo,4);assert.deepEqual(projected.drawings[0].state.typeCounters,{腐食:2,漏水:1});
+  assert.equal(row(projected,'peer-new').globalNo,3);assert.equal(row(projected,'peer-new').typeNo,2);
+  assert.equal(projected.drawings[0].meta.shapeCount,3);env.close();
 });
 await test('edits rebase onto received comments and preserve records added by another device',async()=>{
   const before=initial(),after=copy(before);row(after).memo='この端末の追記';
@@ -259,7 +329,7 @@ await test('explicit photo and comment deletion are accepted without losing thei
 await test('all shared drawing settings and unknown future metadata are retained rather than silently omitted',async()=>{
   const mutations={pageSettings:{1:{scaleDenom:200}},pageRotations:{1:90},pageStates:{1:{hidden:true}},pageReplacements:{1:{hash:'new'}},
     sourceType:'image',fileName:'replacement.pdf',pageCount:4,dxf:{entities:[1]},leaderMarker:'filled-circle',
-    nextGlobalNo:99,typeCounters:{調査:7},autoTracePhotos:[{id:'trace-photo'}],futureSharedOption:{enabled:true}};
+    autoTracePhotos:[{id:'trace-photo'}],futureSharedOption:{enabled:true}};
   for(const [key,value]of Object.entries(mutations)){
     const before=initial(),after=copy(before),env=environment(before);after.drawings[0].state[key]=value;row(after).memo='設定と同時の記入';
     const p=await draft(env,before,after);assert.equal(p.ready,false,key);assert(p.metadataChanges.some(m=>m.kind==='drawing'&&C.equal(m.after[key],value)),key);
@@ -282,7 +352,8 @@ await test('actual cloud snapshot construction retains full metadata while exclu
   assert.equal(comparison.project.drawings[0].shapeCount,2);assert.equal(comparison.drawings[0].state.nextGlobalNo,4);
   assert.equal(comparison.project.drawings[1].groupId,'drawing-2');assert.equal(comparison.project.drawings[1].sheetOrder,1);
   const editMetadata=B.metadataOf(input);assert.equal(editMetadata.project.drawings[0].shapeCount,undefined);
-  assert.equal(editMetadata.drawings[0].state.nextGlobalNo,4);assert.deepEqual(editMetadata.drawings[0].state.autoTracePhotos,drawing.state.autoTracePhotos);
+  assert.equal(editMetadata.drawings[0].state.nextGlobalNo,undefined);assert.equal(editMetadata.drawings[0].state.typeCounters,undefined);
+  assert.deepEqual(editMetadata.drawings[0].state.autoTracePhotos,drawing.state.autoTracePhotos);
   assert(record.photos[0].localBlob instanceof Blob,'snapshot construction must leave source cache untouched');
 });
 await test('project names, drawing order, groups and drawing removal are blocked as complete metadata-bearing plans',async()=>{
@@ -294,12 +365,13 @@ await test('project names, drawing order, groups and drawing removal are blocked
     assert.equal(p.ready,false);assert(p.metadataChanges.some(m=>m.kind==='project'));await assert.rejects(()=>env.bridge.commit(p));assert.equal(env.writes,0);env.close();}
 });
 await test('device view, computed numbering and display counts do not create shared record edits',async()=>{
-  const before=initial(),after=copy(before),env=environment(before);Object.assign(after.drawings[0].state,{currentPage:2,width:600,height:900,pdfPageInfo:{2:{width:600}},labelSize:20});
+  const before=initial(),after=copy(before),env=environment(before);Object.assign(after.drawings[0].state,{currentPage:2,width:600,height:900,pdfPageInfo:{2:{width:600}},labelSize:20,nextGlobalNo:99,typeCounters:{調査:99}});
   after.project.updatedAt=30;after.project.drawings[0].updatedAt=30;after.project.drawings[0].shapeCount=99;after.project.drawings[0].photoCount=99;
   after.drawings[0].meta=copy(after.project.drawings[0]);Object.assign(row(after),{globalNo:40,typeNo:5,autoLabel:'調査5',labelPosEditedAt:100});
   const p=await draft(env,before,after);assert.equal(p.ready,true);assert.equal(p.changes.length,0);assert.deepEqual(p.metadataChanges,[]);
   const r=await env.bridge.commit(p);assert.equal(env.writes,0);assert.equal(r.result.unchanged,true);assert.equal(r.projection.drawings[0].state.currentPage,2);
-  assert.equal(row(r.projection).globalNo,40);assert.equal(r.projection.drawings[0].meta.shapeCount,2);env.close();
+  assert.equal(row(r.projection).globalNo,1);assert.equal(r.projection.drawings[0].meta.shapeCount,1);
+  assert.equal(r.projection.drawings[0].state.nextGlobalNo,2);assert.deepEqual(r.projection.drawings[0].state.typeCounters,{腐食:1});env.close();
 });
 await test('projection preserves editor order and only restores a photo cache matching current metadata',async()=>{
   const before=initial(),record=row(before);record.photos[0].localBlob=new Blob(['abc'],{type:'image/jpeg'});record.photos[0].data='data:image/jpeg;base64,YWJj';

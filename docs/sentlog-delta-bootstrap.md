@@ -68,7 +68,9 @@
 
 `delta-sync-app-bridge.js` は、実際の record-store の workspace/drawing 保存形式を読む。record-collaboration で記録ごとの不変な差分を作り、`changeBatch` に一度で渡す。ローカルの state と送信待ちは一つの保存になる。古い snapshot token、途中の不正な記録、容量不足のいずれでも、一部だけのローカル保存を成功扱いにしない。
 
-ローカルでまとめて保存できることと、サーバー・受信端末でも一つの操作として確定できることは別である。現状の送信 RPC と受信カーソルは記録ごとのイベントを扱う。移動元の削除だけが先に成功することを避けるため、橋渡しは図面間・ページ間の move を検出し、内容を保持して操作全体を拒否する。グループ単位のサーバー確定と受信が実装されるまで解除しない。
+図面間・ページ間の move は、サーバー能力を確認済みの transport がある場合に限り、一つの atomic group にまとめる。グループは端末の outbox、サーバー transaction、受信側の記録と cursor の各境界で分割しない。能力を未確認の場合や、移動元と移動先がそろわない場合は、元の内容を保持して拒否する。
+
+bootstrap は prepare と install 時の計画再構築の両方へ同じ transport を渡す。能力確認が取り消された場合は、グループを単独イベントへ崩さず、初期保存を拒否する。検証では、旧保存の未送信 move をグループとして初期保存し、開き直して同じ引き継ぎを再試行しても、元の group ID と全イベントが保持されることを確認する。この経路は本番の writer 切替や metadata protocol の代わりにはならない。
 
 実アプリの全 writer と必要な接続順序は `sentlog-delta-app-bridge.md`、認証と通知は `sentlog-delta-transport-prototype.md`、照合の内容は `sentlog-delta-reconcile.md` に記載する。
 

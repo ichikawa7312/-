@@ -4,7 +4,11 @@ on:
     paths:
       - 'sentlog/delta-sync-*.js'
       - 'sentlog/photo-recovery.js'
+      - 'sentlog/record-store.js'
+      - 'sentlog/session-guard.js'
       - 'tests/delta_*'
+      - 'tests/record_file_guard*'
+      - 'tests/session_guard.test.cjs'
       - 'tests/photo_redelivery_adversarial.test.cjs'
       - 'tests/delta_rejection_isolation.test.cjs'
       - 'sentlog/delta-sync-legacy-preflight.js'
@@ -19,6 +23,9 @@ on:
       - 'docs/sentlog-delta-semantic-validation-prototype.sql'
       - 'docs/sentlog-delta-baseline-prototype.sql'
       - 'docs/sentlog-delta-transport-prototype.sql'
+      - 'docs/sentlog-delta-atomic-groups-prototype.sql'
+      - 'docs/sentlog-delta-archive-compat-prototype.sql'
+      - 'db/archive_v1.sql'
       - 'sentlog/collaboration-channel.js'
       - 'tests/collaboration_channel.test.cjs'
       - 'tests/delta_schema_fixture.sql'
@@ -55,8 +62,12 @@ jobs:
           node --check sentlog/delta-sync-bootstrap.js
           node --check sentlog/delta-sync-transport.js
           node --check sentlog/delta-sync-app-bridge.js
+          node --check sentlog/delta-sync-asset-transport.js
+          node --check sentlog/delta-sync-asset-runtime.js
+          node --check sentlog/record-store.js
+          node --check sentlog/session-guard.js
       - name: Install pinned in-memory IndexedDB test adapter
-        run: npm install --prefix "$RUNNER_TEMP/sentlog-prototype-deps" --ignore-scripts --no-audit --no-fund --save-exact fake-indexeddb@6.2.8
+        run: npm install --prefix "$RUNNER_TEMP/sentlog-prototype-deps" --ignore-scripts --no-audit --no-fund --save-exact fake-indexeddb@6.2.8 @electric-sql/pglite@0.5.17
       - name: Offline, concurrency and idempotency scenarios
         run: |
           export NODE_PATH="$RUNNER_TEMP/sentlog-prototype-deps/node_modules"
@@ -74,6 +85,12 @@ jobs:
           node tests/delta_transport.test.cjs
           node tests/delta_app_bridge.test.cjs
           node tests/delta_batch_paging.test.cjs
+          node tests/delta_group_sync.test.cjs
+          node tests/delta_group_contract.cjs
+          node tests/delta_archive_pglite.cjs
+          node tests/delta_asset_runtime.test.cjs
+          node tests/record_file_guard.test.cjs
+          node tests/session_guard.test.cjs
           node tests/collaboration_channel.test.cjs
           node tests/photo_redelivery_adversarial.test.cjs
       - name: Existing immutable record safety
@@ -171,3 +188,18 @@ jobs:
         run: psql -v ON_ERROR_STOP=1 -f docs/sentlog-delta-transport-prototype.sql
       - name: Verify registered device, archive and private channel enforcement
         run: psql -v ON_ERROR_STOP=1 -f tests/delta_transport_assertions.sql
+      - name: Compile atomic remote operation groups
+        run: psql -v ON_ERROR_STOP=1 -f docs/sentlog-delta-atomic-groups-prototype.sql
+      - name: Verify whole-group commit, identity, rollback and paging boundaries
+        run: psql -v ON_ERROR_STOP=1 -f tests/delta_groups_assertions.sql
+      - name: Prepare the actual legacy archive gateway in the isolated database
+        run: |
+          psql -v ON_ERROR_STOP=1 -f tests/delta_archive_fixture.sql
+          psql -v ON_ERROR_STOP=1 -f db/archive_v1.sql
+          psql -v ON_ERROR_STOP=1 -f tests/delta_archive_setup.sql
+      - name: Protect incomplete archive projections and existing archive jobs
+        run: |
+          psql -v ON_ERROR_STOP=1 -f docs/sentlog-delta-archive-compat-prototype.sql
+          psql -v ON_ERROR_STOP=1 -f tests/delta_archive_assertions.sql
+      - name: Verify archive and grouped-edit races through separate connections
+        run: bash tests/delta_archive_races.sh

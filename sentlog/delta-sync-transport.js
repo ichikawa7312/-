@@ -139,18 +139,20 @@
       'DELTA_TRANSPORT_CONFIG','利用者・案件・登録端末と認証方法が必要です');
     insist(Number.isSafeInteger(requestTimeoutMs)&&requestTimeoutMs>0&&Number.isSafeInteger(retryMs)&&retryMs>0,
       'DELTA_TRANSPORT_CONFIG','通信の待機時間が不正です');
-    let closed=false,generation=0,observed=null,verified=null,live=null,liveToken=null,realtimeConnected=false,
+    let closed=false,generation=0,observed=null,verified=null,serverCapabilities=null,live=null,liveToken=null,realtimeConnected=false,
       wakeTimer=null,connecting=false,failures=0;
     const listeners=new Set(),pending=new Set();
     const emit=value=>{if(!closed)try{onStatus({...value,scope:copy(scope)});}catch{}};
     const notice=value=>{if(!closed)for(const fn of [...listeners])try{fn({...value,projectId:scope.projectId});}catch{}};
     const scopeOkay=()=>{try{return sameScope(scope,currentScope());}catch{return false;}};
-    function active(){insist(!closed,'DELTA_CLOSED','この通信処理は終了しています');insist(scopeOkay(),'DELTA_SCOPE','利用者・案件・端末が変わりました。内容は元の保存先に残しています');}
+    function active(){insist(!closed,'DELTA_CLOSED','この通信処理は終了しています');
+      if(!scopeOkay()){serverCapabilities=null;throw problem('DELTA_SCOPE','利用者・案件・端末が変わりました。内容は元の保存先に残しています');}}
     const sessionIdentity=s=>s?.access_token&&s?.user?.id?{token:s.access_token,owner:s.user.id}:null;
     const sameAuth=(a,b)=>a?.token===b?.token&&a?.owner===b?.owner;
     function stopLive(){const old=live;live=null;liveToken=null;realtimeConnected=false;if(old)try{old();}catch{}}
     function observe(s){
       const value=sessionIdentity(s);if(sameAuth(observed,value))return;
+      if(observed?.owner!==value?.owner)serverCapabilities=null;
       observed=value;verified=null;generation++;stopLive();
       for(const p of [...pending])if(p.phase!=='session')p.cancel(problem('DELTA_AUTH_CHANGED','ログイン状態が変わりました。未送信の内容は保持しています',401));
     }
@@ -240,6 +242,14 @@
     function baselineId(value){insist(uuid(value),'DELTA_BASELINE_ID','初期データの識別情報が不正です');}
     function page(after,limit,max=100){insist(count(after)&&Number.isSafeInteger(limit)&&limit>=1&&limit<=max,'DELTA_PAGE','取得する範囲が不正です');}
     const base=()=>({p_project_id:scope.projectId,p_device_id:scope.deviceId});
+    function getCapabilities(){
+      try{
+        if(closed||!scopeOkay()){serverCapabilities=null;return {atomicGroups:false};}
+        if(typeof provider.peekSession==='function')observe(provider.peekSession());
+        if(observed?.owner!==scope.ownerId||!serverCapabilities||typeof CORE.validateGroup!=='function')return {atomicGroups:false};
+        return copy(serverCapabilities);
+      }catch{return {atomicGroups:false};}
+    }
     function baselinePage(kind,baseline,after,limit,options){
       baselineId(baseline);page(after,limit);
       return rpc(kind==='records'?'sentlog_delta_read_baseline_page_v1':'sentlog_delta_read_baseline_metadata_page_v1',
@@ -259,7 +269,23 @@
     }
     return {
       getScope:()=>copy(scope),
-      ready:options=>request(async(signal,ticket)=>{await authenticate(signal,ticket);return {authenticated:true,scope:copy(scope)};},options),
+      getCapabilities,
+      async ready(options){
+        try{
+          await rpc('sentlog_delta_capabilities_v1',base(),r=>{
+            insist(object(r)&&r.schema===2&&SCOPE.every(k=>r[k]===scope[k])&&r.atomicGroups===true&&
+              r.groupMaxEvents===500&&r.groupMaxBytes===4194304&&r.pageTargetBytes===900000,
+              'DELTA_UPGRADE_REQUIRED','一括変更に対応した同期先を確認できません');
+            serverCapabilities={atomicGroups:true,groupMaxEvents:r.groupMaxEvents,groupMaxBytes:r.groupMaxBytes,pageTargetBytes:r.pageTargetBytes};
+          },options);
+          fresh(verified);return {authenticated:true,scope:copy(scope)};
+        }catch(error){
+          // A temporary outage leaves an already confirmed offline feature
+          // available. An explicit denial or incompatible server revokes it.
+          if(!error.retryable&&!['DELTA_ABORTED','DELTA_AUTH_CHANGED'].includes(error.code))serverCapabilities=null;
+          throw error;
+        }
+      },
       online(){if(closed||!scopeOkay()||!network())return false;try{if(verified){fresh(verified);return true;}}catch{}
         scheduleConnect();return false;},
       push(event,options){
@@ -272,15 +298,39 @@
             ['projectId','eventId','deviceId','drawingId','recordId'].every(k=>r[k]===e[k]),'DELTA_NOT_DURABLE','この変更のサーバー保存を確認できません');
         },options);
       },
+      pushGroup(group,options){
+        insist(getCapabilities().atomicGroups,'DELTA_UPGRADE_REQUIRED','一括変更に対応した同期先の確認が必要です');
+        CORE.validateGroup(group);const g=copy(group);
+        insist(g.projectId===scope.projectId&&g.deviceId===scope.deviceId,'DELTA_SCOPE','別案件・端末の一括変更は送信できません');
+        return rpc('sentlog_delta_append_group_v1',{...base(),p_group:g},r=>{
+          insist(object(r)&&r.schema===1&&r.groupId===g.groupId&&r.projectId===g.projectId&&r.deviceId===g.deviceId&&
+            Number.isSafeInteger(r.startSeq)&&r.startSeq>=1&&Number.isSafeInteger(r.endSeq)&&r.endSeq===r.startSeq+g.events.length-1&&
+            typeof r.duplicate==='boolean'&&Array.isArray(r.events)&&r.events.length===g.events.length&&r.events.every((row,i)=>
+              object(row)&&row.seq===r.startSeq+i&&['projectId','eventId','deviceId','drawingId','recordId'].every(k=>row[k]===g.events[i][k])),
+            'DELTA_NOT_DURABLE','一括変更全体のサーバー保存を確認できません');
+        },options);
+      },
       async list(projectId,after,limit,options){
         insist(projectId===scope.projectId,'DELTA_SCOPE','別案件の変更は取得できません');page(after,limit,500);
-        const r=await rpc('sentlog_delta_list_v1',{...base(),p_after:after,p_limit:limit},value=>{
-          insist(object(value)&&value.schema===1&&SCOPE.every(k=>value[k]===scope[k])&&value.after===after&&count(value.headSeq)&&value.headSeq>=after&&
+        const r=await rpc('sentlog_delta_list_groups_v1',{...base(),p_after:after,p_limit:limit},value=>{
+          insist(object(value)&&value.schema===2&&SCOPE.every(k=>value[k]===scope[k])&&value.after===after&&count(value.headSeq)&&value.headSeq>=after&&
             Array.isArray(value.events)&&value.events.length<=limit&&typeof value.hasMore==='boolean',
             'DELTA_SERVER','差分の受領情報が一致しません');
-          value.events.forEach((row,i)=>{insist(object(row)&&row.seq===after+i+1&&row.seq<=value.headSeq&&row.event?.projectId===scope.projectId,
-            'DELTA_SEQUENCE_GAP','未受信の変更があります。同期位置は進めません');CORE.validateEvent(row.event);});
-          const last=after+value.events.length;
+          let last=after;
+          value.events.forEach(row=>{
+            insist(object(row)&&row.seq===last+1&&row.seq<=value.headSeq,'DELTA_SEQUENCE_GAP','未受信の変更があります。同期位置は進めません');
+            if(Object.prototype.hasOwnProperty.call(row,'group')){
+              insist(typeof CORE.validateGroup==='function','DELTA_UPGRADE_REQUIRED','一括変更を受け取るためにアプリの更新が必要です');
+              CORE.validateGroup(row.group);
+              insist(!Object.prototype.hasOwnProperty.call(row,'event')&&row.group.projectId===scope.projectId&&uuid(row.group.deviceId)&&
+                Number.isSafeInteger(row.endSeq)&&row.endSeq===row.seq+row.group.events.length-1&&row.endSeq<=value.headSeq,
+                'DELTA_SEQUENCE_GAP','一括変更の範囲が一致しません。同期位置は進めません');
+              last=row.endSeq;
+            }else{
+              insist(!Object.prototype.hasOwnProperty.call(row,'endSeq')&&row.event?.projectId===scope.projectId,
+                'DELTA_SEQUENCE_GAP','差分の範囲または案件が一致しません');CORE.validateEvent(row.event);last=row.seq;
+            }
+          });
           insist(value.hasMore===(last<value.headSeq)&&(value.events.length>0||!value.hasMore),'DELTA_SERVER','差分の終端が一致しません');
         },options);
         const rows=r.events;Object.defineProperties(rows,{hasMore:{value:r.hasMore},headSeq:{value:r.headSeq}});return rows;
@@ -301,7 +351,7 @@
         if(wakeTimer!==null){timers.clearTimeout(wakeTimer);wakeTimer=null;}connect();},
       getStatus(){let authenticated=false;try{if(verified){fresh(verified);authenticated=true;}}catch{}
         return {closed,authenticated,realtimeConnected:authenticated&&realtimeConnected,scope:copy(scope)};},
-      close(){if(closed)return;closed=true;generation++;verified=null;stopLive();listeners.clear();
+      close(){if(closed)return;closed=true;generation++;verified=null;serverCapabilities=null;stopLive();listeners.clear();
         if(wakeTimer!==null)timers.clearTimeout(wakeTimer);wakeTimer=null;
         try{unsubscribeAuth?.();}catch{}
         for(const p of [...pending])p.cancel(problem('DELTA_CLOSED','この通信処理は終了しています'));

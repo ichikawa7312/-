@@ -16,7 +16,8 @@ const baseline = await SentlogDeltaReconcile.readBaseline({
   signal
 });
 const plan = await SentlogDeltaReconcile.plan({
-  scope, baseline, localSnapshot, currentScope, signal
+  scope, baseline, localSnapshot, currentScope, signal,
+  groupTransport: transport // ready() が確認した atomicGroups capability
 });
 await SentlogDeltaReconcile.verifyPlan(plan, {scope, currentScope, signal});
 ```
@@ -34,7 +35,7 @@ await SentlogDeltaReconcile.verifyPlan(plan, {scope, currentScope, signal});
 | `metadata.header` / `metadata.drawings` | サーバーが返した記録以外の案件・図面情報 |
 | `metadata.localView` | 端末固有の表示情報・再計算可能なカウンター。JSON-safe な値のみ |
 | `preservedLocal` | 正確な `rawEntries`、保存元情報、原本台帳、撮影 intent、ファイル descriptor と manifest |
-| `summary` | 元の記録数、照合後の記録数、未送信数、停止項目数、同時編集候補数 |
+| `summary` | 元の記録数、照合後の記録数、未送信 unit 数 `pending`、member event 数 `pendingEvents`、停止項目数、同時編集候補数 |
 | `planSha256` | state・対象 scope・receipt・保護元情報・確認項目・readiness を結び付ける検証値 |
 | `readyForInstall` | この planner が扱う内容に、初期保存を妨げる確認項目がないこと |
 | `readyForActivation` / `readyForCloudSync` | 常に `false`。この処理ではクラウドへの切替や写真の配送を保証しない |
@@ -73,7 +74,11 @@ SQL は `project.drawings` と drawing envelope の順序・詳細 metadata が�
 
 queue へ入れる前に、core の payload 検証、PostgreSQL jsonb の空白・指数表記展開を含む 256 KiB 上限、および `combine(baselineRecord, event)` による再構築結果を検証する。1 つの大きすぎる記録や壊れた履歴は元の内容を review に残し、他の有効な記録の計画は続ける。ただし停止項目が残る計画全体は初期保存できない。
 
-サーバーは複数イベントを一つの操作として原子的に受け取る機能をまだ持たない。旧版の未送信移動を「元の記録の削除」と「移動先の新規作成」に分割して送ると、片方だけ成功するおそれがある。そのため新規の `transferOrigin.operation:'move'`、同じ記録 ID の図面間移動、対応が不明な新規作成と新規削除履歴の組み合わせは `RECONCILE_ATOMIC_GROUP_REQUIRED` として計画全体の初期保存を止める。候補 state と outbox と元の raw は診断・再計画用に保持する。baseline へ既に取り込まれた移動済み記録への通常の追記や、元の記録を残すコピーはこの理由では止めない。
+旧版の未送信移動は「元の記録の削除」と「移動先の新規作成」を一つの送信単位にする。新規の `transferOrigin.operation:'move'`、同じ記録 ID の図面間移動、対応が不明な新規作成と新規削除履歴の組合せを検出し、`groupTransport.pushGroup` と確認済み `getCapabilities().atomicGroups` がある場合にのみ、候補 outbox 全体を `kind:'atomic-group'` にまとめる。`groupId` は scope と順序付き events の canonical SHA-256 から作るため、同じ元入力の再計画・seed 再試行で変化しない。hash の非同期計算後にも scope と capability を再確認する。
+
+group は core の 1〜500 events、各 event 256 KiB、全体 4 MiB の PostgreSQL JSONB text 上限を検証する。一括送信に非対応なら `RECONCILE_ATOMIC_GROUP_REQUIRED`、容量上限ならその理由を保持し、初期保存を止める。元の candidate events を自動で solo 送信へ戻さない。source が存在しない、または source の削除済み／削除競合履歴がない destination-only move は、group 対応済みでも `RECONCILE_MOVE_INCOMPLETE` として止める。baseline 側で source の tombstone が既に確定している場合は、新規 destination だけの 1 member group で補完できる。
+
+候補 state と outbox と元の raw は診断・再計画用に保持する。`verifyPlan()` は core の group を含む state 検証を行うが、確認項目を自動承認しない。baseline へ既に取り込まれた移動済み記録への通常の追記や、元の記録を残すコピーはこの理由では止めない。通常 solo outbox との互換は維持する。
 
 以下は自動採用せず、サーバーの記録とすべての端末候補を review に保存する。
 
@@ -85,7 +90,7 @@ queue へ入れる前に、core の payload 検証、PostgreSQL jsonb の空白�
 - merger が引き継げない未知の collab / entry / projection metadata がある。
 - 再構築できない差分、送信上限超過、送信形式にできないデータがある。
 
-raw の `photos[].localBlob` と `photos[].data` は既存の snapshot exporter と同じく通信用レコードから除く。元の rawEntries とファイル控えは保持する。未知の写真 bytes を履歴へ混ぜて送信することはしない。`globalNo`、`typeNo`、`autoLabel`、`recordNo`、`labelPosEditedAt` は共同編集モデルの派生値として扱い、元の端末値は保護した rawEntries に残る。画面への反映では bridge が元の端末の派生値を保つ。
+raw の `photos[].localBlob` と `photos[].data` は既存の snapshot exporter と同じく通信用レコードから除く。元の rawEntries とファイル控えは保持する。未知の写真 bytes を履歴へ混ぜて送信することはしない。`globalNo`、`typeNo`、`autoLabel`、`recordNo`、`labelPosEditedAt` は共同編集モデルの派生値として扱い、元の端末値は保護した rawEntries に残る。bridge は画面に実際に残る記録から採番とカウンターを再計算し、図面メモ・寸法を採番から除外する。`labelPosEditedAt` は元の端末 view から保持する。
 
 ## 案件・図面設定と端末表示情報
 
@@ -111,6 +116,8 @@ planner は source fingerprint 自体を再計算しない。保護した source
 ## 検証
 
 `node tests/delta_reconcile.test.cjs` は合成 source・ページを用い、保持・停止・履歴競合・hash・欠落ページ・scope・上限・元データ不変性を検証する。shared cases は Node とブラウザー fixture の両方から呼べる。
+
+group 対応では、確認済み transport の陽性経路、同じ入力の group ID 再現性、hash 中の capability 失効、片側 move の停止、baseline に確定済みの削除との補完を検証する。`delta_app_bridge.test.cjs` は実 transfer・採番・旧 record-store batch の控えをこの planner に通す。`delta_bootstrap.test.cjs` は grouped state の原子的 seed と再起動後の再読込まで検証する。これらは metadata 差分や最終 production controller まで完成したことを示さない。
 
 `tests/delta_baseline_assertions.sql` には metadata の exact hash、manifest、ページ、空図面、案件 binding、権限、機器失効、上限の確認を追加した。
 

@@ -231,7 +231,7 @@
       review(reviews,'RECONCILE_SOURCE_ORPHAN','案件一覧にない図面の保存内容を確認待ちに残しました',{sourceKey:key,rawValue:value});
     return {project,drawings,records,localView};
   }
-  async function plan({scope:inputScope,baseline:inputBaseline,localSnapshot:inputSnapshot,currentScope,signal}={}){
+  async function plan({scope:inputScope,baseline:inputBaseline,localSnapshot:inputSnapshot,currentScope,signal,groupTransport}={}){
     const scope=scopeOf(inputScope),snapshot=clone(inputSnapshot),baselineInput=clone(inputBaseline),check=()=>guard(scope,currentScope,signal);check();
     insist(snapshot?.version===1&&snapshot.kind==='sentlog-legacy-source'&&valid(snapshot.projectId)&&digest(snapshot.fingerprint)&&
       Array.isArray(snapshot.rawEntries)&&Array.isArray(snapshot.issues),'RECONCILE_SOURCE_FORMAT','保護した旧保存の控えが不正です');
@@ -287,10 +287,9 @@
         if(conflicts.length)review(reviews,'RECONCILE_CONCURRENT_EDITS','同時の変更候補を両方保持しました',{drawingId:first.drawingId,recordId:first.recordId,conflicts},false);
       }catch(error){review(reviews,error.code||'RECONCILE_RECORD',error.message||'記録の照合を完了できません',details);}
     }
-    // The receiver commits events independently. A legacy move must not seed
-    // a sendable source tombstone whose destination could fail separately.
-    // Keep the full candidate and events for review; block installation of the
-    // whole plan until a real remote atomic group protocol exists.
+    // A legacy move must retain its source tombstone and destination in one
+    // durable unit. Only an authenticated, capability-checked transport may
+    // turn those pending events into a sendable atomic group.
     const created=state.outbox.filter(e=>e.kind==='create');
     const deletionIntent=state.outbox.filter(e=>e.kind==='patch'&&e.patch.deletion.some(r=>r.deleted===true));
     const moveMarkers=state.outbox.filter(e=>e.kind==='create'?e.record.transferOrigin?.operation==='move':
@@ -299,7 +298,31 @@
       !local.records.has(D.keyOf(row.drawingId,row.recordId))));
     if(moveMarkers.length||relocated.length||created.length&&deletionIntent.length){
       const identity=e=>({eventId:e.eventId,drawingId:e.drawingId,recordId:e.recordId});
-      review(reviews,'RECONCILE_ATOMIC_GROUP_REQUIRED','移動元と移動先を一緒に共有する機能が未接続です。変更全体を保持し、引き継ぎを確定していません',
+      // A group is an atomic transport boundary, not proof that both halves
+      // were captured. A destination-only legacy draft still needs its source
+      // tombstone (or an already-deleted baseline source) before installation.
+      for(const event of moveMarkers){
+        const origins=event.kind==='create'?[event.record.transferOrigin]:
+          event.patch.fields.transferOrigin.revisions.filter(r=>r.value?.operation==='move').map(r=>r.value);
+        for(const origin of origins){
+          const key=valid(origin?.drawingId)&&valid(origin?.recordId)?D.keyOf(origin.drawingId,origin.recordId):null;
+          const source=key&&state.records[key],view=source&&C.view(source);
+          if(!source||(!view.deleted&&!view.pendingDelete))review(reviews,'RECONCILE_MOVE_INCOMPLETE',
+            '移動先に対応する移動元の削除履歴を確認できません。入力全体を保持しています',
+            {destination:identity(event),origin:clone(origin),source:source||null});
+        }
+      }
+      if(relocated.length)review(reviews,'RECONCILE_MOVE_INCOMPLETE','移動元の記録が控えからなくなっています。削除履歴を確認するまで引き継ぎを確定しません',
+        {relocatedRecords:relocated.map(identity)});
+      let enabled=false;try{enabled=typeof groupTransport?.pushGroup==='function'&&groupTransport.getCapabilities?.().atomicGroups===true;}catch{}
+      if(enabled){
+        try{
+          const groupId='migration-group:'+await hash(JSON.stringify(C.canonical([scope,state.outbox])));check();
+          insist(groupTransport.getCapabilities?.().atomicGroups===true,'RECONCILE_ATOMIC_GROUP_REQUIRED','一括同期の接続確認が変わりました');
+          const group=D.validateGroup({schema:1,kind:'atomic-group',groupId,projectId:scope.projectId,deviceId:scope.deviceId,events:state.outbox});
+          state.outbox=[group];
+        }catch(error){review(reviews,error.code||'RECONCILE_ATOMIC_GROUP_REQUIRED',error.message||'一括操作の内容を保持して確認を待っています');}
+      }else review(reviews,'RECONCILE_ATOMIC_GROUP_REQUIRED','移動元と移動先を一緒に共有する機能が未接続です。変更全体を保持し、引き継ぎを確定していません',
         {pendingCreates:created.map(identity),pendingDeletions:deletionIntent.map(identity),moveMarkers:moveMarkers.map(identity),relocatedRecords:relocated.map(identity)});
     }
     const result={version:1,kind:'sentlog-delta-reconciliation',hashFormat:PLAN_FORMAT,scope:clone(scope),baselineReceipt:clone(r),
@@ -308,7 +331,8 @@
       preservedLocal:{rawEntries:clone(snapshot.rawEntries),source:clone(snapshot.source),originals:clone(snapshot.originals||[]),
         captureIntentRaw:snapshot.captureIntentRaw??null,files:(snapshot.files||[]).map(({blob,...info})=>clone(info)),manifest:clone(snapshot.manifest||[])},
       summary:{baselineRecords:r.recordCount,localRecords:[...local.records.values()].reduce((n,g)=>n+g.length,0),
-        records:Object.keys(state.records).length,pending:state.outbox.length,blocking:reviews.filter(x=>x.blocking).length,conflicts:reviews.filter(x=>!x.blocking&&x.code==='RECONCILE_CONCURRENT_EDITS').length},
+        records:Object.keys(state.records).length,pending:state.outbox.length,pendingEvents:state.outbox.reduce((n,e)=>n+D.eventsOf(e).length,0),
+        blocking:reviews.filter(x=>x.blocking).length,conflicts:reviews.filter(x=>!x.blocking&&x.code==='RECONCILE_CONCURRENT_EDITS').length},
       readyForInstall:!reviews.some(x=>x.blocking),readyForActivation:false,readyForCloudSync:false};
     jsonValue(result.metadata);result.planSha256=await hash(JSON.stringify(lossless(result)));check();return result;
   }
@@ -323,9 +347,7 @@
     jsonValue(value.metadata);
     const expected=value.planSha256;delete value.planSha256;
     insist(await hash(JSON.stringify(lossless(value)))===expected,'RECONCILE_PLAN_CHANGED','照合後の保存予定が変更されています');check();
-    const ids=new Set();
-    for(const event of value.state.outbox){D.validateEvent(event);insist(event.projectId===scope.projectId&&event.deviceId===scope.deviceId&&!ids.has(event.eventId),
-      'RECONCILE_PLAN','未送信の変更の対象またはIDが不正です');ids.add(event.eventId);}
+    D.validateState(value.state,scope,true);
     for(const [key,record]of Object.entries(value.state.records)){
       let parts;try{parts=JSON.parse(key);}catch{}
       insist(Array.isArray(parts)&&parts.length===2&&parts.every(valid)&&key===D.keyOf(...parts)&&record.id===parts[1],
