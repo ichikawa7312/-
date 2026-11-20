@@ -66,7 +66,7 @@ BEGIN
             WHERE NOT sentlog_delta_private.valid_id(o.v)
         ) THEN RAISE EXCEPTION 'DELTA_UNKNOWN_OBSERVED' USING ERRCODE='22023'; END IF;
       END LOOP;
-      IF pg_catalog.cardinality(local_ids)<>pg_catalog.cardinality(pg_catalog.array(
+      IF pg_catalog.cardinality(local_ids)<>pg_catalog.cardinality(ARRAY(
            SELECT DISTINCT unnest(local_ids))) THEN
         RAISE EXCEPTION 'DELTA_DUPLICATE_REVISION_ID' USING ERRCODE='22023';
       END IF;
