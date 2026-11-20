@@ -59,16 +59,16 @@ def orientation_photo(width, height, *, exif=None, turn=None):
     return buffer.getvalue()
 
 
-IMAGE_PIXELS = r"""async image=>{
-  await image.decode();
+IMAGE_PIXELS = r"""async (image,{decoded=false}={})=>{
+  if(!decoded)await image.decode();
   const width=image.naturalWidth,height=image.naturalHeight;
   if(!width||!height)throw Error('Orientation fixture did not decode');
   const canvas=document.createElement('canvas');canvas.width=width;canvas.height=height;
   try{
     const context=canvas.getContext('2d');context.drawImage(image,0,0,width,height);
-    const corners=[[.25,.25],[.75,.25],[.75,.75],[.25,.75]].map(([x,y])=>
-      [...context.getImageData(Math.floor(x*width),Math.floor(y*height),1,1).data].slice(0,3));
-    return {width,height,corners};
+    const rgba=[[.25,.25],[.75,.25],[.75,.75],[.25,.75]].map(([x,y])=>
+      [...context.getImageData(Math.floor(x*width),Math.floor(y*height),1,1).data]);
+    return {width,height,corners:rgba.map(pixel=>pixel.slice(0,3)),rgba};
   }finally{canvas.width=1;canvas.height=1;}
 }"""
 
@@ -237,10 +237,27 @@ def run(page, engine, screenshot_dir=None):
     assert len(set(saved_photo_ids(page, 'memo-plan-a'))) == 3
     assert_controls_fit(page)
     screenshot('three-photos-portrait')
+    page.evaluate("""()=>{
+      cameraMock.originalFit=fit;cameraMock.hiddenFit=0;
+      cameraMock.openView={view:currentView,projectId:activeProjectId,drawingId:activeDrawingId,recordId:selected};
+      fit=function(){if(SentlogContinuousCamera.isOpen())cameraMock.hiddenFit++;return cameraMock.originalFit.apply(this,arguments);};
+    }""")
     page.set_viewport_size({'width': 844, 'height': 390})
+    page.evaluate("""async()=>{
+      window.dispatchEvent(new Event('orientationchange'));
+      await new Promise(resolve=>setTimeout(resolve,350));
+    }""")
     assert_controls_fit(page)
     screenshot('three-photos-landscape')
     page.set_viewport_size({'width': 390, 'height': 844})
+    page.evaluate("""async()=>{
+      window.dispatchEvent(new Event('orientationchange'));
+      await new Promise(resolve=>setTimeout(resolve,350));
+    }""")
+    assert page.evaluate('cameraMock.hiddenFit') == 0, 'rotation must not refit and redraw the covered drawing behind a live camera'
+    assert page.evaluate("""()=>({view:currentView,projectId:activeProjectId,drawingId:activeDrawingId,recordId:selected})""") == page.evaluate('cameraMock.openView')
+    assert page.evaluate('cameraMock.calls') == 1, 'rotation must preserve the already permitted stream'
+    page.evaluate('fit=cameraMock.originalFit')
 
     # An incoming append is accepted during image conversion. A second shutter
     # press while saving cannot capture a duplicate or overwrite the peer photo.
@@ -300,7 +317,7 @@ def run(page, engine, screenshot_dir=None):
     expect(page.locator('#sentlogContinuousCamera')).to_be_visible()
     assert page.locator('[data-camera-photo-id]:visible').count() == 0
 
-    # Done while saving awaits durable attachment before releasing the camera.
+    # Done while saving awaits durable attachment before disabling the camera.
     page.evaluate(HOLD_CONVERSION)
     shutter(page)
     page.wait_for_function('photoCaptureGate.entered')
@@ -311,11 +328,16 @@ def run(page, engine, screenshot_dir=None):
     wait_photos(page, 'memo-plan-a', 6)
     page.wait_for_function('!SentlogContinuousCamera.isOpen()')
     expect(page.locator('#sentlogContinuousCamera')).to_be_hidden()
-    assert page.evaluate('cameraMock.tracks[0].readyState') == 'ended'
+    assert page.evaluate('cameraMock.tracks[0].readyState') == 'live'
+    assert page.evaluate('cameraMock.tracks[0].enabled') is False
+    assert page.evaluate('document.getElementById("slCameraVideo").srcObject') is None
 
     # The destination is bound when the session opens, not when a later shot
     # finishes. Same-ID records on another drawing must never receive this shot.
     open_camera(page)
+    expect(page.locator('#slCameraShutter')).to_be_enabled()
+    assert page.evaluate('cameraMock.calls') == 1, 'returning to this drawing should reuse its disabled stream without another permission request'
+    assert page.evaluate('cameraMock.tracks[0].enabled') is True
     camera_count(page, 0)
     page.evaluate("SentlogFieldRecords.selectRecord('survey-b')")
     page.evaluate(HOLD_CONVERSION)
@@ -332,6 +354,7 @@ def run(page, engine, screenshot_dir=None):
     assert saved_photo_ids(page, 'memo-plan-b') == []
     page.locator('#slCameraDone').click()
     page.wait_for_function('!SentlogContinuousCamera.isOpen()')
+    assert page.evaluate('cameraMock.tracks[0].readyState') == 'ended', 'the old drawing stream must not be retained after navigation'
 
     # Permission denial leaves an explicit route to the existing native camera.
     page.evaluate('cameraMock.deny=true')
@@ -387,6 +410,28 @@ def run(page, engine, screenshot_dir=None):
     page.locator('#slCameraReviewClose').click()
     page.locator('#slCameraDone').click()
     page.wait_for_function('!SentlogContinuousCamera.isOpen()')
+    assert page.evaluate('cameraMock.tracks.every(track=>track.readyState==="ended"||!track.enabled)'), 'closing must disable every retained camera track'
+    assert page.evaluate('document.getElementById("slCameraVideo").srcObject') is None
+
+    # Leaving the drawing releases a parked grant immediately. Backgrounding
+    # the app must release it even while the camera dialog is already closed.
+    page.evaluate("showDrawings(memoFixture.pid)")
+    assert all(row == 'ended' for row in page.evaluate('cameraMock.tracks.map(track=>track.readyState)'))
+    page.evaluate("""async()=>{
+      await openDrawing(memoFixture.pid,'memo-plan-b');SentlogFieldRecords.selectRecord('survey-a');
+      $('inspector').classList.add('open');
+    }""")
+    open_camera(page)
+    expect(page.locator('#slCameraShutter')).to_be_enabled()
+    page.locator('#slCameraDone').click()
+    page.wait_for_function('!SentlogContinuousCamera.isOpen()')
+    assert page.evaluate('cameraMock.tracks.at(-1).enabled') is False
+    page.evaluate("""()=>{
+      Object.defineProperty(document,'hidden',{configurable:true,value:true});
+      document.dispatchEvent(new Event('visibilitychange'));
+      delete document.hidden;
+      document.dispatchEvent(new Event('visibilitychange'));
+    }""")
     assert all(row == 'ended' for row in page.evaluate('cameraMock.tracks.map(track=>track.readyState)'))
 
     # Ending the session before the permission/start request resolves must
@@ -429,7 +474,7 @@ def run(page, engine, screenshot_dir=None):
     print('PASS '+engine+': three continuous shots, durable per-shot saves, duplicate press guard, '
           'incoming photo/comment preservation, opt-in review, finish waits for save, '
           'fixed destination, permission/video-frame fallback, confirmation layering '
-          'and late-start camera cleanup')
+          'disabled same-drawing stream reuse, navigation/background release and late-start camera cleanup')
 
 
 def run_orientation(page, engine, screenshot_dir=None):
@@ -452,6 +497,40 @@ def run_orientation(page, engine, screenshot_dir=None):
     def shared_size(width, height):
         ratio = min(1, 1600/max(width, height))
         return round(width*ratio), round(height*ratio)
+
+    def review_pixels(photo_id):
+        # Keep the actual review node throughout loading and painting. A
+        # locator that resolves again could silently select a replacement.
+        image = page.locator(f'#slCameraReviewList [data-camera-photo-id="{photo_id}"] img').element_handle()
+        assert image is not None, ('Missing review image', photo_id)
+        image.scroll_into_view_if_needed()
+        page.wait_for_function("""({image,photoId})=>{
+          if(!image.isConnected||image.closest('[data-camera-photo-id]')?.dataset.cameraPhotoId!==photoId)
+            throw Error('Review image changed while loading');
+          return !!image.currentSrc&&image.complete&&image.naturalWidth>0&&image.naturalHeight>0;
+        }""", arg={'image': image, 'photoId': photo_id}, timeout=5000)
+        return image.evaluate(r"""async (image,photoId)=>{
+          const source=image.currentSrc;
+          const current=()=>image.isConnected&&image.currentSrc===source&&image.complete&&
+            image.closest('[data-camera-photo-id]')?.dataset.cameraPhotoId===photoId;
+          if(!source||!current())throw Error('Review image is no longer current');
+          await image.decode();
+          // The review uses lazy, asynchronous image decoding. Give the
+          // visible image a paint opportunity before sampling it in canvas;
+          // never retry a failed pixel/color assertion.
+          let deadline;
+          try{
+            await Promise.race([
+              new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))),
+              new Promise((_,reject)=>{deadline=setTimeout(()=>reject(Error('Review paint did not finish')),5000);})
+            ]);
+          }finally{clearTimeout(deadline);}
+          if(!current())throw Error('Review image changed before pixel verification');
+          const pixels=await (""" + IMAGE_PIXELS + r""")(image,{decoded:true});
+          if(!current())throw Error('Review image changed during pixel verification');
+          return {...pixels,ready:{connected:image.isConnected,complete:image.complete,
+            source,loading:image.loading,decoding:image.decoding,viewport:[innerWidth,innerHeight]}};
+        }""", photo_id)
 
     def grid_pixels(photo_id):
         # Observe the automatic close/attachment refresh. Forcing another
@@ -487,14 +566,19 @@ def run_orientation(page, engine, screenshot_dir=None):
                          'platform': 'MacIntel', 'maxTouchPoints': 5},
          [('portrait', 1920, 2560, 90), ('landscape', 2560, 1920, 270)])
     ]
+    current_orientation = 'not started'
     try:
         for device, navigator, cases in devices:
             set_platform(navigator)
+            # Each platform fixture starts a fresh hardware lifetime. Rotation
+            # within it must keep the same stream for every shot.
+            page.evaluate('window.dispatchEvent(new Event("pagehide"))')
             native_before = page.evaluate('cameraMock.photos')
             frames_before = page.evaluate('cameraMock.canvasPhotos')
             streams_before = page.evaluate('cameraMock.calls')
             checked = []
             for shot, (direction, width, height, turn) in enumerate(cases, 1):
+                current_orientation = device+' '+direction
                 page.set_viewport_size({'width': 390, 'height': 844} if height > width else {'width': 844, 'height': 390})
                 preview = orientation_photo(width, height)
                 wrong_still = orientation_photo(width, height, turn=turn)
@@ -518,9 +602,7 @@ def run_orientation(page, engine, screenshot_dir=None):
                 assert page.evaluate('cameraMock.canvasPhotos') == frames_before+shot
 
                 page.locator('#slCameraCount').click()
-                image = page.locator(f'#slCameraReviewList [data-camera-photo-id="{photo_id}"] img')
-                image.scroll_into_view_if_needed()
-                assert_orientation(image.evaluate(IMAGE_PIXELS), shared_width, shared_height, device+' '+direction+' review')
+                assert_orientation(review_pixels(photo_id), shared_width, shared_height, device+' '+direction+' review')
                 if screenshot_dir and shot == 1:
                     screenshot_dir.mkdir(parents=True, exist_ok=True)
                     page.screenshot(path=str(screenshot_dir / f'sentlog-continuous-camera-{engine}-{device}-orientation.png'))
@@ -534,6 +616,25 @@ def run_orientation(page, engine, screenshot_dir=None):
                 assert_orientation(grid_pixels(photo_id), *shared_size(width, height), device+' photo list')
                 assert saved_pixels(photo_id, original=True)['sha256'] == digest, 'display must not rewrite the retained original'
             print('PASS '+engine+': '+device+' preview pixels and full stream dimensions survive capture, shared conversion, review and photo list')
+    except Exception:
+        # Capture the failing orientation before finally restores portrait.
+        # The outer failure screenshot alone cannot establish the earlier
+        # landscape paint state because that cleanup triggers another resize.
+        try:
+            print('Camera orientation before cleanup:', current_orientation, page.evaluate("""()=>({
+              viewport:[innerWidth,innerHeight],reviewHidden:document.getElementById('slCameraReview')?.hidden,
+              images:[...document.querySelectorAll('#slCameraReviewList [data-camera-photo-id] img')].map(image=>({
+                photoId:image.closest('[data-camera-photo-id]').dataset.cameraPhotoId,
+                source:image.currentSrc,connected:image.isConnected,complete:image.complete,
+                size:[image.naturalWidth,image.naturalHeight],loading:image.loading,decoding:image.decoding
+              }))
+            })"""))
+            if screenshot_dir:
+                screenshot_dir.mkdir(parents=True, exist_ok=True)
+                page.screenshot(path=str(screenshot_dir / f'sentlog-continuous-camera-{engine}-orientation-failure.png'))
+        except Exception as diagnostic_error:
+            print('Camera orientation diagnostic failed:', diagnostic_error)
+        raise
     finally:
         set_platform(platform)
         page.set_viewport_size({'width': 390, 'height': 844})

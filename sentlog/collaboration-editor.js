@@ -7,7 +7,7 @@
   const DRAFT='sentlogCollaborativeDraftV1:',DECISIONS='sentlogCollaborativeDecisionsV1';
   const histories=new Map();let managed=0,renderDepth=0,historyPlayback=false;
   let binding=null,draft=null,composing=false,finishingComposition=false,saveTimer=null,panel=null,list=null,input=null,note=null,conflicts=null;
-  let dialog=null,decision=null,editingComment=null,decisionQueue=[];
+  let dialog=null,decision=null,editingComment=null,decisionQueue=[],confirmation=null;
   let reviewButton=null,reviewDialog=null;const viewCache=new WeakMap(),decisionsMemory=new Map(),undurableDecisions=new Set();
   const scalarLabels={crackWidthMm:'ひび割れ幅',type:'変状名',member:'部材',lineLengthM:'長さ',manualText:'寸法の表示'};
   const guarded=new Set(['crackWidthMm','type','member','lineLengthM','manualText']);
@@ -71,7 +71,7 @@
     const next=context();if(key(next)===key(binding))return;
     if(composing||finishingComposition){writeDraft();message('変換中の文章は元の記録の下書きに残しています。確定後に切り替わります。');return;}
     flushDraft();stopTimer();binding=next;draft=next?readDraft(next):null;editingComment=draft?.editingComment?draft.commentId:null;
-    if(dialog)dialog.hidden=true;decision=null;decisionQueue=[];
+    cancelConfirmation();if(dialog)dialog.hidden=true;decision=null;decisionQueue=[];
     if(input)input.value=draft?.text||'';
     if(draft?.text){
       const actual=currentBound(),entry=actual?M.view(actual).comments.find(x=>x.id===draft.commentId):null;
@@ -175,21 +175,24 @@
     actions.append(button('キャンセル',closeDecision),button(d.kind==='delete'?'削除する':d.kind==='comment-edit'?'修正する':d.kind==='photo-remove'?'写真を外す':'変更する',()=>confirmDecision()));
     dialog.hidden=false;
   }
+  function cancelConfirmation(){const old=confirmation;confirmation=null;old?.controller.abort();}
   function closeDecision(){
-    const old=decision;if(dialog)dialog.hidden=true;decision=null;
+    const old=decision;cancelConfirmation();if(dialog)dialog.hidden=true;decision=null;
     if(old)saveDecisions(old,decisionQueue);
     const next=decisionQueue.shift();if(next){showDecision(next);return;}
   }
   async function confirmDecision(){
-    const d=decision;if(!d)return;const status=dialog.querySelector('[data-status]'),buttons=dialog.querySelectorAll('button');buttons.forEach(b=>b.disabled=true);
+    const d=decision;if(!d||confirmation)return;
+    const attempt={decision:d,controller:new AbortController()};confirmation=attempt;
+    const status=dialog.querySelector('[data-status]'),buttons=dialog.querySelectorAll('button');buttons.forEach((b,index)=>b.disabled=index!==0);
     try{
       if(!navigator.onLine&&d.kind!=='comment-edit')throw Error('変更内容はこの端末に残しています。接続後、最新の記録を確認して変更できます。');
       if(navigator.onLine){
         if(typeof root.sentlogCollabRefresh!=='function')throw Error('最新の記録を確認する準備ができていません。少し待ってからお試しください。');
-        status.textContent='最新の記録を確認しています…';const checked=await root.sentlogCollabRefresh(d.projectId);
+        status.textContent='最新の記録を確認しています…';const checked=await root.sentlogCollabRefresh(d.projectId,{signal:attempt.controller.signal});
         if(checked?.fresh!==true)throw Error('最新の記録をまだ確認できていません。変更内容を保持しています。');
       }
-      if(decision!==d)return;
+      if(decision!==d||confirmation!==attempt||attempt.controller.signal.aborted)return;
       if(!sameDrawing(d)||selected!==d.selectionAtOpen)throw Error('アカウントまたは選択中の記録が変わりました。変更内容を元の記録に残しています。');
       const target=currentTarget(d);if(!target)throw Error('記録が移動または削除されました。');
       const view=M.view(target);
@@ -212,10 +215,15 @@
           state.shapes=state.shapes.filter(s=>s.id!==target.id);state.collabDeletedRecords=[...(state.collabDeletedRecords||[]).filter(s=>s.id!==target.id),removed];selected=null;
         }else if(d.kind==='photo-remove')replaceRecord(M.removePhoto(target,d.photoId,opts({expectedHeads:d.headIds})));
         else replaceRecord(M.setField(target,d.key,d.value,opts({expectedHeads:d.headIds,unset:d.unset===true})));
+      },()=>{
+        // Persist succeeded. Rendering a deletion clears the selected-record
+        // binding, so consume this exact decision before that render can
+        // discard its in-memory identity. Keep every other pending decision.
+        saveDecisions(d,savedDecisions(d).filter(item=>!sameDecision(item,d)));
       });
       closeDecision();refresh();
-    }catch(e){status.textContent=e.message;}
-    finally{buttons.forEach(b=>b.disabled=false);}
+    }catch(e){if(decision===d&&confirmation===attempt)status.textContent=e.message;}
+    finally{if(confirmation===attempt)confirmation=null;buttons.forEach(b=>b.disabled=false);}
   }
   function refreshDraftActions(){if(panel)panel.querySelector('[data-append-copy]').hidden=!(draft&&draft.text!==draft.savedText&&draft.headIds?.length);}
   function refresh(){

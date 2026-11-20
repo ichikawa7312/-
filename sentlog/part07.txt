@@ -23,13 +23,16 @@ async function createDrawingFromFile(file){
   const d={id:uid(),name,fileName:file.name||'',sourceType:(file.type==='application/pdf'||/\.pdf$/i.test(file.name||''))?'pdf':'image',pageCount:1,shapeCount:0,createdAt:Date.now(),updatedAt:Date.now()};p.drawings.push(d);p.updatedAt=d.updatedAt;saveWorkspace();
   activeDrawingId=d.id;state=freshDrawingState(p.name);state.fileName=file.name||'';clearAllHistory();selected=null;drawing=null;pdfDoc=null;showEditor();await saveBackgroundFile(file,d.id);await openFile(file,false);persist();
 }
+let drawingOpenSequence=0;
 async function openDrawing(projectId,drawingId){
+  const opening=++drawingOpenSequence;
+  const current=()=>opening===drawingOpenSequence&&activeProjectId===projectId&&activeDrawingId===drawingId&&currentView==='editor';
   activeProjectId=projectId;activeDrawingId=drawingId;const p=getProject(projectId),d=getDrawingMeta(projectId,drawingId);if(!p||!d)return;
   try{const saved=JSON.parse(window.SentlogRecords.getItem(drawingStorageKey(drawingId))||'null');state={...freshDrawingState(p.name),...(saved||{})}}catch{state=freshDrawingState(p.name)}
   state.project=p.name;state.pageSettings=state.pageSettings||{};state.pdfPageInfo=state.pdfPageInfo||{};state.pageRotations=state.pageRotations||{};state.leaderMarker=state.leaderMarker||'open-circle';state.shapes=state.shapes||[];state.shapes.forEach(s=>s.photos=s.photos||[]);
   selected=null;drawing=null;panStart=null;labelDrag=null;pdfDoc=null;clearAllHistory();showEditor();$('fileName').textContent=state.fileName||d.fileName||'未読込';syncLeaderMarkerUI();rebuildNumberingState();
   empty.style.display='grid';svg.innerHTML='';ctx.clearRect(0,0,canvas.width,canvas.height);updatePageUI();render();renderSelectedPhotos();
-  try{const file=await getBackgroundFile(drawingId);if(file)await openFile(file,false);else{showError('図面を端末へ再取得しています。会社PCの「PC自動同期」を開いたままにしてください。');Promise.resolve(window.sentlogRequestDrawingRecovery?.(drawingId)??window.sentlogCheckPdfRecovery?.()).catch(e=>console.warn('PDF recovery',e))}}catch(e){console.warn(e);showError('図面ファイルの復元に失敗しました。再取得を確認しています。');Promise.resolve(window.sentlogCheckPdfRecovery?.()).catch(()=>{})}
+  try{const file=await getBackgroundFile(drawingId);if(!current())return;if(file)await openFile(file,false);else{showError('図面を端末へ再取得しています。会社PCの「PC自動同期」を開いたままにしてください。');Promise.resolve(window.sentlogRequestDrawingRecovery?.(drawingId)??window.sentlogCheckPdfRecovery?.()).catch(e=>console.warn('PDF recovery',e))}}catch(e){if(!current())return;console.warn(e);showError('図面ファイルの復元に失敗しました。再取得を確認しています。');Promise.resolve(window.sentlogCheckPdfRecovery?.()).catch(()=>{})}
 }
 async function migrateLegacyIfNeeded(){
   if((workspace.projects||[]).length)return;

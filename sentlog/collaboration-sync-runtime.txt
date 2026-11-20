@@ -231,18 +231,19 @@ function collaborationRecordsUnchanged(expected){return expected.every(([key,val
 function collaborationMetaWrite(id,meta,baseline){return [SYNC_META_PREFIX+id,JSON.stringify({...meta,fingerprint_schema:SYNC_FINGERPRINT_SCHEMA,base_snapshot:baseline})];}
 async function collaborationPullProject(cp,context){
   const before=getSyncMeta(cp.client_key),existing=workspace().projects.find(p=>p.id===cp.client_key);
-  const needsLocalFiles=projectFilesChanged(existing,before?.base_snapshot);
-  const heads=await rest('/rest/v1/sentlog_project_snapshots?project_id=eq.'+enc(cp.id)+'&select=revision,updated_at');context.assertCurrent();
+  const needsLocalFiles=context.confirmation?false:projectFilesChanged(existing,before?.base_snapshot);
+  const readOptions=context.signal?{signal:context.signal}:{};
+  const heads=await rest('/rest/v1/sentlog_project_snapshots?project_id=eq.'+enc(cp.id)+'&select=revision,updated_at',readOptions);context.assertCurrent();
   const head=heads?.[0],revision=Number(head?.revision||0);
   if(!head)return {revision:0,changed:0,needsFiles:needsLocalFiles};
   if(existing&&before?.base_snapshot&&!before.restored_backup&&before.fingerprint&&Number(before.fingerprint_schema||0)>=SYNC_FINGERPRINT_SCHEMA&&revision===Number(before.revision))
     return {revision,changed:0,needsFiles:needsLocalFiles};
-  const snaps=await rest('/rest/v1/sentlog_project_snapshots?project_id=eq.'+enc(cp.id)+'&select=revision,payload,updated_at');context.assertCurrent();
+  const snaps=await rest('/rest/v1/sentlog_project_snapshots?project_id=eq.'+enc(cp.id)+'&select=revision,payload,updated_at',readOptions);context.assertCurrent();
   const snap=snaps?.[0];if(!snap?.payload?.project||snap.payload.project.id!==cp.client_key)throw Error('共有記録の案件情報を確認できません。上書きせず保持しています。');
   const lp=workspace().projects.find(p=>p.id===cp.client_key),expectedLocal=JSON.stringify(lp||null),expected=collaborationExpectedRecords(lp),meta=getSyncMeta(cp.client_key);
   const remoteRevision=Number(snap.revision||0),incomingFingerprint=await snapshotFingerprint(snap.payload);context.assertCurrent();
   const local=lp?projectSnapshot(lp):null,localFingerprint=local?await snapshotFingerprint(local):null;context.assertCurrent();
-  const result={revision:remoteRevision,changed:0,needsFiles:needsLocalFiles||sharedFileText(meta?.base_snapshot)!==sharedFileText(snap.payload)};
+  const result={revision:remoteRevision,changed:0,needsFiles:!context.confirmation&&(needsLocalFiles||sharedFileText(meta?.base_snapshot)!==sharedFileText(snap.payload))};
   if(!collaborationRecordsUnchanged(expected))return {...result,deferred:true,reason:'入力中の内容を保存した後に反映します。'};
   const currentFingerprint=Number(meta?.fingerprint_schema||0)>=SYNC_FINGERPRINT_SCHEMA;
   const localChanged=lp&&(!meta||meta.restored_backup||(meta.fingerprint&&currentFingerprint?localFingerprint!==meta.fingerprint:Number(lp.updatedAt||0)!==Number(meta.local_updated_at||0)));
@@ -533,18 +534,64 @@ const collaborationChannel=window.SentlogCollaborationChannel?.create({url:SUPAB
   }});
 window.sentlogCollaborationNormalizeRecord=collaborationNormalizeRecord;
 window.sentlogCollaborationAccountId=()=>session?.user?.id||'';
-window.sentlogCollabRefresh=async projectId=>{
+window.sentlogCollabRefresh=async(projectId,{signal}={})=>{
   if(!collaborationAvailable())throw Error('オンラインで操作が落ち着いてから最新の記録を確認してください。');
   const owner=session.user.id,cp=knownCloudProjects.get(projectId),id=cp?.client_key||projectId;
   if(typeof id!=='string'||!id)throw Error('確認する案件が見つかりません。');
   const priorFailure=collaborationMetadataFailures.get(id);
-  if(priorFailure&&priorFailure.retryAt>Date.now())throw Error(priorFailure.message);
-  const result=await collaborationMetadataWorker.wait([id]);collaborationAssertOwner(owner);
-  if(result.failedIds?.includes(id))throw Error(collaborationMetadataFailures.get(id)?.message||'この案件の記録を確認できませんでした。');
-  if(result.deferredIds.includes(id))throw Error('別の変更を受信しています。最新の内容が反映されてから、もう一度確認してください。');
-  if(!Object.prototype.hasOwnProperty.call(result.revisions,id))throw Error('この案件は現在の同期対象ではありません。');
-  if(!result.readyIds?.includes(id))throw Error('この案件の最新の記録を確認できませんでした。');
-  return {fresh:true,projectId:id,revision:Number(result.revisions[id]||getSyncMeta(id)?.revision||0)};
+  if(priorFailure?.retryable===false)throw Error(priorFailure.message);
+  // A revision-bound decision needs a fresh receive, not an upload of every
+  // drawing, a first delta activation, or a compatibility checkpoint. Keep it
+  // independent of an unrelated project's in-flight/background save queue.
+  const controller=new AbortController();let active=true,timer,abortFailure;
+  const cancel=()=>{abortFailure=Object.assign(Error('確認をキャンセルしました。'),{code:'COLLAB_CONFIRM_CANCELLED'});controller.abort();};
+  const context={owner,confirmation:true,signal:controller.signal,assertCurrent(){
+    collaborationAssertOwner(owner);
+    if(!active||controller.signal.aborted)throw abortFailure||Object.assign(Error('確認を終了しました。'),{code:'COLLAB_CONFIRM_CANCELLED'});
+  }};
+  const cancelled=new Promise((resolve,reject)=>{
+    controller.signal.addEventListener('abort',()=>reject(abortFailure),{once:true});
+    timer=setTimeout(()=>{abortFailure=Object.assign(Error('最新の記録の確認に時間がかかっています。変更は実行していません。通信が落ち着いてから、もう一度確認してください。'),{code:'COLLAB_CONFIRM_TIMEOUT'});controller.abort();},15000);
+  });
+  if(signal?.aborted)cancel();else signal?.addEventListener('abort',cancel,{once:true});
+  const check=async()=>{
+    context.assertCurrent();await window.sentlogAppReady;await collaborationCheckSharedState(context);
+    await ensureSession();context.assertCurrent();await ensureDevice();context.assertCurrent();
+    await collaborationRefreshArchive(context);context.assertCurrent();
+    const manual=collaborationManualProjects.get(id)||null,local=workspace().projects.find(p=>p.id===id);
+    if(!local||!archive.includeLocal(id,manual))throw Error('この案件は現在の同期対象ではありません。');
+    const rows=await rest('/rest/v1/sentlog_projects?client_key=eq.'+enc(id)+'&select=id,name,status,client_key&limit=1',{signal:controller.signal});context.assertCurrent();
+    const current=rows?.[0];
+    if(!current){
+      const previous=getSyncMeta(id);
+      if(previous?.base_snapshot||Number(previous?.revision)>0)throw Error('この案件の共有先を確認できません。変更は実行していません。');
+      return {fresh:true,projectId:id,revision:0};
+    }
+    if(current.client_key!==id||!archive.canSync(current,manual))throw Error('この案件は現在の同期対象ではありません。');
+    knownCloudProjects.set(current.id,current);
+    const delta=window.sentlogDeltaRuntime;
+    if(delta){
+      const mode=await delta.inspect(current);context.assertCurrent();
+      if(mode.enabled||window.sentlogDeltaOwnsProject?.(id)){
+        const result=await delta.sync(current,{confirmation:true});context.assertCurrent();
+        if(!result?.enabled||result.fresh!==true||result.detached||result.deferred)throw Error('別の変更を受信しています。最新の内容が反映されてから、もう一度確認してください。');
+        await collaborationCheckSharedState(context);
+        return {fresh:true,projectId:id,revision:Number(result.revision||0)};
+      }
+    }
+    const beforeRevision=Number(getSyncMeta(id)?.revision||0);
+    const result=await collaborationPullProject(current,context);context.assertCurrent();
+    if(result.deferred)throw Error('別の変更を受信しています。最新の内容が反映されてから、もう一度確認してください。');
+    if(!result.revision&&beforeRevision)throw Error('保存済みの共有記録を確認できません。変更は実行していません。');
+    await collaborationCheckSharedState(context);
+    if(window.sentlogDeltaOwnsProject?.(id))throw Error('確認中に保存方式の切替が始まりました。変更は実行していません。切替が完了してから、もう一度確認してください。');
+    // A fresh receive may introduce new photo/PDF references. Their normal
+    // verification/download stays queued, without delaying this decision.
+    if(result.changed||Number(result.revision)!==beforeRevision)collaborationFileWorker.request([id]);
+    return {fresh:true,projectId:id,revision:Number(result.revision||0)};
+  };
+  try{return await Promise.race([check(),cancelled]);}
+  finally{active=false;clearTimeout(timer);signal?.removeEventListener('abort',cancel);}
 };
 window.addEventListener('offline',()=>collaborationChannel?.wake());
 // An offline/closed client must catch up on reconnect even if its prior

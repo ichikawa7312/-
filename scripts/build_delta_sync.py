@@ -8,7 +8,7 @@ import re
 import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
-TOKEN = '20261121-responsive-save'
+TOKEN = '20261121-interactions'
 pending = {}
 
 
@@ -222,10 +222,11 @@ scripts = ''.join('<script src="./' + name + '.js?v=' + TOKEN + '"></\'+\'script
 change(index, 'document.open();document.write(html);document.close()',
        "html=html.replace('</body>','" + scripts + "</body>');document.open();document.write(html);document.close()")
 version_changes = set()
-for page in [index, 'sentlog-pc/index.html']:
+for page in [index, 'sentlog-pc/index.html', 'sentlog/drawing-export-view.html']:
     value = source(page)
     for name in ['record-store','cloud-sync','sync-view','archive','archive-core','archive-capacity','photo-recovery',
-                 'peer-photo-recovery','pdf-recovery','record-collaboration','session-guard','original-photo-store']:
+                 'peer-photo-recovery','pdf-recovery','record-collaboration','session-guard','original-photo-store',
+                 'collaboration-editor','pdf-quality','image-quality','page-management']:
         for prior in re.findall(r'(?<![A-Za-z-])' + re.escape(name) + r'\.js\?v=([A-Za-z0-9._-]+)', value):
             version_changes.add((name, prior))
         value = re.sub(r'(?<![A-Za-z-])' + re.escape(name) + r'\.js\?v=[A-Za-z0-9._-]+', name + '.js?v=' + TOKEN, value)
@@ -234,7 +235,7 @@ for page in [index, 'sentlog-pc/index.html']:
     pending[page] = value
 worker = source('sentlog/sw.js')
 old_cache = re.search(r'sentlog-pwa-v\d+', worker).group()
-new_cache = 'sentlog-pwa-v' + str(int(old_cache.rsplit('v',1)[1]) + 2)
+new_cache = 'sentlog-pwa-v' + str(int(old_cache.rsplit('v',1)[1]) + 3)
 worker = worker.replace(old_cache,new_cache)
 worker = worker.replace('const FILES=[', 'const FILES=[' + ','.join(repr(name+'.js') for name in modules) + ',')
 pending['sentlog/sw.js'] = worker

@@ -35,7 +35,7 @@ jobs:
       - name: Checkout published baseline
         uses: actions/checkout@v6
         with:
-          ref: f9a45102ff30ba70db57dbb77aea32532ffbcb61
+          ref: 388141d99a4ae47d2d8d456adc73376284933688
           path: perf-baseline
       - uses: actions/setup-node@v4
         with:

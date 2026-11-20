@@ -121,7 +121,7 @@
   };
 
   const baseRenderPdfPage=renderPdfPage;
-  renderPdfPage=async function(pageNo){
+  renderPdfPage=async function(pageNo,...options){
     if(state?.sourceType==='pdf'){
       ensure();
       if(hidden(pageNo)){
@@ -129,7 +129,7 @@
         if(target)pageNo=target;
       }
     }
-    return baseRenderPdfPage.call(this,pageNo);
+    return baseRenderPdfPage.call(this,pageNo,...options);
   };
 
   async function go(delta){

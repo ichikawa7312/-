@@ -73,9 +73,37 @@
     return /iPhone|iPad|iPod/i.test(navigator?.userAgent||'')||
       (navigator?.platform==='MacIntel'&&Number(navigator.maxTouchPoints)>1);
   }
+  // Keep only a disabled, detached stream for a short return to the same
+  // drawing. Disabled tracks deliver no camera image; retaining their grant
+  // avoids another getUserMedia permission request for each record. Leaving
+  // the drawing, backgrounding the app, or this deadline fully stops it.
+  function createStreamLease(options={}){
+    const setTimer=options.setTimeout||setTimeout,clearTimer=options.clearTimeout||clearTimeout;
+    const now=options.now||Date.now;
+    let held=null,scope=null,timer=null,deadline=0;
+    const stop=value=>{for(const t of value?.getTracks?.()||[])t.stop();};
+    const same=(a,b)=>!!a&&!!b&&['projectId','drawingId','ownerId'].every(k=>a[k]===b[k]);
+    function clear(){if(timer!==null)clearTimer(timer);timer=null;stop(held);held=null;scope=null;deadline=0;}
+    function park(value,target){
+      clear();const video=value?.getVideoTracks?.()[0];
+      if(!target?.drawingId||!video||video.readyState!=='live'||video.muted){stop(value);return false;}
+      held=value;scope={projectId:target.projectId,drawingId:target.drawingId,ownerId:target.ownerId};
+      for(const t of held.getTracks())t.enabled=false;
+      const timeout=options.timeoutMs??60000;deadline=now()+timeout;
+      timer=setTimer(clear,timeout);return true;
+    }
+    function take(target){
+      if(now()>=deadline||!same(scope,target)||held?.getVideoTracks?.()[0]?.readyState!=='live'){clear();return null;}
+      if(timer!==null)clearTimer(timer);timer=null;
+      const value=held;held=null;scope=null;deadline=0;
+      for(const t of value.getTracks())t.enabled=true;
+      return value;
+    }
+    return {park,take,clear};
+  }
   async function captureStill(video,track,ImageCaptureClass,document,options={}){
     if(!track||track.readyState==='ended')throw Error('カメラが停止しています。「カメラを再開」を押してください。');
-    if(track.muted)throw Error('カメラの映像が一時停止しています。再開してから撮影してください。');
+    if(track.muted||track.enabled===false)throw Error('カメラの映像が一時停止しています。再開してから撮影してください。');
     // On iPhone/iPad the still-photo output can use a different orientation
     // from the preview. Save the already oriented, full-size video frame there;
     // do not guess a rotation from screen shape or rotate native photo metadata.
@@ -89,7 +117,7 @@
         }
       }catch(e){if(track.readyState==='ended')throw e;}
     }
-    if(track.readyState==='ended'||track.muted)throw Error('カメラの映像が一時停止しています。再開してから撮影してください。');
+    if(track.readyState==='ended'||track.muted||track.enabled===false)throw Error('カメラの映像が一時停止しています。再開してから撮影してください。');
     // Use the actual full stream dimensions, never the on-screen preview size.
     const width=video.videoWidth,height=video.videoHeight;
     if(!width||!height||video.readyState<2)throw Error('カメラの準備中です。映像が出てから撮影してください。');
@@ -102,12 +130,14 @@
     }finally{canvas.width=1;canvas.height=1;}
   }
 
-  const pure={createSession,captureStill,prefersVideoFrame};
+  const pure={createSession,captureStill,prefersVideoFrame,createStreamLease};
   if(typeof module!=='undefined'&&module.exports){module.exports=pure;return;}
   if(!root.document||root.SentlogContinuousCamera)return;
   const document=root.document;
   let ui,session,stream=null,track=null,generation=0,starting=false,paused=false,wakeLock=null;
   let priorFocus=null,priorOverflow='',reviewGeneration=0,unsubscribe=null,exportConfirmed=false,deferredEditorRefresh=null;
+  const streamLease=createStreamLease();
+  const watchedTracks=new WeakSet();
   const urls=new Set();
   const photos=()=>root.SentlogCollaborationPhotos;
   const isOpen=()=>!!ui&&!ui.modal.hidden;
@@ -117,11 +147,23 @@
   }
   const activeTrack=()=>stream?.getVideoTracks?.()[0]||null;
   function status(text){if(ui)ui.status.textContent=text;}
-  function stopStream(){
+  function detachPreview(){
     generation++;starting=false;
-    for(const t of stream?.getTracks?.()||[])t.stop();stream=null;track=null;
     if(ui){ui.video.pause();ui.video.srcObject=null;}
     if(wakeLock){void wakeLock.release().catch(()=>{});wakeLock=null;}
+  }
+  function stopStream(){
+    streamLease.clear();for(const t of stream?.getTracks?.()||[])t.stop();stream=null;track=null;
+    detachPreview();
+  }
+  function releaseStream(reuse){
+    const target=session?.snapshot().target;
+    const sameDrawing=typeof currentView!=='undefined'&&currentView==='editor'&&
+      typeof activeProjectId!=='undefined'&&activeProjectId===target?.projectId&&
+      typeof activeDrawingId!=='undefined'&&activeDrawingId===target?.drawingId;
+    if(reuse&&!document.hidden&&sameDrawing&&stream){
+      streamLease.park(stream,target);stream=null;track=null;detachPreview();
+    }else stopStream();
   }
   function clearReview(){reviewGeneration++;for(const url of urls)URL.revokeObjectURL(url);urls.clear();
     if(ui){ui.list.replaceChildren();ui.large.hidden=true;ui.largeImage.removeAttribute('src');}}
@@ -129,7 +171,7 @@
   function render(){
     if(!ui||!session)return;const s=session.snapshot();
     ui.count.textContent=`保存${s.saved}枚`;ui.count.disabled=!s.entries.length||s.busy||s.closing;
-    ui.shutter.disabled=s.busy||s.closing||s.unsaved||!track||track.muted||paused||starting||!ui.review.hidden;
+    ui.shutter.disabled=s.busy||s.closing||s.unsaved||!track||track.muted||track.enabled===false||ui.video.readyState<2||paused||starting||!ui.review.hidden;
     ui.shutter.setAttribute('aria-label',s.busy?'写真を保存中':'写真を撮影');
     ui.done.disabled=s.closing;ui.done.textContent=s.closing?'保存を待機中…':'完了';
     ui.native.disabled=s.busy||s.unsaved||s.closing;
@@ -179,6 +221,7 @@
       retry:get('slCameraRetry'),export:get('slCameraExport'),exportDone:get('slCameraExportDone'),review:get('slCameraReview'),
       reviewClose:get('slCameraReviewClose'),list:get('slCameraReviewList'),large:get('slCameraLarge'),largeImage:get('slCameraLargeImage')};
     ui.shutter.onclick=()=>void session?.capture();
+    ui.video.addEventListener('loadeddata',render);ui.video.addEventListener('canplay',render);
     ui.done.onclick=()=>void close();ui.resume.onclick=()=>void startCamera();
     ui.retry.onclick=()=>void session?.retry().then(()=>{if(!ui.review.hidden)void showReview();});
     ui.count.onclick=()=>void showReview();ui.reviewClose.onclick=()=>{clearReview();ui.review.hidden=true;render();ui.shutter.focus();};
@@ -191,7 +234,7 @@
       try{const current=photos().captureTarget();if(!current||['projectId','drawingId','recordId','ownerId'].some(k=>current[k]!==fixed[k]))throw Error('追加先が変わりました。撮影を完了し、元の記録を開いてください。');}
       catch(e){showError(e);return;}
       // Keep chooser activation in this actual click, without an async gap.
-      finishClose();document.getElementById('cameraInput')?.click();
+      finishClose(false);document.getElementById('cameraInput')?.click();
     };
     ui.export.onclick=()=>{
       const file=session?.unsavedFile();if(!file)return;
@@ -209,19 +252,27 @@
     });
   }
   async function startCamera(){
-    if(!isOpen()||starting)return;stopStream();const token=generation;starting=true;paused=false;render();status('カメラを準備しています…');
+    if(!isOpen()||starting)return;
+    const retained=streamLease.take(session.snapshot().target);
+    stopStream();const token=generation;starting=true;paused=false;render();status('カメラを準備しています…');
     try{
-      if(!navigator.mediaDevices?.getUserMedia)throw Error('この環境では連続撮影を開けません。「標準カメラ」を使ってください。');
-      const next=await navigator.mediaDevices.getUserMedia({audio:false,video:{facingMode:{ideal:'environment'},width:{ideal:3840},height:{ideal:2880}}});
+      if(!retained&&!navigator.mediaDevices?.getUserMedia)throw Error('この環境では連続撮影を開けません。「標準カメラ」を使ってください。');
+      const next=retained||await navigator.mediaDevices.getUserMedia({audio:false,video:{facingMode:{ideal:'environment'},width:{ideal:3840},height:{ideal:2880}}});
       if(token!==generation||!isOpen()){next.getTracks().forEach(t=>t.stop());return;}
       stream=next;track=activeTrack();if(!track)throw Error('カメラを利用できません。「標準カメラ」を使ってください。');
-      const current=track;current.addEventListener?.('ended',()=>{if(track===current&&isOpen()){paused=true;stopStream();status('カメラが停止しました。「カメラを再開」を押してください。');render();}});
-      current.addEventListener?.('mute',()=>{if(track===current&&isOpen()){paused=true;render();status('カメラの映像を一時停止しています。「カメラを再開」を押してください。');}});
-      current.addEventListener?.('unmute',()=>{if(track===current&&isOpen()){paused=false;render();}});
+      const current=track;
+      if(!watchedTracks.has(current)){
+        watchedTracks.add(current);
+        current.addEventListener?.('ended',()=>{if(track===current&&isOpen()){paused=true;stopStream();status('カメラが停止しました。「カメラを再開」を押してください。');render();}});
+        current.addEventListener?.('mute',()=>{if(track===current&&isOpen()){paused=true;render();status('カメラの映像を一時停止しています。「カメラを再開」を押してください。');}});
+        current.addEventListener?.('unmute',()=>{if(track===current&&isOpen()){paused=false;render();}});
+      }
       ui.video.muted=true;ui.video.playsInline=true;ui.video.srcObject=next;await ui.video.play();
       if(token!==generation||!isOpen())return;
+      paused=!!current.muted;
       if(navigator.wakeLock?.request)void navigator.wakeLock.request('screen').then(lock=>{if(token===generation&&isOpen())wakeLock=lock;else void lock.release();}).catch(()=>{});
       starting=false;render();
+      if(paused)status('カメラの映像を一時停止しています。「カメラを再開」を押してください。');
     }catch(e){
       if(token!==generation||!isOpen())return;
       stopStream();paused=true;render();status(e.name==='NotAllowedError'?'カメラの利用が許可されていません。許可して再開するか「標準カメラ」を使ってください。':message(e));
@@ -274,6 +325,7 @@
       exportConfirmed=false;session=createSession({target,photos:photos(),takePhoto,onChange:render});
       ui.target.textContent=target.recordLabel||'選択中の記録';ui.target.title=[target.drawingName,target.recordLabel].filter(Boolean).join(' / ');
       ui.modal.hidden=false;ui.review.hidden=true;ui.large.hidden=true;ui.done.focus();render();
+      root.dispatchEvent(new CustomEvent('sentlog-camera-visibility',{detail:{open:true}}));
       unsubscribe=root.SentlogRecords?.subscribe?.(()=>{
         if(!isOpen()||!session)return;
         for(const entry of session.snapshot().entries)if(entry.status==='attached'){
@@ -286,10 +338,11 @@
       await startCamera();
     }catch(e){const target=document.getElementById('photoStatus');if(target)target.textContent=message(e);if(isOpen())showError(e);}
   }
-  function finishClose(){
+  function finishClose(reuse=true){
     const refresh=deferredEditorRefresh;deferredEditorRefresh=null;
-    stopStream();clearReview();unsubscribe?.();unsubscribe=null;
+    releaseStream(reuse);clearReview();unsubscribe?.();unsubscribe=null;
     if(ui){ui.modal.hidden=true;ui.review.hidden=true;}document.body.style.overflow=priorOverflow;
+    root.dispatchEvent(new CustomEvent('sentlog-camera-visibility',{detail:{open:false}}));
     priorFocus?.focus?.();
     if(refresh){
       const failed=e=>{console.warn('Sentlog camera editor refresh',e);
@@ -305,16 +358,22 @@
     finishClose();return true;
   }
   document.addEventListener('visibilitychange',()=>{
-    if(!isOpen())return;
-    if(document.hidden){paused=true;stopStream();render();}
+    if(document.hidden){paused=true;stopStream();if(isOpen())render();}
+    else if(!isOpen())return;
     else{paused=true;render();status('カメラを一時停止しました。「カメラを再開」を押してください。');}
   });
-  root.addEventListener('pagehide',()=>{if(isOpen()){paused=true;stopStream();}});
+  root.addEventListener('pagehide',()=>{paused=true;stopStream();});
   root.addEventListener('beforeunload',event=>{if(isOpen()&&(session?.snapshot().busy||session?.snapshot().unsaved)){event.preventDefault();event.returnValue='';}});
   // Capture phase avoids invoking the existing native file picker as well.
   root.addEventListener('click',event=>{
     const button=event.target?.closest?.('#cameraBtn');if(!button||button.disabled)return;
     event.preventDefault();event.stopImmediatePropagation();void open();
   },true);
+  // A stream parked between shots belongs only to this drawing. Navigating
+  // away releases it immediately; an open session still owns its fixed target.
+  for(const name of ['showProjects','showDrawings','openDrawing','createDrawingFromFile']){
+    const original=root[name];if(typeof original!=='function')continue;
+    root[name]=function(){if(!isOpen())stopStream();return original.apply(this,arguments);};
+  }
   root.SentlogContinuousCamera={...pure,open,close,isOpen,deferEditorRefresh};
 })(typeof window==='undefined'?globalThis:window);

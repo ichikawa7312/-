@@ -4,12 +4,12 @@
 const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
 const part=fs.readFileSync('sentlog/part09.txt','utf8');
 const legacy=part.slice(part.indexOf('async function renderImage('),part.indexOf('\nfunction updatePageUI()'));
-const open=part.slice(part.indexOf('async function openFile('),part.indexOf('\nasync function renderPdfPage('));
+const open=part.slice(part.indexOf('let drawingFileOpenSequence='),part.indexOf('\nasync function renderPdfPage('));
 const setup=fs.readFileSync('sentlog/part07.txt','utf8').match(/function setupStage\(w,h\)\{[^\n]+/)[0];
 
 function fixture({patched=true,naturalWidth=11575,naturalHeight=8031,touch=false,bitmap='supported'}={}){
   const allocations=[],draws=[],timers=new Map(),revoked=[],created=[],errors=[];
-  const images=[],bitmaps=[],elements=[];
+  const images=[],bitmaps=[],elements=[],events=new Map();
   let counter=0,fits=0,persists=0;
   const context={console:{warn(){},error(){}},File,Blob,Math,Promise,queueMicrotask,
     navigator:{userAgent:touch?'iPhone test':'Desktop test',maxTouchPoints:touch?5:0},
@@ -20,7 +20,7 @@ function fixture({patched=true,naturalWidth=11575,naturalHeight=8031,touch=false
     scale:.05,tx:0,ty:0,activeTouches:new Map(),panStart:null,labelDrag:null,devicePixelRatio:3,
     setTimeout:fn=>{const id=++counter;timers.set(id,fn);return id;},clearTimeout:id=>timers.delete(id),
     requestAnimationFrame:fn=>{const id=++counter;timers.set(id,fn);return id;},cancelAnimationFrame:id=>timers.delete(id),
-    addEventListener(){},URL:{createObjectURL:file=>{created.push(file);return 'blob:'+created.length;},revokeObjectURL:url=>revoked.push(url)},
+    addEventListener(name,fn){const handlers=events.get(name)||[];handlers.push(fn);events.set(name,handlers);},URL:{createObjectURL:file=>{created.push(file);return 'blob:'+created.length;},revokeObjectURL:url=>revoked.push(url)},
     fit(){fits++;context.scale=.05;context.tx=5;context.ty=10;},render(){},persist(){persists++;},
     updateScaleStatus(){},updateZoomUI(){},updatePageUI(){},showError:error=>errors.push(error),setLoading:on=>{context.loading.style.display=on?'grid':'none';},
     saveBackgroundFile:async()=>{},applyTransform(){},openDrawing:async()=>{},showProjects(){context.currentView='projects';},showDrawings(){context.currentView='drawings';},
@@ -38,7 +38,10 @@ function fixture({patched=true,naturalWidth=11575,naturalHeight=8031,touch=false
     bitmaps.push(result);return result;
   };
   function canvas(){
-    const c={style:{},width:300,height:150,setAttribute(){},remove(){stage.children=stage.children.filter(x=>x!==c)}};
+    const c={style:{},width:300,height:150,setAttribute(){},remove(){
+      if(stage.children.includes(c))stage.removals++;
+      stage.children=stage.children.filter(x=>x!==c);
+    }};
     for(const key of ['width','height']){
       let value=c[key];Object.defineProperty(c,key,{get:()=>value,set:n=>{
         value=n;allocations.push({width:c.width,height:c.height,pixels:c.width*c.height});
@@ -51,7 +54,7 @@ function fixture({patched=true,naturalWidth=11575,naturalHeight=8031,touch=false
     c.getContext=()=>context.denyContext || c.width*c.height>16777216?null:drawingContext;
     c.testContext=drawingContext;return c;
   }
-  const stage={style:{},children:[],insertBefore(c){this.children.push(c)}},wrap={dataset:{},getBoundingClientRect:()=>({width:390,height:650})};
+  const stage={style:{},children:[],insertions:0,removals:0,insertBefore(c){this.insertions++;this.children.push(c)}},wrap={dataset:{},getBoundingClientRect:()=>({width:390,height:650})};
   const svg={style:{},attributes:{},setAttribute(k,v){this.attributes[k]=String(v)},removeAttribute(k){delete this.attributes[k]}};
   context.canvas=canvas();context.ctx=context.canvas.testContext;context.svg=svg;
   context.$=id=>id==='fileName'?{textContent:''}:null;
@@ -60,7 +63,8 @@ function fixture({patched=true,naturalWidth=11575,naturalHeight=8031,touch=false
   if(patched)vm.runInContext(fs.readFileSync('sentlog/image-quality.js','utf8'),context);
   const file=new File(['synthetic-jpeg-bytes'],'02.jpg',{type:'image/jpeg'});
   const flush=()=>{const batch=[...timers.values()];timers.clear();for(const fn of batch)fn();};
-  return {context,file,allocations,draws,stage,wrap,errors,revoked,created,images,bitmaps,elements,flush,get fits(){return fits},get persists(){return persists}};
+  const event=(name,detail)=>{for(const fn of events.get(name)||[])fn({detail});};
+  return {context,file,allocations,draws,stage,wrap,errors,revoked,created,images,bitmaps,elements,flush,event,get fits(){return fits},get persists(){return persists}};
 }
 
 (async()=>{
@@ -137,6 +141,83 @@ function fixture({patched=true,naturalWidth=11575,naturalHeight=8031,touch=false
     assert(phone.bitmaps.every(b=>b.closed),'leaving the drawing closes owned bitmaps');
   }
   console.log('PASS touch memory lifecycle: 100 zoom/pan operations reuse one small surface and never read or retain the original decoder; resize fallback/ignored options close safely');
+
+  for(const touch of [false,true]){
+    const camera=fixture({touch});let isOpen=false;
+    camera.context.SentlogContinuousCamera={isOpen:()=>isOpen};
+    await camera.context.openFile(camera.file,false);camera.flush();
+    const state=JSON.stringify(camera.context.state),source=camera.bitmaps[0];
+    const front=camera.stage.children[0];assert(front);
+    const elements=camera.elements.length,insertions=camera.stage.insertions,removals=camera.stage.removals;
+    isOpen=true;camera.event('sentlog-camera-visibility',{open:true});
+    assert.equal(camera.stage.children.length,1);assert.equal(camera.stage.children[0],front);
+    if(touch)assert(front.width*front.height>1 && front.width*front.height<=1500000,
+      'touch capture retains only its already bounded viewport');
+    else assert.equal(front.width*front.height,1,'larger desktop detail releases its raster while keeping the node');
+    const allocations=camera.allocations.length,draws=camera.draws.length;
+    for(let i=0;i<20;i++){
+      camera.wrap.getBoundingClientRect=()=>i%2?{width:844,height:390}:{width:390,height:650};
+      camera.context.scale=.4;camera.context.tx=-100-i;
+      camera.context.applyTransform();camera.flush();
+    }
+    assert.equal(camera.allocations.length,allocations,'a covered image must not allocate drawing surfaces');
+    assert.equal(camera.draws.length,draws,'a covered image must not repaint behind the camera');
+    if(source)assert.equal(source.closed,false,'the bounded source stays available without decoding the original again');
+    const readRect=camera.wrap.getBoundingClientRect;let layoutReads=0,editorRefreshed=false;
+    camera.wrap.getBoundingClientRect=()=>{
+      assert(editorRefreshed,'camera close must wait for the synchronous editor refresh before reading layout');
+      layoutReads++;return readRect();
+    };
+    isOpen=false;camera.event('sentlog-camera-visibility',{open:false});
+    assert.equal(layoutReads,0,'the close event itself performs no drawing geometry read');
+    // finishClose invokes its deferredEditorRefresh after dispatching this
+    // event, synchronously so native camera input keeps user activation.
+    editorRefreshed=true;await Promise.resolve();camera.flush();
+    assert(layoutReads>0,'the changed viewport is measured after editor refresh');
+    assert.equal(camera.stage.children.length,1);assert.equal(camera.draws.length,draws+1);
+    assert.equal(camera.stage.children[0],front,'a changed camera viewport restores into the same canvas node');
+    if(touch){
+      assert.equal(camera.context.svg.attributes.width,'844');assert.equal(camera.context.svg.attributes.height,'390');
+      assert(front.width*front.height<=1500000,'rotation still respects the existing viewport memory bound');
+    }
+    assert.equal(camera.elements.length,elements,'restoring a changed viewport does not create another canvas');
+    assert.equal(camera.stage.insertions,insertions);assert.equal(camera.stage.removals,removals);
+    assert.equal(camera.created.length,1);assert.equal(JSON.stringify(camera.context.state),state);
+    assert.equal(camera.fits,1,'camera visibility alone must not reset drawing zoom');
+    const plainDraws=camera.draws.length,plainAllocations=camera.allocations.length;
+    for(let i=0;i<10;i++){
+      isOpen=true;camera.event('sentlog-camera-visibility',{open:true});camera.flush();
+      editorRefreshed=false;const previousReads=layoutReads;
+      isOpen=false;camera.event('sentlog-camera-visibility',{open:false});
+      assert.equal(layoutReads,previousReads,'plain closes also defer layout until the editor refresh completes');
+      editorRefreshed=true;await Promise.resolve();camera.flush();
+    }
+    assert.equal(camera.draws.length,plainDraws+(touch?0:10),
+      'an unchanged touch camera close needs no image repaint; desktop reconstructs its released raster once');
+    if(touch)assert.equal(camera.allocations.length,plainAllocations,
+      'repeated unchanged touch sessions do not resize or reallocate their retained surface');
+    assert.equal(camera.elements.length,elements);assert.equal(camera.stage.children[0],front);
+    assert.equal(camera.stage.insertions,insertions);assert.equal(camera.stage.removals,removals);
+    assert.equal(camera.created.length,1);assert.equal(JSON.stringify(camera.context.state),state);
+    assert.equal(await camera.file.text(),'synthetic-jpeg-bytes');
+    isOpen=true;camera.event('sentlog-camera-visibility',{open:true});
+    isOpen=false;camera.event('sentlog-camera-visibility',{open:false});
+    isOpen=true;camera.event('sentlog-camera-visibility',{open:true});
+    const reopenedReads=layoutReads,reopenedDraws=camera.draws.length,reopenedAllocations=camera.allocations.length;
+    await Promise.resolve();camera.flush();
+    assert.equal(layoutReads,reopenedReads,'a queued close cannot measure a drawing covered by a reopened camera');
+    assert.equal(camera.draws.length,reopenedDraws);assert.equal(camera.allocations.length,reopenedAllocations);
+    // Queue another close, then leave before its microtask runs. A stale
+    // callback must not read or recreate the released drawing viewport.
+    isOpen=false;camera.event('sentlog-camera-visibility',{open:false});camera.context.showProjects();
+    assert.equal(camera.stage.children.length,0);assert.equal(front.width*front.height,1);
+    if(source)assert.equal(source.closed,true,'leaving the drawing still releases the bounded source');
+    const afterLeave=camera.allocations.length,afterDraw=camera.draws.length;
+    isOpen=false;camera.event('sentlog-camera-visibility',{open:false});await Promise.resolve();camera.flush();
+    assert.equal(camera.stage.children.length,0);assert.equal(camera.allocations.length,afterLeave);
+    assert.equal(camera.draws.length,afterDraw,'a late camera close cannot resurrect the departed drawing');
+  }
+  console.log('PASS camera overlay: close layout waits for editor refresh, bounded touch raster retained, desktop pixels released, zero covered drawing work, same-node changed-view redraw, ten plain touch closes allocate/repaint nothing, reopened/left views reject stale close work');
 
   for(const failure of ['denyContext','failPaint']){
     const retry=fixture();retry.context[failure]=true;

@@ -2,19 +2,23 @@
 // next normal sync must re-read its revision instead of blindly repeating it.
 async function readSyncResponse(path,opts={}){
   const read=(opts.method||'GET').toUpperCase()==='GET';
+  const checkCancelled=()=>{if(opts.signal?.aborted)throw opts.signal.reason||Object.assign(Error('通信の確認をキャンセルしました。'),{name:'AbortError'});};
   for(let attempt=0;;attempt++){
+    checkCancelled();
     const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),read?12000:30000);
+    const cancel=()=>controller.abort(opts.signal?.reason);opts.signal?.addEventListener('abort',cancel,{once:true});
     try{
       const response=await fetch(SUPABASE_URL+path,{...opts,signal:controller.signal,
         headers:headers({'Content-Type':'application/json',...(opts.headers||{})})});
-      const text=await response.text();
+      const text=await response.text();checkCancelled();
       if(read&&attempt===0&&[503,504].includes(response.status)){await sleep(400);continue;}
       return {response,text};
     }catch(error){
+      checkCancelled();
       const network=error?.name==='TypeError'||error?.name==='AbortError';
       if(!network)throw error;
       if(read&&attempt===0&&navigator.onLine){await sleep(400);continue;}
       throw Error('通信が途中で切れました。接続を確認して「今すぐ同期」を押してください。');
-    }finally{clearTimeout(timer);}
+    }finally{clearTimeout(timer);opts.signal?.removeEventListener('abort',cancel);}
   }
 }

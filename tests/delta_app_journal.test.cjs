@@ -54,9 +54,9 @@ function projectionWriter(f){return async(projection,options)=>{
   if(index<0)workspace.projects.push(copy(projection.project));else workspace.projects[index]=copy(projection.project);
   return f.records.deltaJournal.applyProjection({...options,writes:[[WS,json(workspace)],...projection.drawings.map(d=>[DRAW+d.meta.id,json(d.state)])]});};}
 function runtimeFixture(f,e,options={}){
-  let user=scope.ownerId,generation=1,enabled=!options.staging,inspections=0,installedRevision=null;const auth=new Set(),published=[];
+  let user=scope.ownerId,generation=1,enabled=!options.staging,inspections=0,installedRevision=null,received=0;const auth=new Set(),published=[];
   const cp={id:scope.projectId,client_key:localProjectId,name:'現場'},payload=snapshot();
-  const transport={getScope:()=>copy(scope),online:()=>false,ready:async()=>true,close(){},wake(){},push:async()=>{throw Error('offline');},pushGroup:async()=>{throw Error('offline');},list:async()=>[],
+  const transport={getScope:()=>copy(scope),online:()=>options.online===true,ready:async()=>true,close(){},wake(){},push:async()=>{throw Error('offline');},pushGroup:async()=>{throw Error('offline');},list:async()=>{received++;return [];},
     getCapabilities:()=>({atomicGroups:true,sharedMetadata:true,certifiedArchive:true,writerJournal:2}),
     inspect:async()=>({schema:1,...scope,enabled,canActivate:true,headSeq:0,snapshotRevision:++inspections===1?9:12,checking:false,
       baseline:enabled?{baselineId:'baseline',snapshotRevision:12}:null}),
@@ -71,7 +71,7 @@ function runtimeFixture(f,e,options={}){
     applyProjection:async(cp,projection,context)=>{if(options.beforeProjection)await options.beforeProjection();return projectionWriter(f)(projection,context);},
     readFile:async key=>(await f.disk()).get(key),withFileLock:async(key,fn)=>fn(),
     factories:{provider:()=>({}),transport:()=>transport,store:()=>store,...options.factories}});
-  return {runtime,cp,published,get installedRevision(){return installedRevision;},switchAuth(){user='other-owner';generation++;for(const fn of auth)fn();}};
+  return {runtime,cp,published,get installedRevision(){return installedRevision;},get received(){return received;},switchAuth(){user='other-owner';generation++;for(const fn of auth)fn();}};
 }
 async function installerFixture(f,{onRead}={}){
   const server=snapshot(),hash=async text=>[...new Uint8Array(await webcrypto.subtle.digest('SHA-256',await new Blob([text]).arrayBuffer()))].map(x=>x.toString(16).padStart(2,'0')).join('');
@@ -309,6 +309,22 @@ await test('actual app runtime resumes a staged journal against the latest inspe
   const r=runtimeFixture(f,e,{staging:true});const result=await r.runtime.sync(r.cp);
   assert.equal(result.enabled,true);assert.equal(r.installedRevision,12);assert.equal(f.records.deltaJournal.bindingFor(localProjectId).phase,'active');
   assert.equal(f.records.deltaJournal.bindingFor(localProjectId).cutoff.serverRevision,7);assert(e.read().records[D.keyOf('drawing-1','record-1')].memo.includes('切替中も保存した入力'));r.runtime.close();
+});
+await test('decision confirmation cannot activate a staging journal or certify an offline replica',async()=>{
+  const f=await app(),e=await bind(f,{metadata:true,staging:true,serverRevision:7}),r=runtimeFixture(f,e,{staging:true});
+  await assert.rejects(()=>r.runtime.sync(r.cp,{confirmation:true}),error=>error.code==='DELTA_APP_CONFIRM_PENDING');
+  assert.equal(r.installedRevision,null);assert.equal(f.records.deltaJournal.bindingFor(localProjectId).phase,'staging');assert.equal(r.published.length,0);r.runtime.close();
+  const ready=await app(),bound=await bind(ready,{metadata:true}),offline=runtimeFixture(ready,bound);
+  await assert.rejects(()=>offline.runtime.sync(offline.cp,{confirmation:true}),error=>error.code==='DELTA_APP_CONFIRM_OFFLINE');
+  assert.equal(offline.installedRevision,null);assert.equal(offline.published.length,0);offline.runtime.close();
+});
+await test('active decision confirmation performs a new receive after an existing round without activation or checkpoint',async()=>{
+  const f=await app(),e=await bind(f,{metadata:true}),started=waitPoint(),release=waitPoint();let hold=true;
+  const r=runtimeFixture(f,e,{online:true,beforeProjection:async()=>{if(hold){hold=false;started.resolve();await release.promise;}}});
+  const previous=r.runtime.sync(r.cp);await started.promise;const reads=r.received;
+  const confirmation=r.runtime.sync(r.cp,{confirmation:true});release.resolve();await previous;const checked=await confirmation;
+  assert.equal(checked.fresh,true);assert.equal(checked.deferred,false);assert(r.received>reads,'confirmation must receive after the old in-flight round');
+  assert.equal(r.installedRevision,null);assert.equal(r.published.length,0);r.runtime.close();
 });
 await test('actual app runtime auth switch during asynchronous projection retains old-owner data',async()=>{
   const f=await app(),e=await bind(f,{metadata:true});edit(f,'ログイン切替前の入力');await f.records.settled();const started=waitPoint(),release=waitPoint();let hold=true;
