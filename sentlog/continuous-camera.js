@@ -107,10 +107,14 @@
   if(!root.document||root.SentlogContinuousCamera)return;
   const document=root.document;
   let ui,session,stream=null,track=null,generation=0,starting=false,paused=false,wakeLock=null;
-  let priorFocus=null,priorOverflow='',reviewGeneration=0,unsubscribe=null,exportConfirmed=false;
+  let priorFocus=null,priorOverflow='',reviewGeneration=0,unsubscribe=null,exportConfirmed=false,deferredEditorRefresh=null;
   const urls=new Set();
   const photos=()=>root.SentlogCollaborationPhotos;
   const isOpen=()=>!!ui&&!ui.modal.hidden;
+  function deferEditorRefresh(callback){
+    if(!isOpen()||typeof callback!=='function')return false;
+    deferredEditorRefresh=callback;return true;
+  }
   const activeTrack=()=>stream?.getVideoTracks?.()[0]||null;
   function status(text){if(ui)ui.status.textContent=text;}
   function stopStream(){
@@ -283,9 +287,17 @@
     }catch(e){const target=document.getElementById('photoStatus');if(target)target.textContent=message(e);if(isOpen())showError(e);}
   }
   function finishClose(){
+    const refresh=deferredEditorRefresh;deferredEditorRefresh=null;
     stopStream();clearReview();unsubscribe?.();unsubscribe=null;
     if(ui){ui.modal.hidden=true;ui.review.hidden=true;}document.body.style.overflow=priorOverflow;
     priorFocus?.focus?.();
+    if(refresh){
+      const failed=e=>{console.warn('Sentlog camera editor refresh',e);
+        const target=document.getElementById('photoStatus');if(target)target.textContent='写真一覧を更新できません：'+message(e);};
+      // Invoke synchronously so the native-camera button keeps its user
+      // activation. Thumbnail loading retains its normal asynchronous path.
+      try{Promise.resolve(refresh()).catch(failed);}catch(e){failed(e);}
+    }
   }
   async function close(){
     if(!isOpen())return true;
@@ -304,5 +316,5 @@
     const button=event.target?.closest?.('#cameraBtn');if(!button||button.disabled)return;
     event.preventDefault();event.stopImmediatePropagation();void open();
   },true);
-  root.SentlogContinuousCamera={...pure,open,close,isOpen};
+  root.SentlogContinuousCamera={...pure,open,close,isOpen,deferEditorRefresh};
 })(typeof window==='undefined'?globalThis:window);

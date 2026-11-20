@@ -9,7 +9,7 @@ import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
 ASSET = 'continuous-camera.js'
-TOKEN = '20261121-camera-orientation'
+TOKEN = '20261121-camera-save'
 pending = {}
 
 

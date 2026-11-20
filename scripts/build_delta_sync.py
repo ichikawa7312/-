@@ -8,7 +8,7 @@ import re
 import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
-TOKEN = '20261120-delta-app-1'
+TOKEN = '20261121-responsive-save'
 pending = {}
 
 
@@ -31,10 +31,10 @@ if 'project-sync-controls-v1' not in source(cloud):
 runtime = source('sentlog/delta-sync-cloud-runtime.txt').strip()
 change(cloud, 'async function collaborationMetadataRound(ids,context){', runtime + '\n\nasync function collaborationMetadataRound(ids,context){')
 change(cloud, 'if(lp){collaborationNormalizeStored([id],context);await collaborationCheckSharedState(context);}',
-       "if(lp&&!window.SentlogRecords.deltaJournal.bindingFor(id)){collaborationNormalizeStored([id],context);await collaborationCheckSharedState(context);}")
+       "if(lp&&!(window.SentlogRecords.deltaJournal.bindingStateFor?window.SentlogRecords.deltaJournal.bindingStateFor(id):window.SentlogRecords.deltaJournal.bindingFor(id))){collaborationNormalizeStored([id],context);await collaborationCheckSharedState(context);}")
 change(cloud, "      stage='記録の受信';const read=await collaborationPullProject(cp,context);context.assertCurrent();changed+=read.changed;",
        """      stage='保存方式の確認';const deltaMode=await sentlogDeltaApp.inspect(cp);context.assertCurrent();
-      const deltaBinding=window.SentlogRecords.deltaJournal.bindingFor(id);
+      const deltaBinding=window.SentlogRecords.deltaJournal.bindingStateFor?window.SentlogRecords.deltaJournal.bindingStateFor(id):window.SentlogRecords.deltaJournal.bindingFor(id);
       if(deltaMode.enabled||deltaBinding){
         if(!lp&&!deltaBinding){
           const initial=await collaborationPullProject(cp,context);context.assertCurrent();
@@ -81,6 +81,8 @@ change(cloud, 'function collaborationWake(){', 'function collaborationWake(){sen
 # The existing renderer continues to preserve inspector/IME drafts. Its storage
 # commit now uses the journal CAS authority, never an ordinary remote batch.
 view = 'sentlog/sync-view.js'
+change(view, "isBusy:()=>currentView==='editor'&&busy(),",
+       "isBusy:id=>currentView==='editor'&&(!id||activeProjectId===id)&&busy(),")
 old = "      window.SentlogRecords.batch(writes,{origin:'remote'});"
 new = """      if(mergeOptions.deltaProjection){
         const applied=await window.SentlogRecords.deltaJournal.applyProjection({...mergeOptions.deltaProjection,writes});
@@ -223,7 +225,7 @@ version_changes = set()
 for page in [index, 'sentlog-pc/index.html']:
     value = source(page)
     for name in ['record-store','cloud-sync','sync-view','archive','archive-core','archive-capacity','photo-recovery',
-                 'peer-photo-recovery','pdf-recovery','record-collaboration','session-guard']:
+                 'peer-photo-recovery','pdf-recovery','record-collaboration','session-guard','original-photo-store']:
         for prior in re.findall(r'(?<![A-Za-z-])' + re.escape(name) + r'\.js\?v=([A-Za-z0-9._-]+)', value):
             version_changes.add((name, prior))
         value = re.sub(r'(?<![A-Za-z-])' + re.escape(name) + r'\.js\?v=[A-Za-z0-9._-]+', name + '.js?v=' + TOKEN, value)
@@ -232,7 +234,7 @@ for page in [index, 'sentlog-pc/index.html']:
     pending[page] = value
 worker = source('sentlog/sw.js')
 old_cache = re.search(r'sentlog-pwa-v\d+', worker).group()
-new_cache = 'sentlog-pwa-v' + str(int(old_cache.rsplit('v',1)[1]) + 1)
+new_cache = 'sentlog-pwa-v' + str(int(old_cache.rsplit('v',1)[1]) + 2)
 worker = worker.replace(old_cache,new_cache)
 worker = worker.replace('const FILES=[', 'const FILES=[' + ','.join(repr(name+'.js') for name in modules) + ',')
 pending['sentlog/sw.js'] = worker

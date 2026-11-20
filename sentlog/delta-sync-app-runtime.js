@@ -18,11 +18,11 @@
   const fail=(code,message)=>Object.assign(Error(message),{code});
   function insist(ok,code,message){if(!ok)throw fail(code,message);}
   function createRuntime({records,url,key,session,ensureSession,authGeneration,subscribeAuth,deviceId,
-    install,applyProjection,readFile,withFileLock,actor,onStatus=()=>{},onPhotoReceived=()=>{},
+    install,applyProjection,readFile,withFileLock,actor,onStatus=()=>{},onPhotoReceived=()=>{},canProject=()=>true,
     network=()=>root.navigator?.onLine!==false,visible=()=>!root.document?.hidden,
     factories={},fetch:fetcher=root.fetch}={}){
     insist(records?.deltaJournal&&[session,ensureSession,authGeneration,subscribeAuth,deviceId,install,
-      applyProjection,readFile,withFileLock,actor].every(x=>typeof x==='function'),
+      applyProjection,readFile,withFileLock,actor,canProject].every(x=>typeof x==='function'),
       'DELTA_APP_CONFIG','編集・保存・同期の接続方法を確認できません');
     const contexts=new Map();let closed=false;
     const J=()=>root.SentlogDeltaAppJournal||req('delta-sync-app-journal');
@@ -43,8 +43,9 @@
     function reset(){for(const c of contexts.values())closeContext(c);contexts.clear();root.SentlogDeltaMetadataUI?.clear();}
     const unsubscribe=subscribeAuth(reset);
     async function binding(c){
-      const all=await records.deltaJournal.listBindings();check(c);
-      const found=all.find(x=>x.localProjectId===c.localProjectId);
+      const journal=records.deltaJournal;
+      const found=typeof journal.readBindingState==='function'?await journal.readBindingState(c.localProjectId):
+        (await journal.listBindings()).find(x=>x.localProjectId===c.localProjectId);check(c);
       if(found)insist(same(found.scope,c.scope),'DELTA_APP_BINDING','別のログイン先の未送信変更があります。元の保存先に保持しています');
       return found||null;
     }
@@ -96,7 +97,7 @@
         'DELTA_APP_UPGRADE','図面設定・保存履歴・PC保管に対応する共有先が必要です');
       if(local?.phase!=='active'){
         await install({scope:copy(c.scope),localProjectId:c.localProjectId,transport:c.transport,
-          store:c.store,mode:copy(c.mode),revision:c.mode.snapshotRevision??revision??local?.cutoff?.serverRevision,currentScope:()=>current(c),actor:actor()});check(c);
+          store:c.store,mode:copy(c.mode),revision:c.mode.snapshotRevision??revision??local?.serverRevision??local?.cutoff?.serverRevision,currentScope:()=>current(c),actor:actor()});check(c);
         local=await binding(c);c.mode=await c.transport.inspect();check(c);
       }
       insist(local?.phase==='active'&&c.mode.enabled,'DELTA_APP_INSTALL','案件の保存先の切替を確認できません');
@@ -114,6 +115,7 @@
       c.controller=createController({records,scope:c.scope,localProjectId:c.localProjectId,
         replica:c.replica,replicaStore:c.store,bridge:c.bridge,metadata:M(),currentScope:()=>current(c),
         actor:actor(),onStatus:status=>report(c,status),
+        canProject:()=>{check(c);return canProject(c.cp)!==false;},
         applyProjection:(projection,options)=>{check(c);return applyProjection(c.cp,projection,{...options,scope:c.scope,
           validate:()=>{check(c);return options.validate()===true;}});}});
       const s=await c.replica.snapshotWithStatus();check(c);c.snapshotToken=s.snapshotToken;

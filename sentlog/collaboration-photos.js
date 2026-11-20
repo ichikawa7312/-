@@ -119,18 +119,27 @@
     }
     async function refreshEntries(){
       const pending=new Map(Object.values(journal.entries).map(e=>[e.photoId,clone(e)]));
+      let changed=false;
       for(const meta of await originals.listMeta()){
+        const saved=meta?.photoAssociation;
+        if(saved?.version===VERSION&&saved.photoId===meta.photoId&&saved.status==='attached'){
+          pending.delete(meta.photoId);if(journal.entries[meta.photoId])forget(meta.photoId);continue;
+        }
         const entry=fromMeta(meta);if(!entry)continue;
         if(entry.status==='attached'){pending.delete(entry.photoId);if(journal.entries[entry.photoId])forget(entry.photoId);}
         else {
           const local=journal.entries[entry.photoId];
           const recent=local&&local.operationId===entry.operationId&&local.updatedAt>Number(entry.updatedAt||0)?
             {...entry,lastError:local.lastError,errorCode:local.errorCode}:entry;
-          pending.set(entry.photoId,recent);journal.entries[entry.photoId]=clone(recent);
+          pending.set(entry.photoId,recent);
+          if(JSON.stringify(local)!==JSON.stringify(recent)){journal.entries[entry.photoId]=clone(recent);changed=true;}
         }
       }
-      saveJournal();return [...pending.values()].sort((a,b)=>a.at-b.at);
+      // Discovery must not broadcast an unchanged journal back to other tabs.
+      // Otherwise storage-event discovery can keep two tabs waking each other.
+      if(changed)saveJournal();return [...pending.values()].sort((a,b)=>a.at-b.at);
     }
+    const pendingSnapshot=()=>Object.values(journal.entries).filter(e=>e.status!=='attached').map(clone).sort((a,b)=>a.at-b.at);
     async function stage(entry,file){
       const original=await originals.stageOriginal(entry.storageDrawingId,entry.photoId,file,originalMetadata(entry));
       const saved=fromMeta(original);if(!saved)throw error('STAGE_INVALID','保存した撮影操作を確認できません');
@@ -154,7 +163,7 @@
         await records.checkTarget(current.target);
         let blob=await shared.get(current.photoId,current.target.drawingId);
         const existing=blob instanceof Blob;
-        let photo=current.photo;
+        let photo=current.photo,blobHash;
         if(!photo||!existing){
           const original=await originals.getOriginal(current.storageDrawingId,current.photoId);
           if(!(original instanceof Blob))throw error('ORIGINAL_MISSING','保存済みの原本が見つかりません。保存領域を確認してください。');
@@ -165,9 +174,12 @@
           if(photo&&JSON.stringify(photo)!==JSON.stringify(expected))
             throw error('SHARED_MISMATCH','再作成した確認用写真が保存記録と一致しません。原本を保持しています。');
           photo=photo||expected;
-          if(!existing)blob=prepared;
+          if(!existing){blob=prepared;blobHash=sha256;}
         }
-        if(photo.id!==current.photoId||Number(photo.size)!==blob.size||photo.type!==(blob.type||'image/jpeg')||photo.sha256!==await shared.digest(blob))
+        // A generated Blob is immutable. Reuse its digest in this operation;
+        // bytes read from persistent storage are still hashed independently.
+        if(photo.id!==current.photoId||Number(photo.size)!==blob.size||photo.type!==(blob.type||'image/jpeg')||
+          photo.sha256!==(blobHash===undefined?await shared.digest(blob):blobHash))
           throw error('SHARED_MISMATCH','保存済みの確認用写真が一致しません。上書きせず保持しました。');
         // Persist the expected bytes before the shared write. A crash in either
         // store can then retry this exact identity without trusting a stray blob.
@@ -210,7 +222,7 @@
       if(op.photoIds.length&&op.photoIds.length!==incoming.length)
         throw error('CAPTURE_CHANGED','再試行する写真の枚数が元の操作と異なります');
       if(journal.inputs[op.inputId]===op.operationId)delete journal.inputs[op.inputId];
-      const existingOriginals=op.photoIds.length?[]:await originals.listMeta();
+      const existingOriginals=op.photoIds.length?[]:await originals.listMeta(validTarget(op.target)?op.target.drawingId:undefined);
       // A duplicate callback may have allocated this operation during the read.
       if(op.photoIds.length&&op.photoIds.length!==incoming.length)
         throw error('CAPTURE_CHANGED','再試行する写真の枚数が元の操作と異なります');
@@ -278,7 +290,7 @@
       if(!entry||entry.originalSaved)throw error('ORIGINAL_PRESENT','原本が保存済みの写真は置き換えません');
       files.set(photoId,file);return enqueue(entry);
     }
-    return {prepare,consume,cancel,cancelCapture,register,retryPending,listPending:refreshEntries,reassign,supplyOriginal,
+    return {prepare,consume,cancel,cancelCapture,register,retryPending,listPending:refreshEntries,pendingSnapshot,reassign,supplyOriginal,
       get pendingCount(){return Object.keys(journal.entries).length;}};
   }
 
@@ -287,7 +299,7 @@
   if(!root.document||root.SentlogCollaborationPhotos)return;
   const originals=root.SentlogOriginalPhotos;
   if(!originals?.stageOriginal||!root.SentlogRecords)throw Error('写真の保存機能の読み込み順序を確認してください');
-  let committing=0,renderQueued=false,rendering=false;
+  let committing=0,renderQueued=false,rendering=false,discoveryTimer=null,discoveryFlight=null,discoveryRequested=false;
   const pendingPanels=new Map();
   const currentOwner=()=>{try{return JSON.parse(localStorage.getItem('sentlogCloudSessionV1')||'null')?.user?.id||'';}catch(_){return '';}};
   function actor(){
@@ -345,8 +357,16 @@
     const base=!live.collab&&savedRecord?.collab?{...live,collab:clone(savedRecord.collab)}:live;
     const updated=addPhoto(base,photo,entry,root.SentlogRecordCollaboration);
     live.photos=updated.photos;if(updated.collab)live.collab=updated.collab;
-    if(typeof render==='function')render();
-    if(typeof selected!=='undefined'&&selected===target.recordId&&typeof renderSelectedPhotos==='function')renderSelectedPhotos();
+    // The full-screen camera covers the editor. Keep its model current now,
+    // and paint the latest live view once when that camera is dismissed.
+    const refresh=()=>{
+      if(typeof activeProjectId==='undefined'||typeof activeDrawingId==='undefined'||
+        activeProjectId!==target.projectId||activeDrawingId!==target.drawingId||
+        typeof currentView!=='undefined'&&currentView!=='editor')return;
+      if(typeof render==='function')render();
+      if(typeof selected!=='undefined'&&selected===target.recordId&&typeof renderSelectedPhotos==='function')return renderSelectedPhotos();
+    };
+    if(root.SentlogContinuousCamera?.deferEditorRefresh?.(refresh)!==true)void refresh();
     root.dispatchEvent(new CustomEvent('sentlog-photo-attached',{detail:{projectId:target.projectId,drawingId:target.drawingId,recordId:target.recordId,photoId:photo.id}}));
   }
   async function attach(target,photo,entry){
@@ -415,10 +435,23 @@
     root.addEventListener('change',event=>{if(event.target===input)return received(event);},true);
   }
 
-  function queueRender(){if(renderQueued)return;renderQueued=true;queueMicrotask(()=>{renderQueued=false;void refresh();});}
+  function queueRender(){if(renderQueued)return;renderQueued=true;queueMicrotask(()=>{renderQueued=false;void renderPending();});}
+  function refresh(){
+    if(discoveryTimer!==null){clearTimeout(discoveryTimer);discoveryTimer=null;}
+    discoveryRequested=true;
+    if(discoveryFlight)return discoveryFlight;
+    discoveryFlight=Promise.resolve().then(async()=>{
+      do{discoveryRequested=false;await service.listPending();}while(discoveryRequested);
+    }).finally(()=>{discoveryFlight=null;queueRender();});
+    return discoveryFlight;
+  }
+  function queueDiscovery(){
+    if(discoveryTimer!==null)return;
+    discoveryTimer=setTimeout(()=>{discoveryTimer=null;void refresh().catch(e=>status('保存待ちの写真を確認できません：'+(e.message||e)));},0);
+  }
   function button(text,action){const b=document.createElement('button');b.type='button';b.textContent=text;
     b.onclick=async()=>{b.disabled=true;try{await action();}catch(e){status(e.message||String(e));}finally{b.disabled=false;queueRender();}};return b;}
-  async function refresh(){
+  async function renderPending(){
     if(rendering)return;rendering=true;
     try{
       for(const [id,selector] of [['sentlogPendingPhotos','.photo-panel'],['sentlogPendingPhotosSettings','#sentlogSettingsModal .modal-card']]){
@@ -428,8 +461,12 @@
         panel.style.cssText='margin-top:10px;font-size:12px;line-height:1.6';host.appendChild(panel);pendingPanels.set(id,panel);
       }
       if(!pendingPanels.size)return;
-      const rows=await service.listPending();
-      let selectedTarget=null;try{selectedTarget=captureTarget();}catch(_){}
+      // Local phase changes already update the journal. Redrawing their status
+      // must not scan every retained original or parse every record again.
+      const rows=service.pendingSnapshot();
+      let selectedTarget=null;
+      if(rows.some(row=>!validTarget(row.target)||['TARGET_DELETED','TARGET_MISSING','ACCOUNT_CHANGED'].includes(row.errorCode)))
+        try{selectedTarget=captureTarget();}catch(_){}
       if(selectedTarget)delete selectedTarget.photoNames;
       for(const pendingPanel of pendingPanels.values()){
         pendingPanel.hidden=!rows.length;
@@ -459,9 +496,14 @@
     finally{rendering=false;}
   }
   root.SentlogCollaborationPhotos={...pure,prepareInput,prepareCapture,cancelCapture:intent=>service.cancelCapture(intent),captureTarget,register,
-    retryPending:photoId=>service.retryPending(photoId),listPending:()=>service.listPending(),
-    reassign:(photoId,target)=>service.reassign(photoId,target),refresh,afterIncoming:queueRender,
+    retryPending:photoId=>service.retryPending(photoId),listPending:()=>service.listPending(),pendingSnapshot:()=>service.pendingSnapshot(),
+    reassign:(photoId,target)=>service.reassign(photoId,target),refresh,afterIncoming:queueDiscovery,
     isCommitting:()=>committing>0,get ready(){return !!root.SentlogRecords?.ready;}};
+  // Full discovery remains authoritative after a restart and at cross-tab or
+  // resume boundaries, including originals whose localStorage intent was lost.
+  root.addEventListener('focus',queueDiscovery);
+  root.addEventListener('storage',event=>{if(event.key===JOURNAL_KEY||event.key===null)queueDiscovery();});
+  document.addEventListener?.('visibilitychange',()=>{if(document.visibilityState==='visible')queueDiscovery();});
   Promise.resolve(root.sentlogAppReady).then(()=>service.retryPending()).then(queueRender).catch(e=>status(e.message||String(e)));
   setTimeout(queueRender,0);
 })(typeof window==='undefined'?globalThis:window);

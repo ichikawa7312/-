@@ -27,12 +27,13 @@ function application(factory,memory){
   setItem:(key,value)=>memory.set(key,String(value)),removeItem:key=>memory.delete(key)};
  const context={window:null,indexedDB:factory,IDBKeyRange,localStorage,navigator:{},console,Blob,queueMicrotask,structuredClone,
   crypto:webcrypto,SentlogDeltaSyncCore:D};context.window=context;vm.createContext(context);vm.runInContext(builtWriter(),context);
- return {records:context.SentlogRecords,localStorage,factory,memory};
+ return {records:context.SentlogRecords,localStorage,factory,memory,context};
 }
-function snapshot(id){const drawingId='drawing-'+id,meta={id:drawingId,name:'Drawing '+id,sourceType:'pdf',fileName:id+'.pdf'};
- const record=C.upgrade({id:'record-'+id,kind:'point',memo:'Original '+id,photos:[{id:'photo',name:id+'.png',type:'image/png',size:9}]});
+function snapshot(id,recordCount=1){const drawingId='drawing-'+id,meta={id:drawingId,name:'Drawing '+id,sourceType:'pdf',fileName:id+'.pdf'};
+ const records=Array.from({length:recordCount},(_,index)=>C.upgrade({id:'record-'+id+(index?'-'+index:''),kind:'point',
+  memo:'Original '+id+(index?' '+index:''),photos:[{id:'photo',name:id+'.png',type:'image/png',size:9}]}));
  return {version:1,kind:'sentlog-app-project',localProjectId:id,project:{id,name:'Project '+id,collaborationVersion:1,drawings:[meta]},
-  drawings:[{meta:copy(meta),state:{sourceType:'pdf',fileName:id+'.pdf',shapes:[record],collabDeletedRecords:[]}}]};
+  drawings:[{meta:copy(meta),state:{sourceType:'pdf',fileName:id+'.pdf',shapes:records,collabDeletedRecords:[]}}]};
 }
 async function open(factory){return new Promise((resolve,reject)=>{const q=factory.open('surveyFieldNoteDB');q.onsuccess=()=>resolve(q.result);q.onerror=()=>reject(q.error);});}
 async function disk(factory,store=CONTROL){const db=await open(factory);try{return await new Promise((resolve,reject)=>{
@@ -42,8 +43,8 @@ async function disk(factory,store=CONTROL){const db=await open(factory);try{retu
 async function write(factory,store,key,value){const db=await open(factory);try{await new Promise((resolve,reject)=>{
  const tx=db.transaction(store,'readwrite');tx.objectStore(store).put(value,key);tx.oncomplete=resolve;tx.onabort=()=>reject(tx.error);tx.onerror=()=>{};
  });}finally{db.close();}}
-async function fixture({two=false,history=false}={}){
- const snapshots=[snapshot('a'),...(two?[snapshot('b')]:[])],factory=new IDBFactory(),memory=new Map([[WS,json({projects:snapshots.map(s=>s.project)})],
+async function fixture({two=false,history=false,projectCount=two?2:1,recordCount=1}={}){
+ const snapshots=Array.from({length:projectCount},(_,index)=>snapshot(index===0?'a':index===1?'b':'p-'+index,recordCount)),factory=new IDBFactory(),memory=new Map([[WS,json({projects:snapshots.map(s=>s.project)})],
   ...snapshots.flatMap(s=>s.drawings.map(d=>[DRAW+d.meta.id,json(d.state)]))]);
  const first=application(factory,memory);await first.records.init();const files=new Map();
  for(const s of snapshots){const id=s.localProjectId,drawingId=s.drawings[0].meta.id;
@@ -66,7 +67,7 @@ async function fixture({two=false,history=false}={}){
    baselineProof:{migrationId:'old-'+id,sourceFingerprint:'a'.repeat(64)},replayBaseline:{before:copy(s),after:copy(s)}};
   oldBindings.set(id,copy(binding));await write(factory,CONTROL,'binding:'+id,binding);
  }
- return {factory,memory,files,snapshots,oldBindings,restart:()=>application(factory,memory)};
+ return {factory,memory,files,snapshots,oldBindings,observer:first,restart:()=>application(factory,memory)};
 }
 function noEmbeddedPuts(extra){
  const originals={put:IDBObjectStore.prototype.put,add:IDBObjectStore.prototype.add},calls=[];
@@ -77,6 +78,24 @@ function noEmbeddedPuts(extra){
   return originals[method].call(this,value,key,...rest);
  };
  return {calls,close(){for(const method of ['put','add'])IDBObjectStore.prototype[method]=originals[method];}};
+}
+function observeBindingReads(app,{forbidHydration=false}={}){
+ const originalClone=app.context.structuredClone,originals={get:IDBObjectStore.prototype.get,getAll:IDBObjectStore.prototype.getAll};
+ const counts={gets:0,getAll:0,rows:0,cutoffRows:0,bindingClones:0,blobClones:0,keys:[]};
+ app.context.structuredClone=value=>{
+  if(value?.kind==='binding')counts.bindingClones++;
+  if(value instanceof Blob)counts.blobClones++;
+  if(forbidHydration&&(value?.kind==='binding'||value instanceof Blob))throw Error('A status check must not hydrate a cutoff');
+  return originalClone(value);
+ };
+ for(const method of ['get','getAll'])IDBObjectStore.prototype[method]=function(...args){
+  const request=originals[method].apply(this,args);
+  if(this.name===CONTROL){if(method==='get'){counts.gets++;counts.keys.push(args[0]);}else counts.getAll++;
+   request.addEventListener('success',()=>{const rows=method==='getAll'?request.result:request.result?[request.result]:[];
+    counts.rows+=rows.length;counts.cutoffRows+=rows.filter(row=>row?.kind==='cutoff-file').length;});}
+  return request;
+ };
+ return {counts,close(){app.context.structuredClone=originalClone;for(const method of ['get','getAll'])IDBObjectStore.prototype[method]=originals[method];}};
 }
 const cutoffRows=rows=>[...rows.values()].filter(row=>row?.kind==='cutoff-file');
 async function hydratedSame(actual,expected){
@@ -114,6 +133,58 @@ async function prepareRelease(app,f){
 
 let passed=0;async function test(name,fn){await fn();passed++;console.log('PASS',name);}
 (async()=>{
+ await test('binding status reads only the requested row and never hydrates protected photo bytes or history',async()=>{
+  const f=await fixture({two:true,history:true}),app=f.restart();await app.records.init();const journal=app.records.deltaJournal,guard=observeBindingReads(app,{forbidHydration:true});
+  try{
+   const state=await journal.readBindingState('a');assert.equal(state.id,f.oldBindings.get('a').id);assert.equal(state.phase,'active');
+   assert.equal(state.baselineId,'baseline-a');assert.equal(state.serverRevision,1);assert(C.equal(state.scope,scopeFor('a')));
+   for(const key of ['cutoff','replayBaseline','metadataRecords','lastProof'])assert.equal(Object.hasOwn(state,key),false);
+   state.scope.ownerId='changed by caller';state.phase='detached';
+   assert(C.equal(journal.bindingStateFor('a').scope,scopeFor('a')));assert.equal(journal.bindingStateFor('a').phase,'active');
+   const all=journal.listBindingStatesSync();assert.equal(all.length,2);all[1].scope.ownerId='changed by caller';
+   assert(C.equal(journal.bindingStateFor('b').scope,scopeFor('b')));
+   assert.deepEqual(guard.counts,{gets:1,getAll:0,rows:1,cutoffRows:0,bindingClones:0,blobClones:0,keys:['binding:a']});
+  }finally{guard.close();}
+  await hydratedSame(journal.bindingFor('a'),f.oldBindings.get('a'));
+  await hydratedSame((await journal.listBindings()).find(row=>row.localProjectId==='b'),f.oldBindings.get('b'));
+ });
+ await test('a newly observed cross-tab binding populates its protected cutoff cache once before status becomes visible',async()=>{
+  const f=await fixture({two:true,history:true}),observer=f.observer;assert.equal(observer.records.deltaJournal.bindingFor('a'),null);
+  const writer=f.restart();await writer.records.init();const journal=observer.records.deltaJournal,first=observeBindingReads(observer);
+  try{const state=await journal.readBindingState('a');assert.equal(state.phase,'active');
+   assert.equal(first.counts.gets,1);assert.equal(first.counts.getAll,1);assert.equal(first.counts.cutoffRows,4);
+  }finally{first.close();}
+  await hydratedSame(journal.bindingFor('a'),f.oldBindings.get('a'));
+  await hydratedSame(journal.bindingFor('b'),f.oldBindings.get('b'));
+  const steady=observeBindingReads(observer,{forbidHydration:true});try{
+   for(let index=0;index<3;index++)assert.equal((await journal.readBindingState('a')).phase,'active');
+   assert.deepEqual(steady.counts,{gets:3,getAll:0,rows:3,cutoffRows:0,bindingClones:0,blobClones:0,keys:['binding:a','binding:a','binding:a']});
+  }finally{steady.close();}
+  await replay(observer);await hydratedSame(journal.bindingFor('a'),f.oldBindings.get('a'));
+ });
+ await test('fresh binding status observes other-tab changes and rejects malformed identity without replacing the last valid state',async()=>{
+  const f=await fixture({two:true}),app=f.restart();await app.records.init();const journal=app.records.deltaJournal,raw=await disk(f.factory);
+  const next={...raw.get('binding:a'),phase:'detached',ackedSeq:raw.get('binding:a').ackedSeq+3};
+  await write(f.factory,CONTROL,'binding:a',next);
+  assert.equal(journal.bindingStateFor('a').phase,'active');const fresh=await journal.readBindingState('a');
+  assert.equal(fresh.phase,'detached');assert.equal(fresh.ackedSeq,next.ackedSeq);assert.equal(journal.bindingStateFor('b').phase,'active');
+  for(const changed of [null,false,{...next,kind:'claim'},{...next,localProjectId:'b'},{...next,phase:'unknown'},
+    {...next,ackedSeq:-1},{...next,scope:{...next.scope,ownerId:'another-owner'}},
+    {...next,cutoff:{...next.cutoff,bindingId:'foreign-binding'}},{...next,cutoff:{...next.cutoff,serverRevision:{invalid:true}}}]){
+   await write(f.factory,CONTROL,'binding:a',changed);await assert.rejects(()=>journal.readBindingState('a'),error=>error.code==='JOURNAL_BINDING');
+   assert.equal(journal.bindingStateFor('a').phase,'detached');assert(C.equal(journal.bindingStateFor('a').scope,scopeFor('a')));
+  }
+  const foreign={...next,scope:{...next.scope,ownerId:'another-owner'},cutoff:{...next.cutoff,scope:{...next.scope,ownerId:'another-owner'}}};
+  await write(f.factory,CONTROL,'binding:a',foreign);
+  await assert.rejects(()=>journal.readBindingState('a'),error=>error.code==='JOURNAL_CUTOFF_REF');
+  assert(C.equal(journal.bindingStateFor('a').scope,scopeFor('a')),'a mismatched foreign cutoff cannot replace the valid cache');
+  for(const file of foreign.cutoff.files){const row=raw.get(file.valueRef);await write(f.factory,CONTROL,file.valueRef,{...row,scope:copy(foreign.scope)});}
+  assert.equal((await journal.readBindingState('a')).scope.ownerId,'another-owner');
+  const db=await open(f.factory);try{await new Promise((resolve,reject)=>{const tx=db.transaction(CONTROL,'readwrite');
+   tx.objectStore(CONTROL).delete('binding:a');tx.oncomplete=resolve;tx.onabort=()=>reject(tx.error);});}finally{db.close();}
+  assert.equal(await journal.readBindingState('a'),null);assert.equal(journal.bindingStateFor('a'),null);
+  assert.equal(journal.listBindingStatesSync().length,1);assert.equal(journal.bindingStateFor('b').localProjectId,'b');
+ });
  await test('an old embedded cutoff migrates once and all public readers retain exact Blob bytes',async()=>{
   const f=await fixture({history:true}),guard=noEmbeddedPuts();try{
    const app=f.restart();await app.records.init();const raw=await disk(f.factory),saved=raw.get('binding:a'),rows=cutoffRows(raw);
@@ -207,4 +278,15 @@ let passed=0;async function test(name,fn){await fn();passed++;console.log('PASS'
   assert.equal(await (await disk(f.factory)).get(row.id).value.text(),'pdf-x');
  });
  console.log('PASS cutoff files:',passed,'legacy conversion, immutable-byte, replay and GC groups');
+ if(process.env.BINDING_BENCHMARK==='1')for(const size of [{projectCount:1,recordCount:10},{projectCount:24,recordCount:40}]){
+  const f=await fixture(size),app=f.restart();await app.records.init();const iterations=10,output={...size,iterations};
+  for(const [name,read]of [['previousList',()=>app.records.deltaJournal.listBindings()],['selectedState',()=>app.records.deltaJournal.readBindingState('a')]]){
+   const guard=observeBindingReads(app),start=performance.now();try{for(let index=0;index<iterations;index++)await read();
+    output[name]={milliseconds:Math.round((performance.now()-start)*10)/10,...guard.counts};delete output[name].keys;
+   }finally{guard.close();}
+  }
+  assert.equal(output.selectedState.rows,iterations);assert.equal(output.selectedState.cutoffRows,0);assert.equal(output.selectedState.bindingClones,0);
+  assert.equal(output.previousList.cutoffRows,size.projectCount*2*iterations);
+  console.log('BENCH binding reads (Node/fake IndexedDB; counters are deterministic, milliseconds are not browser latency)',JSON.stringify(output));
+ }
 })().catch(error=>{console.error(error.stack||error);process.exitCode=1;});
