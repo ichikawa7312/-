@@ -65,9 +65,9 @@
       if(c&&(!same(c.scope,scope)||!current(c))){closeContext(c);contexts.delete(cp.client_key);c=null;}
       if(c){c.cp=copy(cp);return c;}
       c={scope,localProjectId:cp.client_key,cp:copy(cp),authGeneration:authGeneration(),closed:false,
-        snapshotToken:null,mode:null,flight:null,assetsFlight:null,checkpoint:null,lastCheckpointAt:0,projectionTimer:null};
+        snapshotToken:null,mode:null,flight:null,assetsFlight:null,photoGeneration:0,photoPauses:0,checkpoint:null,lastCheckpointAt:0,projectionTimer:null};
       const provider=make.provider({url,key,session,refreshSession:ensureSession,subscribeAuth,fetch:fetcher});
-      c.transport=make.transport({provider,scope,currentScope:()=>current(c),network});
+      c.transport=make.transport({provider,scope,currentScope:()=>current(c),online:network});
       c.store=make.store(scope);contexts.set(cp.client_key,c);return c;
     }
     async function inspect(cp){
@@ -76,7 +76,9 @@
       catch(error){
         // Before the server migration is installed, only an explicit missing
         // RPC permits the old writer. A bound project never falls back.
-        if(!local&&error?.code==='PGRST202'&&Number(error?.status)===404)return {enabled:false,canActivate:false,serverInstalled:false};
+        const missingInspect=error?.code==='PGRST202'&&Number(error?.status)===404||
+          error?.code==='DELTA_UPGRADE_REQUIRED'&&error.sqlState==='PGRST202'&&error.httpStatus===404;
+        if(!local&&missingInspect)return {enabled:false,canActivate:false,serverInstalled:false};
         throw error;
       }
       insist(!local||!['active','detached'].includes(local.phase)||c.mode.enabled,'DELTA_APP_DOWNGRADE','切替済み案件の旧保存へ戻すことはできません。変更を保持しています');
@@ -134,29 +136,42 @@
       })();c.flight=task;try{return await task;}finally{if(c.flight===task)c.flight=null;}
     }
     async function photos(cp){
-      const c=await context(cp);if(c.assetsFlight)return c.assetsFlight;
+      const c=await context(cp);
+      if(c.photoPauses||root.SentlogCapacity?.isCleared(cp.id))return {enabled:true,skipped:true,complete:true,issues:[],message:'容量整理した写真はPCからの復旧時に取得します'};
+      if(c.assetsFlight)return c.assetsFlight;
+      const epoch=c.photoGeneration,currentPhotos=()=>!c.photoPauses&&epoch===c.photoGeneration&&!root.SentlogCapacity?.isCleared(cp.id)?current(c):null;
+      const checkPhotos=()=>{check(c);insist(currentPhotos(),'DELTA_PHOTOS_PAUSED','容量整理のため写真の同期を停止しています');};
       const task=(async()=>{
-        const result=await sync(cp);check(c);if(result.detached)return {enabled:true,detached:true,skipped:true,complete:true,issues:[],message:'端末から外した案件の写真は取得しません'};
+        const result=await sync(cp);checkPhotos();if(result.detached)return {enabled:true,detached:true,skipped:true,complete:true,issues:[],message:'端末から外した案件の写真は取得しません'};
         insist(c.controller,'DELTA_APP_INSTALL','写真の同期前に記録の切替が必要です');
         if(!c.assets){
           const fileOwners=new Map();
           c.assetStore=make.assetStore(c.scope);
           c.assetTransport=make.assetTransport({url,key,scope:c.scope,localProjectId:c.localProjectId,session,ensureSession,
-            subscribeAuth,authGeneration,currentScope:()=>current(c),fetch:fetcher,network});
-          c.assets=make.assets({scope:c.scope,store:c.assetStore,transport:c.assetTransport,currentScope:()=>current(c),
+            subscribeAuth,authGeneration,currentScope:currentPhotos,fetch:fetcher,network});
+          c.assets=make.assets({scope:c.scope,store:c.assetStore,transport:c.assetTransport,currentScope:currentPhotos,
             currentSnapshotToken:()=>c.assetExpectedRaw?.every(([key,value])=>records.getItem(key)===value)?c.snapshotToken:null,
             authGeneration,subscribeAuth,onPhotoReceived,
             localFiles:{read:readFile,write:(key,blob,opts)=>records.writeFile(key,blob,{...opts,ownerToken:fileOwners.get(key)}),
               withLock:(key,fn)=>withFileLock(key,async()=>{const token={};fileOwners.set(key,token);
                 try{return await fn();}finally{if(fileOwners.get(key)===token)fileOwners.delete(key);}}),
               getCapabilities:()=>records.getFileWriteCapabilities(),
-              assertExclusive:key=>{check(c);const s=records.writerState(key,{ownerToken:fileOwners.get(key)});
+              assertExclusive:key=>{checkPhotos();const s=records.writerState(key,{ownerToken:fileOwners.get(key)});
                 return s?.exclusive===true&&!s.foreignPending&&!s.failed&&s.journaled===true;}}});
         }
-        const currentState=await c.replica.snapshotWithStatus();check(c);c.snapshotToken=currentState.snapshotToken;
+        const currentState=await c.replica.snapshotWithStatus();checkPhotos();c.snapshotToken=currentState.snapshotToken;
         c.assetExpectedRaw=B.captureProject({records,localProjectId:c.localProjectId}).rawEntries;
-        const synced=await c.assets.sync(currentState);check(c);return synced;
+        const synced=await c.assets.sync(currentState);checkPhotos();return synced;
       })();c.assetsFlight=task;try{return await task;}finally{if(c.assetsFlight===task)c.assetsFlight=null;}
+    }
+    async function suspendPhotos(cp){
+      const c=await context(cp);check(c);c.photoPauses++;c.photoGeneration++;
+      for(const name of ['assets','assetTransport','assetStore'])try{c[name]?.close?.();}catch{}
+      try{if(c.assetsFlight)await c.assetsFlight.catch(()=>{});check(c);}
+      catch(error){c.photoPauses--;throw error;}
+      finally{c.assets=null;c.assetTransport=null;c.assetStore=null;}
+      let released=false;
+      return ()=>{if(released)return;released=true;c.photoPauses=Math.max(0,c.photoPauses-1);};
     }
     async function checkpoint(cp,{force=false}={}){
       const c=await context(cp);
@@ -240,7 +255,7 @@
       if(resolved.changes.length)await c.replica.changeGroup({changes:resolved.changes,groupId:operationId,expectedSnapshotToken:before.snapshotToken});
       check(c);await c.controller.project();check(c);return {saved:true};
     }
-    return {inspect,sync,photos,checkpoint,archiveProof,resolveMetadata,
+    return {inspect,sync,photos,suspendPhotos,checkpoint,archiveProof,resolveMetadata,
       isActive:id=>contexts.get(id)?.mode?.enabled===true,
       wake(){for(const c of contexts.values())if(current(c)){c.transport.wake();c.replica?.onOnline();projectSoon(c);}},
       reset,close(){if(closed)return;reset();closed=true;unsubscribe?.();}};

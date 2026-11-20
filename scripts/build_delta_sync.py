@@ -78,16 +78,19 @@ new = """      if(mergeOptions.deltaProjection){
       }else window.SentlogRecords.batch(writes,{origin:'remote'});"""
 change(view, old, new)
 
-# All live readers accept the version-2 journal database. They never create a
-# parallel v1 store or bypass the one application file writer.
+# Reader compatibility belongs to the base sources: partial DXF/photo builds
+# also load the version-2 writer. The final build verifies that no earlier
+# transform has reintroduced a fixed version-1 file reader.
 for path in ['sentlog/part05.txt', 'sentlog/cloud-sync.js', 'sentlog/photo-recovery.js',
              'sentlog/peer-photo-recovery.js', 'sentlog/rescue.html']:
     value = source(path)
-    revised, count = re.subn(r"indexedDB\.open\((['\"]surveyFieldNoteDB['\"]|DB_NAME|DB),\s*1\)", r'indexedDB.open(\1)', value)
-    if not count:
-        raise RuntimeError('Expected a legacy file reader in ' + path)
-    pending[path] = revised
-change('sentlog/pdf-recovery.js', 'indexedDB.open(name,1)', "indexedDB.open(name,...(name==='surveyFieldNoteDB'?[]:[1]))")
+    if re.search(r"indexedDB\.open\((['\"]surveyFieldNoteDB['\"]|DB_NAME|DB),\s*1\)", value):
+        raise RuntimeError('Fixed version-1 file reader reintroduced in ' + path)
+    if path!='sentlog/rescue.html' and 'SentlogRecords.openFilesDatabase()' not in value:
+        raise RuntimeError('Shared file reader missing in ' + path)
+pdf_reader=source('sentlog/pdf-recovery.js')
+if 'SentlogRecords.openFilesDatabase()' not in pdf_reader or "name==='surveyFieldNoteDB'?[]:[1]" not in pdf_reader:
+    raise RuntimeError('PDF reader must share the app database version and preserve PC KV version 1')
 part = 'sentlog/part05.txt'
 value = source(part)
 a = value.index('async function clearDBFiles(){')

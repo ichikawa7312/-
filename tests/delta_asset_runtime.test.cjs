@@ -35,13 +35,14 @@ async function actualFiles(){
  const root={};const context=vm.createContext({window:root,indexedDB,IDBKeyRange:fake.IDBKeyRange,Blob,AbortController,console,
   navigator:{},localStorage:storage,queueMicrotask,setTimeout,clearTimeout});
  vm.runInContext(fs.readFileSync('sentlog/record-store.js','utf8'),context);await root.SentlogRecords.init();
+ const records=root.SentlogRecords,owners=new Map();
  return {
-  // This isolated store has no old app or retry workers. Production wiring
-  // must establish its real writer fence before returning true here.
-  assertExclusive:()=>root.SentlogRecords.uncommittedFiles().length===0,
-  getCapabilities:()=>root.SentlogRecords.getFileWriteCapabilities(),write:(...args)=>root.SentlogRecords.writeFile(...args),withLock:async(key,fn)=>fn(),
+  assertExclusive:key=>{const state=records.writerState(key,{ownerToken:owners.get(key)});return state.exclusive&&!state.foreignPending&&!state.failed&&state.journaled;},
+  getCapabilities:()=>records.getFileWriteCapabilities(),write:(key,blob,options)=>records.writeFile(key,blob,{...options,ownerToken:owners.get(key)}),
+  async withLock(key,fn){const token={};assert(!owners.has(key),'fixture file lock must not overlap');owners.set(key,token);
+   try{return await fn();}finally{if(owners.get(key)===token)owners.delete(key);}},
   async read(key){
-   const db=await new Promise((resolve,reject)=>{const q=indexedDB.open('surveyFieldNoteDB',1);q.onsuccess=()=>resolve(q.result);q.onerror=()=>reject(q.error);});
+   const db=await records.openFilesDatabase();
    try{return await new Promise((resolve,reject)=>{const tx=db.transaction('files','readonly'),q=tx.objectStore('files').get(key);let value;
     q.onsuccess=()=>{value=q.result;};tx.oncomplete=()=>resolve(value);tx.onabort=()=>reject(tx.error);});}finally{db.close();}
   }

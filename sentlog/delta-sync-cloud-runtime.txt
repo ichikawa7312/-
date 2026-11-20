@@ -36,6 +36,7 @@ window.sentlogDeltaCheckpoint=async cp=>{
   return sentlogDeltaApp.checkpoint(cp,{force:true});
 };
 window.sentlogDeltaArchiveProof=(cp,job)=>job?.delta_checkpoint?sentlogDeltaApp.archiveProof(cp,job):null;
+window.sentlogDeltaSuspendPhotos=cp=>sentlogDeltaApp.suspendPhotos(cp);
 async function collaborationDeltaRound(cp,context){
   context.assertCurrent();const result=await sentlogDeltaApp.sync(cp);context.assertCurrent();
   if(!result.deferred){

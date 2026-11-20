@@ -23,7 +23,10 @@ $$;
 INSERT INTO public.sentlog_projects(id,owner_id,status) VALUES
  ('88888888-1111-4111-8111-111111111111','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','active'),
  ('88888888-2222-4222-8222-222222222222','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','active'),
- ('88888888-3333-4333-8333-333333333333','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','active');
+ ('88888888-3333-4333-8333-333333333333','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','active'),
+ -- The schema suite's global archived project already has an enabled head.
+ -- Own this negative fixture so prior suites cannot change its meaning.
+ ('88888888-4444-4444-8444-444444444444','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','archived');
 INSERT INTO sentlog_delta_private.heads(project_id,owner_id,enabled,activated_at) VALUES
  ('88888888-1111-4111-8111-111111111111','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',true,now()),
  ('88888888-2222-4222-8222-222222222222','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',false,null);
@@ -40,7 +43,7 @@ SELECT pg_temp.check(pg_temp.fails($q$SELECT public.sentlog_delta_list_v1('88888
 SELECT set_config('request.jwt.claim.sub','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',true);
 SELECT pg_temp.check(pg_temp.fails('SELECT * FROM public.sentlog_delta_events','42501'),'table read cannot bypass device checks');
 SELECT pg_temp.check(pg_temp.fails($q$SELECT public.sentlog_delta_list_v1('22222222-2222-4222-8222-222222222222','aaaaaaaa-0000-4000-8000-000000000001',0,100)$q$,'42501'),'foreign project denied');
-SELECT pg_temp.check(pg_temp.fails($q$SELECT public.sentlog_delta_list_v1('33333333-3333-4333-8333-333333333333','aaaaaaaa-0000-4000-8000-000000000001',0,100)$q$,'55000'),'archived legacy project still requires an activated delta head');
+SELECT pg_temp.check(pg_temp.fails($q$SELECT public.sentlog_delta_list_v1('88888888-4444-4444-8444-444444444444','aaaaaaaa-0000-4000-8000-000000000001',0,100)$q$,'55000'),'archived legacy project still requires an activated delta head');
 SELECT pg_temp.check(pg_temp.fails($q$SELECT public.sentlog_delta_list_v1('88888888-1111-4111-8111-111111111111','aaaaaaaa-0000-4000-8000-000000000002',0,100)$q$,'42501'),'inactive device denied');
 SELECT pg_temp.check(pg_temp.fails($q$SELECT public.sentlog_delta_list_v1('88888888-1111-4111-8111-111111111111','bbbbbbbb-0000-4000-8000-000000000003',0,100)$q$,'42501'),'foreign device denied');
 SELECT pg_temp.check(pg_temp.fails($q$SELECT public.sentlog_delta_list_v1('88888888-1111-4111-8111-111111111111','aaaaaaaa-0000-4000-8000-000000000099',0,100)$q$,'42501'),'unknown device denied');

@@ -87,11 +87,11 @@
   return new Set((rows||[]).map(p=>p.id));
  }
  async function localPhoto(key){
-  const connection=await new Promise((resolve,reject)=>{
-   const q=indexedDB.open('surveyFieldNoteDB',1);
+  const connection=await (window.SentlogRecords?.openFilesDatabase?window.SentlogRecords.openFilesDatabase():new Promise((resolve,reject)=>{
+   const q=indexedDB.open('surveyFieldNoteDB');
    q.onupgradeneeded=()=>{if(!q.result.objectStoreNames.contains('files'))q.result.createObjectStore('files');};
-   q.onsuccess=()=>resolve(q.result);q.onerror=()=>reject(q.error);
-  });
+   q.onsuccess=()=>{const db=q.result;db.onversionchange=()=>db.close();resolve(db)};q.onerror=()=>reject(q.error);
+  }));
   try{return await new Promise((resolve,reject)=>{
    const q=connection.transaction('files','readonly').objectStore('files').get(key);
    q.onsuccess=()=>resolve(q.result);q.onerror=()=>reject(q.error);

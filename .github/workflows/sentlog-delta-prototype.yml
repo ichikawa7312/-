@@ -7,12 +7,15 @@ on:
       - 'sentlog/archive-core.js'
       - 'sentlog/record-collaboration.js'
       - 'scripts/build_delta_sync.py'
+      - 'scripts/assemble_delta_sync.py'
       - 'scripts/build_capacity.py'
       - 'scripts/build_management.py'
       - 'docs/sentlog-delta-*.sql'
       - 'db/collaboration_v1.sql'
       - 'sentlog/photo-recovery.js'
       - 'sentlog/record-store.js'
+      - 'sentlog/part05.txt'
+      - 'tests/file_database_compat.test.cjs'
       - 'sentlog/session-guard.js'
       - 'tests/delta_*'
       - 'tests/record_file_guard*'
@@ -74,6 +77,7 @@ jobs:
           node --check sentlog/delta-sync-asset-runtime.js
           node --check sentlog/record-store.js
           node --check sentlog/session-guard.js
+          python3 scripts/assemble_delta_sync.py --check
       - name: Install pinned in-memory IndexedDB test adapter
         run: npm install --prefix "$RUNNER_TEMP/sentlog-prototype-deps" --ignore-scripts --no-audit --no-fund --save-exact fake-indexeddb@6.2.8 @electric-sql/pglite@0.5.17
       - name: Offline, concurrency and idempotency scenarios
@@ -95,18 +99,21 @@ jobs:
           node tests/delta_metadata.test.cjs
           node tests/delta_metadata_bridge.test.cjs
           node tests/delta_app_journal.test.cjs
+          node tests/delta_app_mode.test.cjs
           node tests/delta_capacity.test.cjs
           node tests/delta_projection_pglite.cjs
           node tests/delta_metadata_pglite.cjs
           node tests/delta_legacy_unicode_pglite.cjs
           node tests/delta_checkpoint_pglite.cjs
           node tests/delta_app_backend.test.cjs
+          node tests/delta_release_pglite.cjs
           node tests/delta_batch_paging.test.cjs
           node tests/delta_group_sync.test.cjs
           node tests/delta_group_contract.cjs
           node tests/delta_archive_pglite.cjs
           node tests/delta_asset_runtime.test.cjs
           node tests/record_file_guard.test.cjs
+          node tests/file_database_compat.test.cjs
           node tests/session_guard.test.cjs
           node tests/collaboration_channel.test.cjs
           node tests/photo_redelivery_adversarial.test.cjs

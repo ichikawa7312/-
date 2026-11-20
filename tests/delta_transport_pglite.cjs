@@ -6,8 +6,13 @@ const fs=require('node:fs'),path=require('node:path');
   const db=new PGlite();
   try{
     for(const file of ['tests/delta_schema_fixture.sql','docs/sentlog-delta-v1-schema-prototype.sql',
-      'docs/sentlog-delta-semantic-validation-prototype.sql','tests/delta_baseline_fixture.sql',
-      'docs/sentlog-delta-baseline-prototype.sql','tests/delta_transport_fixture.sql',
+      // CI keeps the schema and baseline fixtures in the same database. Keep
+      // their durable setup here too, so a prior enabled/archived head cannot
+      // accidentally masquerade as an unactivated transport fixture.
+      'docs/sentlog-delta-semantic-validation-prototype.sql','tests/delta_schema_assertions.sql',
+      'tests/delta_schema_adversarial.sql','tests/delta_semantic_assertions.sql',
+      'tests/delta_baseline_fixture.sql','docs/sentlog-delta-baseline-prototype.sql',
+      'tests/delta_baseline_assertions.sql','tests/delta_transport_fixture.sql',
       'docs/sentlog-delta-transport-prototype.sql','tests/delta_transport_assertions.sql']){
       const sql=fs.readFileSync(path.resolve(__dirname,'..',file),'utf8').replace(/^\\set[^\n]*$/mg,'');
       for(const block of sql.split(/^(BEGIN;|ROLLBACK;|COMMIT;)$/m)){

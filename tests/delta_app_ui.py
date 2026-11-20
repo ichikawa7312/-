@@ -86,7 +86,7 @@ class Cloud(collaboration.Cloud):
             route.abort('internetdisconnected')
             return
         path, query = url.path, parse_qs(url.query)
-        body = json.loads(request.post_data) if request.post_data and '/storage/' not in path else None
+        body = json.loads(request.post_data) if '/storage/' not in path and request.post_data else None
         if path.endswith('/sentlog_asset_device_receipts'):
             self.respond(route, self.rows(self.receipts.values(), query))
             return

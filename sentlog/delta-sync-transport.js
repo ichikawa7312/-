@@ -29,7 +29,7 @@
     const message=s===401?'ログインを確認して同期を再開してください':s===403?'この案件・端末では同期を利用できません':
       code==='DELTA_UPGRADE_REQUIRED'?'差分同期のサーバー準備が完了していません':
       retryable?'通信が完了していません。未送信の内容は端末に残しています':'同期先の応答を確認できません。内容を保持して停止しました';
-    const result=problem(code,message,s,retryable);if(sql)result.sqlState=sql;return result;
+    const result=problem(code,message,s,retryable);if(sql)result.sqlState=sql;if(http)result.httpStatus=http;return result;
   }
 
   // One SDK channel per client/account. Closing one project's transport must

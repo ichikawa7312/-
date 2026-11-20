@@ -279,7 +279,7 @@
    }finally{f.close();}
   });
   if(actualFiles)await test('actual SentlogRecords guarded writer participates in full download readback and ACK',async()=>{
-   const adapter=await actualFiles(),f=await fixture({localFiles:adapter});try{assert((await f.sync()).complete);await A.verifyBlob(await adapter.read('photo:drawing:photo'),f.ref());
+   const adapter=await actualFiles(),f=await fixture({localFiles:adapter});try{const result=await f.sync();assert(result.complete,JSON.stringify(result.issues));await A.verifyBlob(await adapter.read('photo:drawing:photo'),f.ref());
     equal((await f.store.read(f.ref())).phase,'acknowledged');}finally{f.close();await adapter.close?.();}
   });
   return results;

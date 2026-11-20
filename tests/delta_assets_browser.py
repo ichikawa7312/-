@@ -148,19 +148,21 @@ def main():
                                 C: SentlogRecordCollaboration, indexedDB, IDBObjectStore,
                                 suffix: engine,
                                 actualFiles: async () => {
-                                    const records=SentlogRecords;await records.init();
-                                    // This disposable fixture loads no legacy workers.
-                                    // This assertion is not a production writer fence.
+                                    const records=SentlogRecords,owners=new Map();await records.init();
                                     return {
-                                        assertExclusive:()=>records.uncommittedFiles().length===0,
+                                        assertExclusive:key=>{
+                                            const state=records.writerState(key,{ownerToken:owners.get(key)});
+                                            return state.exclusive&&!state.foreignPending&&!state.failed&&state.journaled;
+                                        },
                                         getCapabilities:()=>records.getFileWriteCapabilities(),
-                                        write:(...args)=>records.writeFile(...args),
-                                        withLock:async(key,fn)=>fn(),
+                                        write:(key,blob,options)=>records.writeFile(key,blob,{...options,ownerToken:owners.get(key)}),
+                                        async withLock(key,fn){
+                                            if(owners.has(key))throw Error('fixture file lock must not overlap');
+                                            const token={};owners.set(key,token);
+                                            try{return await fn();}finally{if(owners.get(key)===token)owners.delete(key);}
+                                        },
                                         async read(key){
-                                            const db=await new Promise((resolve,reject)=>{
-                                                const q=indexedDB.open('surveyFieldNoteDB',1);
-                                                q.onsuccess=()=>resolve(q.result);q.onerror=()=>reject(q.error);
-                                            });
+                                            const db=await records.openFilesDatabase();
                                             try{return await new Promise((resolve,reject)=>{
                                                 const tx=db.transaction('files','readonly'),q=tx.objectStore('files').get(key);let value;
                                                 q.onsuccess=()=>{value=q.result;};
