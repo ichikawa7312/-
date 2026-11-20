@@ -156,6 +156,7 @@ function fixture({patched=true,naturalWidth=11575,naturalHeight=8031,touch=false
     else assert.equal(front.width*front.height,1,'larger desktop detail releases its raster while keeping the node');
     const allocations=camera.allocations.length,draws=camera.draws.length;
     for(let i=0;i<20;i++){
+      camera.wrap.getBoundingClientRect=()=>i%2?{width:844,height:390}:{width:390,height:650};
       camera.context.scale=.4;camera.context.tx=-100-i;
       camera.context.applyTransform();camera.flush();
     }
@@ -165,6 +166,10 @@ function fixture({patched=true,naturalWidth=11575,naturalHeight=8031,touch=false
     isOpen=false;camera.event('sentlog-camera-visibility',{open:false});camera.flush();
     assert.equal(camera.stage.children.length,1);assert.equal(camera.draws.length,draws+1);
     assert.equal(camera.stage.children[0],front,'a changed camera viewport restores into the same canvas node');
+    if(touch){
+      assert.equal(camera.context.svg.attributes.width,'844');assert.equal(camera.context.svg.attributes.height,'390');
+      assert(front.width*front.height<=1500000,'rotation still respects the existing viewport memory bound');
+    }
     assert.equal(camera.elements.length,elements,'restoring a changed viewport does not create another canvas');
     assert.equal(camera.stage.insertions,insertions);assert.equal(camera.stage.removals,removals);
     assert.equal(camera.created.length,1);assert.equal(JSON.stringify(camera.context.state),state);
