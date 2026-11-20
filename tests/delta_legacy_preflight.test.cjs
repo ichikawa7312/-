@@ -11,7 +11,7 @@ const st=()=>enc({shapes:[{id:'survey-1',type:'調査',memo:'圏外の所見',ph
 function fixture(){
   const data=new Map([['surveyFieldNoteWorkspaceV1',ws()],
     ['surveyFieldNoteDrawingV1:'+drawing,st()]]);
-  const files=new Map([['photo:'+drawing+':photo.id,new Blob(['photo-bytes'],{type:'image/jpeg'})]]);
+  const files=new Map([['photo:'+drawing+':'+photo.id,new Blob(['photo-bytes'],{type:'image/jpeg'})]]);
   let writes=0,reads=0,pending=false,failed=false;
   const legacy={get ready(){return true;},get pending(){return pending;},get failed(){return failed;},
     uncommittedFiles:()=>[],getItem:k=>{reads++;return data.get(k)??null;},
