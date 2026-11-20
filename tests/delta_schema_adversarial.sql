@@ -143,7 +143,8 @@ SELECT label,envelope FROM shapes CROSS JOIN LATERAL (VALUES
  ('create projected photo uppercase URL',jsonb_set(c,'{record,photos}','[{"id":"p","url":"DATA:image/png;base64,AAA="}]')),
  ('duplicate revision in one entry',jsonb_set(p,'{patch,photos,photo-1,revisions}',
    jsonb_build_array(p#>'{patch,photos,photo-1,revisions,0}',p#>'{patch,photos,photo-1,revisions,0}'))),
- ('duplicate revision across groups',jsonb_set(public.test_event('adversarial'),'{patch,fields}',f#>'{patch,fields}'))
+ ('duplicate revision across groups',jsonb_set(public.test_event('adversarial'),'{patch,fields}',
+    jsonb_set(f#>'{patch,fields}','{crackWidthMm,revisions,0,id}','"revision:adversarial"')))
 ) cases(label,envelope);
 DO $test$
 DECLARE value jsonb := '0'; i integer;
