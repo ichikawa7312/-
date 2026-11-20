@@ -35,6 +35,19 @@
         'DELTA_SCOPE','別の案件・端末の未送信データは送信できません');
       assert(!ids.has(e.eventId),'DELTA_LOCAL_STATE','未送信の変更IDが重複しています');ids.add(e.eventId);
     }
+    // Rejected changes stay durable but are not endlessly retransmitted.
+    // Backward compatible with states saved before this optional array existed.
+    if(own(state,'blockedOutbox')){
+      assert(Array.isArray(state.blockedOutbox),'DELTA_LOCAL_STATE','確認待ちの履歴が不正です');
+      for(const block of state.blockedOutbox){
+        assert(object(block)&&object(block.reason)&&typeof block.reason.message==='string',
+          'DELTA_LOCAL_STATE','確認待ちの理由が不正です');
+        validateEvent(block.event);
+        assert(block.event.projectId===scope.projectId&&block.event.deviceId===scope.deviceId&&
+          !ids.has(block.event.eventId),'DELTA_SCOPE','別案件または重複した確認待ち履歴があります');
+        ids.add(block.event.eventId);
+      }
+    }
     if(deep)for(const [key,record]of Object.entries(state.records)){
       let parts;try{parts=JSON.parse(key);}catch{}
       assert(Array.isArray(parts)&&parts.length===2&&parts.every(valid)&&record?.id===parts[1]&&
@@ -227,8 +240,9 @@
     }
     function emit(fn,value){if(closed)return;try{fn(value);}catch{/* UI observers cannot undo a committed save. */}}
     function conflictCount(){return state?Object.values(state.records).reduce((n,r)=>n+C.view(r).conflicts.length,0):0;}
+    function blockedCount(){return state?.blockedOutbox?.length||0;}
     function status(level,description){emit(onStatus,{level,message:description,pending:state?.outbox?.length||0,
-      cursor:state?.cursor||0,conflicts:conflictCount()});}
+      blocked:blockedCount(),cursor:state?.cursor||0,conflicts:conflictCount()});}
     function visibleConflicts(record){const conflicts=C.view(record).conflicts;
       if(conflicts.length)emit(onConflict,{projectId,recordId:record.id,conflicts:clone(conflicts)});
     }
@@ -239,6 +253,15 @@
       if(error?.retryable===true)return true;
       return [408,425,429].includes(code)||(code>=500&&code<=599)||error?.code==='DELTA_TIMEOUT';
     }
+    function permanentRecordReject(error){
+      if([401,403].includes(Number(error?.status||error?.statusCode)))return false;
+      const code=String(error?.code||''),message=String(error?.message||'');
+      // Only explicit application-level record/revision validation errors may
+      // be isolated. Network, auth, deployment and ambiguous errors stay queued.
+      const semantic=/\bDELTA_(?:MISSING_BASE|UNKNOWN_PARENT|UNKNOWN_OBSERVED|HISTORY_CYCLE|REVISION_REWRITE|DELETION_REWRITE|RECORD_ALREADY_EXISTS|RECORD_GRAPH_INVALID|RECORD_HISTORY_MISSING|COMMENT_ORDER_CHANGED|DUPLICATE_REVISION_ID|REVISION_COLLISION_OR_INVALID|PARENTS_INVALID|PAYLOAD_INVALID)\b/;
+      return semantic.test(code)||((code==='22023'||Number(error?.status)===400)&&semantic.test(message));
+    }
+    const sameRecord=(a,b)=>a.drawingId===b.drawingId&&a.recordId===b.recordId;
     function retry(error){
       if(!started||closed||!retryable(error)||!connected()||!visible()||retryTimer!==null)return;
       const wait=Math.min(retryMaxMs,retryBaseMs*2**Math.min(retries++,20));
@@ -283,7 +306,33 @@
       for(;;){
         if(!connected())return {offline:true,pushed};
         const event=await local(()=>clone(state.outbox[0]));if(!event)return {pushed};
-        const ack=await request(signal=>transport.push(clone(event),{signal}));
+        let ack;
+        try{ack=await request(signal=>transport.push(clone(event),{signal}));}
+        catch(error){
+          if(!permanentRecordReject(error))throw error;
+          // A rejected create/update cannot be sent again as a later same-
+          // record patch. Quarantine its entire dependency chain atomically;
+          // unrelated records keep their normal durable FIFO send queue.
+          await local(async()=>{
+            const next=clone(state);
+            assert(C.equal(next.outbox[0],event),'DELTA_LOCAL_STATE','送信待ちの記録が変更されています');
+            const remaining=[];
+            next.blockedOutbox=next.blockedOutbox||[];
+            for(const queued of next.outbox){
+              if(sameRecord(queued,event)){
+                const root=queued.eventId===event.eventId;
+                next.blockedOutbox.push({event:queued,reason:{
+                  code:root?String(error.code||'DELTA_REJECTED'):'DELTA_DEPENDENT_BLOCKED',
+                  message:root?'この記録の変更内容をサーバーが受け付けませんでした': '前の変更を確認するまで送信できません'
+                }});
+              }else remaining.push(queued);
+            }
+            next.outbox=remaining;
+            await persist(next);
+          });
+          status('review','受け付けられない記録を確認待ちに保護し、ほかの記録の同期を続けます');
+          continue;
+        }
         assert(ack&&Number.isSafeInteger(ack.seq)&&ack.seq>=1&&identityKeys.every(k=>ack[k]===event[k]),
           'DELTA_NOT_DURABLE','この変更のサーバー保存を確認できません');
         await local(async()=>{
@@ -302,10 +351,13 @@
         if(sent.offline||received.offline||!connected()){
           status('offline','通信の復旧後に変更点の同期を再開します');return {offline:true,pending:state.outbox.length};
         }
-        const conflicts=conflictCount();
-        status(conflicts?'review':state.outbox.length?'queued':'ok',conflicts?'変更点を受信しました。競合した内容の確認が必要です':
+        const conflicts=conflictCount(),blocked=blockedCount();
+        status(blocked||conflicts?'review':state.outbox.length?'queued':'ok',
+          blocked?'一部の記録は確認待ちです。ほかの記録は同期しました':
+          conflicts?'変更点を受信しました。競合した内容の確認が必要です':
           state.outbox.length?'端末の変更を送信待ちです':'記録の変更点を同期しました（写真本体は別途確認）');
-        return {pushed:sent.pushed,received:received.applied,pending:state.outbox.length,cursor:state.cursor,conflicts};
+        return {pushed:sent.pushed,received:received.applied,pending:state.outbox.length,
+          blocked,cursor:state.cursor,conflicts};
       }catch(error){if(!closed){status('warning','変更内容を保持しました：'+error.message);retry(error);}throw error;}
     }
     function sync(){
@@ -341,18 +393,27 @@
         before=before?clone(before):null;after=clone(after);
         return local(async()=>{
           assert(valid(drawingId)&&valid(after?.id)&&valid(eventId),'DELTA_RECORD','図面・記録・変更IDを確認できません');
-          const pending=state.outbox.find(e=>e.eventId===eventId);
+          const pending=state.outbox.find(e=>e.eventId===eventId)||
+            (state.blockedOutbox||[]).find(b=>b.event.eventId===eventId)?.event;
           if(pending){const repeated=diffRecord(before,after,{eventId,projectId,drawingId,deviceId});
             assert(C.equal(repeated,pending),'DELTA_COLLISION','同じ変更IDに異なる内容があります');
-            wake();return {eventId,duplicate:true,pending:state.outbox.length};}
+            wake();return {eventId,duplicate:true,pending:state.outbox.length,blocked:blockedCount()};}
           const key=keyOf(drawingId,after.id),current=own(state.records,key)?state.records[key]:null;
           assert((!before&&!current)||(before&&current&&C.equal(C.upgrade(before),C.upgrade(current))),
             'DELTA_STALE','記録がほかの操作で更新されました。入力内容を保持して再確認してください');
           const event=diffRecord(current,after,{eventId,projectId,drawingId,deviceId});
           if(!event)return {unchanged:true,pending:state.outbox.length};
-          const next=clone(state);put(next.records,key,C.upgrade(after));next.outbox.push(event);
-          await persist(next);status('queued','端末に変更を保存しました');wake();
-          return {eventId,pending:state.outbox.length};
+          const next=clone(state);put(next.records,key,C.upgrade(after));
+          const blocked=(next.blockedOutbox||[]).some(b=>sameRecord(b.event,event));
+          if(blocked){
+            next.blockedOutbox.push({event,reason:{code:'DELTA_DEPENDENT_BLOCKED',
+              message:'同じ記録の前の変更を確認するまで送信できません'}});
+          }else next.outbox.push(event);
+          await persist(next);
+          status(blocked?'review':'queued',blocked?
+            '確認待ちの記録に追記しました。内容は端末に保護しています':'端末に変更を保存しました');
+          if(!blocked)wake();
+          return {eventId,pending:state.outbox.length,blocked:blockedCount()};
         });
       },
       sync,
