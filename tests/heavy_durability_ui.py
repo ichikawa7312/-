@@ -343,10 +343,13 @@ def fault_cases(page, context, new_page, report, camera_png, save_report):
         assert len(failure['pending']) == 1, failure
         pending = failure['pending'][0]
         photo_id = pending['photoId']
+        # The collaboration projection deliberately orders photographs by ID,
+        # independently of arrival time or the device doing the recovery.
+        expected_ids = sorted(before+[photo_id])
         assert pending['target']['drawingId'] == PDF_ID and pending['target']['recordId'] == 'survey-a', pending
         assert pending['status'] == 'pending' and pending['originalSaved'] is (mode != 'original'), pending
         disk_ids = saved_ids(page)
-        assert disk_ids == before + ([photo_id] if mode == 'association' else []), (mode, disk_ids, before, photo_id)
+        assert disk_ids == (expected_ids if mode == 'association' else before), (mode, disk_ids, before, photo_id)
         assert saved_ids(page, IMAGE_ID) == []
         if mode == 'original':
             expect(page.locator('#slCameraShutter')).to_be_disabled()
@@ -365,8 +368,7 @@ def fault_cases(page, context, new_page, report, camera_png, save_report):
 
         # Discard JS memory without invoking cleanup/retry. The profile's real
         # native IndexedDB and localStorage are the sole restart inputs.
-        page.close(run_before_unload=False)
-        page = new_page(context)
+        page = new_page(context, replacing=page)
         if mode == 'original':
             select_record(page, PDF_ID)
             restarted = page.evaluate('SentlogCollaborationPhotos.listPending()')
@@ -382,7 +384,7 @@ def fault_cases(page, context, new_page, report, camera_png, save_report):
             chooser.value.set_files({'name': 'reselected-original.png', 'mimeType': 'image/png', 'buffer': camera_png})
         wait_attached(page, len(before)+1)
         proof = page.evaluate(PHOTO_PROOF, {'drawingId': PDF_ID, 'photoId': photo_id})
-        assert proof['matches'] == 1 and proof['ids'] == before+[photo_id], proof
+        assert proof['matches'] == 1 and proof['ids'] == expected_ids, proof
         assert proof['originalHash'] == source_hash and proof['originalBytes'] == len(camera_png), proof
         assert proof['sharedHash'] == proof['expectedSharedHash'] and proof['sharedHash'], proof
         assert proof['status'] == 'attached' and proof['target']['drawingId'] == PDF_ID, proof
@@ -390,7 +392,7 @@ def fault_cases(page, context, new_page, report, camera_png, save_report):
         assert saved_ids(page, IMAGE_ID) == []
         # A repeated retry callback is idempotent after recovery.
         assert page.evaluate('id=>SentlogCollaborationPhotos.retryPending(id)', photo_id) == []
-        assert saved_ids(page) == before+[photo_id]
+        assert saved_ids(page) == expected_ids
         assert page.evaluate(READ_RECORD, PDF_ID)['shapes'][1:] == other_pdf_records
         assert page.evaluate(READ_RECORD, IMAGE_ID)['shapes'] == other_drawing_records
         recovered.append({'boundary': mode, 'nativeTransactionAborts': failure['aborted'],
@@ -449,8 +451,15 @@ def main():
 
             context.route('**/*', route)
 
-            def new_page(browser_context):
-                current = browser_context.new_page()
+            def new_page(browser_context, *, replacing=None):
+                if replacing is None:
+                    current = browser_context.pages[0] if browser_context.pages else browser_context.new_page()
+                else:
+                    # Closing WebKit's last page ends its persistent browser.
+                    # Keep a new blank page alive, discard the old renderer,
+                    # and only then load the app and acquire its writer lock.
+                    current = browser_context.new_page()
+                    replacing.close(run_before_unload=False)
                 current.on('pageerror', lambda error: errors.append(str(error)))
                 current.goto(origin+'/sentlog/', wait_until='domcontentloaded')
                 current.wait_for_function('window.sentlogAppReady&&window.SentlogContinuousCamera&&window.SentlogCollaborationPhotos', timeout=45000)
@@ -458,8 +467,6 @@ def main():
                 return current
 
             try:
-                for blank in context.pages:
-                    blank.close()
                 page = new_page(context)
                 report['stage'] = 'seed'
                 page.evaluate(SETUP, base64.b64encode(photo_png()).decode('ascii'))

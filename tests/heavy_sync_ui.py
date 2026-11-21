@@ -230,27 +230,56 @@ BURST = r"""async ({operations,geometry})=>{
 }"""
 
 SUMMARY = r"""async()=>{
-  await SentlogRecords.settled();SentlogRecords.assertSafe();
-  const workspace=JSON.parse(SentlogRecords.getItem(WORKSPACE_KEY));
-  const project=workspace.projects.find(p=>p.id==='edit-project');
-  const records=[],comments=[],photos=[];
-  for(const meta of project.drawings){
-    const key=drawingStorageKey(meta.id),text=SentlogRecords.getItem(key);
-    const durable=await getDBFile('__sentlog_record__:'+key);
-    if(durable!==text)throw Error('Native durable record mirror mismatch: '+meta.id);
-    const drawing=JSON.parse(durable);
-    for(const record of [...drawing.shapes,...(drawing.collabDeletedRecords||[])]){
-      const view=SentlogRecordCollaboration.view(record);
-      records.push({drawing:meta.id,record:record.id,token:view.token,deleted:SentlogRecordCollaboration.isDeleted(record),conflicts:view.conflicts.length});
-      for(const comment of view.comments)comments.push({drawing:meta.id,record:record.id,id:comment.id,
-        text:comment.text,deleted:comment.deleted,headIds:comment.headIds});
-      for(const photo of record.photos||[])photos.push({drawing:meta.id,record:record.id,...photo});
+  const store=SentlogRecords,started=performance.now();let generation=0,changedReads=0;
+  const unsubscribe=store.subscribe(()=>generation++);
+  window.__heavySummaryObservation??={calls:0,changedReads:0,maxChangedReads:0};
+  window.__heavySummaryObservation.calls++;
+  try{
+    for(let attempt=0;attempt<12&&performance.now()-started<15000;attempt++){
+      await store.settled();store.assertSafe();
+      const beforeGeneration=generation,beforePending=store.pending;
+      const workspaceText=store.getItem(WORKSPACE_KEY),workspace=JSON.parse(workspaceText);
+      const project=workspace.projects.find(p=>p.id==='edit-project');
+      const keys=[WORKSPACE_KEY,...project.drawings.map(meta=>drawingStorageKey(meta.id))];
+      const memory=keys.map(key=>store.getItem(key));
+      const disk=await Promise.all(keys.map(key=>getDBFile('__sentlog_record__:'+key)));
+      const afterPending=store.pending,afterGeneration=generation,after=keys.map(key=>store.getItem(key));
+      // settled() drains the work already scheduled; it is not a read lock.
+      // Discard only a sample proven to overlap store activity or changed
+      // values, including ABA changes detected by the subscription generation.
+      if(beforePending||afterPending||beforeGeneration!==afterGeneration||memory.some((text,i)=>text!==after[i])){
+        changedReads++;window.__heavySummaryObservation.changedReads++;
+        window.__heavySummaryObservation.maxChangedReads=Math.max(window.__heavySummaryObservation.maxChangedReads,changedReads);
+        await new Promise(resolve=>setTimeout(resolve,0));continue;
+      }
+      const mismatch=keys.findIndex((key,i)=>disk[i]!==memory[i]);
+      if(mismatch>=0){
+        const hash=async value=>[...new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(String(value))))]
+          .map(v=>v.toString(16).padStart(2,'0')).join('');
+        throw Error('Stable native durable record mirror mismatch: '+JSON.stringify({key:keys[mismatch],
+          beforeGeneration,afterGeneration,beforePending,afterPending,changedReads,
+          memoryLength:memory[mismatch]?.length,durableLength:disk[mismatch]?.length,
+          memorySha256:await hash(memory[mismatch]),durableSha256:await hash(disk[mismatch])}));
+      }
+      const records=[],comments=[],photos=[];
+      for(const [index,meta]of project.drawings.entries()){
+        const drawing=JSON.parse(disk[index+1]);
+        for(const record of [...drawing.shapes,...(drawing.collabDeletedRecords||[])]){
+          const view=SentlogRecordCollaboration.view(record);
+          records.push({drawing:meta.id,record:record.id,token:view.token,deleted:SentlogRecordCollaboration.isDeleted(record),conflicts:view.conflicts.length});
+          for(const comment of view.comments)comments.push({drawing:meta.id,record:record.id,id:comment.id,
+            text:comment.text,deleted:comment.deleted,headIds:comment.headIds});
+          for(const photo of record.photos||[])photos.push({drawing:meta.id,record:record.id,...photo});
+        }
+      }
+      return {records,comments,photos,pending:await SentlogCollaborationPhotos.listPending(),
+        binding:store.deltaJournal.bindingFor('edit-project'),view:currentView,drawing:activeDrawingId,
+        queuedProjects:[...(window.sentlogEditSync?.pending||[])],
+        observation:{changedReads,ms:performance.now()-started},
+        cloudMessage:document.getElementById('sentlogCloudMsg')?.textContent};
     }
-  }
-  return {records,comments,photos,pending:await SentlogCollaborationPhotos.listPending(),
-    binding:SentlogRecords.deltaJournal.bindingFor('edit-project'),view:currentView,drawing:activeDrawingId,
-    queuedProjects:[...(window.sentlogEditSync?.pending||[])],
-    cloudMessage:document.getElementById('sentlogCloudMsg')?.textContent};
+    throw Error('Could not obtain a coherent native record observation within bounds: '+JSON.stringify({changedReads,ms:performance.now()-started}));
+  }finally{unsubscribe();}
 }"""
 
 CAPTURE = r"""async ({encoded,name})=>{
@@ -320,6 +349,7 @@ def capture_failure(cloud, report):
               cloud:document.getElementById('sentlogCloudMsg')?.textContent,
               photo:document.getElementById('photoStatus')?.textContent,
               storageFailed:SentlogRecords.failed,storageIssues:SentlogRecords.issues,
+              observations:window.__heavySummaryObservation,
               confirmation:document.querySelector('.sl-collab-dialog [data-status]')?.textContent})"""))
             page.screenshot(path=f'/tmp/sentlog-heavy-sync-{cloud.engine}-failure-{index}.png',full_page=True)
         except Exception as diagnostic_error:report.setdefault('diagnosticErrors',[]).append(str(diagnostic_error))
@@ -412,6 +442,8 @@ def run(engine, cloud, report):
             print('HEAVY_SYNC offline round',round_index+1,'durable comments',len(expected)-1000,'photos',len(photos),flush=True)
 
             if round_index==1:
+                report.setdefault('snapshotObservationFences',[]).append(dict(device=DEVICES[0],phase='before-mid-round-reload',
+                    counters=pages[0].evaluate('window.__heavySummaryObservation')))
                 pages[0].reload(wait_until='domcontentloaded');ready(pages[0])
                 assert not pages[0].evaluate('navigator.onLine')
                 verify_summary(pages[0].evaluate(SUMMARY),local_expected[0],original_tokens,changed)
@@ -506,6 +538,8 @@ def run(engine, cloud, report):
 
         for number,(device,page) in enumerate(zip(DEVICES,pages)):
             offline(cloud,device,page,True)
+            report.setdefault('snapshotObservationFences',[]).append(dict(device=device,phase='before-final-reload',
+                counters=page.evaluate('window.__heavySummaryObservation')))
             page.reload(wait_until='domcontentloaded');ready(page)
             proof=page.evaluate(SUMMARY);verify_summary(proof,expected,original_tokens,changed)
             assert page.evaluate(PHOTO_PROOF,photos) is not False
