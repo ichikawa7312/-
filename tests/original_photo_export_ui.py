@@ -120,10 +120,30 @@ NATIVE_ENVIRONMENT = r"""async()=>{
   const main={href:location.href,origin:location.origin,isSecureContext,storageType:typeof navigator.storage,
     getDirectoryType:typeof navigator.storage?.getDirectory,estimateType:typeof navigator.storage?.estimate,
     locksType:typeof navigator.locks?.request,userAgent:navigator.userAgent};
-  const script=`postMessage({href:location.href,origin:location.origin,isSecureContext,
+  const script=`(async()=>{const features={href:location.href,origin:location.origin,isSecureContext,
     storageType:typeof navigator.storage,getDirectoryType:typeof navigator.storage?.getDirectory,
     estimateType:typeof navigator.storage?.estimate,locksType:typeof navigator.locks?.request,
-    syncAccessHandleType:typeof self.FileSystemSyncAccessHandle});`;
+    syncAccessHandleType:typeof self.FileSystemSyncAccessHandle};
+    const probe=features.syncAccessHandleProbe={ok:false,cleanupComplete:false};
+    let root,handle,created=false;const name='sentlog-export-native-probe-'+crypto.randomUUID();
+    try{
+      root=await navigator.storage.getDirectory();const file=await root.getFileHandle(name,{create:true});created=true;
+      features.createSyncAccessHandleType=typeof file.createSyncAccessHandle;
+      handle=await file.createSyncAccessHandle();
+      const expected=new TextEncoder().encode('native OPFS write/read/flush verification'),actual=new Uint8Array(expected.length);
+      await handle.truncate(0);probe.writtenBytes=await handle.write(expected,{at:0});await handle.flush();
+      probe.readBytes=await handle.read(actual,{at:0});await handle.close();handle=null;
+      const persisted=new Uint8Array(await (await file.getFile()).arrayBuffer());probe.persistedBytes=persisted.length;
+      probe.ok=probe.writtenBytes===expected.length&&probe.readBytes===expected.length&&persisted.length===expected.length&&
+        expected.every((value,index)=>actual[index]===value&&persisted[index]===value);
+      if(!probe.ok)throw Error('Native OPFS bytes did not round trip');
+    }catch(error){probe.error={name:error.name,message:error.message};}
+    finally{
+      try{if(handle)await handle.close();if(created)await root.removeEntry(name);probe.cleanupComplete=true;}
+      catch(error){probe.cleanupError={name:error.name,message:error.message};}
+    }
+    postMessage(features);
+  })();`;
   const url=URL.createObjectURL(new Blob([script],{type:'text/javascript'})),worker=new Worker(url);let timer;
   try{const features=await new Promise((resolve,reject)=>{
     timer=setTimeout(()=>reject(Error('Native worker capability probe timed out')),10000);
@@ -875,7 +895,7 @@ def main():
     # leaves them disabled by default in the Linux MiniBrowser embedder. Use
     # that embedder's documented feature arguments to exercise the same native
     # implementation, with no JS API shim or weakened availability assertion.
-    native_features = ['--features=StorageAPI,StorageAPIEstimate,FileSystem'] if args.engine == 'webkit' else []
+    native_features = ['--features=StorageAPI,StorageAPIEstimate,FileSystem,AccessHandle'] if args.engine == 'webkit' else []
     report['nativeFeatureArguments'] = native_features
     save_json(report_path, report)
 
@@ -946,6 +966,8 @@ def main():
                   exportButton:!!document.getElementById('slOriginalPhotoExportBtn')})""")
                 report['capabilities']['workerOpfs'] = report['nativeEnvironment']['worker']['getDirectoryType'] == 'function'
                 report['capabilities']['workerSyncAccessHandle'] = report['nativeEnvironment']['worker']['syncAccessHandleType'] == 'function'
+                native_io = report['nativeEnvironment']['worker']['syncAccessHandleProbe']
+                report['capabilities']['nativeOpfsRoundTrip'] = native_io['ok'] is True and native_io['cleanupComplete'] is True
                 report['capabilities']['sourceLease'] = report['nativeEnvironment']['main']['locksType'] == 'function'
                 assert all(report['capabilities'].values()), report['capabilities']
                 run(page, context, origin, route_state, fixture, report, report_path, directory)
