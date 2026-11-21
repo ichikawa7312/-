@@ -263,13 +263,25 @@ MUTATE_NATIVE = r"""async ({key,mode})=>{
         tx.objectStore('photos').get(key).onsuccess=e=>out.blob=e.target.result;
         tx.oncomplete=()=>resolve(out);tx.onabort=()=>reject(tx.error);});
       if(!saved.meta||!(saved.blob instanceof Blob))throw Error('Mutation fixture source missing');
+      saved.mode=mode;
+      if(mode==='missing'){
+        // A Blob read from WebKit's IndexedDB can lose its backing reference
+        // after a delete. Materialize bytes before the destructive fixture
+        // step and restore from a fresh native Blob, not the old IDB handle.
+        saved.data=await saved.blob.arrayBuffer();
+        saved.mediaType=saved.blob.type;
+      }
+      delete saved.blob;
       originalFixture.backups.set(key,saved);
     }
     const saved=originalFixture.backups.get(key);if(!saved)throw Error('Missing mutation backup');
     await new Promise((resolve,reject)=>{const tx=db.transaction(['meta','photos'],'readwrite');
       if(mode==='missing')tx.objectStore('photos').delete(key);
       else if(mode==='changed')tx.objectStore('meta').put({...saved.meta,exportName:'changed-during-export.jpg',storedAt:saved.meta.storedAt+1});
-      else if(mode==='restore'){tx.objectStore('meta').put(saved.meta);tx.objectStore('photos').put(saved.blob,key);}
+      else if(mode==='restore'){
+        tx.objectStore('meta').put(saved.meta);
+        if(saved.mode==='missing')tx.objectStore('photos').put(new Blob([saved.data],{type:saved.mediaType}),key);
+      }
       else throw Error('Unknown fixture mutation');
       tx.oncomplete=resolve;tx.onabort=()=>reject(tx.error);tx.onerror=()=>{};});
     if(mode==='restore')originalFixture.backups.delete(key);
