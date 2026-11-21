@@ -93,6 +93,11 @@ jobs:
       matrix:
         engine: [chromium, webkit]
         suite: [camera, sync, durability, delta, originals]
+        # The Linux WebKit port does not implement native OPFS access handles.
+        # Exercise that suite on Cocoa below, keeping every storage assertion.
+        exclude:
+          - engine: webkit
+            suite: originals
     steps:
       - uses: actions/checkout@v6
         with:
@@ -137,5 +142,48 @@ jobs:
         with:
           name: heavy-${{ matrix.suite }}-${{ matrix.engine }}
           path: /tmp/sentlog-heavy-${{ matrix.suite }}-${{ matrix.engine }}*
+          if-no-files-found: warn
+          retention-days: 30
+  originals-webkit:
+    name: browser (webkit, originals, macOS)
+    needs: build
+    runs-on: macos-15-intel
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          name: heavy-production-build
+          path: .
+      - name: Verify that every scenario uses the same built files
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import hashlib, json, os
+          manifest=json.loads(Path('heavy-build-manifest.json').read_text())
+          assert manifest['testedHead']==os.environ['SENTLOG_TESTED_HEAD']
+          for name,digest in manifest['sha256'].items():
+              assert hashlib.sha256(Path(name).read_bytes()).hexdigest()==digest,name
+          print('PASS same built files:',manifest['testedHead'],len(manifest['sha256']))
+          PY
+      - name: Install pinned native macOS WebKit
+        run: |
+          python -m pip install playwright==1.57.0 pillow==11.3.0
+          python -m playwright install webkit
+      - name: Verify complete original-photo ZIP exports in native macOS WebKit
+        run: python tests/original_photo_export_ui.py --engine webkit --built-root . --report /tmp/sentlog-heavy-originals-webkit.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: heavy-originals-webkit
+          path: /tmp/sentlog-heavy-originals-webkit*
           if-no-files-found: warn
           retention-days: 30

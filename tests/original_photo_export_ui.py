@@ -12,7 +12,9 @@ import hashlib
 import io
 import json
 import os
+import platform
 import re
+import sys
 import tempfile
 import threading
 import time
@@ -124,23 +126,29 @@ NATIVE_ENVIRONMENT = r"""async()=>{
     storageType:typeof navigator.storage,getDirectoryType:typeof navigator.storage?.getDirectory,
     estimateType:typeof navigator.storage?.estimate,locksType:typeof navigator.locks?.request,
     syncAccessHandleType:typeof self.FileSystemSyncAccessHandle};
-    const probe=features.syncAccessHandleProbe={ok:false,cleanupComplete:false};
+    const probe=features.syncAccessHandleProbe={ok:false,cleanupComplete:false,operations:[]};
+    const phase=value=>{probe.phase=value;probe.operations.push(value);};
     let root,handle,created=false;const name='sentlog-export-native-probe-'+crypto.randomUUID();
     try{
-      root=await navigator.storage.getDirectory();const file=await root.getFileHandle(name,{create:true});created=true;
+      phase('getDirectory');root=await navigator.storage.getDirectory();
+      phase('getFileHandle');const file=await root.getFileHandle(name,{create:true});created=true;
       features.createSyncAccessHandleType=typeof file.createSyncAccessHandle;
-      handle=await file.createSyncAccessHandle();
+      phase('createSyncAccessHandle');handle=await file.createSyncAccessHandle();
       const expected=new TextEncoder().encode('native OPFS write/read/flush verification'),actual=new Uint8Array(expected.length);
-      await handle.truncate(0);probe.writtenBytes=await handle.write(expected,{at:0});await handle.flush();
-      probe.readBytes=await handle.read(actual,{at:0});await handle.close();handle=null;
+      phase('truncate');await handle.truncate(0);
+      phase('write');probe.writtenBytes=await handle.write(expected,{at:0});
+      phase('flush');await handle.flush();phase('read');probe.readBytes=await handle.read(actual,{at:0});
+      phase('close');await handle.close();handle=null;phase('getFile');
       const persisted=new Uint8Array(await (await file.getFile()).arrayBuffer());probe.persistedBytes=persisted.length;
       probe.ok=probe.writtenBytes===expected.length&&probe.readBytes===expected.length&&persisted.length===expected.length&&
         expected.every((value,index)=>actual[index]===value&&persisted[index]===value);
       if(!probe.ok)throw Error('Native OPFS bytes did not round trip');
-    }catch(error){probe.error={name:error.name,message:error.message};}
+    }catch(error){probe.error={name:error.name,message:error.message,phase:probe.phase};}
     finally{
-      try{if(handle)await handle.close();if(created)await root.removeEntry(name);probe.cleanupComplete=true;}
-      catch(error){probe.cleanupError={name:error.name,message:error.message};}
+      try{
+        if(handle){phase('cleanup-close');await handle.close();}
+        if(created){phase('remove');await root.removeEntry(name);}probe.cleanupComplete=true;
+      }catch(error){probe.cleanupError={name:error.name,message:error.message,phase:probe.phase};}
     }
     postMessage(features);
   })();`;
@@ -885,17 +893,18 @@ def main():
     report_path = args.report or Path(f'/tmp/sentlog-heavy-originals-{args.engine}.json')
     root = args.built_root.resolve()
     report = {'engine': args.engine, 'status': 'running', 'stage': 'boot', 'downloadEvents': 0,
+              'hostPlatform': {'sys': sys.platform, 'system': platform.system(),
+                               'release': platform.release(), 'machine': platform.machine()},
               'workload': {'largeOriginals': BIG_COUNT, 'largeOriginalBytes': BIG_COUNT * BIG_SIZE,
                            'largeDrawings': 4, 'alreadyExportedLargeOriginals': 80},
               'storage': 'native IndexedDB originals, native Worker, native OPFS, actual browser downloads',
               'faultModel': 'injected failures/delays only at native OPFS write and Blob chunk read boundaries',
               'crashModel': 'Worker.terminate while real temporary output and exclusive lease are open'}
-    # Playwright 1.57 pins WebKit 486de399887bc8fa8a69e2f194ebc9476589a08a.
-    # Its UnifiedWebPreferences.yaml enables these native APIs for COCOA but
-    # leaves them disabled by default in the Linux MiniBrowser embedder. Use
-    # that embedder's documented feature arguments to exercise the same native
-    # implementation, with no JS API shim or weakened availability assertion.
-    native_features = ['--features=StorageAPI,StorageAPIEstimate,FileSystem,AccessHandle'] if args.engine == 'webkit' else []
+    # Native OPFS coverage runs on macOS WebKit, whose Cocoa defaults enable
+    # these APIs. Keep Linux-only preferences available for diagnostics, but
+    # require the real I/O probe too: an exposed API does not establish backend
+    # support. Never pass MiniBrowser's Linux arguments to the Cocoa browser.
+    native_features = ['--features=StorageAPI,StorageAPIEstimate,FileSystem,AccessHandle'] if args.engine == 'webkit' and sys.platform == 'linux' else []
     report['nativeFeatureArguments'] = native_features
     save_json(report_path, report)
 
