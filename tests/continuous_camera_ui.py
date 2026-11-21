@@ -768,8 +768,8 @@ def run_landscape_recovery(page, engine, screenshot_dir=None):
         assert set(saved_photo_ids(page, drawing_id)) == before
 
         # An actual export exposes the third recovery button. A failed Done
-        # then restores the full explanatory error, exercising the largest
-        # feedback panel while the unsaved photograph is still protected.
+        # then explains how to retain the unsaved photograph, exercising the
+        # feedback panel with all recovery actions visible.
         with page.expect_download() as download_info:
             page.locator('#slCameraExport').click()
         download = download_info.value
@@ -779,7 +779,8 @@ def run_landscape_recovery(page, engine, screenshot_dir=None):
         expect(page.locator('#slCameraExportDone')).to_be_visible()
         page.locator('#slCameraDone').click()
         expect(page.locator('#slCameraDone')).to_be_enabled()
-        expect(page.locator('#slCameraStatus')).to_contain_text('空き容量')
+        expect(page.locator('#slCameraStatus')).to_have_text(
+            'まだ保存できていない写真があります。再試行するか、写真を書き出してから終了してください。')
         assert page.evaluate('SentlogContinuousCamera.isOpen()'), 'Done must not discard the retained photograph'
         assert_controls_fit(page, safe_area)
         if screenshot_dir:
