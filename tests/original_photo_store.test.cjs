@@ -34,5 +34,5 @@ assert.match(featureSource,/1つのZIPにまとめて保存/);
 assert.match(featureSource,/保存確認済みの写真も含め/);
 assert.doesNotMatch(featureSource,/今日の未書き出し原本|すべての案件|最大250枚・約400MB/);
 assert.match(featureSource,/buildPcPath\(meta\)/);
-assert.match(featureSource,/if\(!confirm\('書き出し確認済みの原本だけを、この端末から削除します。未書き出し原本は削除しません。/);
+assert.match(featureSource,/if\(!confirm\('この端末の全案件から、保存確認済みの元写真だけを削除します。未書き出し原本は削除しません。/);
 console.log('PASS original photo store: exact local source, lighter shared copy, PC-layout export, guarded cleanup');

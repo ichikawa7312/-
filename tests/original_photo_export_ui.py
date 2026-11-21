@@ -378,6 +378,14 @@ def open_ui(page, project_id):
 
 
 def open_settings_ui(page, project_id):
+    # The preceding export scenarios leave the real app in its drawing list.
+    # Settings is a home-screen control (the production header hides it on
+    # other views), so exercise the actual back button before opening it.
+    assert page.evaluate('currentView') == 'drawings'
+    expect(page.locator('#navBackBtn')).to_be_visible()
+    page.locator('#navBackBtn').click()
+    page.wait_for_function("currentView==='projects'")
+    expect(page.locator('#sentlogSettingsBtn')).to_be_visible()
     page.locator('#sentlogSettingsBtn').click()
     expect(page.locator('#sentlogSettingsModal')).to_have_attribute('aria-hidden', 'false')
     section = page.locator('#sentlogOriginalPhotosSection')
