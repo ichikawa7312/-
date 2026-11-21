@@ -50,12 +50,17 @@
     let crc=seed>>>0;for(const b of bytes)crc=CRC_TABLE[(crc^b)&255]^(crc>>>8);return crc>>>0;
   }
   function finalizedCrc(crc){return (crc^0xFFFFFFFF)>>>0;}
-  const pure={SHARED_MAX_SIDE,SHARED_JPEG_QUALITY,EXPORT_MAX_BYTES,EXPORT_MAX_FILES,safeSegment,uniqueName,localDateKey,buildPcPath,planBatches,crc32Bytes,finalizedCrc};
+  const SOURCE_FIELDS=['key','drawingId','photoId','projectId','projectName','drawingName','shapeId','shapeLabel','exportName','originalName','type','size','lastModified','createdAt','storedAt','originalRevision'];
+  function sourceSignature(row){return JSON.stringify(SOURCE_FIELDS.map(key=>row?.[key]??null));}
+  const pure={SHARED_MAX_SIDE,SHARED_JPEG_QUALITY,EXPORT_MAX_BYTES,EXPORT_MAX_FILES,safeSegment,uniqueName,localDateKey,buildPcPath,planBatches,crc32Bytes,finalizedCrc,sourceSignature};
   if(typeof module!=='undefined'&&module.exports){module.exports=pure;return;}
   if(!root.document||root.SentlogOriginalPhotos)return;
 
   const DB='sentlog-original-photos-v1', VERSION=1, PHOTOS='photos', META='meta';
   let connection=null, ui=null, uiBusy=false, uiRefreshRequested=false;
+  const EXPORT_LOCK='sentlog-original-photo-export-source-v1',exportSessions=new WeakMap();
+  let writeSequence=0;
+  const originalRevision=()=>root.crypto?.randomUUID?.()||Date.now().toString(36)+'-'+(++writeSequence)+'-'+Math.random().toString(36).slice(2);
   const keyFor=(drawingId,photoId)=>`${drawingId}:${photoId}`;
   function openDb(){
     if(connection)return Promise.resolve(connection);
@@ -76,7 +81,7 @@
     if(!(file instanceof Blob))throw Error('原本写真を読み取れません');
     const db=await openDb(),key=keyFor(drawingId,photoId),tx=db.transaction([PHOTOS,META],'readwrite'),done=txDone(tx);
     tx.objectStore(PHOTOS).put(file,key);
-    tx.objectStore(META).put({...meta,key,drawingId,photoId,size:file.size,type:file.type||'application/octet-stream',originalName:file.name||meta?.originalName||'photo',lastModified:Number(file.lastModified)||null,storedAt:Date.now(),exportedAt:null,packageName:null});
+    tx.objectStore(META).put({...meta,key,drawingId,photoId,size:file.size,type:file.type||'application/octet-stream',originalName:file.name||meta?.originalName||'photo',lastModified:Number(file.lastModified)||null,storedAt:Date.now(),originalRevision:originalRevision(),exportedAt:null,packageName:null});
     await done;return key;
   }
   async function getOriginal(drawingId,photoId){
@@ -94,7 +99,7 @@
         if(!row||!(blob instanceof Blob)||row.photoAssociation?.operationId!==meta?.photoAssociation?.operationId){error=Error('保存済みの原本と撮影操作が一致しません。上書きせず保持しました。');tx.abort();return;}
         result=row;return;
       }
-      result={...meta,key,drawingId,photoId,size:file.size,type:file.type||'application/octet-stream',originalName:file.name||meta?.originalName||'photo',lastModified:Number(file.lastModified)||null,storedAt:Date.now(),exportedAt:null,packageName:null};
+      result={...meta,key,drawingId,photoId,size:file.size,type:file.type||'application/octet-stream',originalName:file.name||meta?.originalName||'photo',lastModified:Number(file.lastModified)||null,storedAt:Date.now(),originalRevision:originalRevision(),exportedAt:null,packageName:null};
       tx.objectStore(PHOTOS).put(file,key);tx.objectStore(META).put(result);
     }
     const qr=tx.objectStore(META).get(key),qb=tx.objectStore(PHOTOS).get(key);
@@ -123,7 +128,7 @@
          (oldKey!==newKey&&(existing||existingBlob))){
         error=Error('保存待ちの原本を確認できません。元の写真は保持しています。');tx.abort();return;
       }
-      result={...oldRow,...meta,key:newKey,drawingId:toDrawingId,photoId,size:oldRow.size,type:oldRow.type,originalName:oldRow.originalName,lastModified:oldRow.lastModified,storedAt:oldRow.storedAt,exportedAt:oldRow.exportedAt,packageName:oldRow.packageName};
+      result={...oldRow,...meta,key:newKey,drawingId:toDrawingId,photoId,size:oldRow.size,type:oldRow.type,originalName:oldRow.originalName,lastModified:oldRow.lastModified,storedAt:oldRow.storedAt,originalRevision:oldRow.originalRevision,exportedAt:oldRow.exportedAt,packageName:oldRow.packageName};
       photos.put(blob,newKey);metas.put(result);
       if(oldKey!==newKey){photos.delete(oldKey);metas.delete(oldKey);}
     }
@@ -162,10 +167,77 @@
     for(const key of keys){const q=s.get(key);q.onsuccess=()=>{if(q.result)s.put({...q.result,exportedAt:when,packageName});};}
     await done;
   }
+  async function listProjectMeta(projectId){
+    if(typeof projectId!=='string'||!projectId.trim())throw Error('元写真を保存する案件を選んでください。');
+    const db=await openDb();
+    return new Promise((resolve,reject)=>{
+      const q=db.transaction(META,'readonly').objectStore(META).index('projectId').getAll(projectId);
+      q.onsuccess=()=>resolve((q.result||[]).filter(row=>row.projectId===projectId)
+        .sort((a,b)=>(Number(a.createdAt)||0)-(Number(b.createdAt)||0)||String(a.key).localeCompare(String(b.key))));
+      q.onerror=()=>reject(q.error);
+    });
+  }
+  // The lock spans preparation, explicit download and user confirmation. It
+  // prevents another tab's cleanup from deleting source files during export.
+  // Captures still work; version checks reject changed sources without marking
+  // newer originals as saved. A closed/crashed page releases its Web Lock.
+  async function beginExportSession(projectId){
+    if(typeof projectId!=='string'||!projectId.trim())throw Error('元写真を保存する案件を選んでください。');
+    if(typeof root.navigator?.locks?.request!=='function')throw Error('このブラウザーでは元写真をまとめて保存できません。最新版のブラウザーで開いてください。');
+    return new Promise((resolve,reject)=>{
+      root.navigator.locks.request(EXPORT_LOCK,{mode:'exclusive',ifAvailable:true},async lock=>{
+        if(!lock)throw Error('別の画面で元写真の保存・整理を行っています。その画面を閉じてからやり直してください。');
+        const rows=await listProjectMeta(projectId);
+        if(!rows.length)throw Error('この案件の元写真は、この端末にはありません。');
+        let release;const untilReleased=new Promise(done=>{release=done;});
+        const snapshot=structuredClone(rows),session=Object.freeze({projectId,rows:structuredClone(rows)});
+        exportSessions.set(session,{projectId,rows:snapshot,release,active:true,confirmed:false});
+        resolve(session);await untilReleased;
+      }).catch(reject);
+    });
+  }
+  async function confirmExportSession(session,packageName){
+    const held=exportSessions.get(session);
+    if(!held?.active||held.confirmed)throw Error('保存の確認画面を開き直してください。');
+    if(typeof packageName!=='string'||!packageName.endsWith('.zip'))throw Error('保存したZIPを確認できません。');
+    const db=await openDb(),tx=db.transaction([PHOTOS,META],'readwrite'),done=txDone(tx);
+    const metas=tx.objectStore(META),photos=tx.objectStore(PHOTOS),when=Date.now();let problem;
+    let position=0;
+    function next(){
+      if(position===held.rows.length)return;
+      const expected=held.rows[position++];
+      let current,blob,remaining=2;
+      const check=()=>{
+        if(--remaining||problem)return;
+        if(!held.active||!current||current.projectId!==held.projectId||sourceSignature(current)!==sourceSignature(expected)||
+          !(blob instanceof Blob)||blob.size!==Number(expected.size)){
+          problem=Error('保存の準備後に元写真が更新されました。保存確認は付けていません。もう一度ZIPを作成してください。');tx.abort();return;
+        }
+        metas.put({...current,exportedAt:when,packageName});next();
+      };
+      const qm=metas.get(expected.key),qp=photos.get(expected.key);
+      qm.onsuccess=()=>{current=qm.result;check();};qp.onsuccess=()=>{blob=qp.result;check();};
+    }
+    next();
+    try{await done;}catch(error){throw problem||error;}
+    held.confirmed=true;return {count:held.rows.length,bytes:held.rows.reduce((sum,row)=>sum+Number(row.size||0),0)};
+  }
+  function releaseExportSession(session){
+    const held=exportSessions.get(session);if(!held?.active)return;
+    held.active=false;held.release();exportSessions.delete(session);
+  }
   async function deleteExported(){
-    const rows=await listMeta(),targets=rows.filter(m=>m.exportedAt&&(!m.photoAssociation||m.photoAssociation.status==='attached'));if(!targets.length)return {count:0,bytes:0};
-    const db=await openDb(),tx=db.transaction([PHOTOS,META],'readwrite'),done=txDone(tx),p=tx.objectStore(PHOTOS),m=tx.objectStore(META);let bytes=0;
-    for(const row of targets){p.delete(row.key);m.delete(row.key);bytes+=Number(row.size)||0;}await done;return {count:targets.length,bytes};
+    const remove=async()=>{
+      const db=await openDb(),tx=db.transaction([PHOTOS,META],'readwrite'),done=txDone(tx),photos=tx.objectStore(PHOTOS),metas=tx.objectStore(META);let count=0,bytes=0;
+      const q=metas.openCursor();q.onsuccess=()=>{const cursor=q.result;if(!cursor)return;const row=cursor.value;
+        if(row.exportedAt&&(!row.photoAssociation||row.photoAssociation.status==='attached')){photos.delete(row.key);cursor.delete();count++;bytes+=Number(row.size)||0;}cursor.continue();};
+      await done;return {count,bytes};
+    };
+    if(typeof root.navigator?.locks?.request!=='function')return remove();
+    return root.navigator.locks.request(EXPORT_LOCK,{mode:'exclusive',ifAvailable:true},lock=>{
+      if(!lock)throw Error('元写真のZIP保存画面を開いています。保存を終えて画面を閉じてから整理してください。');
+      return remove();
+    });
   }
 
   function currentContext(shape,file,photoId,exportName,createdAt){
@@ -211,44 +283,44 @@
     const centralStart=offset,centralSize=central.reduce((n,b)=>n+b.size,0);parts.push(...central,header([le32(0x06054b50),le16(0),le16(0),le16(entries.length),le16(entries.length),le32(centralSize),le32(centralStart),le16(0)]));
     return new Blob(parts,{type:'application/zip'});
   }
-  function download(blob,name){const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=name;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),60000);}
   function bytes(n){n=Number(n)||0;return n<1024**2?(n/1024).toFixed(1)+' KB':n<1024**3?(n/1024**2).toFixed(1)+' MB':(n/1024**3).toFixed(2)+' GB';}
-  function projectOptions(){try{return (workspace?.projects||[]).map(p=>({id:p.id,name:p.name}));}catch(_){return [];}}
-  async function rowsFor(mode,projectId){
-    let rows=(await listMeta()).filter(m=>!m.exportedAt);
-    if(mode==='today'){const today=localDateKey(Date.now());rows=rows.filter(m=>localDateKey(m.createdAt)===today);}
-    if(projectId)rows=rows.filter(m=>m.projectId===projectId);
-    return rows.sort((a,b)=>(a.createdAt||0)-(b.createdAt||0));
+  function projectOptions(rows=[]){
+    const projects=new Map();
+    try{const ws=typeof workspace==='function'?workspace():workspace;for(const p of ws?.projects||[])if(p?.id)projects.set(p.id,{id:p.id,name:p.name||'案件'});}catch(_){}
+    // Originals can outlive a project's shared files or its workspace entry.
+    for(const row of rows)if(row.projectId&&!projects.has(row.projectId))projects.set(row.projectId,{id:row.projectId,name:row.projectName||'案件'});
+    return [...projects.values()];
   }
   async function exportNext(mode,projectId){
-    const rows=await rowsFor(mode,projectId);if(!rows.length){alert('書き出し待ちの原本写真はありません。');return;}
-    const batch=planBatches(rows)[0],entries=[];
-    for(const meta of batch){const blob=await getOriginal(meta.drawingId,meta.photoId);if(!(blob instanceof Blob))throw Error('原本写真が見つかりません：'+(meta.exportName||meta.originalName));entries.push({path:buildPcPath(meta),blob,modifiedAt:meta.lastModified||meta.createdAt});}
-    const zip=await makeZip(entries),day=localDateKey(Date.now()).replaceAll('-',''),project=projectId?safeSegment(projectOptions().find(p=>p.id===projectId)?.name,'案件'):'全案件',name=`セントログ_原本写真_${project}_${day}_${String(Math.ceil((rows.length-batch.length+1)/EXPORT_MAX_FILES)).padStart(2,'0')}.zip`;
-    download(zip,name);
-    const ok=confirm(`${batch.length}枚（${bytes(batch.reduce((n,m)=>n+(Number(m.size)||0),0))}）を書き出しました。\n\n「ファイル」等に保存できたことを確認できた場合だけ「OK」を押してください。\n確認できない場合は「キャンセル」で未書き出しのまま残します。`);
-    if(ok)await markExported(batch.map(x=>x.key),name);
-    await refreshUI();
+    if(typeof projectId!=='string'||!projectId.trim())throw Error('元写真を保存する案件を選んでください。');
+    if(!root.SentlogOriginalPhotoExport)throw Error('一括保存の準備ができていません。画面を読み込み直してください。');
+    return root.SentlogOriginalPhotoExport.open(projectId);
   }
 
   async function refreshUI(){
     if(!ui||!ui.section.open||ui.section.closest('#sentlogSettingsModal')?.getAttribute('aria-hidden')==='true')return;
     if(uiBusy){uiRefreshRequested=true;return;}uiBusy=true;try{
-      const s=await stats();ui.total.textContent=`原本 ${s.count}枚 / ${bytes(s.bytes)}`;ui.pending.textContent=`未書き出し ${s.unexportedCount}枚 / ${bytes(s.unexportedBytes)}　・　書き出し確認済み ${s.exportedCount}枚`;
-      const selected=ui.project.value;ui.project.replaceChildren(new Option('すべての案件',''));
-      for(const p of projectOptions())ui.project.append(new Option(p.name,p.id));if([...ui.project.options].some(o=>o.value===selected))ui.project.value=selected;else if(typeof activeProjectId!=='undefined'&&activeProjectId&&[...ui.project.options].some(o=>o.value===activeProjectId))ui.project.value=activeProjectId;
-      ui.cleanup.disabled=s.exportedCount===0;
-    }catch(e){ui.message.textContent='原本写真の状態を確認できません：'+(e.message||e);}finally{uiBusy=false;
+      const rows=await listMeta(),totalBytes=rows.reduce((sum,row)=>sum+Number(row.size||0),0);
+      ui.total.textContent=`この端末の元写真 ${rows.length}枚 / ${bytes(totalBytes)}`;
+      const selected=ui.project.value;ui.project.replaceChildren(new Option('案件を選択してください',''));
+      for(const p of projectOptions(rows))ui.project.append(new Option(p.name,p.id));
+      if([...ui.project.options].some(o=>o.value===selected)&&selected)ui.project.value=selected;
+      else if(typeof activeProjectId!=='undefined'&&activeProjectId&&[...ui.project.options].some(o=>o.value===activeProjectId))ui.project.value=activeProjectId;
+      const chosen=rows.filter(row=>row.projectId===ui.project.value&&ui.project.value);
+      ui.pending.textContent=ui.project.value?`選択案件：${chosen.length}枚 / ${bytes(chosen.reduce((sum,row)=>sum+Number(row.size||0),0))}（保存確認済みの写真も含む）`:'保存する案件を選んでください。';
+      ui.start.disabled=!ui.project.value||!chosen.length||!!root.SentlogOriginalPhotoExport?.busy;
+      ui.cleanup.disabled=!rows.some(row=>row.exportedAt)||!!root.SentlogOriginalPhotoExport?.busy;
+    }catch(e){ui.message.textContent='元写真の状態を確認できません：'+(e.message||e);}finally{uiBusy=false;
       if(uiRefreshRequested){uiRefreshRequested=false;void refreshUI();}}
   }
   function installUI(){
     if(ui||document.getElementById('sentlogOriginalPhotosSection'))return;
     const modal=document.querySelector('#sentlogSettingsModal .modal-card');if(!modal)return;
-    const style=document.createElement('style');style.textContent=`#sentlogOriginalPhotosSection{border:1px solid var(--line);border-radius:10px;padding:0 14px;margin-bottom:12px;text-align:left}#sentlogOriginalPhotosSection summary{padding:12px 0;min-height:48px;font-size:14px;font-weight:600;cursor:pointer}#sentlogOriginalPhotosSection p{font-size:12px;line-height:1.65;margin:8px 0;color:#4b5563}#sentlogOriginalPhotosSection select,#sentlogOriginalPhotosSection button{min-height:44px;font-size:12px}#sentlogOriginalPhotosSection select{width:100%;padding:8px;border:1px solid #cbd5e1;border-radius:8px;background:#fff}#sentlogOriginalPhotosSection .sl-original-actions{display:flex;flex-wrap:wrap;gap:7px;margin:10px 0}#sentlogOriginalPhotosSection button{width:auto;padding:8px 10px}#sentlogOriginalPhotosSection .sl-original-total{font-size:20px;font-weight:700;color:#111827}`;document.head.appendChild(style);
-    const section=document.createElement('details');section.id='sentlogOriginalPhotosSection';section.innerHTML=`<summary>原本写真（この端末）</summary><p>撮影・追加した元写真はこの端末だけに残し、端末間の同期には軽い確認用画像を使います。原本はSupabaseへ通常送信しません。</p><div class="sl-original-total" data-role="total">確認中…</div><p data-role="pending"></p><label style="font-size:12px;color:#4b5563">案件<select data-role="project"></select></label><div class="sl-original-actions"><button type="button" data-role="today">今日の未書き出し原本</button><button type="button" data-role="projectExport">選択案件の未書き出し原本</button><button type="button" data-role="cleanup">書き出し確認済み原本を端末から削除</button></div><p data-role="message">1回の書き出しは最大250枚・約400MBです。残りがある場合は同じボタンでもう一度書き出してください。ZIPの中は会社PCと同じ「年 → 案件 → 写真 → 図面 → 変状」の構成です。</p><p>この機能追加前に登録した写真には原本はありません。未書き出し原本は容量整理では削除しません。</p>`;
+    const style=document.createElement('style');style.textContent=`#sentlogOriginalPhotosSection{border:1px solid var(--line);border-radius:10px;padding:0 14px;margin-bottom:12px;text-align:left}#sentlogOriginalPhotosSection summary{padding:12px 0;min-height:48px;font-size:14px;font-weight:600;cursor:pointer}#sentlogOriginalPhotosSection p{font-size:12px;line-height:1.65;margin:8px 0;color:#4b5563}#sentlogOriginalPhotosSection select,#sentlogOriginalPhotosSection button{min-height:44px;font-size:12px}#sentlogOriginalPhotosSection select{width:100%;padding:8px;border:1px solid #cbd5e1;border-radius:8px;background:#fff}#sentlogOriginalPhotosSection .sl-original-actions{display:flex;flex-wrap:wrap;gap:7px;margin:10px 0}#sentlogOriginalPhotosSection button{width:auto;padding:8px 10px}#sentlogOriginalPhotosSection .sl-original-total{font-size:18px;font-weight:700;color:#111827}`;document.head.appendChild(style);
+    const section=document.createElement('details');section.id='sentlogOriginalPhotosSection';section.innerHTML=`<summary>元写真をまとめて保存（この端末）</summary><p>案件を選び、この端末にある元写真を1つのZIPにまとめて保存できます。保存確認済みの写真も含め、何度でも保存できます。元写真は端末に残ります。</p><div class="sl-original-total" data-role="total">確認中…</div><label style="font-size:12px;color:#4b5563">保存する案件<select data-role="project" required><option value="">案件を選択してください</option></select></label><p data-role="pending"></p><div class="sl-original-actions"><button type="button" data-role="projectExport" disabled>元写真をまとめて保存</button></div><p data-role="message">ZIPの中は会社PCと同じ「年 → 案件 → 写真 → 図面 → 変状」の構成です。写真を撮影・追加した端末で開いてください。</p><p>元写真の保存に対応する前に登録した写真や、別の端末で撮影した写真の原本は、この端末にはありません。</p><div class="sl-original-actions"><button type="button" data-role="cleanup">全案件の保存確認済み元写真を端末から削除</button></div><p>削除はこの端末の全案件が対象です。未書き出し原本は削除しません。</p>`;
     const storage=document.getElementById('sentlogStorageSection'),backup=modal.querySelector('#sentlogBackupSection');if(storage)storage.after(section);else if(backup)backup.before(section);else modal.appendChild(section);
-    ui={section,total:section.querySelector('[data-role=total]'),pending:section.querySelector('[data-role=pending]'),project:section.querySelector('[data-role=project]'),message:section.querySelector('[data-role=message]'),cleanup:section.querySelector('[data-role=cleanup]')};
-    section.addEventListener('toggle',()=>{if(section.open)refreshUI();});
+    ui={section,total:section.querySelector('[data-role=total]'),pending:section.querySelector('[data-role=pending]'),project:section.querySelector('[data-role=project]'),message:section.querySelector('[data-role=message]'),cleanup:section.querySelector('[data-role=cleanup]'),start:section.querySelector('[data-role=projectExport]')};
+    section.addEventListener('toggle',()=>{if(section.open)refreshUI();});ui.project.onchange=()=>refreshUI();
     const settings=section.closest('#sentlogSettingsModal');
     if(settings&&typeof MutationObserver==='function'){
       let visible=settings.getAttribute('aria-hidden')!=='true';
@@ -258,9 +330,8 @@
         if(visible&&section.open)void refreshUI();
       }).observe(settings,{attributes:true,attributeFilter:['aria-hidden','class']});
     }
-    section.querySelector('[data-role=today]').onclick=()=>exportNext('today','').catch(e=>{ui.message.textContent='書き出しに失敗しました。原本は削除していません：'+(e.message||e);});
-    section.querySelector('[data-role=projectExport]').onclick=()=>exportNext('all',ui.project.value).catch(e=>{ui.message.textContent='書き出しに失敗しました。原本は削除していません：'+(e.message||e);});
-    ui.cleanup.onclick=async()=>{if(!confirm('書き出し確認済みの原本だけを、この端末から削除します。未書き出し原本は削除しません。よろしいですか？'))return;try{const r=await deleteExported();ui.message.textContent=`${r.count}枚（${bytes(r.bytes)}）の書き出し確認済み原本を端末から削除しました。`;await refreshUI();}catch(e){ui.message.textContent='削除できませんでした：'+(e.message||e);}};
+    ui.start.onclick=()=>exportNext('project',ui.project.value).catch(e=>{ui.message.textContent=e.message||'一括保存を開けませんでした。';});
+    ui.cleanup.onclick=async()=>{if(!confirm('この端末の全案件から、保存確認済みの元写真だけを削除します。未書き出し原本は削除しません。よろしいですか？'))return;try{const r=await deleteExported();ui.message.textContent=`${r.count}枚（${bytes(r.bytes)}）の保存確認済み原本を端末から削除しました。`;await refreshUI();}catch(e){ui.message.textContent='削除できませんでした：'+(e.message||e);}};
     refreshUI();
   }
 
@@ -278,7 +349,7 @@
     if(typeof persist==='function')persist();if(status&&added)status.textContent=`${added}枚保存しました（原本はこの端末・共有は軽量版）`;setTimeout(()=>{if(status&&/保存しました/.test(status.textContent))status.textContent='';},1800);if(typeof selected!=='undefined'&&selected===targetId&&typeof renderSelectedPhotos==='function')renderSelectedPhotos();refreshUI();
   }
 
-  const api={...pure,saveOriginal,getOriginal,stageOriginal,updatePhotoAssociation,rebindPendingOriginal,listMeta,stats,drawingStats,renameDrawing,markExported,deleteExported,makeSharedPhoto,makeZip,refreshUI,exportNext};
+  const api={...pure,saveOriginal,getOriginal,stageOriginal,updatePhotoAssociation,rebindPendingOriginal,listMeta,stats,drawingStats,renameDrawing,markExported,deleteExported,makeSharedPhoto,makeZip,refreshUI,exportNext,listProjectMeta,projectOptions,beginExportSession,confirmExportSession,releaseExportSession};
   root.SentlogOriginalPhotos=api;
   try{if(typeof addPhotosToSelected==='function')addPhotosToSelected=registerPhotos;}catch(e){console.warn('Sentlog original photo hook',e);}
   setTimeout(installUI,0);

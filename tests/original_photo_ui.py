@@ -62,7 +62,8 @@ with sync_playwright() as p:
     assert result['beforeCleanup']['count']==0 and result['stillThere'],result
     assert result['cleanup']['count']==1 and result['removed'],result
     assert result['persistCount']==1 and result['historyCount']==1,result
-    assert '会社PCと同じ' in result['ui'] and '未書き出し原本' in result['ui'],result
+    assert '会社PCと同じ' in result['ui'] and '未書き出し原本' in result['ui'] and '1つのZIP' in result['ui'],result
+    assert 'すべての案件' not in result['ui'] and '今日の未書き出し原本' not in result['ui'],result
     assert not errors,errors
     (ROOT/'test-results').mkdir(exist_ok=True);page.screenshot(path=str(ROOT/'test-results/original-photo-ui.png'),full_page=True)
     browser.close()

@@ -5,6 +5,8 @@ on:
       - '.github/workflows/heavy-use-check.yml'
       - '.github/workflows/pages.yml'
       - 'tests/heavy_*'
+      - 'tests/original_photo_export_ui.py'
+      - 'tests/original_photo_zip.test.cjs'
       - 'tests/field_record_render_ui.py'
       - 'tests/delta_app_*'
       - 'tests/delta_checkpoint_retry.test.cjs'
@@ -36,6 +38,8 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -83,14 +87,16 @@ jobs:
     runs-on: ubuntu-24.04
     container:
       image: mcr.microsoft.com/playwright/python:v1.57.0-noble@sha256:8331696befd3ee8b5baefca428446345f548e415a2408fe1d3d1224e9d919682
-    timeout-minutes: ${{ matrix.suite == 'delta' && 25 || 15 }}
+    timeout-minutes: ${{ (matrix.suite == 'delta' || matrix.suite == 'originals') && 25 || 15 }}
     strategy:
       fail-fast: false
       matrix:
         engine: [chromium, webkit]
-        suite: [camera, sync, durability, delta]
+        suite: [camera, sync, durability, delta, originals]
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -121,7 +127,11 @@ jobs:
         if: matrix.suite == 'camera'
         run: python tests/field_record_render_ui.py --engine ${{ matrix.engine }} --built-root . --report /tmp/sentlog-heavy-camera-${{ matrix.engine }}-labels.json
       - name: Verify heavy ${{ matrix.suite }} use in ${{ matrix.engine }}
+        if: matrix.suite != 'originals'
         run: NODE_PATH="$RUNNER_TEMP/sentlog-heavy-deps/node_modules" python tests/heavy_${{ matrix.suite }}_ui.py --engine ${{ matrix.engine }} --built-root . --report /tmp/sentlog-heavy-${{ matrix.suite }}-${{ matrix.engine }}.json
+      - name: Verify complete original-photo ZIP exports in ${{ matrix.engine }}
+        if: matrix.suite == 'originals'
+        run: python tests/original_photo_export_ui.py --engine ${{ matrix.engine }} --built-root . --report /tmp/sentlog-heavy-originals-${{ matrix.engine }}.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
