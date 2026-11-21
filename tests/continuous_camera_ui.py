@@ -193,13 +193,68 @@ def saved_photo_ids(page, drawing_id, record_id='survey-a'):
     }""", {'drawingId': drawing_id, 'recordId': record_id})
 
 
-def assert_controls_fit(page):
-    bounds = page.evaluate("""()=>['slCameraNative','slCameraCount','slCameraShutter','slCameraDone'].map(id=>{
-      const box=document.getElementById(id).getBoundingClientRect();
-      return {id,x:box.x,y:box.y,right:box.right,bottom:box.bottom,
-        fits:box.x>=-0.5&&box.y>=-0.5&&box.right<=innerWidth+0.5&&box.bottom<=innerHeight+0.5};
+def set_safe_area(page, insets=None):
+    page.evaluate("""insets=>{
+      const style=document.getElementById('sentlogContinuousCamera').style;
+      for(const side of ['top','right','bottom','left']){
+        const property='--sl-camera-safe-'+side;
+        if(insets)style.setProperty(property,(insets[side]||0)+'px');else style.removeProperty(property);
+      }
+    }""", insets)
+
+
+def assert_controls_fit(page, safe_area=None):
+    bounds = page.evaluate("""()=>[
+      'slCameraNative','slCameraCount','slCameraShutter','slCameraDone',
+      'slCameraResume','slCameraRetry','slCameraExport','slCameraExportDone'
+    ].flatMap(id=>{
+      const button=document.getElementById(id);
+      if(!button.getClientRects().length)return [];
+      const box=button.getBoundingClientRect(),hit=document.elementFromPoint(box.x+box.width/2,box.y+box.height/2);
+      return [{id,x:box.x,y:box.y,right:box.right,bottom:box.bottom,width:box.width,height:box.height,
+        fits:box.x>=-0.5&&box.y>=-0.5&&box.right<=innerWidth+0.5&&box.bottom<=innerHeight+0.5,
+        exposed:!!hit&&(hit===button||button.contains(hit))}];
     })""")
-    assert all(box['fits'] for box in bounds), bounds
+    assert all(box['fits'] and box['exposed'] and box['width'] >= 44 and box['height'] >= 44
+               for box in bounds), bounds
+    if safe_area:
+        viewport = page.evaluate('({width:innerWidth,height:innerHeight})')
+        assert all(box['x'] >= safe_area.get('left', 0)-.5 and box['y'] >= safe_area.get('top', 0)-.5
+                   and box['right'] <= viewport['width']-safe_area.get('right', 0)+.5
+                   and box['bottom'] <= viewport['height']-safe_area.get('bottom', 0)+.5
+                   for box in bounds), (safe_area, bounds)
+
+
+def assert_camera_layout(page, *, landscape, safe_area=None):
+    """Check usable preview/frame and thumb reach, not particular CSS rules."""
+    page.wait_for_function("landscape=>matchMedia('(orientation:landscape)').matches===landscape", arg=landscape)
+    expect(page.locator('#slCameraShutter')).to_be_enabled()
+    assert_controls_fit(page, safe_area)
+    layout = page.evaluate("""()=>{
+      const video=document.getElementById('slCameraVideo'),rect=element=>{
+        const r=element.getBoundingClientRect();
+        return {x:r.x,y:r.y,width:r.width,height:r.height,right:r.right,bottom:r.bottom};
+      },frame=rect(video),fit=getComputedStyle(video).objectFit;
+      const scale=Math.min(frame.width/video.videoWidth,frame.height/video.videoHeight);
+      return {viewport:{width:innerWidth,height:innerHeight},stage:rect(video.parentElement),
+        shutter:rect(document.getElementById('slCameraShutter')),fit,
+        frame:{width:video.videoWidth*scale,height:video.videoHeight*scale}};
+    }""")
+    width, height = layout['viewport']['width'], layout['viewport']['height']
+    shutter_box = layout['shutter']
+    center_x = shutter_box['x']+shutter_box['width']/2
+    center_y = shutter_box['y']+shutter_box['height']/2
+    assert shutter_box['width'] >= 70 and shutter_box['height'] >= 70, layout
+    assert layout['fit'] == 'contain', ('Preview must show the full photograph without cropping', layout)
+    if landscape:
+        assert center_x >= width*.80, ('Landscape shutter must stay on the visual right', layout)
+        assert abs(center_y-height/2) <= height*.20, ('Landscape shutter must be within thumb reach', layout)
+        assert layout['stage']['height'] >= height*.80, ('Landscape preview must use most of the screen height', layout)
+        assert layout['frame']['height'] >= height*.75, ('Actual contained frame must be larger than the old stacked layout', layout)
+    else:
+        assert abs(center_x-width/2) <= max(4, width*.04), ('Portrait shutter must remain centered', layout)
+        assert center_y >= height*.70, ('Portrait shutter must remain near the bottom', layout)
+    return layout
 
 
 def run(page, engine, screenshot_dir=None):
@@ -235,25 +290,27 @@ def run(page, engine, screenshot_dir=None):
     assert page.evaluate('cameraMock.photos') == 3
     assert page.evaluate('cameraMock.canvasPhotos') == 0, 'supported ImageCapture should be preferred'
     assert len(set(saved_photo_ids(page, 'memo-plan-a'))) == 3
-    assert_controls_fit(page)
+    assert_camera_layout(page, landscape=False)
     screenshot('three-photos-portrait')
     page.evaluate("""()=>{
       cameraMock.originalFit=fit;cameraMock.hiddenFit=0;
       cameraMock.openView={view:currentView,projectId:activeProjectId,drawingId:activeDrawingId,recordId:selected};
       fit=function(){if(SentlogContinuousCamera.isOpen())cameraMock.hiddenFit++;return cameraMock.originalFit.apply(this,arguments);};
     }""")
-    page.set_viewport_size({'width': 844, 'height': 390})
-    page.evaluate("""async()=>{
-      window.dispatchEvent(new Event('orientationchange'));
-      await new Promise(resolve=>setTimeout(resolve,350));
-    }""")
-    assert_controls_fit(page)
-    screenshot('three-photos-landscape')
+    for width, height, name in [(844, 390, 'three-photos-landscape'), (568, 320, 'landscape-small')]:
+        page.set_viewport_size({'width': width, 'height': height})
+        page.evaluate("""async()=>{
+          window.dispatchEvent(new Event('orientationchange'));
+          await new Promise(resolve=>setTimeout(resolve,350));
+        }""")
+        assert_camera_layout(page, landscape=True)
+        screenshot(name)
     page.set_viewport_size({'width': 390, 'height': 844})
     page.evaluate("""async()=>{
       window.dispatchEvent(new Event('orientationchange'));
       await new Promise(resolve=>setTimeout(resolve,350));
     }""")
+    assert_camera_layout(page, landscape=False)
     assert page.evaluate('cameraMock.hiddenFit') == 0, 'rotation must not refit and redraw the covered drawing behind a live camera'
     assert page.evaluate("""()=>({view:currentView,projectId:activeProjectId,drawingId:activeDrawingId,recordId:selected})""") == page.evaluate('cameraMock.openView')
     assert page.evaluate('cameraMock.calls') == 1, 'rotation must preserve the already permitted stream'
@@ -577,9 +634,15 @@ def run_orientation(page, engine, screenshot_dir=None):
             frames_before = page.evaluate('cameraMock.canvasPhotos')
             streams_before = page.evaluate('cameraMock.calls')
             checked = []
+            layouts = []
             for shot, (direction, width, height, turn) in enumerate(cases, 1):
                 current_orientation = device+' '+direction
-                page.set_viewport_size({'width': 390, 'height': 844} if height > width else {'width': 844, 'height': 390})
+                portrait = height > width
+                if device == 'iPad-desktop':
+                    viewport = {'width': 768, 'height': 1024} if portrait else {'width': 1024, 'height': 768}
+                else:
+                    viewport = {'width': 390, 'height': 844} if portrait else {'width': 844, 'height': 390}
+                page.set_viewport_size(viewport)
                 preview = orientation_photo(width, height)
                 wrong_still = orientation_photo(width, height, turn=turn)
                 page.evaluate('fixture=>cameraMock.setFrame(fixture)', {
@@ -587,6 +650,19 @@ def run_orientation(page, engine, screenshot_dir=None):
                     'stillEncoded': base64.b64encode(wrong_still).decode('ascii')})
                 if shot == 1:
                     open_camera(page)
+                # Exercise both notch sides in the same stream. These inputs
+                # represent the browser's safe-area values, not layout rules.
+                safe_area = None
+                if device == 'iPhone' and not portrait:
+                    safe_area = {'left': 44 if direction == 'landscape-left' else 0,
+                                 'right': 44 if direction == 'landscape-right' else 0, 'bottom': 21}
+                set_safe_area(page, safe_area)
+                layout = assert_camera_layout(page, landscape=not portrait, safe_area=safe_area)
+                layouts.append({'direction': direction, 'viewport': layout['viewport'],
+                                'frame': layout['frame'], 'shutter': layout['shutter']})
+                if screenshot_dir and not portrait:
+                    screenshot_dir.mkdir(parents=True, exist_ok=True)
+                    page.screenshot(path=str(screenshot_dir / f'sentlog-continuous-camera-{engine}-{device}-{direction}-layout.png'))
                 before = set(saved_photo_ids(page, drawing_id))
                 shutter(page)
                 wait_photos(page, drawing_id, len(before)+1)
@@ -616,6 +692,7 @@ def run_orientation(page, engine, screenshot_dir=None):
                 assert_orientation(grid_pixels(photo_id), *shared_size(width, height), device+' photo list')
                 assert saved_pixels(photo_id, original=True)['sha256'] == digest, 'display must not rewrite the retained original'
             print('PASS '+engine+': '+device+' preview pixels and full stream dimensions survive capture, shared conversion, review and photo list')
+            print('PASS '+engine+': '+device+' right-side landscape shutter, full-frame preview, safe touch areas and portrait return', layouts)
     except Exception:
         # Capture the failing orientation before finally restores portrait.
         # The outer failure screenshot alone cannot establish the earlier
@@ -637,6 +714,7 @@ def run_orientation(page, engine, screenshot_dir=None):
         raise
     finally:
         set_platform(platform)
+        set_safe_area(page)
         page.set_viewport_size({'width': 390, 'height': 844})
 
     # Native-camera/gallery JPEGs retain their EXIF-bearing originals. The
@@ -660,6 +738,74 @@ def run_orientation(page, engine, screenshot_dir=None):
     ids = saved_photo_ids(page, drawing_id)
     assert len(ids) == len(set(ids)), 'orientation handling must not duplicate photo IDs'
     print('PASS '+engine+': EXIF orientations 1–8 decode once in shared photos/list and retain byte-identical originals')
+
+
+def run_landscape_recovery(page, engine, screenshot_dir=None):
+    """Recovery actions must remain usable on a short landscape screen."""
+    drawing_id = 'memo-plan-b'
+    fixture = orientation_photo(1600, 1200)
+    page.evaluate('fixture=>cameraMock.setFrame(fixture)', {
+        'encoded': base64.b64encode(fixture).decode('ascii'), 'width': 1600, 'height': 1200})
+    before = set(saved_photo_ids(page, drawing_id))
+    page.set_viewport_size({'width': 568, 'height': 320})
+    open_camera(page)
+    safe_area = {'left': 44, 'bottom': 21}
+    set_safe_area(page, safe_area)
+    assert_camera_layout(page, landscape=True, safe_area=safe_area)
+    page.evaluate("""()=>{
+      cameraMock.registerBeforeLayoutCheck=SentlogCollaborationPhotos.register;
+      SentlogCollaborationPhotos.register=async()=>{
+        throw Error('この端末の空き容量を確認してください。写真の保存が完了していません。');
+      };
+    }""")
+    try:
+        shutter(page)
+        expect(page.locator('#slCameraRetry')).to_be_visible()
+        expect(page.locator('#slCameraExport')).to_be_visible()
+        expect(page.locator('#slCameraShutter')).to_be_disabled()
+        expect(page.locator('#slCameraStatus')).to_contain_text('空き容量')
+        assert_controls_fit(page, safe_area)
+        assert set(saved_photo_ids(page, drawing_id)) == before
+
+        # An actual export exposes the third recovery button. A failed Done
+        # then restores the full explanatory error, exercising the largest
+        # feedback panel while the unsaved photograph is still protected.
+        with page.expect_download() as download_info:
+            page.locator('#slCameraExport').click()
+        download = download_info.value
+        assert download.failure() is None
+        assert hashlib.sha256(Path(download.path()).read_bytes()).hexdigest() == hashlib.sha256(fixture).hexdigest()
+        download.delete()
+        expect(page.locator('#slCameraExportDone')).to_be_visible()
+        page.locator('#slCameraDone').click()
+        expect(page.locator('#slCameraDone')).to_be_enabled()
+        expect(page.locator('#slCameraStatus')).to_contain_text('空き容量')
+        assert page.evaluate('SentlogContinuousCamera.isOpen()'), 'Done must not discard the retained photograph'
+        assert_controls_fit(page, safe_area)
+        if screenshot_dir:
+            screenshot_dir.mkdir(parents=True, exist_ok=True)
+            page.screenshot(path=str(screenshot_dir / f'sentlog-continuous-camera-{engine}-landscape-recovery.png'))
+
+        page.evaluate('SentlogCollaborationPhotos.register=cameraMock.registerBeforeLayoutCheck')
+        page.locator('#slCameraRetry').click()
+        wait_photos(page, drawing_id, len(before)+1)
+        camera_count(page, 1)
+        added = set(saved_photo_ids(page, drawing_id))-before
+        assert len(added) == 1, added
+        original = page.evaluate(SAVED_IMAGE_PIXELS, {
+            'photoId': added.pop(), 'drawingId': drawing_id, 'original': True})
+        assert original['sha256'] == hashlib.sha256(fixture).hexdigest(), 'Retry must preserve the exported original'
+        expect(page.locator('#slCameraRetry')).to_be_hidden()
+        expect(page.locator('#slCameraExportDone')).to_be_hidden()
+        assert_camera_layout(page, landscape=True, safe_area=safe_area)
+        page.locator('#slCameraDone').click()
+        page.wait_for_function('!SentlogContinuousCamera.isOpen()')
+        assert page.evaluate('SentlogCollaborationPhotos.listPending()') == []
+    finally:
+        page.evaluate('SentlogCollaborationPhotos.register=cameraMock.registerBeforeLayoutCheck')
+        set_safe_area(page)
+        page.set_viewport_size({'width': 390, 'height': 844})
+    print('PASS '+engine+': small landscape failure message, export, protected Done and retry remain reachable and preserve exact original bytes')
 
 
 def main():
@@ -705,6 +851,7 @@ def main():
                 page.wait_for_function('window.sentlogAppReady&&window.SentlogContinuousCamera&&window.SentlogCollaborationPhotos', timeout=45000)
                 run(page, args.engine, args.screenshot_dir)
                 run_orientation(page, args.engine, args.screenshot_dir)
+                run_landscape_recovery(page, args.engine, args.screenshot_dir)
                 assert not errors, errors
             except Exception:
                 if args.screenshot_dir:

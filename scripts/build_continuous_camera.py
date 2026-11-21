@@ -9,7 +9,7 @@ import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
 ASSET = 'continuous-camera.js'
-TOKEN = '20261121-camera-session'
+TOKEN = '20261121-camera-landscape'
 pending = {}
 
 
@@ -64,7 +64,7 @@ if not match:
 old_cache = match.group(0)
 # Advance beyond the already published camera generation so installed PWAs
 # refresh the camera implementation as part of the complete static resource set.
-new_cache = 'sentlog-pwa-v' + str(int(match.group(1)) + 2)
+new_cache = 'sentlog-pwa-v' + str(int(match.group(1)) + 3)
 pending['sentlog/sw.js'] = worker.replace(old_cache, new_cache)
 
 # Existing release assertions follow the final generated cache/resource names.
