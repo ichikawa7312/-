@@ -290,9 +290,17 @@ OPFS_STATE = r"""async()=>{
 }"""
 
 
+_LAST_REPORTED_STAGE = None
+
+
 def save_json(path, value):
+    global _LAST_REPORTED_STAGE
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+    current_stage = value.get('stage')
+    if current_stage and current_stage != _LAST_REPORTED_STAGE:
+        _LAST_REPORTED_STAGE = current_stage
+        print('TEST STAGE: ' + str(current_stage), flush=True)
 
 
 def capture_failure(page, report, report_path, error):
