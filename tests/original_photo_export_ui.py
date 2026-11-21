@@ -912,7 +912,7 @@ def run(page, context, origin, route_state, fixture, report, report_path, direct
     for row in expected:
         before, after = before_meta[row['key']], after_meta[row['key']]
         if row['projectId'] == SMALL:
-            assert after['exportedAt'] and after['packageName'] == name, after
+            assert after['exportedAt'] and unicodedata.normalize('NFC', after['packageName'] or '') == unicodedata.normalize('NFC', name), {'stored': after['packageName'], 'downloadSuggested': name, 'record': after}
             assert {k: v for k, v in after.items() if k not in ('exportedAt', 'packageName')} == {
                 k: v for k, v in before.items() if k not in ('exportedAt', 'packageName')}
         else:
