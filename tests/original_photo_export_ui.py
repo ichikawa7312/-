@@ -694,6 +694,9 @@ def run(page, context, origin, route_state, fixture, report, report_path, direct
     page.wait_for_function('window.sentlogAppReady&&window.SentlogOriginalPhotos&&window.SentlogOriginalPhotoExport', timeout=60000)
     page.evaluate('sentlogAppReady')
     page.evaluate('id=>showDrawings(id)', SMALL)
+    # The native IndexedDB photos survive reload; the test-only mutation
+    # backup Map does not, so recreate only the fixture bookkeeping.
+    page.evaluate('window.originalFixture={done:0,backups:new Map(),rows:[]}')
     assert {m['key']: m for m in page.evaluate('SentlogOriginalPhotos.listMeta()')} == before_meta
     assert page.evaluate('SentlogRecords.keys().sort().map(key=>[key,SentlogRecords.getItem(key)])') == records_before
     print('PASS reload after large exports: all local originals and shared records preserved', flush=True)
