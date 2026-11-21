@@ -683,6 +683,22 @@ def run(page, context, origin, route_state, fixture, report, report_path, direct
         save_json(report_path, report)
         print(f'PASS large export {number}: one ZIP, 320 entries, 480 MiB, exact bytes, 80 previously exported originals', flush=True)
 
+    # Force a real page lifecycle boundary after two 480 MiB exports. This
+    # checks durable originals and metadata across reload and prevents
+    # transient WebKit File/download/page resources from polluting the
+    # subsequent small-project fault-injection checks.
+    report['stage'] = 'reload-after-large-exports'
+    save_json(report_path, report)
+    print('START reload after two full ZIP downloads', flush=True)
+    page.reload(wait_until='domcontentloaded')
+    page.wait_for_function('window.sentlogAppReady&&window.SentlogOriginalPhotos&&window.SentlogOriginalPhotoExport', timeout=60000)
+    page.evaluate('sentlogAppReady')
+    page.evaluate('id=>showDrawings(id)', SMALL)
+    assert {m['key']: m for m in page.evaluate('SentlogOriginalPhotos.listMeta()')} == before_meta
+    assert page.evaluate('SentlogRecords.keys().sort().map(key=>[key,SentlogRecords.getItem(key)])') == records_before
+    print('PASS reload after large exports: all local originals and shared records preserved', flush=True)
+    save_json(report_path, report)
+
     # Hold a real chunk read after data has reached OPFS. Cancel must drain the
     # worker and release its temporary file; it cannot report a completed ZIP.
     report['stage'] = 'cancel-after-progress'
