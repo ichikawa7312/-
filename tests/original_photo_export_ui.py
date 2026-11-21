@@ -116,6 +116,23 @@ TRACE = r"""(() => {
 })()"""
 
 
+NATIVE_ENVIRONMENT = r"""async()=>{
+  const main={href:location.href,origin:location.origin,isSecureContext,storageType:typeof navigator.storage,
+    getDirectoryType:typeof navigator.storage?.getDirectory,estimateType:typeof navigator.storage?.estimate,
+    locksType:typeof navigator.locks?.request,userAgent:navigator.userAgent};
+  const script=`postMessage({href:location.href,origin:location.origin,isSecureContext,
+    storageType:typeof navigator.storage,getDirectoryType:typeof navigator.storage?.getDirectory,
+    estimateType:typeof navigator.storage?.estimate,locksType:typeof navigator.locks?.request,
+    syncAccessHandleType:typeof self.FileSystemSyncAccessHandle});`;
+  const url=URL.createObjectURL(new Blob([script],{type:'text/javascript'})),worker=new Worker(url);let timer;
+  try{const features=await new Promise((resolve,reject)=>{
+    timer=setTimeout(()=>reject(Error('Native worker capability probe timed out')),10000);
+    worker.onmessage=event=>resolve(event.data);worker.onerror=event=>{event.preventDefault();reject(Error(event.message));};
+  });return {main,worker:features};}
+  finally{clearTimeout(timer);worker.terminate();URL.revokeObjectURL(url);}
+}"""
+
+
 # This shim surrounds real native I/O, then imports the unmodified production
 # worker. It never substitutes a ZIP writer, IndexedDB, OPFS file, or result.
 WORKER_BOUNDARY = r"""(() => {
@@ -853,6 +870,13 @@ def main():
               'storage': 'native IndexedDB originals, native Worker, native OPFS, actual browser downloads',
               'faultModel': 'injected failures/delays only at native OPFS write and Blob chunk read boundaries',
               'crashModel': 'Worker.terminate while real temporary output and exclusive lease are open'}
+    # Playwright 1.57 pins WebKit 486de399887bc8fa8a69e2f194ebc9476589a08a.
+    # Its UnifiedWebPreferences.yaml enables these native APIs for COCOA but
+    # leaves them disabled by default in the Linux MiniBrowser embedder. Use
+    # that embedder's documented feature arguments to exercise the same native
+    # implementation, with no JS API shim or weakened availability assertion.
+    native_features = ['--features=StorageAPI,StorageAPIEstimate,FileSystem'] if args.engine == 'webkit' else []
+    report['nativeFeatureArguments'] = native_features
     save_json(report_path, report)
 
     class Handler(SimpleHTTPRequestHandler):
@@ -871,7 +895,8 @@ def main():
             directory = Path(temporary)
             context = getattr(playwright, args.engine).launch_persistent_context(
                 str(directory / 'profile'), headless=True, viewport={'width': 390, 'height': 844},
-                has_touch=True, is_mobile=True, device_scale_factor=2, accept_downloads=True, service_workers='block', timezone_id='UTC')
+                has_touch=True, is_mobile=True, device_scale_factor=2, accept_downloads=True, service_workers='block',
+                timezone_id='UTC', args=native_features)
 
             def route(request):
                 url = request.request.url
@@ -915,9 +940,13 @@ def main():
                 page.goto(origin + '/sentlog/', wait_until='domcontentloaded')
                 page.wait_for_function('window.sentlogAppReady&&window.SentlogOriginalPhotos&&window.SentlogOriginalPhotoExport', timeout=60000)
                 page.evaluate('sentlogAppReady')
+                report['nativeEnvironment'] = page.evaluate(NATIVE_ENVIRONMENT)
                 report['capabilities'] = page.evaluate("""()=>({worker:typeof Worker==='function',
                   opfs:typeof navigator.storage?.getDirectory==='function',nativeIndexedDB:!!indexedDB,
                   exportButton:!!document.getElementById('slOriginalPhotoExportBtn')})""")
+                report['capabilities']['workerOpfs'] = report['nativeEnvironment']['worker']['getDirectoryType'] == 'function'
+                report['capabilities']['workerSyncAccessHandle'] = report['nativeEnvironment']['worker']['syncAccessHandleType'] == 'function'
+                report['capabilities']['sourceLease'] = report['nativeEnvironment']['main']['locksType'] == 'function'
                 assert all(report['capabilities'].values()), report['capabilities']
                 run(page, context, origin, route_state, fixture, report, report_path, directory)
                 assert not errors, errors
