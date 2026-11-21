@@ -1,0 +1,131 @@
+name: Sentlog heavy-use verification
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/heavy-use-check.yml'
+      - '.github/workflows/pages.yml'
+      - 'tests/heavy_*'
+      - 'tests/field_record_render_ui.py'
+      - 'tests/delta_app_*'
+      - 'tests/delta_checkpoint_retry.test.cjs'
+      - 'tests/delta_capacity_app_flow.py'
+      - 'tests/collaboration_ui.py'
+      - 'tests/edit_sync_ui.py'
+      - 'tests/continuous_camera_ui.py'
+      - 'tests/drawing_responsiveness_ui.py'
+      - 'tests/field_record_memo_ui.py'
+      - 'tests/photo_save_performance_ui.py'
+      - 'docs/sentlog-delta-*.sql'
+      - 'db/*.sql'
+      - 'sentlog/**'
+      - 'scripts/build_*.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: heavy-use-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+env:
+  PYTHONUNBUFFERED: '1'
+  SENTLOG_TESTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    container:
+      image: mcr.microsoft.com/playwright/python:v1.57.0-noble@sha256:8331696befd3ee8b5baefca428446345f548e415a2408fe1d3d1224e9d919682
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build and check the exact production application
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import hashlib, json, os, subprocess
+          lines=Path('.github/workflows/pages.yml').read_text().splitlines()
+          marker='      - name: Build archive, management and capacity integration'
+          assert lines.count(marker)==1
+          start=lines.index(marker)+1
+          assert lines[start].strip()=='run: |'
+          commands=[]
+          for line in lines[start+1:]:
+              if not line.startswith('          '):break
+              commands.append(line[10:])
+          assert any('build_continuous_camera.py' in command for command in commands)
+          assert any('build_delta_sync.py' in command for command in commands)
+          subprocess.run(['bash','-e','-o','pipefail','-c','\n'.join(commands)],check=True)
+          inputs=[path for directory in ('sentlog','tests','db') for path in Path(directory).rglob('*')]
+          inputs.extend(Path('docs').glob('sentlog-delta-*.sql'))
+          files={str(path):hashlib.sha256(path.read_bytes()).hexdigest()
+                 for path in sorted(inputs)
+                 if path.is_file() and '__pycache__' not in path.parts and path.suffix!='.pyc'}
+          manifest={'testedHead':os.environ['SENTLOG_TESTED_HEAD'],'sha256':files}
+          Path('heavy-build-manifest.json').write_text(json.dumps(manifest,indent=2)+'\n')
+          print('PASS exact production build:',manifest['testedHead'],len(files),'hashed files')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: heavy-production-build
+          path: |
+            sentlog/
+            tests/
+            db/
+            docs/sentlog-delta-*.sql
+            heavy-build-manifest.json
+          retention-days: 14
+  browser:
+    needs: build
+    runs-on: ubuntu-24.04
+    container:
+      image: mcr.microsoft.com/playwright/python:v1.57.0-noble@sha256:8331696befd3ee8b5baefca428446345f548e415a2408fe1d3d1224e9d919682
+    timeout-minutes: ${{ matrix.suite == 'delta' && 25 || 15 }}
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: [chromium, webkit]
+        suite: [camera, sync, durability, delta]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          name: heavy-production-build
+          path: .
+      - name: Verify that every scenario uses the same built files
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import hashlib, json, os
+          manifest=json.loads(Path('heavy-build-manifest.json').read_text())
+          assert manifest['testedHead']==os.environ['SENTLOG_TESTED_HEAD']
+          for name,digest in manifest['sha256'].items():
+              assert hashlib.sha256(Path(name).read_bytes()).hexdigest()==digest,name
+          print('PASS same built files:',manifest['testedHead'],len(manifest['sha256']))
+          PY
+      - name: Install matching browser test dependencies
+        run: python -m pip install playwright==1.57.0 pillow==11.3.0
+      - name: Install the pinned SQL adapter for active delta synchronization
+        if: matrix.suite == 'delta'
+        run: npm install --prefix "$RUNNER_TEMP/sentlog-heavy-deps" --ignore-scripts --no-audit --no-fund --save-exact @electric-sql/pglite@0.5.17
+      - name: Verify identical field labels and interactions after render batching
+        if: matrix.suite == 'camera'
+        run: python tests/field_record_render_ui.py --engine ${{ matrix.engine }} --built-root . --report /tmp/sentlog-heavy-camera-${{ matrix.engine }}-labels.json
+      - name: Verify heavy ${{ matrix.suite }} use in ${{ matrix.engine }}
+        run: NODE_PATH="$RUNNER_TEMP/sentlog-heavy-deps/node_modules" python tests/heavy_${{ matrix.suite }}_ui.py --engine ${{ matrix.engine }} --built-root . --report /tmp/sentlog-heavy-${{ matrix.suite }}-${{ matrix.engine }}.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: heavy-${{ matrix.suite }}-${{ matrix.engine }}
+          path: /tmp/sentlog-heavy-${{ matrix.suite }}-${{ matrix.engine }}*
+          if-no-files-found: warn
+          retention-days: 30

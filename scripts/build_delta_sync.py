@@ -8,7 +8,7 @@ import re
 import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
-TOKEN = '20261121-interactions'
+TOKEN = '20261121-heavy-sync'
 pending = {}
 
 
@@ -235,7 +235,7 @@ for page in [index, 'sentlog-pc/index.html', 'sentlog/drawing-export-view.html']
     pending[page] = value
 worker = source('sentlog/sw.js')
 old_cache = re.search(r'sentlog-pwa-v\d+', worker).group()
-new_cache = 'sentlog-pwa-v' + str(int(old_cache.rsplit('v',1)[1]) + 3)
+new_cache = 'sentlog-pwa-v' + str(int(old_cache.rsplit('v',1)[1]) + 4)
 worker = worker.replace(old_cache,new_cache)
 worker = worker.replace('const FILES=[', 'const FILES=[' + ','.join(repr(name+'.js') for name in modules) + ',')
 pending['sentlog/sw.js'] = worker

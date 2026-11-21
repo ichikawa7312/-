@@ -15,7 +15,7 @@ change('sentlog/index.html','field-records.js?v=168','field-records.js?v=179',2)
 change('sentlog/sw.js',"const CACHE='sentlog-pwa-v189';","const CACHE='sentlog-pwa-v190';")
 # Add ownership only; geometry, interaction, storage and display stay identical.
 change('sentlog/part09.txt','b.textContent=`📷${photoN}`;svg.appendChild(b);','b.dataset.dxfPhotoCountId=s.id;b.textContent=`📷${photoN}`;svg.appendChild(b);')
-change('sentlog/field-records.js',"      if(s.recordType==='photo')drawPhotoRecord(s);\n      else if(s.displayKind==='arrow')drawSurveyArrow(s);\n      else drawSurveyPoint(s);", "      const last=svg.lastElementChild;\n      if(s.recordType==='photo')drawPhotoRecord(s);\n      else if(s.displayKind==='arrow')drawSurveyArrow(s);\n      else drawSurveyPoint(s);\n      for(let e=last?last.nextElementSibling:svg.firstElementChild;e;e=e.nextElementSibling)e.dataset.dxfFieldRecordId=s.id;")
+change('sentlog/field-records.js',"      if(s.recordType==='photo')drawPhotoRecord(s,labels);\n      else if(s.displayKind==='arrow')drawSurveyArrow(s,labels);\n      else drawSurveyPoint(s,labels);", "      const last=svg.lastElementChild;\n      if(s.recordType==='photo')drawPhotoRecord(s,labels);\n      else if(s.displayKind==='arrow')drawSurveyArrow(s,labels);\n      else drawSurveyPoint(s,labels);\n      for(let e=last?last.nextElementSibling:svg.firstElementChild;e;e=e.nextElementSibling)e.dataset.dxfFieldRecordId=s.id;")
 for path in (ROOT/'tests').iterdir():
  if path.suffix not in ('.py','.cjs'):continue
  text=path.read_text();updated=text.replace("SENTLOG_BUILD==='v1.78'","SENTLOG_BUILD==='v1.79'").replace('sentlog-pwa-v189','sentlog-pwa-v190')

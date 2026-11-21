@@ -96,6 +96,7 @@ jobs:
           node tests/delta_bootstrap.test.cjs
           node tests/delta_fresh_archive_bootstrap.test.cjs
           node tests/delta_transport.test.cjs
+          node tests/delta_checkpoint_retry.test.cjs
           node tests/delta_app_bridge.test.cjs
           node tests/delta_metadata.test.cjs
           node tests/delta_metadata_bridge.test.cjs

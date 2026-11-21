@@ -491,12 +491,21 @@
       fill:selectedNow?'#1d4ed8':'#111827','font-weight':'700','paint-order':'stroke fill',stroke:'#fff','stroke-width':3/z(),'pointer-events':'none'});
     t.textContent=text;svg.appendChild(t);return t;
   }
-  function drawRecordLabel(s,selectedNow){
+  function drawRecordLabel(s,selectedNow,labels){
     const label=recordLabel(s),pos=recordLabelLayout(s,z());
     const t=drawText(label,pos.x,pos.y,selectedNow,pos.anchor),fontSize=Math.max(11,14/z());
+    labels.push({s,selectedNow,label,pos,t,fontSize});
+  }
+  function recordLabelWidth({t,fontSize,label}){
     let textWidth=0;try{textWidth=t.getComputedTextLength?.()||0;}catch(_){}
     if(!(textWidth>0))textWidth=Math.max(fontSize,label.length*fontSize*.7);
+    return textWidth;
+  }
+  function finishRecordLabel({s,selectedNow,pos,t,fontSize},textWidth){
     const left=pos.anchor==='end'?pos.x-textWidth:pos.anchor==='start'?pos.x:pos.x-textWidth/2;
+    // The production DXF builder tags the first drawing pass. Late label
+    // geometry inherits that ownership without changing any export grouping.
+    const owner=t.dataset.dxfFieldRecordId;
     // A fine leader ends at the label edge instead of crossing its text.
     if(s.labelPos){
       const from=recordLeaderOrigin(s),pad=3/z();
@@ -509,7 +518,7 @@
         const line=svgEl('line',{x1:from.x+dx/d*off,y1:from.y+dy/d*off,
           x2:x,y2:y,stroke:selectedNow?'#2563eb':'#374151',
           'stroke-width':.8/z(),'stroke-linecap':'round','pointer-events':'none'});
-        line.dataset.fieldRecordLeaderId=s.id;svg.insertBefore(line,t);
+        line.dataset.fieldRecordLeaderId=s.id;if(owner)line.dataset.dxfFieldRecordId=owner;svg.insertBefore(line,t);
       }
     }
     if(tool==='pan'){
@@ -517,10 +526,13 @@
       const w=Math.max(textWidth+12/z(),(coarse?44:26)/z()),h=Math.max(fontSize+12/z(),(coarse?44:26)/z());
       const hit=svgEl('rect',{x:left+textWidth/2-w/2,y:pos.y-h/2,width:w,height:h,
         rx:5/z(),ry:5/z(),fill:'rgba(0,0,0,.001)','pointer-events':'all'});
-      bindRecordLabelHit(hit,s.id);svg.appendChild(hit);
+      bindRecordLabelHit(hit,s.id);if(owner)hit.dataset.dxfFieldRecordId=owner;
+      // Keep the same per-record stacking order even though all text widths
+      // were read together: a later record still paints above this hit target.
+      svg.insertBefore(hit,t.nextSibling);
     }
   }
-  function drawPhotoRecord(s){
+  function drawPhotoRecord(s,labels){
     const p=normPoint(s.point||s.points?.[0]),end=photoEnd(p,s.angle,z()),selectedNow=s.id===selected||recordMove?.id===s.id;
     const color=selectedNow?'#2563eb':'#111827',r=PHOTO_CIRCLE_RADIUS/z(),head=8/z(),wing=5/z();
     const ux=Math.cos(s.angle||0),uy=Math.sin(s.angle||0),px=-uy,py=ux;
@@ -538,18 +550,18 @@
     }
     // The text has its own event target. Keep that above the broader marker
     // hit zones so the user can grab the actual letters near a camera circle.
-    drawRecordLabel(s,selectedNow);
+    drawRecordLabel(s,selectedNow,labels);
   }
-  function drawSurveyPoint(s){
+  function drawSurveyPoint(s,labels){
     const p=surveyPointFrom(s),selectedNow=s.id===selected||recordMove?.id===s.id,color=selectedNow?'#2563eb':'#334155',r=SURVEY_POINT_RADIUS/z();
     const outer=svgEl('circle',{cx:p.x,cy:p.y,r,fill:'#fff',stroke:color,'stroke-width':2.2/z()});
     const inner=svgEl('circle',{cx:p.x,cy:p.y,r:r*.35,fill:color,stroke:'none'});outer.style.pointerEvents=inner.style.pointerEvents='none';svg.append(outer,inner);
     if(tool==='pan'){
       const hit=svgEl('circle',{cx:p.x,cy:p.y,r:16/z(),fill:'rgba(0,0,0,.001)','pointer-events':'all'});bindRecordHit(hit,s.id);svg.appendChild(hit);
     }
-    drawRecordLabel(s,selectedNow);
+    drawRecordLabel(s,selectedNow,labels);
   }
-  function drawSurveyArrow(s){
+  function drawSurveyArrow(s,labels){
     const tail=normPoint(s.points?.[0]),tip=normPoint(s.points?.[1]),poly=surveyArrowPolygon(tail,tip,z());if(!poly.length)return;
     const selectedNow=s.id===selected||recordMove?.id===s.id,color=selectedNow?'#2563eb':'#334155';
     const arrow=svgEl('polygon',{points:poly.map(p=>p.x+','+p.y).join(' '),fill:'#fff',stroke:color,'stroke-width':2.4/z(),'stroke-linejoin':'round'});
@@ -559,15 +571,21 @@
     }
     // On outlined arrows the name starts near the shaft. Give its text hit
     // target priority while leaving the rest of the arrow draggable by hold.
-    drawRecordLabel(s,selectedNow);
+    drawRecordLabel(s,selectedNow,labels);
   }
   function drawRecords(records){
+    const labels=[];
     for(const s of records){
       if((s.page||1)!==state.currentPage)continue;
-      if(s.recordType==='photo')drawPhotoRecord(s);
-      else if(s.displayKind==='arrow')drawSurveyArrow(s);
-      else drawSurveyPoint(s);
+      if(s.recordType==='photo')drawPhotoRecord(s,labels);
+      else if(s.displayKind==='arrow')drawSurveyArrow(s,labels);
+      else drawSurveyPoint(s,labels);
     }
+    // SVG text measurements can force layout. Complete every text/geometry
+    // write before reading any width, then add the same leaders and hit zones.
+    // Re-measure on every render so zoom, font and label changes stay exact.
+    const widths=labels.map(recordLabelWidth);
+    labels.forEach((label,index)=>finishRecordLabel(label,widths[index]));
   }
 
   function renderRecordPreview(){
