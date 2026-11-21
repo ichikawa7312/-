@@ -25,9 +25,13 @@
     else if(sql==='42501'||http===403){code=application||'DELTA_FORBIDDEN';s=403;}
     else if(sql==='40001'||sql==='23505'){s=409;}
     else if(['22023','22003','54000','55000'].includes(sql)){s=sql==='55000'?409:400;}
-    const retryable=[408,425,429].includes(s)||(s>=500&&s<600)||(!s&&!sql);
+    // A concurrent append invalidates only this checkpoint attempt. The worker
+    // must sync to a fresh head before republishing, rather than retry this RPC.
+    const staleCheckpoint=s===409&&sql==='40001'&&code==='DELTA_CHECKPOINT_STALE_HEAD';
+    const retryable=staleCheckpoint||[408,425,429].includes(s)||(s>=500&&s<600)||(!s&&!sql);
     const message=s===401?'ログインを確認して同期を再開してください':s===403?'この案件・端末では同期を利用できません':
       code==='DELTA_UPGRADE_REQUIRED'?'差分同期のサーバー準備が完了していません':
+      staleCheckpoint?'最新の更新を受信して、PC保管用の記録を再確認します':
       retryable?'通信が完了していません。未送信の内容は端末に残しています':'同期先の応答を確認できません。内容を保持して停止しました';
     const result=problem(code,message,s,retryable);if(sql)result.sqlState=sql;if(http)result.httpStatus=http;return result;
   }

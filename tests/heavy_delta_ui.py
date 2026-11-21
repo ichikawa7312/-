@@ -54,7 +54,7 @@ class Cloud(delta.Cloud):
         request, parsed = route.request, urlparse(route.request.url)
         if parsed.netloc == 'wiulvaqixphuobdielyy.supabase.co' and request.method != 'OPTIONS':
             self.traffic.append(dict(device=device, path=parsed.path, method=request.method,
-                                     bytes=len(request.post_data_buffer or b''), offline=device in self.offline))
+                                     bytes=len(request.post_data_buffer or b''), offline=device in self.offline, at=time.time()))
             key = request.method + ' ' + parsed.path
             self.method_counts[key] = self.method_counts.get(key, 0) + 1
             assert len(self.traffic) <= 6000, 'Active delta produced an unbounded request storm'
@@ -72,6 +72,8 @@ class Cloud(delta.Cloud):
 
     def respond(self, route, value, status=200):
         path = urlparse(route.request.url).path
+        if status >= 400 and self.sql_errors and self.sql_errors[-1]['path'] == path:
+            self.sql_errors[-1].update(device=self.route_devices[id(route)], at=time.time())
         if '/rpc/sentlog_delta_append' in path and 200 <= status < 300:
             device = self.route_devices[id(route)]
             receipt = dict(device=device, groupId=value.get('groupId'), eventId=value.get('eventId'),
@@ -240,6 +242,72 @@ def is_drained(proof, head):
             and proof['journal']['claimId'] is None and not proof['journal']['detached'])
 
 
+def brief_native(proof):
+    result = {key:value for key, value in proof.items() if key != 'graph'}
+    if proof.get('graph'):
+        result['historySha256'] = proof['graph']['graphSha256']
+    return result
+
+
+def observe_complete(cloud, pages, drawings, report, phase):
+    """Wait for file-receive WAL work, then capture a fenced final proof.
+
+    Native photo writes can create new journal intents after record replay has
+    drained. This is a separate asynchronous phase, not evidence of a lost
+    comment. Do not manually trigger sync or accept pending work: an unchanged
+    nonempty journal must fail the deadline, and stable history mismatches are
+    still checked by the caller without retries.
+    """
+    trace = dict(phase=phase, samples=0, changedObservations=0, transitions=[])
+    report.setdefault('postPhotoSettling', []).append(trace)
+    started, result, ui_started, previous = time.monotonic(), [], [None]*len(pages), [None]
+
+    def sample():
+        cloud.pump()
+        head = cloud.head_seq
+        before = [native_state(page, device) for device, page in zip(DEVICES, pages)]
+        trace['samples'] += 1
+        status = dict(headSeq=head, devices=[brief_native(proof) for proof in before])
+        if status != previous[0]:
+            trace['transitions'].append(dict(seconds=time.monotonic()-started, **status))
+            del trace['transitions'][:-40]
+            previous[0] = status
+            print('HEAVY_DELTA post-photo journal state:', phase,
+                  [dict(cursor=proof['cursor'], outbox=proof['outbox'], journal=proof['journal']) for proof in before], flush=True)
+        if head != cloud.head_seq or not all(is_drained(proof, head) for proof in before):
+            return False
+        summaries = [page.evaluate(SUMMARY) for page in pages]
+        for index, (page, drawing, summary) in enumerate(zip(pages, drawings, summaries)):
+            assert summary['view'] == 'editor' and summary['drawing'] == drawing, 'Reconnect interrupted the active editor'
+            expected_live = {row['record']:row['token'] for row in summary['records'] if row['drawing'] == drawing}
+            live = page.evaluate("""()=>({view:currentView,drawing:activeDrawingId,
+              records:state.shapes.map(record=>[record.id,SentlogRecordCollaboration.view(record).token])})""")
+            assert live['view'] == 'editor' and live['drawing'] == drawing, 'Incoming edits navigated away from the active editor'
+            if len(live['records']) != len(expected_live) or dict(live['records']) != expected_live:
+                if ui_started[index] is None:
+                    ui_started[index] = time.monotonic()
+                assert time.monotonic()-ui_started[index] < 15, 'The active editor did not display the converged saved revisions'
+                return False
+            ui_started[index] = None
+        proofs = [native_state(page, device, full=True) for device, page in zip(DEVICES, pages)]
+        after = [native_state(page, device) for device, page in zip(DEVICES, pages)]
+        # Discard only an observation proven to overlap durable journal/cursor
+        # activity. A settled graph mismatch is never hidden by polling.
+        proof_states = [{key:value for key, value in proof.items() if key != 'graph'} for proof in proofs]
+        if head != cloud.head_seq or before != after or proof_states != after:
+            trace['changedObservations'] += 1
+            return False
+        assert all(is_drained(proof, head) for proof in proofs), [brief_native(proof) for proof in proofs]
+        result[:] = [summaries, proofs]
+        report['lastNativeProofs'] = proofs  # Full proof remains in a failure artifact, never the exception text.
+        trace['seconds'] = time.monotonic()-started
+        return True
+
+    heavy.wait(cloud, pages[0], sample,
+               'Post-photo journal/UI work did not automatically settle before the 180-second deadline', timeout=180)
+    return result
+
+
 def verify_sql(cloud, page, expected, report):
     state = cloud.backend.admin(op='state', ownerId=OWNER, projectId=PID)
     assert len(state['heads']) == 1 and state['heads'][0]['enabled']
@@ -287,13 +355,17 @@ def capture_failure(cloud, report, report_path):
         try:
             report.setdefault('failureStates', []).append(dict(device=device,
                 state=page.evaluate("""()=>({view:currentView,drawing:activeDrawingId,selected,
-                  online:navigator.onLine,progress:window.__heavyDeltaProgress,
+                  online:navigator.onLine,hidden:document.hidden,importing:window.sentlogImporting,progress:window.__heavyDeltaProgress,
                   burst:window.__heavyDeltaOutcome,bootstrap:window.__heavyDeltaBootstrap,
                   binding:SentlogRecords.deltaJournal.bindingStateFor('edit-project'),
                   failed:SentlogRecords.failed,issues:SentlogRecords.issues,
                   cloud:document.getElementById('sentlogCloudMsg')?.textContent,
                   observation:window.__heavySummaryObservation,
                   photoDiagnostics:window.__deltaPhotoDiagnostics?.events.slice(-20)})""")))
+            try:
+                report.setdefault('failureNativeProofs', []).append(native_state(page, device, full=True))
+            except Exception as error:
+                report.setdefault('diagnosticErrors', []).append('Native failure proof: '+str(error))
             page.screenshot(path=str(report_path.with_name(report_path.stem+'-'+str(DEVICES.index(device))+'.png')), full_page=True)
         except Exception as error:
             report.setdefault('diagnosticErrors', []).append(str(error))
@@ -375,7 +447,7 @@ def run(engine, cloud, report, report_path):
         # needs at least ten page RPCs (activation rechecks may add more).
         assert cloud.method_counts.get('POST /rest/v1/rpc/sentlog_delta_read_baseline_page_v1', 0) >= 20
         report.update(mode='active-delta', devices=2, drawings=heavy.DRAWINGS, records=RECORD_COUNT,
-                      plannedDurableComments=ROUNDS*len(DEVICES)*COMMENTS_PER_DEVICE, rounds=[], photos=[])
+                      plannedDurableComments=ROUNDS*len(DEVICES)*COMMENTS_PER_DEVICE, rounds=[], photos=photos)
         print('HEAVY_DELTA active SQL baseline ready:', RECORD_COUNT, 'records, 10 drawings, 2 native persistent profiles', flush=True)
 
         for round_index in range(ROUNDS):
@@ -459,21 +531,14 @@ def run(engine, cloud, report, report_path):
                 and all((asset['id'], device) in cloud.receipts for device in DEVICES) for asset in cloud.assets.values()) for photo in photos),
                 'Photo delivery did not record both exact-byte device receipts', timeout=90)
             verify_photo_receipts(cloud, photos)
+            summaries, native_proofs = observe_complete(cloud, pages,
+                [burst['operations'][0]['drawing'] for burst in bursts], report, 'round-'+str(round_index+1))
             sql_state, sql_graph = verify_sql(cloud, pages[0], expected, report)
             proofs = []
             for number, (device, page) in enumerate(zip(DEVICES, pages)):
-                summary = page.evaluate(SUMMARY)
+                summary, proof = summaries[number], native_proofs[number]
                 verify_summary(summary, expected, original_tokens, changed, photos)
-                assert summary['view'] == 'editor' and summary['drawing'] == bursts[number]['operations'][0]['drawing'], 'Reconnect interrupted the active editor'
-                expected_live = {row['record']:row['token'] for row in summary['records'] if row['drawing'] == summary['drawing']}
-                def editor_updated():
-                    live = page.evaluate("""()=>({view:currentView,drawing:activeDrawingId,
-                      records:state.shapes.map(record=>[record.id,SentlogRecordCollaboration.view(record).token])})""")
-                    assert live['view'] == 'editor' and live['drawing'] == summary['drawing'], 'Incoming edits navigated away from the active editor'
-                    return len(live['records']) == len(expected_live) and dict(live['records']) == expected_live
-                heavy.wait(cloud, page, editor_updated, 'The active editor did not display the converged saved revisions', timeout=15)
-                proof = native_state(page, device, full=True)
-                assert is_drained(proof, cloud.head_seq), proof
+                assert is_drained(proof, cloud.head_seq), brief_native(proof)
                 assert tokens(summary) == tokens(proof['graph']) == tokens(sql_graph), 'Saved record mirror, native replica and SQL revisions differ'
                 assert proof['graph']['graphSha256'] == sql_graph['graphSha256'], 'Native replica and SQL immutable history bytes differ'
                 delta.assert_native_writes(page)
@@ -481,6 +546,7 @@ def run(engine, cloud, report, report_path):
             report['rounds'].append(dict(round=round_index+1, seconds=time.monotonic()-started,
                 localBursts=results, acceptedAppendCalls=len(cloud.accepted)-accepted_before,
                 newComments=len(expected)-RECORD_COUNT, photos=len(photos), durableProofs=proofs))
+            report.pop('lastNativeProofs', None)
             print('PASS heavy active-delta round:', round_index+1, len(expected)-RECORD_COUNT, 'comments, SQL head', cloud.head_seq, flush=True)
 
         assert cloud.lost_ack is not None and cloud.duplicate_acks >= 1, 'Lost acknowledgement and idempotent retry were not exercised'

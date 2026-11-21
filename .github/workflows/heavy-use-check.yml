@@ -7,6 +7,7 @@ on:
       - 'tests/heavy_*'
       - 'tests/field_record_render_ui.py'
       - 'tests/delta_app_*'
+      - 'tests/delta_checkpoint_retry.test.cjs'
       - 'tests/delta_capacity_app_flow.py'
       - 'tests/collaboration_ui.py'
       - 'tests/edit_sync_ui.py'
