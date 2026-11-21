@@ -96,7 +96,7 @@ change(p, "document.addEventListener('visibilitychange',()=>{if(document.visibil
 change('sentlog/index.html', 'const deps=[', "const deps=[['edit-sync.js?v=" + TOKEN + "','SentlogEditSync'],")
 change('sentlog/index.html', '<script type="module" src="./cloud-sync.js?',
        '<script src="./edit-sync.js?v=' + TOKEN + '"><\\/script><script type="module" src="./cloud-sync.js?')
-revisions = [('cloud-sync.js', '20261105-device-label-207'), ('sync-view.js', '20261118-memo'), ('archive-capacity.js', '140')]
+revisions = [('cloud-sync.js', '20261105-device-label-207'), ('sync-view.js', '20261121-heavy-render'), ('archive-capacity.js', '140')]
 for name, version in revisions:
     change('sentlog/index.html', name + '?v=' + version, name + '?v=' + TOKEN, 2)
 change('sentlog/index.html', "['cloud-sync.js?v=" + TOKEN + "','sentlogRecordReview']",

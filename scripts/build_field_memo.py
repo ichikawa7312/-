@@ -4,7 +4,7 @@ import re
 import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
-TOKEN = '20261118-memo'
+TOKEN = '20261121-heavy-render'
 pending = {}
 
 
@@ -34,7 +34,9 @@ match = re.search(r'sentlog-pwa-v(\d+)', worker)
 if not match:
     raise RuntimeError('Field memo offline cache revision missing')
 old_cache = match.group(0)
-new_cache = 'sentlog-pwa-v' + str(int(match.group(1)) + 1)
+# The batched label renderer must also replace the already published memo build
+# in installed applications and drawing exports.
+new_cache = 'sentlog-pwa-v' + str(int(match.group(1)) + 2)
 pending['sentlog/sw.js'] = worker.replace(old_cache, new_cache)
 
 # Existing behavior checks remain in place; their loader/cache expectations

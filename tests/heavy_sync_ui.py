@@ -320,7 +320,7 @@ def comment_set(summary):
 
 
 def verify_summary(summary, expected, original_tokens, changed):
-    assert summary['binding'] is None, 'Stress must stay in the current production legacy mode'
+    assert summary['binding'] is None, 'Stress must stay in legacy snapshot mode'
     assert len(summary['records']) == DRAWINGS*RECORDS_PER_DRAWING, len(summary['records'])
     assert len({(r['drawing'],r['record']) for r in summary['records']}) == len(summary['records'])
     assert not any(row['deleted'] for row in summary['records'])

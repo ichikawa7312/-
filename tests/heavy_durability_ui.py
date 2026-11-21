@@ -4,7 +4,7 @@ PDF.js, canvas decoding, Blob IndexedDB, record commits, capture recovery and UI
 are production code. Camera hardware and fault timing are synthetic. Each fault
 aborts a real native IndexedDB transaction after its write request succeeds,
 before commit; this is not a claim of exhausting a physical iPhone's disk.
-Fresh pages discard renderer memory while retaining the persistent profile.
+Fresh browser processes discard memory while reopening the same persistent profile.
 No external service or user record is accessed.
 """
 import argparse
@@ -319,11 +319,13 @@ def lifecycle(page, report, cycles, save_report):
     print('PASS drawing cycles: real PDF pixels, bounded large-image sources, released workers/bitmaps/tracks and six stale-load races', flush=True)
 
 
-def fault_cases(page, context, new_page, report, camera_png, save_report):
+def fault_cases(page, restart_page, report, camera_png, save_report):
     source_hash = hashlib.sha256(camera_png).hexdigest()
     encoded = base64.b64encode(camera_png).decode('ascii')
     recovered = []
     for mode in ('original', 'shared', 'record', 'association'):
+        report['activeFaultBoundary'] = mode
+        save_report()
         select_record(page, PDF_ID)
         before = saved_ids(page)
         other_pdf_records = page.evaluate(READ_RECORD, PDF_ID)['shapes'][1:]
@@ -339,6 +341,8 @@ def fault_cases(page, context, new_page, report, camera_png, save_report):
         camera_count(page, 0)
         failure = page.evaluate("""async()=>({fired:heavyFault.fired,aborted:heavyFault.aborted,events:heavyFault.events,
           pending:await SentlogCollaborationPhotos.listPending(),recordStoreFailed:SentlogRecords.failed})""")
+        report['lastNativeAbort'] = failure
+        save_report()
         assert failure['fired'] == failure['aborted'] == (2 if mode == 'original' else 1), failure
         assert len(failure['pending']) == 1, failure
         pending = failure['pending'][0]
@@ -366,15 +370,16 @@ def fault_cases(page, context, new_page, report, camera_png, save_report):
         if mode in ('shared', 'record'):
             assert failure['recordStoreFailed'], failure
 
-        # Discard JS memory without invoking cleanup/retry. The profile's real
-        # native IndexedDB and localStorage are the sole restart inputs.
-        page = new_page(context, replacing=page)
+        # Close the browser without invoking application cleanup/retry, then
+        # reopen this profile. Native IndexedDB/localStorage are the only
+        # restart inputs; the new process cannot retain files from JS memory.
+        page = restart_page(page)
         if mode == 'original':
             select_record(page, PDF_ID)
             restarted = page.evaluate('SentlogCollaborationPhotos.listPending()')
             assert len(restarted) == 1 and restarted[0]['photoId'] == photo_id and not restarted[0]['originalSaved'], restarted
             assert saved_ids(page) == before
-            # RAM bytes cannot survive renderer termination before commit.
+            # RAM bytes cannot survive browser termination before commit.
             # The application must say so and request the source again.
             panel = page.locator('#sentlogPendingPhotos')
             expect(panel).to_be_visible()
@@ -416,7 +421,7 @@ def main():
     report = {'engine': args.engine, 'status': 'running', 'requestedCycles': args.cycles,
               'storage': 'native IndexedDB Blob storage in a persistent profile',
               'faultModel': 'native transaction abort after write request success; not physical disk exhaustion',
-              'restartModel': 'new renderer page; precommit RAM bytes must be reselected'}
+              'restartModel': 'clean browser process restart, same persistent profile; not abrupt OS power loss; precommit RAM bytes must be reselected'}
 
     def save_report():
         report_path.parent.mkdir(parents=True, exist_ok=True)
@@ -435,10 +440,6 @@ def main():
     save_report()
     try:
         with tempfile.TemporaryDirectory(prefix='sentlog-heavy-durability-') as profile, sync_playwright() as playwright:
-            context = getattr(playwright, args.engine).launch_persistent_context(
-                profile, headless=True, viewport={'width': 390, 'height': 844}, has_touch=True,
-                is_mobile=True, device_scale_factor=2, service_workers='block')
-
             def route(request):
                 url = request.request.url
                 if url.startswith((origin+'/', 'blob:', 'data:')):
@@ -449,22 +450,36 @@ def main():
                 else:
                     request.abort()
 
-            context.route('**/*', route)
+            def launch():
+                browser_context = getattr(playwright, args.engine).launch_persistent_context(
+                    profile, headless=True, viewport={'width': 390, 'height': 844}, has_touch=True,
+                    is_mobile=True, device_scale_factor=2, service_workers='block')
+                browser_context.route('**/*', route)
+                return browser_context
 
-            def new_page(browser_context, *, replacing=None):
-                if replacing is None:
-                    current = browser_context.pages[0] if browser_context.pages else browser_context.new_page()
-                else:
-                    # Closing WebKit's last page ends its persistent browser.
-                    # Keep a new blank page alive, discard the old renderer,
-                    # and only then load the app and acquire its writer lock.
-                    current = browser_context.new_page()
-                    replacing.close(run_before_unload=False)
+            context = launch()
+
+            def new_page(browser_context):
+                current = browser_context.pages[0] if browser_context.pages else browser_context.new_page()
                 current.on('pageerror', lambda error: errors.append(str(error)))
                 current.goto(origin+'/sentlog/', wait_until='domcontentloaded')
                 current.wait_for_function('window.sentlogAppReady&&window.SentlogContinuousCamera&&window.SentlogCollaborationPhotos', timeout=45000)
                 current.evaluate("pdfjsLib.GlobalWorkerOptions.workerSrc='./vendor/export-pdf.worker.min.js'")
                 return current
+
+            def restart_page(previous):
+                nonlocal context
+                # WebKit can retain a closing page's Web Lock until its old
+                # process shuts down. Restart the browser, preserving its
+                # native profile, instead of racing or bypassing that guard.
+                live = [p for p in context.pages if not p.is_closed()]
+                report.setdefault('restartEvidence', []).append({
+                    'boundary': report.get('activeFaultBoundary'), 'openPageUrls': [p.url for p in live]})
+                assert live == [previous], 'Only the intended application page may own this profile'
+                context.close()
+                assert previous.is_closed(), 'The previous application must be gone before recovery'
+                context = launch()
+                return new_page(context)
 
             try:
                 page = new_page(context)
@@ -483,12 +498,13 @@ def main():
                 lifecycle(page, report, args.cycles, save_report)
                 verify_backgrounds(page, hashes)
                 report['stage'] = 'native-transaction-recovery'
-                page = fault_cases(page, context, new_page, report, raster_fixture(1600, 1200), save_report)
+                page = fault_cases(page, restart_page, report, raster_fixture(1600, 1200), save_report)
                 verify_backgrounds(page, hashes)
                 assert not errors, errors
                 report.update(status='passed', stage='complete', browserErrors=errors,
                               cameraOpenCloseCycles=args.cycles*2, cameraCoveredRotations=args.cycles*4,
                               backgroundResumeCycles=(args.cycles+4)//5, finalPhotoIds=saved_ids(page))
+                report.pop('activeFaultBoundary', None)
                 save_report()
                 print('PASS '+args.engine+': heavy drawing lifetimes and native transaction/restart recovery', flush=True)
             except Exception as error:
