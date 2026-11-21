@@ -352,5 +352,24 @@
   const api={...pure,saveOriginal,getOriginal,stageOriginal,updatePhotoAssociation,rebindPendingOriginal,listMeta,stats,drawingStats,renameDrawing,markExported,deleteExported,makeSharedPhoto,makeZip,refreshUI,exportNext,listProjectMeta,projectOptions,beginExportSession,confirmExportSession,releaseExportSession};
   root.SentlogOriginalPhotos=api;
   try{if(typeof addPhotosToSelected==='function')addPhotosToSelected=registerPhotos;}catch(e){console.warn('Sentlog original photo hook',e);}
-  setTimeout(installUI,0);
+  // app-settings.js inserts its dialog later in the document.write loader.
+  // A one-shot timer can run before that script on reload, silently omitting
+  // the original-photo controls. Attach exactly once when the dialog exists.
+  // Observing DOM additions handles both immediate and delayed construction.
+  if(typeof MutationObserver==='function'&&document.documentElement){
+    let observer;
+    const attach=()=>{
+      installUI();
+      if(ui||document.getElementById('sentlogOriginalPhotosSection')){
+        observer?.disconnect();
+        return true;
+      }
+      return false;
+    };
+    if(!attach()){
+      observer=new MutationObserver(attach);
+      observer.observe(document.documentElement,{childList:true,subtree:true});
+      if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',attach,{once:true});
+    }
+  }else setTimeout(installUI,0);
 })(typeof globalThis!=='undefined'?globalThis:this);
