@@ -585,11 +585,11 @@ def run(page, context, origin, route_state, fixture, report, report_path, direct
     big = [row for row in expected if row['projectId'] == BIG]
     small = [row for row in expected if row['projectId'] == SMALL]
     report['seed'] = page.evaluate(SEED, fixture)
-    print('SEEDED native originals: 320 large / 480 MiB plus isolated small and foreign projects', flush=True)
+    print('SEEDED native originals: '+str(len(expected))+' photographs across '+str(len(set(row['projectId'] for row in expected)))+' projects', flush=True)
     report['sourceBefore'] = page.evaluate(READ_NATIVE, None)
     check_native(report['sourceBefore'], expected)
     before_meta = {entry['key']: entry['meta'] for entry in report['sourceBefore']['entries']}
-    assert sum(bool(before_meta[row['key']]['exportedAt']) for row in big) == 80
+    assert sum(bool(before_meta[row['key']]['exportedAt']) for row in big) == (0 if phase == 'recovery' else 80)
     records_before = page.evaluate('SentlogRecords.keys().sort().map(key=>[key,SentlogRecords.getItem(key)])')
     expect(page.locator('#slOriginalPhotoExportBtn')).to_be_visible()
     page.screenshot(path=str(prefix) + '-drawing-entry.png')
@@ -953,6 +953,16 @@ def main():
     errors, blocked, requests = [], [], []
     try:
         fixture = fixture_catalog()
+        if args.phase == 'recovery':
+            # The 480 MiB case already runs independently in the macOS large
+            # phase. Recovery focuses on the same native cancel/quota/source/
+            # crash behavior with two projects, without unnecessary 480 MiB
+            # indexing pressure in Safari. Chromium still runs the combined
+            # full-size and recovery suite.
+            fixture['rows'] = [row for row in fixture['rows'] if row['projectId'] != BIG]
+            report['workload'].update(largeOriginals=0, largeOriginalBytes=0,
+                                      alreadyExportedLargeOriginals=0,
+                                      recoveryOriginals=len(fixture['rows']))
         with tempfile.TemporaryDirectory(prefix='sentlog-onezip-browser-') as temporary, sync_playwright() as playwright:
             directory = Path(temporary)
             context = getattr(playwright, args.engine).launch_persistent_context(
