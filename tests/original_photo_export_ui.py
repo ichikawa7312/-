@@ -571,7 +571,7 @@ def download_retained_ready_file(page, path):
     page.evaluate("""()=>{const a=document.getElementById('fixture-contract-download');URL.revokeObjectURL(a.href);a.remove();delete window.originalReadyCrashFile;}""")
 
 
-def run(page, context, origin, route_state, fixture, report, report_path, directory):
+def run(page, context, origin, route_state, fixture, report, report_path, directory, phase='all'):
     prefix = report_path.with_suffix('')
     expected = fixture['rows']
     big = [row for row in expected if row['projectId'] == BIG]
@@ -652,44 +652,45 @@ def run(page, context, origin, route_state, fixture, report, report_path, direct
     save_json(report_path, report)
 
     report['largeExports'] = []
-    for number in (1, 2):
-        report['stage'] = f'large-ui-export-{number}'
-        save_json(report_path, report)
-        open_ui(page, BIG)
-        before_downloads = report['downloadEvents']
-        before_ticks = page.evaluate('originalExportTrace.ticks')
-        started = time.perf_counter()
-        index = begin_ui(page)
-        ready = wait_message(page, index, 'ready', 300000)
-        interactive_ticks = page.evaluate('originalExportTrace.ticks') - before_ticks
-        assert interactive_ticks >= 2, 'the page event loop must continue while the Worker builds the large ZIP'
-        assert ready['entryCount'] == BIG_COUNT and ready['originalBytes'] == BIG_COUNT * BIG_SIZE, ready
-        assert ready['zipBytes'] > 400 * 1024 * 1024 and ready['file']['size'] == ready['zipBytes'], ready
-        path = directory / f'large-{number}.zip'
-        name = download_ui(page, path)
-        checked = verify_zip(path, big)
-        assert report['downloadEvents'] == before_downloads + 1, 'one action must produce exactly one download'
-        assert checked['entryCount'] > 250 and checked['originalBytes'] > 400 * 1024 * 1024
-        progress = [m for m in worker_messages(page, index) if m['type'] == 'progress']
-        assert any(m['phase'] == 'writing' and m['doneBytes'] > 0 for m in progress), progress
-        assert any(m['phase'] == 'finalizing' for m in progress), progress
-        assert all(m['totalFiles'] == BIG_COUNT and m['totalBytes'] == BIG_COUNT * BIG_SIZE for m in progress)
-        report['largeExports'].append({'fileName': name, 'elapsedMs': round((time.perf_counter() - started) * 1000, 2),
-                                       'ready': ready, **checked, 'io': assert_io(page, index),
-                                       'alreadyExportedIncluded': 80, 'pageHeartbeatsDuringWorker': interactive_ticks})
-        close_ui(page, index, discard=True)
-        path.unlink()
-        assert {m['key']: m for m in page.evaluate('SentlogOriginalPhotos.listMeta()')} == before_meta
-        save_json(report_path, report)
-        print(f'PASS large export {number}: one ZIP, 320 entries, 480 MiB, exact bytes, 80 previously exported originals', flush=True)
+    if phase in ('all', 'large'):
+        for number in (1, 2):
+            report['stage'] = f'large-ui-export-{number}'
+            save_json(report_path, report)
+            open_ui(page, BIG)
+            before_downloads = report['downloadEvents']
+            before_ticks = page.evaluate('originalExportTrace.ticks')
+            started = time.perf_counter()
+            index = begin_ui(page)
+            ready = wait_message(page, index, 'ready', 300000)
+            interactive_ticks = page.evaluate('originalExportTrace.ticks') - before_ticks
+            assert interactive_ticks >= 2, 'the page event loop must continue while the Worker builds the large ZIP'
+            assert ready['entryCount'] == BIG_COUNT and ready['originalBytes'] == BIG_COUNT * BIG_SIZE, ready
+            assert ready['zipBytes'] > 400 * 1024 * 1024 and ready['file']['size'] == ready['zipBytes'], ready
+            path = directory / f'large-{number}.zip'
+            name = download_ui(page, path)
+            checked = verify_zip(path, big)
+            assert report['downloadEvents'] == before_downloads + 1, 'one action must produce exactly one download'
+            assert checked['entryCount'] > 250 and checked['originalBytes'] > 400 * 1024 * 1024
+            progress = [m for m in worker_messages(page, index) if m['type'] == 'progress']
+            assert any(m['phase'] == 'writing' and m['doneBytes'] > 0 for m in progress), progress
+            assert any(m['phase'] == 'finalizing' for m in progress), progress
+            assert all(m['totalFiles'] == BIG_COUNT and m['totalBytes'] == BIG_COUNT * BIG_SIZE for m in progress)
+            report['largeExports'].append({'fileName': name, 'elapsedMs': round((time.perf_counter() - started) * 1000, 2),
+                                           'ready': ready, **checked, 'io': assert_io(page, index),
+                                           'alreadyExportedIncluded': 80, 'pageHeartbeatsDuringWorker': interactive_ticks})
+            close_ui(page, index, discard=True)
+            path.unlink()
+            assert {m['key']: m for m in page.evaluate('SentlogOriginalPhotos.listMeta()')} == before_meta
+            save_json(report_path, report)
+            print(f'PASS large export {number}: one ZIP, 320 entries, 480 MiB, exact bytes, 80 previously exported originals', flush=True)
 
     # Force a real page lifecycle boundary after two 480 MiB exports. This
     # checks durable originals and metadata across reload and prevents
     # transient WebKit File/download/page resources from polluting the
     # subsequent small-project fault-injection checks.
-    report['stage'] = 'reload-after-large-exports'
+    report['stage'] = 'reload-after-large-exports' if phase != 'recovery' else 'reload-before-recovery'
     save_json(report_path, report)
-    print('START reload after two full ZIP downloads', flush=True)
+    print('START reload after full ZIP downloads' if phase != 'recovery' else 'START reload before recovery checks', flush=True)
     page.reload(wait_until='domcontentloaded')
     page.wait_for_function('window.sentlogAppReady&&window.SentlogOriginalPhotos&&window.SentlogOriginalPhotoExport', timeout=60000)
     page.evaluate('sentlogAppReady')
@@ -699,8 +700,12 @@ def run(page, context, origin, route_state, fixture, report, report_path, direct
     page.evaluate('window.originalFixture={done:0,backups:new Map(),rows:[]}')
     assert {m['key']: m for m in page.evaluate('SentlogOriginalPhotos.listMeta()')} == before_meta
     assert page.evaluate('SentlogRecords.keys().sort().map(key=>[key,SentlogRecords.getItem(key)])') == records_before
-    print('PASS reload after large exports: all local originals and shared records preserved', flush=True)
+    print('PASS reload: all local originals and shared records preserved', flush=True)
     save_json(report_path, report)
+
+    if phase == 'large':
+        print('PASS native macOS large ZIP phase: both 480 MiB downloads and reload preserved originals', flush=True)
+        return
 
     # Hold a real chunk read after data has reached OPFS. Cancel must drain the
     # worker and release its temporary file; it cannot report a completed ZIP.
@@ -906,12 +911,13 @@ def main():
     parser.add_argument('--engine', choices=('chromium', 'webkit'), required=True)
     parser.add_argument('--built-root', type=Path, default=ROOT)
     parser.add_argument('--report', type=Path)
+    parser.add_argument('--phase', choices=('all','large','recovery'), default='all')
     args = parser.parse_args()
     if os.environ.get('SITES_MANAGED_LINUX_CONTAINER') == '1' and os.environ.get('GITHUB_ACTIONS') != 'true':
         raise SystemExit('Browser/server execution is restricted to GitHub Actions; use py_compile locally.')
     report_path = args.report or Path(f'/tmp/sentlog-heavy-originals-{args.engine}.json')
     root = args.built_root.resolve()
-    report = {'engine': args.engine, 'status': 'running', 'stage': 'boot', 'downloadEvents': 0,
+    report = {'engine': args.engine, 'phase': args.phase, 'status': 'running', 'stage': 'boot', 'downloadEvents': 0,
               'hostPlatform': {'sys': sys.platform, 'system': platform.system(),
                                'release': platform.release(), 'machine': platform.machine()},
               'workload': {'largeOriginals': BIG_COUNT, 'largeOriginalBytes': BIG_COUNT * BIG_SIZE,
@@ -998,7 +1004,7 @@ def main():
                 report['capabilities']['nativeOpfsRoundTrip'] = native_io['ok'] is True and native_io['cleanupComplete'] is True
                 report['capabilities']['sourceLease'] = report['nativeEnvironment']['main']['locksType'] == 'function'
                 assert all(report['capabilities'].values()), report['capabilities']
-                run(page, context, origin, route_state, fixture, report, report_path, directory)
+                run(page, context, origin, route_state, fixture, report, report_path, directory, args.phase)
                 assert not errors, errors
                 report.update(status='passed', stage='complete', browserErrors=errors, blockedExternalRequests=blocked, workerRequests=requests)
                 save_json(report_path, report)
