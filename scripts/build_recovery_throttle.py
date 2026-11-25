@@ -7,7 +7,7 @@ from pathlib import Path
 import re, subprocess
 
 ROOT=Path(__file__).resolve().parents[1]
-TOKEN='20261125-retain-media-3'
+TOKEN='20261125-retain-media-4'
 guard=(ROOT/'sentlog/recovery-throttle.js').read_text(encoding='utf-8').strip()
 pending={}
 def source(path):
@@ -302,11 +302,34 @@ change(p,'  for(const p of ws.projects||[]){\n   for(const d of p.drawings||[]){
 change(p,'  const active=await activeProjectIds(),assets=await assetList();\n  let pendingRequestsPromise=null;',
        "  const active=new Set([...await activeProjectIds()].filter(id=>!window.sentlogDeltaOwnsProject?.(id)));\n  if(!active.size){show('');return;}\n  const assets=await assetList(active);\n  let pendingRequestsPromise=null;")
 
+# The same read-only source verifier can rescue exact surviving copies on
+# iPhone/iPad/browser. No automatic migration starts merely by opening the app.
+p='sentlog/index.html'
+change(p,'const deps=[',"const deps=[['active-media-restore.js?v=20261125-restore-2','SentlogActiveMediaRestore'],")
+change(p,'document.open();document.write(html);document.close()',
+       """html=html.replace('</body>','<script src="./active-media-restore.js?v=20261125-restore-2"></'+'script></body>');document.open();document.write(html);document.close()""")
+p='sentlog/cloud-sync.js'
+change(p,'window.sentlogManagementSession=ensureSession;',
+       """window.sentlogManagementSession=ensureSession;
+Promise.resolve(window.sentlogAppReady).then(()=>{
+  window.SentlogActiveMediaRestore?.mount({
+    getScope:()=>({owner:session?.user?.id,device:localStorage.getItem(DEVICE_KEY)}),
+    getSession:()=>session,
+    ensure:async()=>{await window.SentlogRecords.settled();window.SentlogRecords.assertSafe();await ensureSession();},
+    readSource:a=>window.SentlogActiveMediaRestore.readDeviceOriginal(a,dbGet),
+    baseUrl:SUPABASE_URL,apiKey:SUPABASE_KEY,host:document.querySelector('#projectsView .manager-shell')
+  });
+}).catch(e=>console.warn('Device cloud repair unavailable',e));""")
+p='sentlog-pc/index.html'
+change(p,'active-media-restore.js?v=20261125-restore-1','active-media-restore.js?v=20261125-restore-2')
+p='sentlog/sw.js'
+change(p,"'photo-recovery.js'","'photo-recovery.js','active-media-restore.js'")
+
 # Version every loader reference and corresponding existing test expectation.
 versions=set()
 for page in ['sentlog/index.html','sentlog-pc/index.html']:
     text=source(page)
-    for name in ['pdf-recovery','peer-photo-recovery','photo-recovery']:
+    for name in ['pdf-recovery','peer-photo-recovery','photo-recovery','cloud-sync']:
         pattern=r'(?<!peer-)'+re.escape(name)+r'\.js\?v=([A-Za-z0-9._-]+)'
         for old in re.findall(pattern,text):
             versions.add((name,old))

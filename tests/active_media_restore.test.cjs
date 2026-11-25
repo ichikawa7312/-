@@ -1,14 +1,14 @@
 'use strict';
 const assert=require('node:assert/strict'),crypto=require('node:crypto').webcrypto;
-const {create}=require('../sentlog/active-media-restore.js');
+const {create,readDeviceOriginal}=require('../sentlog/active-media-restore.js');
 const id=n=>'00000000-0000-4000-8000-'+String(n).padStart(12,'0');
 const scope={owner:id(9001),device:id(9201)},project=id(9101),token=id(9002);
 const blob=new Blob(['verified shared media']);const corrupt=new Blob(['x'.repeat(blob.size)]);
 (async()=>{
  const sha=Buffer.from(await crypto.subtle.digest('SHA-256',await blob.arrayBuffer())).toString('hex');
  const row=n=>({id:id(n),project_id:project,kind:n%2?'photo':'drawing',file_name:'file',mime_type:n%2?'image/jpeg':'application/dxf',sha256:sha,byte_size:blob.size,storage_path:'old/'+n,updated_at:'2026-01-01T00:00:00.000Z',pc_path:'Root/f'});
- function make(n,mode='ok'){
-  const rows=Array.from({length:n},(_,i)=>row(i+1)),done=new Set(),staged=new Map(),states=[],calls={list:0,claim:0,upload:0,download:0,finish:0,localRead:0};let current={...scope},isOnline=true,service;
+ function make(n,mode='ok',deviceSource=false){
+  const rows=Array.from({length:n},(_,i)=>({...row(i+1),...(deviceSource?{pc_path:null,drawing_id:'drawing-'+(i+1),photo_id:'photo-'+(i+1)}:{})})),done=new Set(),staged=new Map(),states=[],calls={list:0,claim:0,upload:0,download:0,finish:0,localRead:0};let current={...scope},isOnline=true,service;
   const root={name:'Root',queryPermission:async()=>mode==='permission'?'denied':'granted',getFileHandle:async(name,opts)=>{assert.equal(opts,undefined);assert.equal(name,'f');return {getFile:async()=>{calls.localRead++;return mode==='localcorrupt'?corrupt:blob;}};}};
   const path=a=>scope.owner+'/'+project+'/active-restore/'+a.id+'/'+sha+'/'+('b'.repeat(64))+'/'+token+(a.mime_type==='image/jpeg'?'.jpg':'.dxf');
   const find=a=>rows.find(r=>r.id===a.p_asset_id);
@@ -19,6 +19,10 @@ const blob=new Blob(['verified shared media']);const corrupt=new Blob(['x'.repea
     assert.equal(action,'finish');assert.equal(args.p_token,token);assert(staged.has(path(a)));if(mode==='finishloss'&&!done.has(a.id)){done.add(a.id);throw Object.assign(Error('timeout'),{status:504});}done.add(a.id);return {published:true,asset_id:a.id};},
    upload:async(path,file,mime)=>{calls.upload++;assert.equal(file,blob);assert(!staged.has(path),'no overwrite or duplicate send');staged.set(path,file);if(mode==='offline'){isOnline=false;}if(mode==='scopechange'){current={...scope,owner:id(44)};}if(mode==='stop'){service.stop();}if(mode==='uploadloss'&&calls.upload===1)throw Object.assign(Error('timeout'),{status:504});},
    download:async(path)=>{calls.download++;return mode==='remotecorrupt'?corrupt:staged.get(path);}};
+  if(deviceSource)opts.readSource=a=>readDeviceOriginal(a,async key=>{calls.localRead++;
+   assert(key.startsWith('photo:')||key.startsWith('background:'));
+   return mode==='localcorrupt'?corrupt:mode==='missingdevice'?undefined:blob;
+  });
   service=create(opts);
   return {service,calls,states,done,staged,rows,setOnline:x=>{isOnline=x},setScope:x=>{current=x}};
  }
@@ -38,5 +42,8 @@ const blob=new Blob(['verified shared media']);const corrupt=new Blob(['x'.repea
  const double=make(17);const results=await Promise.all([double.service.start(),double.service.start()]);assert.deepEqual(results,[true,false]);assert.equal(double.calls.upload,17);
  const missing=make(1);missing.rows[0].pc_path=null;await missing.service.start();assert.equal(missing.calls.upload,0);assert.equal(missing.states.at(-1).phase,'review');
  const badpath=make(1);badpath.rows[0].pc_path='Root/../f';await badpath.service.start();assert.equal(badpath.calls.upload,0);
+ const device=make(33,'ok',true);await device.service.start();assert.equal(device.done.size,33);assert.equal(device.calls.upload,33);
+ const absent=make(1,'missingdevice',true);await absent.service.start();assert.equal(absent.calls.upload,0);assert.equal(absent.states.at(-1).phase,'review');
+ const different=make(1,'localcorrupt',true);await different.service.start();assert.equal(different.calls.upload,0);
  console.log('PASS active shared media restore worker: 5028 simulated files, bounded paging, zero repeated uploads, lost upload/finish response, offline/manual resume, cancellation, corrupt local/remote bytes, destination/scope/path protection, permission, competing lease, double-click');
 })().catch(e=>{console.error(e);process.exitCode=1;});

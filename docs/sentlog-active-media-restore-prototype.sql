@@ -1,4 +1,4 @@
--- Additive draft: restore missing active-project shared files from verified PC copies.
+-- Additive draft: restore missing active-project shared files from verified PC or registered-device copies.
 -- No fake receiving-device requests, no file or record deletions, no changes to
 -- the original receipt ledger. The shared lease prevents concurrent legacy
 -- redelivery from publishing a competing copy during this operation.
@@ -12,24 +12,34 @@ AS $fn$
 DECLARE
  u uuid:=auth.uid(); a public.sentlog_assets%rowtype; l public.sentlog_pdf_leases%rowtype;
  r public.sentlog_pc_receipts%rowtype; mode text; ext text; prefix text; dest text;
- version text; tok uuid; rows jsonb;
+ version text; tok uuid; rows jsonb; device_kind text; is_pc boolean;
 BEGIN
  IF u IS NULL THEN RAISE EXCEPTION 'MEDIA_RESTORE_AUTH_REQUIRED' USING ERRCODE='28000'; END IF;
  IF p_action NOT IN ('list','claim','finish') OR p_action IS NULL
  THEN RAISE EXCEPTION 'MEDIA_RESTORE_ACTION_INVALID' USING ERRCODE='22023'; END IF;
- IF NOT EXISTS(SELECT 1 FROM public.sentlog_devices d WHERE d.id=p_device_id AND d.owner_id=u AND d.active AND d.device_type='pc'
-   AND NOT EXISTS(SELECT 1 FROM sentlog_archive_private.removed_device_registrations x WHERE x.device_id=d.id))
- THEN RAISE EXCEPTION 'MEDIA_RESTORE_PC_REQUIRED' USING ERRCODE='42501'; END IF;
+ SELECT d.device_type INTO device_kind FROM public.sentlog_devices d
+ WHERE d.id=p_device_id AND d.owner_id=u AND d.active AND d.device_type IN ('pc','iphone','ipad','browser')
+   AND NOT EXISTS(SELECT 1 FROM sentlog_archive_private.removed_device_registrations x WHERE x.device_id=d.id);
+ IF NOT FOUND THEN RAISE EXCEPTION 'MEDIA_RESTORE_DEVICE_REQUIRED' USING ERRCODE='42501'; END IF;
+ is_pc:=device_kind='pc';
  IF p_action='list' THEN
    SELECT coalesce(jsonb_agg(to_jsonb(q) ORDER BY q.id),'[]'::jsonb) INTO rows FROM (
      SELECT a0.id,a0.project_id,a0.kind,a0.file_name,a0.mime_type,a0.byte_size,a0.sha256,
-       a0.storage_path,a0.updated_at,r0.pc_path
+       a0.storage_path,a0.updated_at,CASE WHEN is_pc THEN r0.pc_path ELSE NULL END AS pc_path,
+       a0.metadata->>'drawing_id' AS drawing_id,a0.metadata->>'photo_id' AS photo_id
      FROM public.sentlog_assets a0
      JOIN public.sentlog_projects p ON p.id=a0.project_id AND p.owner_id=u AND p.status='active'
      LEFT JOIN public.sentlog_pc_receipts r0 ON r0.asset_id=a0.id AND r0.owner_id=u
        AND lower(r0.sha256)=lower(a0.sha256) AND r0.byte_size=a0.byte_size
      WHERE a0.owner_id=u AND a0.kind IN ('photo','drawing') AND a0.status='storage_deleted'
        AND (p_after IS NULL OR a0.id>p_after)
+       AND (is_pc OR (
+         nullif(a0.metadata->>'drawing_id','') IS NOT NULL
+         AND (a0.kind='drawing' OR nullif(a0.metadata->>'photo_id','') IS NOT NULL)
+         AND (a0.source_device_id=p_device_id OR EXISTS(
+           SELECT 1 FROM public.sentlog_asset_device_receipts d0
+           WHERE d0.asset_id=a0.id AND d0.owner_id=u AND d0.device_id=p_device_id
+             AND lower(d0.sha256)=lower(a0.sha256) AND d0.byte_size=a0.byte_size))))
        AND NOT EXISTS(SELECT 1 FROM sentlog_archive_private.retired_projects x WHERE x.project_id=p.id AND x.restored_at IS NULL)
        AND NOT EXISTS(SELECT 1 FROM sentlog_archive_private.jobs j WHERE j.project_id=p.id AND j.state='checking' AND j.expires_at>now())
      ORDER BY a0.id LIMIT 16
@@ -37,8 +47,9 @@ BEGIN
    RETURN jsonb_build_object('schema',1,'rows',rows);
  END IF;
  -- Recheck the device under a lock before issuing/consuming a lease.
- PERFORM 1 FROM public.sentlog_devices d WHERE d.id=p_device_id AND d.owner_id=u AND d.active AND d.device_type='pc' FOR SHARE;
- IF NOT FOUND THEN RAISE EXCEPTION 'MEDIA_RESTORE_PC_REQUIRED' USING ERRCODE='42501'; END IF;
+ PERFORM 1 FROM public.sentlog_devices d WHERE d.id=p_device_id AND d.owner_id=u AND d.active AND d.device_type=device_kind
+   AND NOT EXISTS(SELECT 1 FROM sentlog_archive_private.removed_device_registrations x WHERE x.device_id=d.id) FOR SHARE;
+ IF NOT FOUND THEN RAISE EXCEPTION 'MEDIA_RESTORE_DEVICE_REQUIRED' USING ERRCODE='42501'; END IF;
  SELECT * INTO a FROM public.sentlog_assets WHERE id=p_asset_id AND owner_id=u AND kind IN ('photo','drawing') FOR UPDATE;
  IF NOT FOUND THEN RAISE EXCEPTION 'MEDIA_RESTORE_ASSET_FORBIDDEN' USING ERRCODE='42501'; END IF;
  SELECT status INTO mode FROM public.sentlog_projects WHERE id=a.project_id AND owner_id=u FOR UPDATE;
@@ -49,10 +60,20 @@ BEGIN
  IF p_sha256 IS NULL OR lower(p_sha256) IS DISTINCT FROM lower(a.sha256)
    OR p_byte_size IS DISTINCT FROM a.byte_size OR p_expected_path IS NULL OR p_expected_updated_at IS NULL
  THEN RAISE EXCEPTION 'MEDIA_RESTORE_VERSION_CHANGED' USING ERRCODE='40001'; END IF;
- SELECT * INTO r FROM public.sentlog_pc_receipts WHERE asset_id=a.id AND owner_id=u AND lower(sha256)=lower(a.sha256)
-   AND byte_size=a.byte_size FOR SHARE;
- IF NOT FOUND OR nullif(btrim(r.pc_path),'') IS NULL
- THEN RAISE EXCEPTION 'MEDIA_RESTORE_PC_RECEIPT_REQUIRED' USING ERRCODE='55000'; END IF;
+ IF is_pc THEN
+   SELECT * INTO r FROM public.sentlog_pc_receipts WHERE asset_id=a.id AND owner_id=u AND lower(sha256)=lower(a.sha256)
+     AND byte_size=a.byte_size FOR SHARE;
+   IF NOT FOUND OR nullif(btrim(r.pc_path),'') IS NULL
+   THEN RAISE EXCEPTION 'MEDIA_RESTORE_PC_RECEIPT_REQUIRED' USING ERRCODE='55000'; END IF;
+ ELSE
+   IF nullif(a.metadata->>'drawing_id','') IS NULL OR
+      (a.kind='photo' AND nullif(a.metadata->>'photo_id','') IS NULL) OR
+      (a.source_device_id IS DISTINCT FROM p_device_id AND NOT EXISTS(
+        SELECT 1 FROM public.sentlog_asset_device_receipts d0
+        WHERE d0.asset_id=a.id AND d0.owner_id=u AND d0.device_id=p_device_id
+          AND lower(d0.sha256)=lower(a.sha256) AND d0.byte_size=a.byte_size))
+   THEN RAISE EXCEPTION 'MEDIA_RESTORE_SOURCE_REQUIRED' USING ERRCODE='42501'; END IF;
+ END IF;
  ext:=CASE lower(a.mime_type) WHEN 'image/jpeg' THEN '.jpg' WHEN 'image/png' THEN '.png'
    WHEN 'image/webp' THEN '.webp' WHEN 'image/heic' THEN '.heic' WHEN 'image/heif' THEN '.heif'
    WHEN 'image/tiff' THEN '.tiff' WHEN 'application/pdf' THEN '.pdf' WHEN 'application/dxf' THEN '.dxf' ELSE NULL END;
@@ -62,7 +83,7 @@ BEGIN
    jsonb_build_array(p_expected_path,extract(epoch FROM p_expected_updated_at),lower(a.sha256),a.byte_size)::text,'UTF8')),'hex');
  prefix:=u::text||'/'||a.project_id::text||'/active-restore/'||a.id::text||'/'||lower(a.sha256)||'/'||version||'/';
  -- A lost completion response is safe to retry against the exact new path.
- IF p_action='finish' AND p_token IS NOT NULL AND a.status='pc_verified'
+ IF p_action='finish' AND p_token IS NOT NULL AND a.status IN ('pc_verified','uploaded')
    AND a.storage_path=prefix||p_token::text||ext AND a.storage_deleted_at IS NULL
    AND EXISTS(SELECT 1 FROM storage.objects o WHERE o.bucket_id='sentlog-temp' AND o.name=a.storage_path
      AND (o.metadata->>'size')::bigint=a.byte_size)
@@ -96,11 +117,13 @@ BEGIN
  IF NOT EXISTS(SELECT 1 FROM storage.objects o WHERE o.bucket_id='sentlog-temp' AND o.name=l.storage_path
    AND (o.metadata->>'size')::bigint=a.byte_size)
  THEN RAISE EXCEPTION 'MEDIA_RESTORE_UPLOAD_INCOMPLETE' USING ERRCODE='55000'; END IF;
- -- The PC independently verifies the source and the downloaded staged bytes
- -- before invoking finish. The server checks size, authorization, scope,
- -- version, and lease; it does not independently compute an object SHA-256.
- UPDATE public.sentlog_assets SET storage_path=l.storage_path,status='pc_verified',
-   storage_deleted_at=null,pc_verified_at=coalesce(a.pc_verified_at,r.verified_at),pc_path=r.pc_path,
+ -- The source device independently verifies local and downloaded staged bytes.
+ -- A restored non-PC copy still requires a new verified PC backup. The old
+ -- receipt ledger is not deleted or falsely promoted to a new proof.
+ -- The server checks object size, not an independently computed object hash.
+ UPDATE public.sentlog_assets SET storage_path=l.storage_path,status=CASE WHEN is_pc THEN 'pc_verified' ELSE 'uploaded' END,
+   storage_deleted_at=null,pc_verified_at=CASE WHEN is_pc THEN coalesce(a.pc_verified_at,r.verified_at) ELSE NULL END,
+   pc_path=CASE WHEN is_pc THEN r.pc_path ELSE NULL END,
    uploaded_at=now(),updated_at=now() WHERE id=a.id AND owner_id=u;
  DELETE FROM public.sentlog_pdf_leases WHERE asset_id=a.id AND token=p_token;
  RETURN jsonb_build_object('published',true,'asset_id',a.id,'already_published',false);

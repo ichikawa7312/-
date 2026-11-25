@@ -43,7 +43,16 @@
   if(p.length!==7||p[0]!==scope.owner||p[1]!==a.project_id||p[2]!=='active-restore'||p[3]!==a.id||p[4]!==a.sha256
    ||!hex(p[5])||p[6]!==c.token+types[a.mime_type])throw fail('補完先の案件・ファイル・内容が一致しません。','RESTORE_LEASE');
  }
- function create({getScope,ensure,getRoot,rpc,upload,download,subtle,online=()=>true,wait=delay,onState=()=>{}}){
+ async function readDeviceOriginal(a,readFile){
+  const valid=x=>typeof x==='string'&&x.length>0&&x.length<=512;
+  if(!valid(a.drawing_id)||(a.kind==='photo'&&!valid(a.photo_id)))
+   throw fail('端末の保存対象を確認できません。','RESTORE_DEVICE_KEY');
+  const key=a.kind==='drawing'?'background:'+a.drawing_id:'photo:'+a.drawing_id+':'+a.photo_id;
+  const blob=await readFile(key);
+  if(!blob||typeof blob.arrayBuffer!=='function')throw fail('この端末に該当ファイルがありません。','RESTORE_DEVICE_MISSING');
+  return blob;
+ }
+ function create({getScope,ensure,getRoot,readSource=null,rpc,upload,download,subtle,online=()=>true,wait=delay,onState=()=>{}}){
   let running=false,stopped=false,stats={checked:0,restored:0,skipped:0,failed:0,lastError:''};
   const emit=(phase,message='')=>onState({...stats,phase,message});
   const assertScope=s=>{if(stopped)throw stopError();if(!online())throw fail('通信が切れました。次回は未復旧分から再開します。','RESTORE_OFFLINE');
@@ -51,9 +60,9 @@
   const base=a=>({p_asset_id:a.id,p_sha256:a.sha256,p_byte_size:a.byte_size,p_expected_path:a.storage_path,p_expected_updated_at:a.updated_at});
   async function restoreOne(a,scope){
    assertScope(scope);
-   if(!a.pc_path)throw fail('一致するPC保存記録がありません。','RESTORE_PC_RECEIPT');
+   if(!readSource&&!a.pc_path)throw fail('一致するPC保存記録がありません。','RESTORE_PC_RECEIPT');
    if(!types[a.mime_type]||a.byte_size>25*1024*1024)throw fail('対象ファイルの形式または容量が現在のStorage設定に対応していません。','RESTORE_FORMAT');
-   const file=await readOriginal(getRoot(),a);assertScope(scope);await verify(file,a,subtle);assertScope(scope);
+   const file=readSource?await readSource(a):await readOriginal(getRoot(),a);assertScope(scope);await verify(file,a,subtle);assertScope(scope);
    const args={p_device_id:scope.device,...base(a)};
    const c=await rpc('claim',args,scope);assertScope(scope);
    if(c?.claimed===false&&['leased','already_available'].includes(c.reason))return 'skipped';
@@ -77,11 +86,13 @@
   async function start(){
    if(running)return false;running=true;stopped=false;stats={checked:0,restored:0,skipped:0,failed:0,lastError:''};emit('running','クラウド補完対象を確認中');
    try{
-    await ensure();const scope=getScope();if(!sameScope(scope,scope))throw fail('登録済みPCでログインしてください。','RESTORE_SCOPE');
+    await ensure();const scope=getScope();if(!sameScope(scope,scope))throw fail('登録済み端末でログインしてください。','RESTORE_SCOPE');
     assertScope(scope);
-    const folder=getRoot();
-    if(!folder||typeof folder.queryPermission!=='function'||await folder.queryPermission({mode:'readwrite'})!=='granted')
-     throw fail('会社PCの保管フォルダを選択し、保存許可を確認してください。','RESTORE_FOLDER');
+    if(!readSource){
+     const folder=getRoot();
+     if(!folder||typeof folder.queryPermission!=='function'||await folder.queryPermission({mode:'readwrite'})!=='granted')
+      throw fail('会社PCの保管フォルダを選択し、保存許可を確認してください。','RESTORE_FOLDER');
+    }
     let after=null;
     for(;;){
      assertScope(scope);const page=await rpc('list',{p_device_id:scope.device,p_after:after},scope);assertScope(scope);
@@ -108,11 +119,12 @@
   }
   return {start,stop(){stopped=true;},get running(){return running;}};
  }
- function mount({getScope,getSession,ensure,getRoot,baseUrl,apiKey,fetcher=fetch,subtle=crypto.subtle,host=document.querySelector('main')}){
+ function mount({getScope,getSession,ensure,getRoot,readSource=null,baseUrl,apiKey,fetcher=fetch,subtle=crypto.subtle,host=document.querySelector('main')}){
   if(!host||document.getElementById('slActiveMediaRestore'))return;
-  const panel=document.createElement('section');panel.id='slActiveMediaRestore';panel.className='card';
-  const h=document.createElement('h2');h.textContent='既存写真・図面のクラウド補完';
-  const explanation=document.createElement('p');explanation.className='muted';explanation.textContent='使用中案件の未補完ファイルをPCの保管原本から復旧します。元画像や記録は削除しません。最初の補完時のみデータ転送が発生します。';
+  const panel=document.createElement(readSource?'details':'section');panel.id='slActiveMediaRestore';panel.className='card';
+  if(readSource)panel.style.cssText='margin:12px 0;padding:12px;border:1px solid #d1d5db;border-radius:10px;background:#fff;color:#374151;';
+  const h=document.createElement(readSource?'summary':'h2');h.textContent=readSource?'この端末の写真・図面をクラウド補完':'既存写真・図面のクラウド補完';
+  const explanation=document.createElement('p');explanation.className='muted';explanation.textContent=readSource?'この端末に残っている照合済みの共有ファイルをクラウドへ補完します。元画像や記録は削除しません。':'使用中案件の未補完ファイルをPCの保管原本から復旧します。元画像や記録は削除しません。最初の補完時のみデータ転送が発生します。';
   const state=document.createElement('p');state.setAttribute('role','status');state.textContent='未実行（必要なときだけ開始）';
   const controls=document.createElement('div');controls.className='row';
   const startButton=document.createElement('button'),stopButton=document.createElement('button');
@@ -130,14 +142,14 @@
     return options.readBlob?await resp.blob():await resp.json();
    }finally{clearTimeout(timer);}
   }
-  const service=create({getScope,ensure,getRoot,subtle,online:()=>navigator.onLine,
+  const service=create({getScope,ensure,getRoot,readSource,subtle,online:()=>navigator.onLine,
    rpc:(action,args,scope)=>request('/rest/v1/rpc/sentlog_active_media_restore_v1',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({p_action:action,...args})},scope),
    upload:(path,file,mime,scope)=>request('/storage/v1/object/sentlog-temp/'+encodePath(path),{method:'POST',headers:{'Content-Type':mime,'x-upsert':'false'},body:file},scope),
    download:(path,scope)=>request('/storage/v1/object/authenticated/sentlog-temp/'+encodePath(path),{method:'GET',headers:{},readBlob:true},scope),
    onState:s=>{state.textContent='確認 '+s.checked+'件 ／ 復旧 '+s.restored+'件 ／ 他処理待ち '+s.skipped+'件 ／ 要確認 '+s.failed+'件。'+s.message+(s.failed&&s.lastError?' 最終確認: '+s.lastError:'');}});
-  startButton.onclick=async()=>{if(service.running)return;if(!confirm('使用中案件の不足ファイルをPC保管原本からクラウドへ補完します。元のデータは削除しません。開始しますか？'))return;
+  startButton.onclick=async()=>{if(service.running)return;if(!confirm(readSource?'この端末に残っている共有ファイルをクラウドへ補完します。元のデータは削除しません。開始しますか？':'使用中案件の不足ファイルをPC保管原本からクラウドへ補完します。元のデータは削除しません。開始しますか？'))return;
    startButton.disabled=true;stopButton.disabled=false;try{await service.start();}finally{startButton.disabled=false;stopButton.disabled=true;}};
   stopButton.onclick=()=>{service.stop();stopButton.disabled=true;};
  }
- return {create,mount,readOriginal,verify};
+ return {create,mount,readOriginal,readDeviceOriginal,verify};
 });
