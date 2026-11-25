@@ -353,7 +353,7 @@ new_cache='sentlog-pwa-v'+str(int(old_cache.rsplit('v',1)[1])+1)
 pending['sentlog/sw.js']=worker.replace(old_cache,new_cache)
 for f in (ROOT/'tests').iterdir():
     if f.suffix not in ('.cjs','.py'):continue
-    path=str(f.relative_to(ROOT));old=source(path);new=old.replace(old_cache,new_cache).replace("'v1.95'","'v1.96'").replace('phone-runtime.js?v=195','phone-runtime.js?v=196').replace('v1.95 · 同期通信の重複抑制','v1.96 · 共有ファイル保持・同期軽量化')
+    path=str(f.relative_to(ROOT));old=source(path);new=old.replace(old_cache,new_cache).replace("'v1.95'","'v1.96'").replace('phone-runtime.js?v=195','phone-runtime.js?v=196').replace(r'phone-runtime\.js\?v=195',r'phone-runtime\.js\?v=196').replace('v1.95 · 同期通信の重複抑制','v1.96 · 共有ファイル保持・同期軽量化')
     for name,version in versions:
         new=new.replace(name+'.js?v='+version,name+'.js?v='+TOKEN)
         new=new.replace(name+r'\.js\?v='+version,name+r'\.js\?v='+TOKEN)
