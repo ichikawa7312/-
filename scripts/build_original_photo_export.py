@@ -74,3 +74,6 @@ print('Connected one-ZIP exports of all originals for the selected device-local 
 # Run after the entire production build so earlier pinned-source checks stay intact.
 import sys
 subprocess.run([sys.executable, 'scripts/build_recovery_throttle.py'], cwd=ROOT, check=True)
+
+# Ledger export only; do not change shared media or synchronization.
+subprocess.run([sys.executable, 'scripts/build_high_quality_ledger.py'], cwd=ROOT, check=True)

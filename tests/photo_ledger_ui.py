@@ -113,6 +113,7 @@ try:
         page=context.new_page()
         errors=[]
         page.on('pageerror',lambda e:errors.append(str(e)))
+        page.on('dialog',lambda d:d.accept() if d.message.startswith('前回のExcelは保存済みですか？') else d.dismiss())
         page.goto(origin+'/sentlog/',wait_until='domcontentloaded')
         page.wait_for_function("window.SentlogPhotoLedger&&window.SentlogDrawingGroups&&window.SentlogRecords?.ready",timeout=30000)
         if engine=='webkit':
