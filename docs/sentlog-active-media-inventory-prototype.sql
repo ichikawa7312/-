@@ -12,19 +12,22 @@ BEGIN
  IF p_project_ids IS NULL OR cardinality(p_project_ids)>5000 OR p_limit IS NULL OR p_limit NOT BETWEEN 1 AND 200
  THEN RAISE EXCEPTION 'PC_INVENTORY_INVALID' USING ERRCODE='22023'; END IF;
  WITH eligible AS MATERIALIZED (
-  SELECT a.id,a.project_id,a.kind,a.file_name,a.storage_path,a.mime_type,a.byte_size,a.sha256,a.status,a.captured_at,a.metadata,
+  SELECT a.id,a.kind,a.status,a.byte_size,
     coalesce(r.asset_id IS NOT NULL AND lower(r.sha256)=lower(a.sha256) AND r.byte_size=a.byte_size,false) AS receipt_ok
   FROM public.sentlog_assets a
   JOIN public.sentlog_projects p ON p.id=a.project_id AND p.owner_id=u AND p.status='active'
   LEFT JOIN public.sentlog_pc_receipts r ON r.asset_id=a.id AND r.owner_id=u
   WHERE a.owner_id=u AND a.project_id=ANY(p_project_ids) AND a.kind IN ('photo','drawing')
  ),
- page AS (
-  SELECT id,project_id,kind,file_name,storage_path,mime_type,byte_size,sha256,status,captured_at,metadata,receipt_ok AS "pcReceiptVerified"
-  FROM eligible
+ page_ids AS (
+  SELECT id,receipt_ok FROM eligible
   WHERE status IN ('uploaded','pc_verified') AND NOT(status='pc_verified' AND receipt_ok)
     AND (p_after IS NULL OR id>p_after)
   ORDER BY id LIMIT p_limit
+ ),
+ page AS (
+  SELECT a.id,a.project_id,a.kind,a.file_name,a.storage_path,a.mime_type,a.byte_size,a.sha256,a.status,a.captured_at,a.metadata,q.receipt_ok AS "pcReceiptVerified"
+  FROM page_ids q JOIN public.sentlog_assets a ON a.id=q.id AND a.owner_id=u
  )
  SELECT jsonb_build_object(
   'schema',1,

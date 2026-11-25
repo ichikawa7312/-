@@ -7,7 +7,7 @@ from pathlib import Path
 import re, subprocess
 
 ROOT=Path(__file__).resolve().parents[1]
-TOKEN='20261125-retain-media-1'
+TOKEN='20261125-retain-media-2'
 guard=(ROOT/'sentlog/recovery-throttle.js').read_text(encoding='utf-8').strip()
 pending={}
 def source(path):
@@ -164,6 +164,70 @@ helper="""async function retainActiveMedia(a){
 """
 pending[p]=t[:start]+helper+body+t[finish:]
 
+
+# Keep the registration guard assertion tied to the actual paginated query.
+# This does not relax the invariant: both the old and new query must be gated.
+p='tests/management.test.cjs'
+change(p,'''  assert(pdf.indexOf('registration[0].active!==true')<pdf.indexOf("const assets=await api('sentlog_assets?"));''',
+       '''  const registrationGuard=pdf.indexOf('registration[0].active!==true'),inventoryQuery=pdf.indexOf("const assets=await sentlogRecoveryRows(api,'sentlog_assets'");
+  assert(registrationGuard>=0&&inventoryQuery>registrationGuard,'active registration checked before any PDF inventory query');''')
+
+# The legacy read-only list remains available to older servers. On the
+# new server, only pending rows plus summary counts cross the network.
+p='sentlog-pc/index.html'
+change(p,'let pcRetainedPhotoCount=0;',
+       'let pcRetainedPhotoCount=0,pcCloudMissingCount=null,pcInventoryProtocol=null;')
+change(p,"+pcRetainedPhotoCount+'件';\n const time=$('pendingTime')",
+       "+pcRetainedPhotoCount+'件 ／ クラウド補完待ち：'+(pcCloudMissingCount===null?'未確認':pcCloudMissingCount+'件');\n const time=$('pendingTime')")
+change(p,'async function pendingAssets(){','async function legacyPendingAssets(){')
+inventory="""async function pendingAssets(){
+ const owner=session?.user?.id,device=localStorage.getItem('sentlogPcWebDeviceV1');
+ if(!owner||!device)throw Error('PCの同期対象を確認できません。');
+ const scope=()=>{if(session?.user?.id!==owner||localStorage.getItem('sentlogPcWebDeviceV1')!==device)throw Error('同期中にログインまたは端末が変わりました。');};
+ const key=owner+':'+device;
+ if(pcInventoryProtocol?.key===key&&pcInventoryProtocol.legacy){pcCloudMissingCount=null;return legacyPendingAssets();}
+ const states=await rest('/rest/v1/rpc/sentlog_archive_v1',{method:'POST',body:JSON.stringify({p_action:'list'})});scope();
+ if(!Array.isArray(states))throw Error('案件の同期対象を確認できません。');
+ const ids=[...new Set(states.filter(c=>c.status==='active'&&!c.checking&&!c.retired).map(c=>c.id))];
+ const allowed=new Set(ids),uuid=x=>typeof x==='string'&&/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(x);
+ if(ids.some(x=>!uuid(x)))throw Error('案件の識別情報を確認できません。');
+ const all=[];let after=null,summary=null;
+ const validCount=x=>Number.isSafeInteger(x)&&x>=0;
+ for(;;){
+  let page;
+  try{page=await rest('/rest/v1/rpc/sentlog_pc_inventory_v1',{method:'POST',body:JSON.stringify({p_project_ids:ids,p_after:after,p_limit:200})});}
+  catch(e){
+   // Only the explicitly absent RPC permits a fallback. Outages and auth
+   // errors must not trigger an expensive second full inventory scan.
+   if(after===null&&/Could not find the function (?:public\\.)?sentlog_pc_inventory_v1\\b/i.test(String(e?.message||e))){
+    scope();pcInventoryProtocol={key,legacy:true};pcCloudMissingCount=null;return legacyPendingAssets();
+   }
+   throw e;
+  }
+  scope();
+  if(page?.schema!==1||!Array.isArray(page.rows)||page.rows.length>200||
+     !['retainedDrawings','retainedPhotos','pendingBackups','cloudMissing','cloudMissingBytes','cloudMissingWithoutReceipt'].every(k=>validCount(page[k])))
+    throw Error('クラウドの残件を確認できません。');
+  summary=page;
+  for(const a of page.rows){
+   if(!uuid(a?.id)||(after!==null&&a.id<=after)||!allowed.has(a.project_id)||!['photo','drawing'].includes(a.kind)||
+      !['uploaded','pc_verified'].includes(a.status)||typeof a.pcReceiptVerified!=='boolean'||
+      (a.status==='pc_verified'&&a.pcReceiptVerified))throw Error('クラウドの残件一覧が一致しません。');
+   all.push(a);after=a.id;
+  }
+  if(page.rows.length<200)break;
+ }
+ if(all.length!==summary.pendingBackups)throw Error('確認中に同期対象が変わりました。次回の同期で再確認します。');
+ pcInventoryProtocol={key,legacy:false};pcRetainedDrawingCount=summary.retainedDrawings;
+ pcRetainedPhotoCount=summary.retainedPhotos;pcCloudMissingCount=summary.cloudMissing;
+ pcPendingRows=new Map(all.map(a=>[a.id,a]));
+ pcInventoryTime=new Date().toLocaleTimeString('ja-JP');renderPcPending();
+ return [...pcPendingRows.values()];
+}
+"""
+change(p,'async function downloadAsset(a){',inventory+'async function downloadAsset(a){')
+change(p,'PC同期完了：未処理データはありません','PC保管確認完了：写真・図面のクラウド補完は別途確認')
+
 # Version every loader reference and corresponding existing test expectation.
 versions=set()
 for page in ['sentlog/index.html','sentlog-pc/index.html']:
@@ -191,4 +255,5 @@ for path in ['sentlog/pdf-recovery.js','sentlog/peer-photo-recovery.js','sentlog
     subprocess.run(['node','--check',path],cwd=ROOT,check=True)
 subprocess.run(['node','tests/recovery_throttle.test.cjs'],cwd=ROOT,check=True)
 subprocess.run(['node','tests/recovery_queue.test.cjs'],cwd=ROOT,check=True)
+subprocess.run(['node','tests/active_media_pc_inventory.test.cjs'],cwd=ROOT,check=True)
 print('Built bounded fair PDF/photo recovery; existing byte checks and data guards retained')
