@@ -1,7 +1,7 @@
 """Two isolated real browser stores; peer uploads and normal recovery, no PC.
 Network and account are synthetic. Both production scripts execute unchanged.
 """
-import functools,hashlib,json,os,threading,tempfile
+import functools,hashlib,json,os,threading,tempfile,time
 from pathlib import Path
 from http.server import SimpleHTTPRequestHandler,ThreadingHTTPServer
 from urllib.parse import urlparse,parse_qs
@@ -74,6 +74,13 @@ try:
      if 'id' in q:data=[d for d in data if d['id']>q['id'][0][3:]]
     elif path.endswith('/sentlog_pdf_requests'):
      data=[r for r in requests.values() if r.get('received_at') is None]
+     if 'device_id' in q and q['device_id'][0].startswith('in.'):
+      recipients=q['device_id'][0][4:-1].split(',')
+      data=[r for r in data if r['device_id'] in recipients]
+     if q.get('sentlog_assets.kind')==['eq.photo']:
+      data=[r for r in data if any(a['id']==r['asset_id'] and a['kind']=='photo' for a in assets)]
+     if q.get('sentlog_assets.status')==['eq.storage_deleted']:
+      data=[r for r in data if any(a['id']==r['asset_id'] and a['status']=='storage_deleted' for a in assets)]
      data.sort(key=lambda r:(r['asset_id'],r['device_id']))
      if 'or' in q:
       import re
@@ -86,6 +93,9 @@ try:
       if value.startswith('gt.'):data=[a for a in data if a['id']>value[3:]]
       elif value.startswith('in.'):data=[a for a in data if a['id'] in value]
      if q.get('status')==['eq.storage_deleted']:data=[a for a in data if a['status']=='storage_deleted']
+     if 'project_id' in q and q['project_id'][0].startswith('in.'):
+      selected=q['project_id'][0][4:-1].split(',')
+      data=[a for a in data if a['project_id'] in selected]
     elif path.endswith('/rpc/sentlog_request_photo'):
      a=next(a for a in assets if a['id']==body['p_asset_id'])
      requests[(a['id'],body['p_device_id'])]={'asset_id':a['id'],'device_id':body['p_device_id'],'expected_sha256':a['sha256'],'requested_at':'2099-01-01T00:00:00Z','received_at':None}
@@ -126,12 +136,24 @@ try:
    assert len(requests)==2
    for page in pages:page.evaluate('sentlogCheckPeerPhotos()')
    for page in pages:page.evaluate('sentlogCheckPhotoRecovery()')
+   # wait_for_function(async()=>...) can treat the Promise itself as truthy.
+   # Wait for the actual IndexedDB bytes and the server's receiving proof,
+   # using the real worker's explicit wake path. The synthetic timer is off.
+   expected=['peer-photo-0','peer-photo-1']
+   deadline=time.monotonic()+25
+   while True:
+    copies=[page.evaluate('readPhotos()') for page in pages]
+    assert all(value is None or value==expected[i] for copy in copies for i,value in enumerate(copy)),copies
+    if copies==[expected,expected] and all(r.get('received_at') for r in requests.values()):break
+    assert time.monotonic()<deadline,('peer receive/ACK did not converge',copies,stats,requests,errors)
+    for page in pages:page.evaluate('sentlogCheckPhotoRecovery()')
+    pages[0].wait_for_timeout(250)
    for page in pages:
-    page.wait_for_function("async()=> (await readPhotos()).every(Boolean)")
-    assert page.evaluate('readPhotos()')==['peer-photo-0','peer-photo-1']
+    assert page.evaluate('readPhotos()')==expected
     assert page.evaluate("JSON.parse(SentlogRecords.getItem('surveyFieldNoteDrawingV1:drawing'))")==state
     page.reload();page.wait_for_function("typeof window.readPhotos==='function'")
-    assert page.evaluate('readPhotos()')==['peer-photo-0','peer-photo-1']
+    page.evaluate('sentlogAppReady')
+    assert page.evaluate('readPhotos()')==expected
    assert stats['uploads']==2,stats
    assert all(r.get('received_at') for r in requests.values()),requests
    assert not errors,errors
