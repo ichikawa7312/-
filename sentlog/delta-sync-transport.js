@@ -165,10 +165,13 @@
       if(typeof provider.peekSession==='function')observe(provider.peekSession());
       insist(auth&&auth.generation===generation&&sameAuth(auth,observed),'DELTA_AUTH_CHANGED','ログイン状態が変わりました。内容は保持しています');
     }
+    function requireNetwork(){
+      if(!network())throw problem('DELTA_OFFLINE','通信が切れています。未送信の内容は端末に保持します',0,true);
+    }
     async function authenticate(signal,ticket){
-      active();if(signal.aborted)throw problem('DELTA_ABORTED','通信を中止しました');
+      active();if(signal.aborted)throw problem('DELTA_ABORTED','通信を中止しました');requireNetwork();
       const before=generation,s=await provider.getSession();active();
-      if(signal.aborted)throw problem('DELTA_ABORTED','通信を中止しました');
+      if(signal.aborted)throw problem('DELTA_ABORTED','通信を中止しました');requireNetwork();
       const value=sessionIdentity(s);
       if(before!==generation&&!sameAuth(value,observed))throw problem('DELTA_AUTH_CHANGED','ログイン状態が変わりました。内容は保持しています',401);
       if(!(value&&typeof value.token==='string'&&value.token.length>0))throw problem('DELTA_LOGIN_REQUIRED','ログインが必要です',401);
@@ -183,7 +186,7 @@
     }
     function request(action,{signal}={}){
       let controller,timer,abortExternal,ticket;
-      try{active();if(signal?.aborted)throw problem('DELTA_ABORTED','通信を中止しました');controller=new AbortController();}
+      try{active();if(signal?.aborted)throw problem('DELTA_ABORTED','通信を中止しました');requireNetwork();controller=new AbortController();}
       catch(error){return Promise.reject(error);}
       const cancelled=new Promise((resolve,reject)=>{
         ticket={phase:'session',cancel(error){controller.abort();reject(error);}};pending.add(ticket);
@@ -198,7 +201,9 @@
     async function rpc(name,args,validate,options){
       const saved=copy(args);
       return request(async(signal,ticket)=>{
-        const auth=await authenticate(signal,ticket);fresh(auth);ticket.phase='rpc';
+        const auth=await authenticate(signal,ticket);fresh(auth);
+        if(signal.aborted)throw problem('DELTA_ABORTED','通信を中止しました');
+        requireNetwork();ticket.phase='rpc';
         const r=await provider.rpc(name,saved,{accessToken:auth.token,signal});fresh(auth);
         if(signal.aborted)throw problem('DELTA_ABORTED','通信を中止しました');
         if(r?.error)throw normalize(r.error,r.status);

@@ -7,7 +7,7 @@ from pathlib import Path
 import re, subprocess
 
 ROOT=Path(__file__).resolve().parents[1]
-TOKEN='20261125-retain-media-4'
+TOKEN='20261125-retain-media-5'
 guard=(ROOT/'sentlog/recovery-throttle.js').read_text(encoding='utf-8').strip()
 pending={}
 def source(path):
@@ -325,11 +325,23 @@ change(p,'active-media-restore.js?v=20261125-restore-1','active-media-restore.js
 p='sentlog/sw.js'
 change(p,"'photo-recovery.js'","'photo-recovery.js','active-media-restore.js'")
 
+# Cancel fresh-state inspection with the existing confirmation lifecycle;
+# don't start a new RPC if the network dropped while authentication was pending.
+p='sentlog/cloud-sync.js'
+change(p,'const mode=await delta.inspect(current);context.assertCurrent();',
+       'const mode=await delta.inspect(current,{signal:controller.signal});context.assertCurrent();')
+# Release marker: keep the new resource URLs and version label in sync.
+p='sentlog/phone-runtime.js'
+change(p,'v1.95','v1.96',4)
+for p in ['sentlog/index.html','sentlog-pc/index.html']:
+    v=source(p)
+    pending[p]=v.replace('phone-runtime.js?v=195','phone-runtime.js?v=196').replace("'v1.95'","'v1.96'").replace('v1.95 · 同期通信の重複抑制','v1.96 · 共有ファイル保持・同期軽量化')
+
 # Version every loader reference and corresponding existing test expectation.
 versions=set()
 for page in ['sentlog/index.html','sentlog-pc/index.html']:
     text=source(page)
-    for name in ['pdf-recovery','peer-photo-recovery','photo-recovery','cloud-sync']:
+    for name in ['pdf-recovery','peer-photo-recovery','photo-recovery','cloud-sync','delta-sync-transport','delta-sync-app-runtime']:
         pattern=r'(?<!peer-)'+re.escape(name)+r'\.js\?v=([A-Za-z0-9._-]+)'
         for old in re.findall(pattern,text):
             versions.add((name,old))
@@ -341,7 +353,7 @@ new_cache='sentlog-pwa-v'+str(int(old_cache.rsplit('v',1)[1])+1)
 pending['sentlog/sw.js']=worker.replace(old_cache,new_cache)
 for f in (ROOT/'tests').iterdir():
     if f.suffix not in ('.cjs','.py'):continue
-    path=str(f.relative_to(ROOT));old=source(path);new=old.replace(old_cache,new_cache)
+    path=str(f.relative_to(ROOT));old=source(path);new=old.replace(old_cache,new_cache).replace("'v1.95'","'v1.96'").replace('phone-runtime.js?v=195','phone-runtime.js?v=196').replace('v1.95 · 同期通信の重複抑制','v1.96 · 共有ファイル保持・同期軽量化')
     for name,version in versions:
         new=new.replace(name+'.js?v='+version,name+'.js?v='+TOKEN)
         new=new.replace(name+r'\.js\?v='+version,name+r'\.js\?v='+TOKEN)
@@ -358,4 +370,5 @@ subprocess.run(['node','tests/active_media_restore.test.cjs'],cwd=ROOT,check=Tru
 subprocess.run(['node','--check','sentlog/pc-safe-backup.js'],cwd=ROOT,check=True)
 subprocess.run(['node','tests/pc_safe_backup.test.cjs'],cwd=ROOT,check=True)
 subprocess.run(['node','tests/legacy_photo_scope.test.cjs'],cwd=ROOT,check=True)
+subprocess.run(['node','tests/delta_transport.test.cjs'],cwd=ROOT,check=True)
 print('Built bounded fair PDF/photo recovery; existing byte checks and data guards retained')
