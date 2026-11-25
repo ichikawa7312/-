@@ -78,7 +78,7 @@ window.runLedger=async ({count,format='visual3',types=null,how='normal'})=>{
   return {ok:true,ms,bytes:file.size,reads,peakReads};
  }catch(e){return {ok:false,error:String(e.message||e),code:e.code,ms:performance.now()-start,reads,peakReads};}
 };
-window.saveResult=()=>{const a=document.createElement('a');a.href=URL.createObjectURL(window.result);a.download='test.xlsx';document.body.append(a);a.click();};
+window.saveResult=()=>{const prev=document.getElementById('save-test');if(prev){URL.revokeObjectURL(prev.href);prev.remove();}const a=document.createElement('a');a.id='save-test';a.textContent='Save test file';a.href=URL.createObjectURL(window.result);a.download='test.xlsx';document.body.append(a);};
 window.directZip=async (opts={})=>{
  const C=new AbortController(),S=SentlogLedgerStream;
  const files=[['[Content_Types].xml','<Types/>'],['xl/workbook.xml','<workbook/>'],...Array.from({length:30},(_,i)=>['xl/media/photo'+i+'.jpeg',S.photo(async()=>{await new Promise(r=>setTimeout(r,25));return sources.get('p'+(i%6));},'photo'+i,n=>{if(opts.cancel&&n===3)C.abort();})])];
@@ -90,8 +90,10 @@ threading.Thread(target=server.serve_forever,daemon=True).start()
 origin=f'http://127.0.0.1:{server.server_port}'
 report={'engine':args.engine,'phase':args.phase,'width':args.width,'fixture_bytes':[len(fixtures['p'+str(i)]) for i in range(6)],'results':[]}
 def save(page,path):
- with page.expect_download(timeout=120000) as dl:page.evaluate('saveResult()')
+ page.evaluate('saveResult()')
+ with page.expect_download(timeout=120000) as dl:page.locator('#save-test').click()
  dl.value.save_as(path)
+ page.evaluate("URL.revokeObjectURL(document.getElementById('save-test').href);document.getElementById('save-test').remove();")
 def inspect(path,count,exact=False,types=None):
  with zipfile.ZipFile(path) as z:
   assert z.testzip() is None,'ZIP CRC failure'

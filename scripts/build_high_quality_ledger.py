@@ -1,6 +1,6 @@
 """Connect the high-quality file-backed ledger only after the existing build."""
 from pathlib import Path
-import re,subprocess
+import json,re,subprocess
 ROOT=Path(__file__).resolve().parents[1]
 S=ROOT/'sentlog'
 TOKEN='20261125-ledger-hq-1'
@@ -30,9 +30,11 @@ s=s[:start]+'''  async function preparePhotos(entries){
 '''+s[end:]
 s=change(s,'if(!modal)return;\n    try{const blob=await loadShared','if(!modal||current?.exporting)return;\n    try{const blob=await loadShared')
 s=change(s,'if(!modal||!img.isConnected)return;','if(!modal||current?.exporting||!img.isConnected)return;')
-s=change(s,'current.exporting=true;const btn=modal.querySelector','current.exporting=true;current.abort=new AbortController();const btn=modal.querySelector')
+s=change(s,'current.exporting=true;const btn=modal.querySelector','let focusAfter=null;current.exporting=true;current.abort=new AbortController();const btn=modal.querySelector')
 s=change(s,'btn.disabled=true;updateSelectionControls();',"btn.disabled=true;updateSelectionControls();cleanPreview();modal.querySelectorAll('.ledger-thumb').forEach(img=>img.removeAttribute('src'));modal.querySelector('.ledger-cancel').hidden=false;")
-s=change(s,'finally{for(const e of entries)delete e.jpeg;current.exporting=false;btn.disabled=false;updateSelectionControls();}',"finally{for(const e of entries)delete e.jpeg;current.exporting=false;current.abort=null;modal.querySelector('.ledger-cancel').hidden=true;btn.disabled=false;renderEntries();updateSelectionControls();}")
+s=change(s,'finally{for(const e of entries)delete e.jpeg;current.exporting=false;btn.disabled=false;updateSelectionControls();}',"finally{for(const e of entries)delete e.jpeg;current.exporting=false;current.abort=null;modal.querySelector('.ledger-cancel').hidden=true;btn.disabled=false;renderEntries();updateSelectionControls();if(focusAfter)focusLedgerField(...focusAfter);}")
+s=change(s,"focusLedgerField(pending[0].key,current.format==='visual3'?'notes':'description');return;","focusAfter=[pending[0].key,current.format==='visual3'?'notes':'description'];return;")
+s=change(s,"if(e?.ledgerEntryKey)focusLedgerField(e.ledgerEntryKey,e.ledgerField);","if(e?.ledgerEntryKey)focusAfter=[e.ledgerEntryKey,e.ledgerField];")
 s=change(s,'function moveGroup(name,dir){const a=','function moveGroup(name,dir){if(current?.exporting)return;const a=')
 s=change(s,'function movePhoto(entry,dir){const same=','function movePhoto(entry,dir){if(current?.exporting)return;const same=')
 s=change(s,'formatSelect.onchange=()=>{c.format=','formatSelect.onchange=()=>{if(current?.exporting){formatSelect.value=c.format;return;}c.format=')
@@ -62,6 +64,12 @@ for path in (ROOT/'tests').iterdir():
         v=v.replace(name+'?v='+version,name+'?v='+TOKEN)
         v=v.replace(name.replace('.js',r'\.js')+r'\?v='+version,name.replace('.js',r'\.js')+r'\?v='+TOKEN)
     if v!=s:path.write_text(v,encoding='utf-8')
+# Inline the already tested ZIP library into the worker payload. The optional
+# ledger script is available offline; export must not fetch more scripts.
+stream=S/'photo-ledger-stream.js'
+source=stream.read_text(encoding='utf-8')
+payload=(S/'original-photo-zip.js').read_text(encoding='utf-8')+'\n'+source
+stream.write_text(change(source,'const WORKER_CODE=null;', 'const WORKER_CODE='+json.dumps(payload,ensure_ascii=True)+';'),encoding='utf-8')
 for name in ['photo-ledger','photo-ledger-damage','photo-ledger-tensile','photo-ledger-visual3','photo-ledger-stream']:
     subprocess.run(['node','--check','sentlog/'+name+'.js'],cwd=ROOT,check=True)
 print('Built high-quality photo ledger: lazy image references, existing workbook templates, file-backed ZIP')

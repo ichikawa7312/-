@@ -4,9 +4,10 @@
  const TOKEN='20261125-ledger-hq-1',TYPE='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
  const err=(message,code='LEDGER_EXPORT')=>Object.assign(Error(message),{code});
  const MAX_BYTES=0xffffffff-32*1024*1024,MAX_PIXELS=24000000;
+ const WORKER_CODE=null; // populated by the production builder, no network on export
  const check=signal=>{if(signal?.aborted)throw err('Excel出力を中止しました。元の写真・記録は変更していません。','LEDGER_CANCEL');};
  if(typeof root.importScripts==='function'&&!root.document){
-  const lib=new URL('original-photo-zip.js',root.location.href);lib.search='?v=20261121-onezip';root.importScripts(lib.href);
+  if(!root.SentlogOriginalPhotoZip)throw err('Excel出力用ZIP処理が未更新です。');
   const NS='sentlog-ledger-exports-v1',READY='ready.json';let job=null,busy=false;
   async function cleanup(remove){
    const j=job;job=null;if(!j)return;
@@ -67,9 +68,17 @@
    const out=await new Promise((resolve,reject)=>{const t=setTimeout(()=>reject(err('写真のJPEG変換が時間内に完了しませんでした。')),20000);cv.toBlob(b=>{clearTimeout(t);b?resolve(b):reject(err('写真のJPEG変換に失敗しました。'));},'image/jpeg',.95);});check(signal);return out;
   }finally{if(cv){cv.width=1;cv.height=1;}if(im)im.src='';URL.revokeObjectURL(url);}
  }
+ async function readPhoto(ref,signal){
+  check(signal);let timer,abort;
+  try{return await Promise.race([Promise.resolve().then(()=>ref.read()),new Promise((resolve,reject)=>{
+   abort=()=>reject(err('Excel出力を中止しました。元の写真・記録は変更していません。','LEDGER_CANCEL'));
+   signal?.addEventListener('abort',abort,{once:true});timer=setTimeout(()=>reject(err('写真の保存領域を読み取る処理が時間内に完了しませんでした。')),30000);
+  })]);}finally{clearTimeout(timer);signal?.removeEventListener('abort',abort);}
+ }
  async function zip(files,{signal,confirmPrevious=()=>false}={}){
   check(signal);if(typeof Worker!=='function'||typeof navigator.storage?.getDirectory!=='function')throw err('このブラウザーでは高画質Excelの一時保存を利用できません。PCまたは最新版ブラウザーをご利用ください。','LEDGER_OPFS');
-  const worker=new Worker(new URL('photo-ledger-stream.js?v='+TOKEN,document.baseURI),{name:'sentlog-ledger-stream'});let id=0,pending=null,fatal=null;
+  if(typeof WORKER_CODE!=='string'||!WORKER_CODE.length)throw err('高画質Excel出力機能が未更新です。アプリを更新してください。');
+  const workerUrl=URL.createObjectURL(new Blob([WORKER_CODE],{type:'text/javascript'}));let worker;try{worker=new Worker(workerUrl,{name:'sentlog-ledger-stream'});}catch(e){URL.revokeObjectURL(workerUrl);throw e;}let id=0,pending=null,fatal=null;
   const fail=e=>{if(pending)pending.reject(e);};const onAbort=()=>fail(err('Excel出力を中止しました。元の写真・記録は変更していません。','LEDGER_CANCEL'));
   signal?.addEventListener('abort',onAbort);worker.onmessage=e=>{const m=e.data;if(!pending||m?.id!==pending.id)return;if(m.ok)pending.resolve(m);else pending.reject(Object.assign(err(m.message,m.code),{prior:m.prior}));};
   worker.onerror=e=>{e.preventDefault?.();fatal=err('Excel出力の処理が停止しました。元の写真・記録は変更していません。');fail(fatal);};
@@ -78,12 +87,12 @@
    try{await ask('start');}catch(e){if(e.code!=='LEDGER_PREVIOUS'||!Array.isArray(e.prior)||!confirmPrevious())throw e;await ask('start',{ack:e.prior});}
    let count=0;const total=files.filter(([,v])=>refs.has(v)).length;
    for(const [path,v] of files){check(signal);let blob;if(refs.has(v)){
-    v.progress?.(++count,total);try{blob=await jpeg(await v.read(),signal);}catch(e){if(e.code==='LEDGER_CANCEL')throw e;throw err('写真を1枚取得・変換できません。Excel出力を停止しました：'+v.label+'（'+e.message+'）',e.code);}
+    v.progress?.(++count,total);try{blob=await jpeg(await readPhoto(v,signal),signal);}catch(e){if(e.code==='LEDGER_CANCEL')throw e;throw err('写真を1枚取得・変換できません。Excel出力を停止しました：'+v.label+'（'+e.message+'）',e.code);}
    }else blob=v instanceof Blob?v:new Blob([v]);
    await ask('add',{path,blob});blob=null;
    }
-   const result=await ask('finish');check(signal);if(!(result.file instanceof Blob)||!result.file.size)throw err('Excelの完成ファイルを確認できません。');return new File([result.file],'ledger.xlsx',{type:TYPE});
-  }finally{signal?.removeEventListener('abort',onAbort);worker.terminate();}
+   const result=await ask('finish');check(signal);if(!(result.file instanceof Blob)||!result.file.size)throw err('Excelの完成ファイルを確認できません。');return result.file;
+  }finally{signal?.removeEventListener('abort',onAbort);worker.terminate();URL.revokeObjectURL(workerUrl);}
  }
  root.SentlogLedgerStream={version:TOKEN,valid,photo,jpeg,zip};
 })(globalThis);
