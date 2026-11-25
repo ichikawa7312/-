@@ -37,7 +37,7 @@ function fixture(config={}){
       let result=[];
       if(u.pathname.endsWith('/sentlog_pdf_requests'))result=[{asset_id:assetId,device_id:'receiver',expected_sha256:sha,requested_at:new Date().toISOString()}];
       else if(u.pathname.endsWith('/sentlog_devices'))result=[{id:'receiver',last_seen_at:new Date().toISOString()}];
-      else if(u.pathname.endsWith('/sentlog_assets'))result=u.searchParams.has('id')?[]:[{...asset,status:published?'uploaded':'storage_deleted'}];
+      else if(u.pathname.endsWith('/sentlog_assets'))result=u.searchParams.get('id')?.startsWith('gt.')?[]:[{...asset,status:published?'uploaded':'storage_deleted'}];
       else if(u.pathname.endsWith('/sentlog_projects'))result=config.archived?[]:[{id:project}];
       else if(u.pathname.endsWith('/sentlog_pc_receipts'))result=[receipt];
       else if(u.pathname.endsWith('/rpc/sentlog_claim_photo_redelivery')){

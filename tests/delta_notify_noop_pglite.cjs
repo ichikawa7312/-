@@ -1,0 +1,35 @@
+'use strict';
+// Disposable database using the same legacy schema and collaboration trigger.
+const {PGlite}=require('@electric-sql/pglite'),assert=require('node:assert/strict'),fs=require('node:fs');
+const read=p=>fs.readFileSync(p,'utf8');
+const owner='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',other='bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+const pid='11111111-1111-4111-8111-111111111111',aid='22222222-2222-4222-8222-222222222222';
+(async()=>{const db=new PGlite();try{
+ await db.exec(read('tests/delta_release_legacy_fixture.sql'));
+ for(const file of ['db/archive_v1.sql','db/management_v1.sql','db/device_registration_v1.sql','db/capacity_v1.sql','db/resilience_v2.sql','db/collaboration_v1.sql'])await db.exec(read(file));
+ const v=async(sql,args=[])=>(await db.query(sql,args)).rows[0]?.n;
+ await db.query('insert into auth.users(id) values($1),($2)',[owner,other]);
+ await db.query("insert into public.sentlog_projects(id,owner_id,client_key,name) values($1,$2,'fixture','fixture')",[pid,owner]);
+ await db.query("select set_config('request.jwt.claim.sub',$1,false)",[owner]);
+ await db.query("insert into public.sentlog_assets(id,owner_id,project_id,client_key,kind,file_name,mime_type,byte_size,sha256,storage_path,status) values($1,$2,$3,'photo:1','photo','f.jpg','image/jpeg',1,$4,'old','uploaded')",[aid,owner,pid,'a'.repeat(64)]);
+ const count=()=>v('select count(*)::int as n from realtime.test_messages');
+ const baseline=await count();
+ await db.query("update public.sentlog_assets set status='uploaded',updated_at=clock_timestamp() where id=$1",[aid]);
+ assert.equal(await count(),baseline+1,'old trigger emits a redundant notification');
+ const before=await v("select to_jsonb(a)::text as n from public.sentlog_assets a where id=$1",[aid]);
+ await db.exec(read('docs/sentlog-delta-notify-noop-prototype.sql'));
+ assert.equal(await v("select to_jsonb(a)::text as n from public.sentlog_assets a where id=$1",[aid]),before,'patch does not mutate data');
+ let n=await count();
+ await db.query("update public.sentlog_assets set status='uploaded',updated_at=clock_timestamp() where id=$1",[aid]);assert.equal(await count(),n);
+ await db.query("update public.sentlog_assets set status='pc_verified',pc_verified_at=clock_timestamp() where id=$1",[aid]);assert.equal(await count(),++n);
+ await db.query("update public.sentlog_assets set status='pc_verified',updated_at=clock_timestamp() where id=$1",[aid]);assert.equal(await count(),n);
+ await db.query("update public.sentlog_assets set storage_path='new' where id=$1",[aid]);assert.equal(await count(),++n);
+ await db.query("update public.sentlog_assets set sha256=$2 where id=$1",[aid,'b'.repeat(64)]);assert.equal(await count(),++n);
+ await db.query("update public.sentlog_assets set status=status,metadata=jsonb_build_object('keep',true) where id=$1",[aid]);assert.equal(await count(),++n);
+ await db.query("update public.sentlog_assets set status='storage_deleted' where id=$1",[aid]);assert.equal(await count(),n);
+ await db.query("update public.sentlog_assets set status='uploaded' where id=$1",[aid]);assert.equal(await count(),++n);
+ await db.query("select set_config('request.jwt.claim.sub','',false)");
+ await db.query("update public.sentlog_assets set storage_path='admin' where id=$1",[aid]);assert.equal(await count(),n);
+ assert.equal(await v("select has_function_privilege('authenticated','sentlog_collaboration_private.notify_change()','EXECUTE') as n"),false);
+ console.log('PASS no-op asset notices suppressed; real status/hash/path/metadata changes, redelivery and authorization preserved; original rows unchanged on install');
+ }finally{await db.close();}})().catch(e=>{console.error(e);process.exitCode=1;});

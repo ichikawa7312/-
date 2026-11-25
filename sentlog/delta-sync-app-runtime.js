@@ -71,9 +71,9 @@
       c.transport=make.transport({provider,scope,currentScope:()=>current(c),online:network});
       c.store=make.store(scope);contexts.set(cp.client_key,c);return c;
     }
-    async function inspect(cp){
+    async function inspect(cp,options){
       const c=await context(cp),local=await binding(c);
-      try{c.mode=await c.transport.inspect();check(c);}
+      try{c.mode=await c.transport.inspect(options);check(c);}
       catch(error){
         // Before the server migration is installed, only an explicit missing
         // RPC permits the old writer. A bound project never falls back.

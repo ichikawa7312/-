@@ -70,3 +70,7 @@ for path, value in pending.items():
 for name in modules:
     subprocess.run(['node', '--check', 'sentlog/' + name + '.js'], cwd=ROOT, check=True)
 print('Connected one-ZIP exports of all originals for the selected device-local project')
+
+# Run after the entire production build so earlier pinned-source checks stay intact.
+import sys
+subprocess.run([sys.executable, 'scripts/build_recovery_throttle.py'], cwd=ROOT, check=True)

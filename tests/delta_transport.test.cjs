@@ -172,6 +172,27 @@ test('external abort, timeout and close release callers without a late RPC',asyn
   const h=harness(),controller=new AbortController();controller.abort();
   await rejects(()=>h.transport.push(event(),{signal:controller.signal}),'DELTA_ABORTED');assert.equal(h.stats().sessionReads,0);
 });
+test('offline transport and disconnect during session or Auth verification never launch a delta RPC',async()=>{
+  let online=false;
+  const h=harness({transport:{online:()=>online}});
+  await rejects(()=>h.transport.inspect(),'DELTA_OFFLINE');
+  assert.equal(h.stats().sessionReads,0);assert.equal(h.calls.length,0);
+  online=true;const waiting=deferred();h.provider.getSession=()=>waiting.promise;
+  const pending=h.transport.inspect();await settle();online=false;waiting.resolve(h.getSession());
+  await rejects(()=>pending,'DELTA_OFFLINE');assert.equal(h.calls.length,0);assert.equal(h.users.length,0);
+  const verification=deferred(),h2=harness({transport:{online:()=>online},provider:{getUser:()=>verification.promise}});
+  online=true;const verifying=h2.transport.inspect();await settle();online=false;verification.resolve({id:OWNER});
+  await rejects(()=>verifying,'DELTA_OFFLINE');assert.equal(h2.calls.length,0);
+  online=true;h2.setRpc(()=>({data:{schema:1,...SCOPE,enabled:false,canActivate:false,headSeq:0,checking:false,baseline:null}}));
+  assert.equal((await h2.transport.inspect()).enabled,false);assert.equal(h2.calls.length,1);
+});
+test('aborted inspection and late native network rejection cannot escape or enable legacy writes',async()=>{
+  const h=harness();const flight=deferred();h.setRpc(()=>flight.promise);
+  const ctrl=new AbortController(),pending=h.transport.inspect({signal:ctrl.signal});await settle();
+  ctrl.abort();await rejects(()=>pending,'DELTA_ABORTED');assert.equal(h.calls[0].options.signal.aborted,true);
+  flight.reject(new TypeError('Load failed due to access control checks.'));await settle();
+  assert.equal(h.timers.pending.size,0);
+});
 test('notifications are validated wake-up hints and readiness requests catch-up',async()=>{
   const h=harness(),notices=[];const off=h.transport.subscribe(PROJECT,v=>notices.push(v));await settle();
   const sub=h.subscriptions[0];assert.equal(sub.options.ownerId,OWNER);assert.equal(sub.options.accessToken,'token-a');

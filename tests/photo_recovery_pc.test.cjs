@@ -44,7 +44,8 @@ async function fixture({corrupt=false,unknownMime=false,staleRequest=false,recen
        else if(u.includes('sentlog_assets')){
          const q=new URL(u).searchParams;
          result=[...(manyAssets?Array.from({length:1100},(_,n)=>({...a,id:'00000000-0000-4000-8000-'+String(n).padStart(12,'0')})):[]),a];
-         if(q.has('id'))result=result.filter(row=>row.id>q.get('id').slice(3));
+         if(q.get('id')?.startsWith('gt.'))result=result.filter(row=>row.id>q.get('id').slice(3));
+         if(q.get('id')?.startsWith('in.'))result=result.filter(row=>q.get('id').slice(4,-1).split(',').includes(row.id));
          if(q.get('order')==='id.asc')result.sort((a,b)=>a.id.localeCompare(b.id));
          result=result.slice(0,Math.min(1000,Number(q.get('limit')||1000)));
        }
