@@ -30,7 +30,8 @@ let passed=0;async function test(name,fn){await fn();passed++;console.log('PASS 
  if(fs.existsSync(built))await test('built integration includes guard, lazy download, valid scripts',async()=>{
   const pc=fs.readFileSync(built,'utf8'),cloud=fs.readFileSync('sentlog/cloud-sync.js','utf8'),index=fs.readFileSync('sentlog/index.html','utf8');
   assert.match(pc,/session-guard\.js\?v=189/);assert.match(index,/session-guard\.js\?v=189/);assert.match(cloud,/sessionGuard\.ensure/);assert.match(cloud,/async function readSyncResponse/);
-  assert.match(pc,/if\(!ok\)\{const blob=await downloadAsset\(a\)/);
+  if(pc.includes('SentlogPcSafeBackup.save')){assert.match(pc,/download:\(\)=>downloadAsset\(a\)/);assert.match(pc,/confirmation\?\.verified!==true/);}
+  else assert.match(pc,/if\(!ok\)\{const blob=await downloadAsset\(a\)/);
   assert.ok(!pc.includes('async function saveVerified(a){\n  const blob=await downloadAsset(a);'));
   for(const m of pc.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/g))if(m[1].trim())new vm.Script(m[1]);
   assert.match(cloud,/同期は完了していません/);

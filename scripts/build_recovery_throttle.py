@@ -7,7 +7,7 @@ from pathlib import Path
 import re, subprocess
 
 ROOT=Path(__file__).resolve().parents[1]
-TOKEN='20261125-retain-media-2'
+TOKEN='20261125-retain-media-3'
 guard=(ROOT/'sentlog/recovery-throttle.js').read_text(encoding='utf-8').strip()
 pending={}
 def source(path):
@@ -241,6 +241,67 @@ SentlogActiveMediaRestore.mount({
 """
 change(p,'</body>',repair_script+'</body>')
 
+# Preserve all old nonempty PC files, including same-name different photos.
+p='sentlog-pc/index.html'
+change(p,'async function saveVerified(a){',
+       """async function saveVerified(a){
+  const originalRoot=rootHandle,originalOwner=session?.user?.id,originalDevice=localStorage.getItem(DEVICE_KEY);
+  const assertBackupScope=()=>{if(!originalRoot||rootHandle!==originalRoot||!originalOwner||session?.user?.id!==originalOwner||!originalDevice||localStorage.getItem(DEVICE_KEY)!==originalDevice)throw Error('PC保管中に保存先・ログイン・端末が変更されました。');};
+  assertBackupScope();""")
+t=source(p)
+start=t.index('async function saveVerified(a){')
+end=t.index('async function deleteVerified(a){',start)
+body=t[start:end]
+a=body.index("  const name=safe(a.file_name,")
+b=body.index('  const device=await ensureDevice();',a)
+if a<0 or b<0 or 'createWritable()' not in body[a:b]:
+    raise RuntimeError('PC file-write integration changed')
+body=body[:a]+"""  const preferredName=safe(a.file_name,a.kind==='drawing'?'drawing.pdf':'photo.jpg');
+  assertBackupScope();
+  const saved=await SentlogPcSafeBackup.save({directory:d,preferredName,asset:a,download:()=>downloadAsset(a),hash:fileSha,locks:navigator.locks,assertCurrent:assertBackupScope});
+  const {name,file:existing,sha256:hash}=saved;
+"""+body[b:]
+body=body.replace('let d=rootHandle;','let d=originalRoot;').replace('[rootHandle.name,','[originalRoot.name,')
+body=body.replace('  const device=await ensureDevice();','  const device=await ensureDevice();assertBackupScope();if(device!==originalDevice)throw Error("PCの端末登録が変更されました。");')
+body=body.replace("  await rest('/rest/v1/rpc/sentlog_mark_pc_verified'", "  const confirmation=await rest('/rest/v1/rpc/sentlog_mark_pc_verified'")
+body=body.replace("  savedCount++;", "  assertBackupScope();if(confirmation?.verified!==true||confirmation.asset_id!==a.id)throw Error('PCの保存確認をサーバーへ登録できませんでした。');\n  savedCount++;")
+if 'const confirmation=await rest' not in body or 'confirmation?.verified!==true' not in body:
+    raise RuntimeError('PC verification receipt integration changed')
+pending[p]=t[:start]+body+t[end:]
+change(p,'<script src="../sentlog/active-media-restore.js?v=20261125-restore-1"></script>',
+       '<script src="../sentlog/pc-safe-backup.js?v=20261125-safe-1"></script>\n<script src="../sentlog/active-media-restore.js?v=20261125-restore-1"></script>')
+
+# In delta mode the old photo worker must not fetch or hash the same photo
+# catalog. Legacy projects keep their existing receipt and recovery paths.
+p='sentlog/photo-recovery.js'
+t=source(p)
+start=t.index(' async function assetList(){')
+end=t.index(' function currentPhotoKeys(){',start)
+if 'sentlog_assets?kind=eq.photo' not in t[start:end]:raise RuntimeError('legacy photo list integration changed')
+pending[p]=t[:start]+""" async function assetList(projectIds){
+  const ids=[...new Set(projectIds)],out=[];
+  if(ids.some(id=>typeof id!=='string'||!/^[A-Za-z0-9_-]+$/.test(id)))throw Error('写真の案件を確認できません。');
+  for(let i=0;i<ids.length;i+=50){
+   const selected=ids.slice(i,i+50),allowed=new Set(selected);
+   let after='';
+   for(;;){
+    const rows=await api('sentlog_assets?kind=eq.photo&project_id=in.'+enc('('+selected.join(',')+')')+'&select=id,project_id,status,file_name,mime_type,byte_size,sha256,storage_path,metadata&order=id.asc&limit=400'+(after?'&id=gt.'+enc(after):''));
+    if(!Array.isArray(rows))throw Error('写真一覧を確認できません。');
+    if(!rows.length)break;
+    for(const row of rows){
+     if(typeof row.id!=='string'||!row.id||row.id<=after||!allowed.has(row.project_id))throw Error('写真一覧の案件・続きを確認できません。');
+     after=row.id;out.push(row);
+    }
+   }
+  }
+  return out;
+ }
+"""+t[end:]
+change(p,'  for(const p of ws.projects||[]){\n   for(const d of p.drawings||[]){',
+       '  for(const p of ws.projects||[]){\n   if(window.sentlogDeltaOwnsProject?.(p.id))continue;\n   for(const d of p.drawings||[]){')
+change(p,'  const active=await activeProjectIds(),assets=await assetList();\n  let pendingRequestsPromise=null;',
+       "  const active=new Set([...await activeProjectIds()].filter(id=>!window.sentlogDeltaOwnsProject?.(id)));\n  if(!active.size){show('');return;}\n  const assets=await assetList(active);\n  let pendingRequestsPromise=null;")
+
 # Version every loader reference and corresponding existing test expectation.
 versions=set()
 for page in ['sentlog/index.html','sentlog-pc/index.html']:
@@ -271,4 +332,7 @@ subprocess.run(['node','tests/recovery_queue.test.cjs'],cwd=ROOT,check=True)
 subprocess.run(['node','tests/active_media_pc_inventory.test.cjs'],cwd=ROOT,check=True)
 subprocess.run(['node','--check','sentlog/active-media-restore.js'],cwd=ROOT,check=True)
 subprocess.run(['node','tests/active_media_restore.test.cjs'],cwd=ROOT,check=True)
+subprocess.run(['node','--check','sentlog/pc-safe-backup.js'],cwd=ROOT,check=True)
+subprocess.run(['node','tests/pc_safe_backup.test.cjs'],cwd=ROOT,check=True)
+subprocess.run(['node','tests/legacy_photo_scope.test.cjs'],cwd=ROOT,check=True)
 print('Built bounded fair PDF/photo recovery; existing byte checks and data guards retained')
