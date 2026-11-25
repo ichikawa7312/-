@@ -139,15 +139,58 @@ change(p,"  const list=await pendingAssets();\n  for(const a of list){",
   const pendingKeys=new Set(list.map(cleanupKey));
   for(const key of pcCleanupDeferred.keys())if(!pendingKeys.has(key)||pcCleanupDeferred.get(key)<=Date.now())pcCleanupDeferred.delete(key);
   for(const a of list){""")
-change(p,"    await deleteVerified(a);\n    pcPendingRows.delete(a.id);renderPcPending();",
-       """    const key=cleanupKey(a);
-    if((pcCleanupDeferred.get(key)||0)>Date.now()){checked++;continue;}
-    try{await deleteVerified(a);pcCleanupDeferred.delete(key);}
-    catch(e){
-     if(/(?:photo|pdf|drawing)_delivery_pending/.test(String(e?.message||e)))pcCleanupDeferred.set(key,Date.now()+120000);
-     throw e;
-    }
-    pcPendingRows.delete(a.id);renderPcPending();""")
+# Wrap the existing cleanup call without replacing its subsequent receipt/
+# retention bookkeeping, which is supplied by earlier production builders.
+t=source(p)
+start=t.index('async function syncOnce(){')
+finish=t.index('function start(){',start)
+body=t[start:finish]
+matches=list(re.finditer(r'(?m)^([ \t]*)await deleteVerified\(a\);[ \t]*
+
+# Version every loader reference and corresponding existing test expectation.
+versions=set()
+for page in ['sentlog/index.html','sentlog-pc/index.html']:
+    text=source(page)
+    for name in ['pdf-recovery','peer-photo-recovery','photo-recovery']:
+        pattern=r'(?<!peer-)'+re.escape(name)+r'\.js\?v=([A-Za-z0-9._-]+)'
+        for old in re.findall(pattern,text):
+            versions.add((name,old))
+        text=re.sub(pattern,name+'.js?v='+TOKEN,text)
+    pending[page]=text
+worker=source('sentlog/sw.js')
+old_cache=re.search(r'sentlog-pwa-v\d+',worker).group()
+new_cache='sentlog-pwa-v'+str(int(old_cache.rsplit('v',1)[1])+1)
+pending['sentlog/sw.js']=worker.replace(old_cache,new_cache)
+for f in (ROOT/'tests').iterdir():
+    if f.suffix not in ('.cjs','.py'):continue
+    path=str(f.relative_to(ROOT));old=source(path);new=old.replace(old_cache,new_cache)
+    for name,version in versions:
+        new=new.replace(name+'.js?v='+version,name+'.js?v='+TOKEN)
+        new=new.replace(name+r'\.js\?v='+version,name+r'\.js\?v='+TOKEN)
+    if new!=old:pending[path]=new
+for path,text in pending.items():
+    (ROOT/path).write_text(text,encoding='utf-8')
+for path in ['sentlog/pdf-recovery.js','sentlog/peer-photo-recovery.js','sentlog/photo-recovery.js','sentlog/recovery-throttle.js','sentlog/recovery-queue.js']:
+    subprocess.run(['node','--check',path],cwd=ROOT,check=True)
+subprocess.run(['node','tests/recovery_throttle.test.cjs'],cwd=ROOT,check=True)
+subprocess.run(['node','tests/recovery_queue.test.cjs'],cwd=ROOT,check=True)
+print('Built bounded fair PDF/photo recovery; existing byte checks and data guards retained')
+,body))
+if len(matches)!=1:
+    raise RuntimeError('PC cleanup call integration changed: '+repr([line for line in body.splitlines() if 'deleteVerified' in line]))
+m=matches[0]
+indent=m.group(1)
+lines=[
+    'const key=cleanupKey(a);',
+    'if((pcCleanupDeferred.get(key)||0)>Date.now()){checked++;continue;}',
+    'try{await deleteVerified(a);pcCleanupDeferred.delete(key);}',
+    'catch(e){',
+    ' if(/(?:photo|pdf|drawing)_delivery_pending/.test(String(e?.message||e)))pcCleanupDeferred.set(key,Date.now()+120000);',
+    ' throw e;',
+    '}',
+]
+body=body[:m.start()]+'\n'.join(indent+line for line in lines)+body[m.end():]
+pending[p]=t[:start]+body+t[finish:]
 
 # Version every loader reference and corresponding existing test expectation.
 versions=set()
