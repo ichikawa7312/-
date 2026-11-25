@@ -115,6 +115,8 @@ jobs:
           node tests/delta_app_backend.test.cjs
           node tests/delta_release_pglite.cjs
           node tests/delta_receipt_cache_pglite.cjs
+          node tests/delta_notify_noop_pglite.cjs
+          node tests/recovery_queue.test.cjs
           node tests/delta_realtime_privileges.cjs
           node tests/delta_batch_paging.test.cjs
           node tests/delta_group_sync.test.cjs

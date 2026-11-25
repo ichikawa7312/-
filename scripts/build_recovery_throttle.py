@@ -7,7 +7,7 @@ from pathlib import Path
 import re, subprocess
 
 ROOT=Path(__file__).resolve().parents[1]
-TOKEN='20261125-recovery-guard-1'
+TOKEN='20261125-recovery-guard-2'
 guard=(ROOT/'sentlog/recovery-throttle.js').read_text(encoding='utf-8').strip()
 pending={}
 def source(path):
@@ -61,11 +61,99 @@ change(p,"}catch(e){show('写真補完の確認：'+(e.name==='AbortError'?'通�
          "}catch(e){cycleFailed=true;deliveryGuard.fail(e);show('写真補完の確認：'+(e.name==='AbortError'?'通信が途中で止まりました。次回の確認で再試行します。':e.message));}")
 change(p,"   finally{busy=false;}",
          "   finally{if(!cycleFailed)deliveryGuard.complete();busy=false;}")
+
+# Recovery inventory must not mix photo requests with drawing requests or drop
+# the tail of the PostgREST result. Use the existing authorization and SHA checks.
+queue=(ROOT/'sentlog/recovery-queue.js').read_text(encoding='utf-8').strip()
+p='sentlog/pdf-recovery.js'
+change(p,'const deliveryGuard=createSentlogDeliveryGuard();',queue+'\nconst deliveryGuard=createSentlogDeliveryGuard();')
+asset_line="const assets=await api('sentlog_assets?kind=eq.drawing&select=id,project_id,status,file_name,mime_type,byte_size,sha256,storage_path,metadata&limit=1000');"
+asset_replacement="const assets=await sentlogRecoveryRows(api,'sentlog_assets','kind=eq.drawing&select=id,project_id,status,file_name,mime_type,byte_size,sha256,storage_path,metadata',['id']);"
+n=source(p).count(asset_line)
+if not 1<=n<=2: raise RuntimeError('PDF asset paging integration changed: '+str(n))
+change(p,asset_line,asset_replacement,n)
+change(p,"const requests=await api('sentlog_pdf_requests?received_at=is.null&select=asset_id,device_id,expected_sha256&limit=1000');",
+         "const requests=await sentlogRecoveryRequests(api,'drawing');")
+change(p,"    const needed=new Set((requests||[]).filter(r=>r.device_id!==id).map(r=>r.asset_id+':'+String(r.expected_sha256).toLowerCase()));",
+         "    const otherRequests=requests.filter(r=>r.device_id!==id);\n    const activeDevices=otherRequests.length?await sentlogRecoveryDevices(api):new Map();\n    const cutoff=Date.now()-15*60*1000;\n    const needed=new Set(otherRequests.filter(r=>sentlogFreshRecoveryRequest(r,activeDevices,cutoff)).map(r=>r.asset_id+':'+String(r.expected_sha256).toLowerCase()));")
+
+p='sentlog/photo-recovery.js'
+change(p," let busy=false,message='',lastRequested=new Map();",
+       guard+"\n"+queue+"\n const deliveryGuard=createSentlogDeliveryGuard({maxPerCycle:24});\n let busy=false,message='',lastRequested=new Map();")
+change(p,"   if(!r.ok){const error=await r.json().catch(()=>({}));throw Error(error.message||error.error||('通信エラー '+r.status));}",
+       "   if(!r.ok){const error=await r.json().catch(()=>({}));const failure=Error(error.message||error.error||('通信エラー '+r.status));failure.status=r.status;throw failure;}")
+# Receiver: when a matching outstanding request is already durable on the
+# server, leave it intact. A new hash/version has an independent request.
+change(p,"  const active=await activeProjectIds(),assets=await assetList();",
+       "  const active=await activeProjectIds(),assets=await assetList();\n  let pendingRequestsPromise=null;")
+change(p,"      const request=await rpc('sentlog_request_photo',{p_asset_id:a.id,p_device_id:id});\n      if(!request?.requested)throw Error(request?.reason||'PCの写真保存を確認できません。');\n      lastRequested.set(a.id,Date.now());",
+       """      if(!pendingRequestsPromise)pendingRequestsPromise=sentlogRecoveryRequests(api,'photo',{deviceIds:[id],missingOnly:true}).then(rows=>new Set(rows.map(r=>r.asset_id+':'+String(r.expected_sha256).toLowerCase())));
+      const requests=await pendingRequestsPromise,requestKey=a.id+':'+String(a.sha256).toLowerCase();
+      if(!requests.has(requestKey)){
+       const request=await rpc('sentlog_request_photo',{p_asset_id:a.id,p_device_id:id});
+       if(!request?.requested)throw Error(request?.reason||'PCの写真保存を確認できません。');
+       requests.add(requestKey);
+      }
+      lastRequested.set(a.id,Date.now());""")
+# PC: select only current, missing-photo requests, then only the referenced
+# assets. Never scan every stored photo merely to find those requested files.
+t=source(p)
+start="  const requests=await api('sentlog_pdf_requests?received_at=is.null&select=asset_id,device_id,expected_sha256,requested_at&limit=5000');"
+end="  const desired=new Set(fresh.map(r=>r.asset_id+':'+String(r.expected_sha256).toLowerCase()));"
+if t.count(start)!=1 or t.count(end)!=1: raise RuntimeError('PC recovery request integration changed')
+a=t.index(start);b=t.index(end,a)
+pending[p]=t[:a]+"""  const activeDevices=await sentlogRecoveryDevices(api),cutoff=Date.now()-15*60*1000;
+  const fresh=await sentlogLiveRecoveryRequests(api,'photo',activeDevices,{self:id,cutoff,missingOnly:true});
+"""+t[b:]
+change(p,"  const assets=await assetList(),active=await activeProjectIds();",
+       """  const active=await activeProjectIds(),assets=[];
+  const requestedIds=deliveryGuard.order([...new Set(fresh.map(r=>r.asset_id))]);
+  for(let offset=0;offset<requestedIds.length;offset+=50){
+   const ids=requestedIds.slice(offset,offset+50);
+   const allowed=new Set(ids);
+   const rows=await api('sentlog_assets?kind=eq.photo&status=eq.storage_deleted&select=id,project_id,status,kind,file_name,mime_type,byte_size,sha256,storage_path,metadata&id=in.'+encodeURIComponent('('+ids.join(',')+')')+'&limit=50');
+   if(!Array.isArray(rows)||rows.some(r=>!allowed.has(r.id)))throw Error('写真の再取得対象を確認できません。');
+   assets.push(...rows);
+  }""")
+change(p,"  for(const a of pending){\n   try{if(await uploadPhoto(a,id,ownerId))count++;}\n   catch(e){if(e?.code==='PHOTO_SESSION_CHANGED')throw e;errors.push((a.file_name||'写真')+'：'+e.message);}\n  }",
+       """  for(const a of deliveryGuard.order(pending)){
+   if(deliveryGuard.full())break;
+   if(!deliveryGuard.take(a))continue;
+   try{if(await uploadPhoto(a,id,ownerId))count++;}
+   catch(e){if(e?.code==='PHOTO_SESSION_CHANGED'||deliveryGuard.isTransient(e))throw e;errors.push((a.file_name||'写真')+'：'+e.message);}
+  }""")
+change(p,"  busy=true;\n  try{\n   if(IS_PC)await window.ensureSession?.();",
+       "  if(IS_PC&&!deliveryGuard.begin(JSON.stringify([s.user?.id,id])))return;\n  busy=true;let cycleFailed=false;\n  try{\n   if(IS_PC)await window.ensureSession?.();")
+change(p,"  }catch(e){show('写真の再取得を確認できません：'+e.message);}\n  finally{busy=false;}",
+       "  }catch(e){cycleFailed=true;if(IS_PC)deliveryGuard.fail(e);show('写真の再取得を確認できません：'+e.message);}\n  finally{if(IS_PC&&!cycleFailed)deliveryGuard.complete();busy=false;}")
+# PC deletion is a separate stage: a delivery-pending response is expected,
+# not proof of completion. Keep the row pending but avoid rechecking it each pass.
+p='sentlog-pc/index.html'
+change(p,"let pcPendingRows=new Map(),pcInventoryTime='',pcRetainedDrawingCount=0;",
+       "let pcPendingRows=new Map(),pcInventoryTime='',pcRetainedDrawingCount=0;\nlet pcCleanupDeferred=new Map();")
+change(p,"  const list=await pendingAssets();\n  for(const a of list){",
+       """  const list=await pendingAssets();
+  list.sort((a,b)=>Number(b.status==='uploaded')-Number(a.status==='uploaded'));
+  const cleanupScope=JSON.stringify([session?.user?.id,localStorage.getItem('sentlogPcWebDeviceV1')]);
+  const cleanupKey=a=>JSON.stringify([cleanupScope,a.id,a.sha256,a.storage_path]);
+  const pendingKeys=new Set(list.map(cleanupKey));
+  for(const key of pcCleanupDeferred.keys())if(!pendingKeys.has(key)||pcCleanupDeferred.get(key)<=Date.now())pcCleanupDeferred.delete(key);
+  for(const a of list){""")
+change(p,"    await deleteVerified(a);\n    pcPendingRows.delete(a.id);renderPcPending();",
+       """    const key=cleanupKey(a);
+    if((pcCleanupDeferred.get(key)||0)>Date.now()){checked++;continue;}
+    try{await deleteVerified(a);pcCleanupDeferred.delete(key);}
+    catch(e){
+     if(/(?:photo|pdf|drawing)_delivery_pending/.test(String(e?.message||e)))pcCleanupDeferred.set(key,Date.now()+120000);
+     throw e;
+    }
+    pcPendingRows.delete(a.id);renderPcPending();""")
+
 # Version every loader reference and corresponding existing test expectation.
 versions=set()
 for page in ['sentlog/index.html','sentlog-pc/index.html']:
     text=source(page)
-    for name in ['pdf-recovery','peer-photo-recovery']:
+    for name in ['pdf-recovery','peer-photo-recovery','photo-recovery']:
         pattern=r'(?<!peer-)'+re.escape(name)+r'\.js\?v=([A-Za-z0-9._-]+)'
         for old in re.findall(pattern,text):
             versions.add((name,old))
@@ -84,7 +172,8 @@ for f in (ROOT/'tests').iterdir():
     if new!=old:pending[path]=new
 for path,text in pending.items():
     (ROOT/path).write_text(text,encoding='utf-8')
-for path in ['sentlog/pdf-recovery.js','sentlog/peer-photo-recovery.js','sentlog/recovery-throttle.js']:
+for path in ['sentlog/pdf-recovery.js','sentlog/peer-photo-recovery.js','sentlog/photo-recovery.js','sentlog/recovery-throttle.js','sentlog/recovery-queue.js']:
     subprocess.run(['node','--check',path],cwd=ROOT,check=True)
 subprocess.run(['node','tests/recovery_throttle.test.cjs'],cwd=ROOT,check=True)
+subprocess.run(['node','tests/recovery_queue.test.cjs'],cwd=ROOT,check=True)
 print('Built bounded fair PDF/photo recovery; existing byte checks and data guards retained')
