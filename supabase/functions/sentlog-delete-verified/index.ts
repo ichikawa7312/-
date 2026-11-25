@@ -18,13 +18,16 @@ Deno.serve(async(req:Request)=>{
   if(asset.owner_id!==identity.user.id)return json({error:'forbidden'},403);
   if(asset.status==='storage_deleted'||asset.storage_deleted_at)return json({ok:true,already_deleted:true,asset_id:asset.id});
   if(asset.status!=='pc_verified')return json({error:'pc_verification_required'},409);
-  if(asset.kind==='drawing'){
-    const {data:project,error:projectError}=await client.from('sentlog_projects').select('status').eq('id',asset.project_id).single();
-    if(projectError||!project)return json({error:'project_status_check_failed'},500);
-    if(project.status==='active')return json({ok:true,retained:true,asset_id:asset.id,reason:'active_project_drawing'});
-  }
+  // Active shared files remain independently downloadable even when every
+  // source device is offline. Validate a matching PC receipt before reporting
+  // the backup complete. This guard applies to old clients as well.
+  if(asset.kind!=='drawing'&&asset.kind!=='photo')return json({error:'unsupported_asset_kind'},409);
   const {data:pc,error:pcError}=await client.from('sentlog_pc_receipts').select('sha256,byte_size,verified_at').eq('asset_id',asset.id).single();
   if(pcError||!pc||pc.sha256!==asset.sha256||Number(pc.byte_size)!==Number(asset.byte_size))return json({error:'matching_pc_receipt_required'},409);
+  const {data:project,error:projectError}=await client.from('sentlog_projects').select('status').eq('id',asset.project_id).single();
+  if(projectError||!project)return json({error:'project_status_check_failed'},500);
+  if(project.status==='active')return json({ok:true,retained:true,asset_id:asset.id,reason:asset.kind==='drawing'?'active_project_drawing':'active_project_photo'});
+  if(project.status!=='archived')return json({error:'project_status_check_failed'},409);
   const admin=createClient(url,Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,{auth:{persistSession:false,autoRefreshToken:false}});
   if(asset.kind==='drawing'){
     // Requests survive app closure and offline periods. Do not expire the receiver out of this check.
@@ -71,6 +74,11 @@ Deno.serve(async(req:Request)=>{
       if(missing.length)return json({error:'device_delivery_pending',pending_device_count:missing.length},409);
     }
   }else return json({error:'unsupported_asset_kind'},409);
+  // Recheck lifecycle immediately before any legacy archived cleanup.
+  const {data:latestProject,error:latestProjectError}=await client.from('sentlog_projects').select('status').eq('id',asset.project_id).single();
+  if(latestProjectError||!latestProject)return json({error:'project_status_check_failed'},500);
+  if(latestProject.status==='active')return json({ok:true,retained:true,asset_id:asset.id,reason:asset.kind==='drawing'?'active_project_drawing':'active_project_photo'});
+  if(latestProject.status!=='archived')return json({error:'project_status_check_failed'},409);
   // Delete only the exact object checked above. A new delivery uses a different path.
   const {error:removeError}=await admin.storage.from('sentlog-temp').remove([asset.storage_path]);
   if(removeError)return json({error:'storage_delete_failed',detail:removeError.message},500);

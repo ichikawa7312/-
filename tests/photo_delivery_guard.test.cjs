@@ -25,15 +25,15 @@ function makeQuery(table,rows,counters){
  };
  return q;
 }
-async function scenario({pending=[],devices=[],legacyReceipts=[],photo=true,projectStatus='archived'}={}){
+async function scenario({pending=[],devices=[],legacyReceipts=[],photo=true,projectStatus='archived',badPc=false,projectMissing=false}={}){
  const now=Date.now();
  const asset={id:'asset-1',owner_id:'account-1',project_id:'project-1',kind:photo?'photo':'drawing',status:'pc_verified',
   storage_path:'account-1/project/photo-redelivery.jpg',storage_deleted_at:null,
   sha256:'f'.repeat(64),byte_size:101,source_device_id:'iphone-original'};
  const rows={
   sentlog_assets:[asset],
-  sentlog_projects:[{id:'project-1',status:projectStatus}],
-  sentlog_pc_receipts:[{asset_id:asset.id,sha256:asset.sha256,byte_size:asset.byte_size}],
+  sentlog_projects:projectMissing?[]:[{id:'project-1',status:projectStatus}],
+  sentlog_pc_receipts:[{asset_id:asset.id,sha256:badPc?'e'.repeat(64):asset.sha256,byte_size:asset.byte_size}],
   sentlog_pdf_requests:pending.map(p=>({asset_id:asset.id,owner_id:'account-1',expected_sha256:asset.sha256,
     received_at:null,...p})),
   sentlog_devices:devices.map(d=>({owner_id:'account-1',active:true,
@@ -90,5 +90,17 @@ async function scenario({pending=[],devices=[],legacyReceipts=[],photo=true,proj
  const activePdf=await scenario({photo:false,projectStatus:'active'});
  assert.equal(activePdf.code,200);assert.equal(activePdf.data.retained,true);
  assert.equal(activePdf.removed,0,'active project drawing must stay in cloud storage');
+ const activePhoto=await scenario({projectStatus:'active'});
+ assert.equal(activePhoto.code,200);assert.equal(activePhoto.data.reason,'active_project_photo');
+ assert.equal(activePhoto.removed,0);assert.equal(activePhoto.updates,0);
+ const activePhotoPending=await scenario({projectStatus:'active',pending:[{device_id:'browser-1',requested_at:fresh}],devices:[{id:'browser-1',device_type:'browser'}]});
+ assert.equal(activePhotoPending.code,200);assert.equal(activePhotoPending.data.retained,true);
+ assert.equal(activePhotoPending.removed,0);assert.equal(activePhotoPending.updates,0);
+ const unverifiedActive=await scenario({projectStatus:'active',badPc:true});
+ assert.equal(unverifiedActive.code,409);assert.equal(unverifiedActive.data.error,'matching_pc_receipt_required');
+ assert.equal(unverifiedActive.removed,0);
+ const unknownProject=await scenario({projectMissing:true});
+ assert.equal(unknownProject.code,500);assert.equal(unknownProject.removed,0);
+ console.log('PASS active shared photo retention, offline/new receivers, invalid PC receipt and missing project fail closed');
  console.log('PASS delete-verified: active browser waits for ACK; stale request expires; inactive ignored; archived PDF guard preserved; active PDF retained');
 })().catch(e=>{console.error(e);process.exitCode=1;});
