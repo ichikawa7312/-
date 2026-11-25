@@ -228,6 +228,19 @@ inventory="""async function pendingAssets(){
 change(p,'async function downloadAsset(a){',inventory+'async function downloadAsset(a){')
 change(p,'PC同期完了：未処理データはありません','PC保管確認完了：写真・図面のクラウド補完は別途確認')
 
+# Explicit one-time PC cloud repair. It is not a background polling task.
+p='sentlog-pc/index.html'
+repair_script="""<script src="../sentlog/active-media-restore.js?v=20261125-restore-1"></script>
+<script>
+SentlogActiveMediaRestore.mount({
+ getScope:()=>({owner:session?.user?.id,device:localStorage.getItem('sentlogPcWebDeviceV1')}),
+ getSession:()=>session,ensure:()=>ensureSession(),getRoot:()=>rootHandle,
+ baseUrl:SUPABASE_URL,apiKey:API_KEY
+});
+</script>
+"""
+change(p,'</body>',repair_script+'</body>')
+
 # Version every loader reference and corresponding existing test expectation.
 versions=set()
 for page in ['sentlog/index.html','sentlog-pc/index.html']:
@@ -256,4 +269,6 @@ for path in ['sentlog/pdf-recovery.js','sentlog/peer-photo-recovery.js','sentlog
 subprocess.run(['node','tests/recovery_throttle.test.cjs'],cwd=ROOT,check=True)
 subprocess.run(['node','tests/recovery_queue.test.cjs'],cwd=ROOT,check=True)
 subprocess.run(['node','tests/active_media_pc_inventory.test.cjs'],cwd=ROOT,check=True)
+subprocess.run(['node','--check','sentlog/active-media-restore.js'],cwd=ROOT,check=True)
+subprocess.run(['node','tests/active_media_restore.test.cjs'],cwd=ROOT,check=True)
 print('Built bounded fair PDF/photo recovery; existing byte checks and data guards retained')
