@@ -108,5 +108,7 @@ jobs:
         if: always()
         with:
           name: ledger-diagnostics-${{ matrix.engine }}-${{ matrix.phase }}
-          path: ledger-diagnostics/
+          path: |
+            ledger-diagnostics/
+            test-results/photo-ledger/
           retention-days: 14

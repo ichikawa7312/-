@@ -30,9 +30,24 @@ s=s[:start]+'''  async function preparePhotos(entries){
 '''+s[end:]
 s=change(s,'if(!modal)return;\n    try{const blob=await loadShared','if(!modal||current?.exporting)return;\n    try{const blob=await loadShared')
 s=change(s,'if(!modal||!img.isConnected)return;','if(!modal||current?.exporting||!img.isConnected)return;')
-s=change(s,'current.exporting=true;const btn=modal.querySelector','let focusAfter=null;current.exporting=true;current.abort=new AbortController();const btn=modal.querySelector')
+# Reset status synchronously before any awaited work. Never expose a stale
+# download link as if it were the new output, even when an export is delayed.
+# Keep the old file available on failure unless its removal was acknowledged.
+s=change(s,'  function renderTensileFields(host){', '''  const tensileInputs=new WeakMap();
+  function captureTensileInputs(){
+    if(!modal||!current||current.exporting)return;
+    for(const control of modal.querySelectorAll('[data-tensile-field]')){
+      const data=tensileInputs.get(control),field=control.dataset.tensileField;
+      if(data&&Object.prototype.hasOwnProperty.call(data,field)&&data[field]!==control.value){data[field]=control.value;current.changed=true;}
+    }
+  }
+  function renderTensileFields(host){''')
+s=change(s,'control.dataset.tensileField=field;','control.dataset.tensileField=field;tensileInputs.set(control,data);')
+s=change(s,'function saveDraft(){\n    if(!current)return;','function saveDraft(){\n    if(!current||current.exporting)return;captureTensileInputs();')
+s=change(s,'if(!modal||!current)return;cleanPreview();const host=','if(!modal||!current)return;captureTensileInputs();cleanPreview();const host=')
+s=change(s,'current.exporting=true;const btn=modal.querySelector','captureTensileInputs();let focusAfter=null;const priorLink=modal.querySelector(\'.ledger-download-ready\');if(priorLink)priorLink.style.display=\'none\';status(\'Excelを作成しています…\');current.exporting=true;current.abort=new AbortController();const btn=modal.querySelector')
 s=change(s,'btn.disabled=true;updateSelectionControls();',"btn.disabled=true;updateSelectionControls();cleanPreview();modal.querySelectorAll('.ledger-thumb').forEach(img=>img.removeAttribute('src'));modal.querySelector('.ledger-cancel').hidden=false;")
-s=change(s,'finally{for(const e of entries)delete e.jpeg;current.exporting=false;btn.disabled=false;updateSelectionControls();}',"finally{for(const e of entries)delete e.jpeg;current.exporting=false;current.abort=null;modal.querySelector('.ledger-cancel').hidden=true;btn.disabled=false;renderEntries();updateSelectionControls();if(focusAfter)focusLedgerField(...focusAfter);}")
+s=change(s,'finally{for(const e of entries)delete e.jpeg;current.exporting=false;btn.disabled=false;updateSelectionControls();}',"finally{for(const e of entries)delete e.jpeg;current.exporting=false;current.abort=null;modal.querySelector('.ledger-cancel').hidden=true;btn.disabled=false;if(priorLink?.isConnected){priorLink.style.display=\'\';priorLink.textContent=\'前回のExcelを保存\';}renderEntries();updateSelectionControls();if(focusAfter)focusLedgerField(...focusAfter);}")
 s=change(s,"focusLedgerField(pending[0].key,current.format==='visual3'?'notes':'description');return;","focusAfter=[pending[0].key,current.format==='visual3'?'notes':'description'];return;")
 s=change(s,"if(e?.ledgerEntryKey)focusLedgerField(e.ledgerEntryKey,e.ledgerField);","if(e?.ledgerEntryKey)focusAfter=[e.ledgerEntryKey,e.ledgerField];")
 s=change(s,'function moveGroup(name,dir){const a=','function moveGroup(name,dir){if(current?.exporting)return;const a=')
