@@ -86,3 +86,6 @@ subprocess.run([sys.executable, 'scripts/build_camera_reliability.py'], cwd=ROOT
 
 # Keep a polygon's displayed candidate through a small finger/Pencil release.
 subprocess.run([sys.executable, 'scripts/build_polygon_pointer_stability.py'], cwd=ROOT, check=True)
+
+# Give phones more drawing space while retaining the original control handlers.
+subprocess.run([sys.executable, 'scripts/build_phone_editor_space.py'], cwd=ROOT, check=True)
