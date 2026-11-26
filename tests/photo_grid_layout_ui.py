@@ -275,7 +275,6 @@ def run_case(engine, origin, variant, folder, result):
             assert [row['id'] for row in proof] == [f'p{n}' for n in range(7)]
             assert all(row['loaded'] and row['sha256'] == hashlib.sha256(png(n)).hexdigest() for n, row in enumerate(proof)), proof
             result['images'] = proof
-            page.screenshot(path=str(folder / (variant + '-layout.png')), full_page=True)
 
             if variant == 'baseline':
                 assert initial['slots'] == 1, 'Historical renderer must expose its one-slot first-await state'
@@ -314,7 +313,6 @@ def run_case(engine, origin, variant, folder, result):
             if page:
                 try:
                     result['failureState'] = page.evaluate('photoGridProbe.inspect()')
-                    page.screenshot(path=str(folder / (variant + '-failure.png')), full_page=True)
                 except Exception as diagnostic:
                     result['diagnosticErrorType'] = type(diagnostic).__name__
         finally:
