@@ -29,6 +29,39 @@ IDS = ['ffffffff-0000-4000-8000-000000000001',
 NAMES = ['first.jpg', 'second.jpg', 'third.jpg']
 
 
+def evaluate(page, source, arg=None):
+    label = ' '.join(source.split())[:110]
+    print('PHOTO_ORDER step: ' + label, flush=True)
+    return page.evaluate(r"""async ({source,arg,label})=>{
+      let timer;
+      const detail=()=>({document:document.readyState,view:typeof currentView==='undefined'?null:currentView,
+        recordsReady:!!window.SentlogRecords?.ready,cameraReturn:!!window.SentlogCameraReturn});
+      try{
+        const value=eval('('+source+')');
+        return await Promise.race([
+          Promise.resolve(typeof value==='function'?value(arg):value),
+          new Promise((resolve,reject)=>{timer=setTimeout(()=>reject(Error('Photo order step timeout: '+label+' '+JSON.stringify(detail()))),45000);})
+        ]);
+      }finally{clearTimeout(timer);}
+    }""", {'source': source, 'arg': arg, 'label': label})
+
+
+def await_ready(page):
+    evaluate(page, r"""async()=>{
+      await window.sentlogAppReady;let timer;
+      try{
+        await Promise.race([
+          window.SentlogCameraReturn?.ready,
+          new Promise((resolve,reject)=>{timer=setTimeout(()=>reject(Error('Camera return ready timeout: '+JSON.stringify({
+            document:document.readyState,view:typeof currentView==='undefined'?null:currentView,
+            module:!!window.SentlogCameraReturn,recordsReady:!!window.SentlogRecords?.ready,
+            checkpoint:sessionStorage.getItem('sentlogCameraReturnV1')
+          }))),20000);})
+        ]);
+      }finally{clearTimeout(timer);}
+    }""")
+
+
 def pictures():
     result = []
     for index, color in enumerate([(220, 40, 40), (40, 190, 80), (40, 80, 220)]):
@@ -42,7 +75,7 @@ def pictures():
 
 
 def grid_order(page):
-    return page.evaluate("""async()=>{
+    return evaluate(page, """async()=>{
       const record=state.shapes.find(s=>s.id==='survey-a'),before=JSON.stringify(record);
       await renderSelectedPhotos();
       if(before!==JSON.stringify(record))throw Error('Photo rendering mutated the source record');
@@ -55,7 +88,7 @@ def ledger_order(page):
 
 
 def open_ledger(page):
-    page.evaluate("""async()=>{
+    evaluate(page, """async()=>{
       const project=workspace.projects.find(p=>p.id==='memo-project');
       const group=SentlogDrawingGroups.groupsForProject(project).find(g=>g.sheets.some(s=>s.id==='memo-plan-a'));
       if(!group)throw Error('Synthetic ledger group missing');
@@ -84,16 +117,16 @@ PHOTO_PROOF = r"""async()=>{
 
 def run(page, engine):
     if engine == 'webkit':
-        page.evaluate(WEBKIT_TRANSPORT)
-    page.evaluate(SETUP, base64.b64encode(photo_png()).decode('ascii'))
+        evaluate(page, WEBKIT_TRANSPORT)
+    evaluate(page, SETUP, base64.b64encode(photo_png()).decode('ascii'))
     # SETUP normally supplies backgrounds through a Map. Materialize them before
     # page reload so opening the durable drawing does not lose its fixture.
-    page.evaluate("""async()=>{
+    evaluate(page, """async()=>{
       for(const [key,file] of memoFixture.files)await putDBFile(key,file);
       await SentlogRecords.settled();
     }""")
     sources = pictures()
-    reserved = page.evaluate(r"""async({sources,ids})=>{
+    reserved = evaluate(page, r"""async({sources,ids})=>{
       if(!SentlogCollaborationPhotos.captureTarget())throw Error('Synthetic capture target missing');
       const nativeUUID=crypto.randomUUID,nativeNow=Date.now,convert=SentlogOriginalPhotos.makeSharedPhoto;
       const queue=['10000000-0000-4000-8000-000000000000',...ids];let calls=0;
@@ -117,17 +150,17 @@ def run(page, engine):
     assert [row['photoId'] for row in reserved['result']] == IDS, reserved
     assert len(reserved['pending']) == 1 and reserved['pending'][0]['originalSaved'], reserved
     assert grid_order(page) == NAMES[1:]
-    retry = page.evaluate("SentlogCollaborationPhotos.retryPending()")
+    retry = evaluate(page, "SentlogCollaborationPhotos.retryPending()")
     assert len(retry) == 1 and retry[0]['status'] == 'attached', retry
     wait_photos(page, 'memo-plan-a', 3)
     assert grid_order(page) == NAMES
-    proof = page.evaluate(PHOTO_PROOF)
+    proof = evaluate(page, PHOTO_PROOF)
     assert proof['projectionValid'] and proof['canonicalIds'] == [IDS[1], IDS[2], IDS[0]], proof
     assert sorted(p['originalHash'] for p in proof['photos']) == sorted(p['sha256'] for p in sources), proof
     assert len({p['captureDisplayOrder']['at'] for p in proof['photos']}) == 1, proof
     assert sorted(p['captureDisplayOrder']['index'] for p in proof['photos']) == [0, 1, 2], proof
 
-    before = page.evaluate("JSON.stringify(state.shapes.find(s=>s.id==='survey-a'))")
+    before = evaluate(page, "JSON.stringify(state.shapes.find(s=>s.id==='survey-a'))")
     open_ledger(page)
     assert ledger_order(page) == IDS
     for format_name in ['damage', 'tensile', 'visual3', 'standard']:
@@ -148,9 +181,9 @@ def run(page, engine):
     page.locator('[data-ledger=format]').select_option('tensile')
     assert ledger_order(page) == manual
     page.locator('.ledger-close').click()
-    assert before == page.evaluate("JSON.stringify(state.shapes.find(s=>s.id==='survey-a'))")
+    assert before == evaluate(page, "JSON.stringify(state.shapes.find(s=>s.id==='survey-a'))")
 
-    received = page.evaluate("""async()=>{
+    received = evaluate(page, """async()=>{
       document.activeElement?.blur();await SentlogRecords.settled();
       const incoming=structuredClone(memoFixture.snapshot()),drawing=incoming.drawings.find(d=>d.meta.id==='memo-plan-a');
       incoming.project.collaborationVersion=1;
@@ -161,13 +194,13 @@ def run(page, engine):
     }""")
     assert received['applied'], received
     assert grid_order(page) == NAMES
-    assert page.evaluate(PHOTO_PROOF) == proof
+    assert evaluate(page, PHOTO_PROOF) == proof
 
     # WebKit's fixture Blob maps are process-local. Snapshot only those I/O
     # fixtures and restore after reload; never reconstruct or replace records.
     transport = None
     if engine == 'webkit':
-        transport = page.evaluate(r"""async()=>{
+        transport = evaluate(page, r"""async()=>{
           const encode=async blob=>btoa(String.fromCharCode(...new Uint8Array(await blob.arrayBuffer())));
           const rows=[];
           for(const meta of await SentlogOriginalPhotos.listMeta()){
@@ -176,23 +209,23 @@ def run(page, engine):
           }
           return rows;
         }""")
-    page.evaluate("SentlogRecords.settled()")
+    evaluate(page, "SentlogRecords.settled()")
     page.reload(wait_until='domcontentloaded')
     page.wait_for_function('window.sentlogAppReady&&window.SentlogCollaborationPhotos&&window.SentlogPhotoDisplayOrder&&window.SentlogPhotoLedger', timeout=45000)
-    page.evaluate('async()=>{await window.sentlogAppReady;await window.SentlogCameraReturn?.ready;}')
+    await_ready(page)
     if engine == 'webkit':
-        page.evaluate(WEBKIT_TRANSPORT)
-        page.evaluate(r"""async rows=>{
+        evaluate(page, WEBKIT_TRANSPORT)
+        evaluate(page, r"""async rows=>{
           for(const row of rows){const meta=row.meta,bytes=value=>Uint8Array.from(atob(value),c=>c.charCodeAt(0));
             await SentlogOriginalPhotos.stageOriginal(meta.drawingId,meta.photoId,new File([bytes(row.original)],meta.originalName,{type:meta.type}),meta);
             await savePhotoBlob(meta.photoId,new Blob([bytes(row.shared)],{type:row.sharedType}),meta.drawingId);
           }
         }""", transport)
-    page.evaluate("""async()=>{
+    evaluate(page, """async()=>{
       await openDrawing('memo-project','memo-plan-a');SentlogFieldRecords.selectRecord('survey-a');$('inspector').classList.add('open');
     }""")
     assert grid_order(page) == NAMES
-    assert page.evaluate(PHOTO_PROOF) == proof
+    assert evaluate(page, PHOTO_PROOF) == proof
     open_ledger(page)
     assert ledger_order(page) == manual
     page.locator('.ledger-close').click()
@@ -240,7 +273,7 @@ def main():
             try:
                 page.goto(origin+'/sentlog/', wait_until='domcontentloaded')
                 page.wait_for_function('window.sentlogAppReady&&window.SentlogCollaborationPhotos&&window.SentlogPhotoDisplayOrder&&window.SentlogPhotoLedger', timeout=45000)
-                page.evaluate('async()=>{await window.sentlogAppReady;await window.SentlogCameraReturn?.ready;}')
+                await_ready(page)
                 report.update(run(page, args.engine))
                 assert not errors, errors
                 report['passed'] = True

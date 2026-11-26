@@ -61,8 +61,23 @@ PHOTOS = """async()=>{
 
 def ready(page):
     page.wait_for_function('window.sentlogAppReady&&window.SentlogCameraReturn&&window.SentlogContinuousCamera&&window.SentlogCollaborationPhotos', timeout=60000)
-    page.evaluate('window.sentlogAppReady')
-    return page.evaluate('window.SentlogCameraReturn.ready')
+    return page.evaluate("""async()=>{
+      let app='pending',timer;
+      const work=Promise.resolve(window.sentlogAppReady).then(()=>{
+        app='resolved';return window.SentlogCameraReturn.ready;
+      },error=>{app='rejected: '+String(error);throw error;});
+      try{return await Promise.race([work,new Promise((_,reject)=>{
+        timer=setTimeout(()=>reject(Error('Camera return ready timed out: '+JSON.stringify({
+          readyState:document.readyState,appReady:app,view:typeof currentView==='undefined'?null:currentView,
+          project:typeof activeProjectId==='undefined'?null:activeProjectId,
+          drawing:typeof activeDrawingId==='undefined'?null:activeDrawingId,
+          checkpoint:sessionStorage.getItem('sentlogCameraReturnV1'),
+          modules:{cameraReturn:!!window.SentlogCameraReturn,camera:!!window.SentlogContinuousCamera,
+            photos:!!window.SentlogCollaborationPhotos,fieldRecords:!!window.SentlogFieldRecords,
+            syncView:!!window.sentlogSyncView,cloud:typeof window.sentlogCollaborationAccountId==='function'}
+        }))),20000);
+      })]);}finally{clearTimeout(timer);}
+    }""")
 
 
 def reload_return(page, drawing='memo-plan-a', record='survey-a', number=1):
@@ -91,6 +106,11 @@ def remember_without_photo(page):
 
 
 def run(page, report):
+    def progress(phase):
+        report['phase'] = phase
+        print('CAMERA_RETURN_PROGRESS '+json.dumps({'engine': report['engine'], 'phase': phase}), flush=True)
+
+    progress('seed native records and backgrounds')
     png = photo_png()
     page.evaluate(SETUP, base64.b64encode(png).decode())
     page.evaluate("""async()=>{
@@ -102,6 +122,7 @@ def run(page, report):
     }""")
     page.evaluate(CAMERA_MOCK, base64.b64encode(png).decode())
     page.evaluate('cameraMock.imageReady')
+    progress('continuous capture')
     open_camera(page)
     expect(page.locator('#slCameraShutter')).to_be_enabled()
     page.locator('#slCameraShutter').click()
@@ -109,19 +130,22 @@ def run(page, report):
     before = page.evaluate(PHOTOS)
     assert len(before) == 1 and before[0]['original'] == hashlib.sha256(png).hexdigest(), before
     # No explicit openDrawing/selectRecord is allowed between reload and proof.
+    progress('continuous reload')
     report['continuousReload'] = reload_return(page)
     assert page.evaluate(PHOTOS) == before
     report['nativePhotoBytesRetained'] = True
 
     # A peer update repaints the same selected record through real sync-view.
+    progress('incoming sync preserving selected record')
     result = page.evaluate("""async()=>{
       const project=JSON.parse(SentlogRecords.getItem(WORKSPACE_KEY)).projects.find(p=>p.id==='memo-project');
       const payload={project:structuredClone(project),drawings:project.drawings.map(meta=>({meta:structuredClone(meta),
         state:JSON.parse(SentlogRecords.getItem(drawingStorageKey(meta.id)))}))};
       const drawing=payload.drawings.find(d=>d.meta.id==='memo-plan-a');
-      const index=drawing.state.shapes.findIndex(r=>r.id==='survey-b');
+      const index=drawing.state.shapes.findIndex(r=>r.id==='damage-a');
+      const expectedHeads=SentlogRecordCollaboration.view(drawing.state.shapes[index]).fields.member.headIds;
       drawing.state.shapes[index]=SentlogRecordCollaboration.setField(drawing.state.shapes[index],'member','peer field',
-        {revisionId:'camera-return-peer',actor:{deviceId:'synthetic-peer',deviceName:'synthetic'},at:Date.now()});
+        {revisionId:'camera-return-peer',expectedHeads,actor:{deviceId:'synthetic-peer',deviceName:'synthetic'},at:Date.now()});
       const result=await sentlogSyncView.commit({client_key:project.id},{payload},JSON.stringify(project));
       await SentlogRecords.settled();return result;
     }""")
@@ -131,6 +155,7 @@ def run(page, report):
     assert page.evaluate(PHOTOS) == before
 
     # Native camera fallback must establish a checkpoint in the actual click.
+    progress('native camera capture and reload')
     page.evaluate(CAMERA_MOCK, base64.b64encode(png).decode())
     page.evaluate('cameraMock.imageReady')
     open_camera(page)
@@ -144,6 +169,7 @@ def run(page, report):
     assert page.evaluate(PHOTOS) == after_native
 
     # Intentional Back/selection changes must not resurrect the older record.
+    progress('deliberate navigation')
     page.locator('#navBackBtn').click()
     assert not page.evaluate(f"sessionStorage.getItem('{KEY}')")
     page.reload(wait_until='domcontentloaded');ready(page)
@@ -157,11 +183,13 @@ def run(page, report):
     assert page.evaluate('currentView') == 'projects'
 
     # Both kinds of inspector selection use the actual application's adapters.
+    progress('normal damage reload')
     reopen(page, 'damage-a')
     remember_without_photo(page)
     report['damageReload'] = reload_return(page, record='damage-a')
 
     # Real PDF rendering: recover page 2 even if the last durable view was 1.
+    progress('real PDF setup and page 2 reload')
     encoded_pdf = base64.b64encode(two_page_pdf()).decode()
     page.evaluate("""async encoded=>{
       const file=new File([Uint8Array.from(atob(encoded),c=>c.charCodeAt(0))],'return.pdf',{type:'application/pdf'});
@@ -182,6 +210,7 @@ def run(page, report):
     report['pdfReload'] = reload_return(page, drawing='return-pdf', record='pdf-record', number=2)
 
     # Missing/archived sources must not be reopened; existing photo bytes remain.
+    progress('archived source rejection')
     page.evaluate("""()=>localStorage.setItem('sentlogArchiveControlV1:',JSON.stringify([
       {client_key:'memo-project',status:'archived',checking:false}]))""")
     page.reload(wait_until='domcontentloaded');ready(page)
@@ -235,6 +264,8 @@ def main():
             errors = []
             page.on('pageerror', lambda error: errors.append(str(error)))
             try:
+                report['phase'] = 'initial ready'
+                print('CAMERA_RETURN_PROGRESS '+json.dumps({'engine': args.engine, 'phase': report['phase']}), flush=True)
                 page.goto(origin+'/sentlog/', wait_until='domcontentloaded');ready(page)
                 run(page, report)
                 assert not errors, errors

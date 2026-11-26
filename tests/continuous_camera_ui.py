@@ -595,15 +595,18 @@ def run_orientation(page, engine, screenshot_dir=None):
         # still be loading, and can sample a discarded image in WebKit.
         photos = page.evaluate("""id=>JSON.parse(SentlogRecords.getItem(drawingStorageKey(id)))
           .shapes.find(record=>record.id==='survey-a').photos.map(photo=>({id:photo.id,name:photo.name||'変状写真'}))""", drawing_id)
-        index = next(index for index, photo in enumerate(photos) if photo['id'] == photo_id)
+        # Canonical collaboration order is deliberately independent of the
+        # chronological grid. Identify this image by its unique saved name;
+        # the capture-order regression separately verifies the presentation.
+        name = next(photo['name'] for photo in photos if photo['id'] == photo_id)
         page.wait_for_function("""names=>{
           const items=[...document.querySelectorAll('#photoGrid .photo-thumb')];
-          return items.length===names.length&&items.every((item,index)=>{
-            const image=item.querySelector('img');
-            return item.title===names[index]&&image?.src&&image.complete&&image.naturalWidth>0;
+          return items.length===names.length&&names.every(name=>{
+            const matches=items.filter(item=>item.title===name),image=matches[0]?.querySelector('img');
+            return matches.length===1&&image?.src&&image.complete&&image.naturalWidth>0;
           });
         }""", arg=[photo['name'] for photo in photos])
-        image = page.locator('#photoGrid .photo-thumb img').nth(index)
+        image = page.locator('#photoGrid').get_by_alt_text(name, exact=True)
         image.scroll_into_view_if_needed()
         return image.evaluate(r"""async image=>{
           const source=image.currentSrc||image.src;
