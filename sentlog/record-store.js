@@ -116,6 +116,12 @@
   const copy=value=>structuredClone(value);
   const scopeKeys=['ownerId','projectId','deviceId'];
   const FILE_CHUNK_BYTES=2*1024*1024;
+  const FILE_COMPARE_MS=5000;
+  function fileIdentity(value){
+    if(!(value instanceof Blob))return null;
+    return JSON.stringify([value.size,value.type,typeof value.name==='string'?value.name:null,
+      Number.isFinite(value.lastModified)?value.lastModified:null]);
+  }
   async function recordBlobHash(blob){
     if(window.SentlogBlobSha256?.digest)return window.SentlogBlobSha256.digest(blob,{crypto});
     if(blob.size>FILE_CHUNK_BYTES)throw journalError('JOURNAL_HASH_UNAVAILABLE','大きなファイルを安全に照合する機能を読み込めません。保存済みデータを保持して停止しました。画面を更新してください。');
@@ -295,12 +301,12 @@
   // Read preimages, append the immutable intent, and mutate the legacy view in
   // ONE transaction. A completed canvas save therefore always has a replayable
   // intent, even if the process dies before the independent replica is written.
-  function journalMutation(tx,{writes=[],fileWrites=[],fileDeletes=[],expectedFileStates=[],kind='batch',contexts=[],archiveRelease=null}={},mutate){
+  function journalMutation(tx,{writes=[],fileWrites=[],fileDeletes=[],expectedFileStates=[],kind='batch',contexts=[],archiveRelease=null,unchangedFile=null}={},mutate){
     const s=tx.objectStore(STORE),control=tx.objectStore(CONTROL),log=tx.objectStore(JOURNAL);
     const recordKeys=[...new Set(writes.map(x=>x[0]))],fileKeys=[...new Set([...fileWrites.map(x=>x.key),...fileDeletes.map(x=>typeof x==='string'?x:x.key)])];
     const archiveContext=contexts.find(x=>x.operation==='archive-local'&&x.context?.localArchive===true);
     const before=new Map(),oldFiles=new Map(),fileStates=new Map();let workspaceBefore=null,allBindings=[],clock=0,archiveRows=[],rawKeys=new Set(),
-      waiting=3+recordKeys.length+fileKeys.length+expectedFileStates.length+(archiveContext?2:0);
+      waiting=3+recordKeys.length+fileKeys.length+expectedFileStates.length+(archiveContext?2:0)+(unchangedFile?1:0);
     function stop(error){tx.sentlogJournalError=error;try{tx.abort();}catch{}}
     function ready(){
       if(--waiting)return;
@@ -337,6 +343,16 @@
         }
         if(contexts.some(x=>x.origin==='remote')&&affected.projectIds.some(id=>bound.some(x=>x.localProjectId===id))&&changes.some(x=>x.key===WS||x.key.startsWith(DRAW)))
           throw journalError('JOURNAL_REMOTE_WRITER','旧方式の共有処理がこの案件を変更しようとしたため停止しました');
+        // The byte comparison ran outside this transaction. Recheck its durable
+        // file revision here, after all ordinary ownership/handover guards. A
+        // concurrent write/delete invalidates the proof and follows the normal
+        // write path, preserving that intervening file in the journal.
+        if(unchangedFile&&kind==='file-write'&&!writes.length&&!fileDeletes.length&&fileWrites.length===1&&
+          fileWrites[0].key===unchangedFile.key&&fileStates.get(unchangedFile.key)===unchangedFile.sequence&&
+          fileIdentity(oldFiles.get(unchangedFile.key))===unchangedFile.identity&&
+          fileIdentity(fileWrites[0].value)===unchangedFile.identity){
+          mutate({unchanged:true,value:oldFiles.get(unchangedFile.key)});return;
+        }
         const seq=clock+1;
         const ownedIds=new Set(workspaceOf(workspaceAfter).projects.flatMap(project=>(project.drawings||[]).map(d=>d.id)));
         const hasOrphan=affected.drawingIds.some(id=>!ownedIds.has(id));
@@ -370,6 +386,7 @@
     for(const key of recordKeys)s.get(PREFIX+key).onsuccess=e=>{before.set(key,e.target.result??null);ready();};
     for(const key of fileKeys)s.get(key).onsuccess=e=>{oldFiles.set(key,e.target.result??null);ready();};
     for(const expected of expectedFileStates)control.get('file:'+expected?.key).onsuccess=e=>{fileStates.set(expected?.key,Number(e.target.result)||0);ready();};
+    if(unchangedFile)control.get('file:'+unchangedFile.key).onsuccess=e=>{fileStates.set(unchangedFile.key,Number(e.target.result)||0);ready();};
     if(archiveContext){journalRows(log).onsuccess=e=>{archiveRows=e.target.result.filter(x=>x.kind==='sentlog-app-intent');ready();};
       s.getAllKeys(IDBKeyRange.bound(PREFIX,PREFIX+'\uffff')).onsuccess=e=>{rawKeys=new Set(e.target.result.map(key=>key.slice(PREFIX.length)));ready();};}
   }
@@ -1291,12 +1308,63 @@
         if(result===false)throw fileError('FILE_WRITE_GUARD','保存する案件・写真が変更されました。上書きを止めました');
       }
     }
+    // This is only a no-op optimization. Do not keep an IndexedDB transaction
+    // alive while reading Blob bytes, and never replace changed-file history.
+    // A failed comparison uses the existing write path; cancellation and the
+    // caller's synchronous guards still reject normally.
+    async function unchangedCandidate(){
+      // Explicit lifecycle operations may update bindings even when the file
+      // bytes match. Preserve their existing transaction side effects.
+      const identity=fileIdentity(value);if(onlyIfMissing||identity===null||
+        options.operation==='restore'||options.operation==='archive-local')return null;
+      if(typeof setTimeout!=='function'||typeof clearTimeout!=='function')return null;
+      const deadline=Date.now()+FILE_COMPARE_MS;
+      function compareWait(reading,cancelRead){
+        return new Promise((resolve,reject)=>{
+          let finished=false,timer;
+          const finish=(error,result)=>{
+            if(finished)return;finished=true;clearTimeout(timer);signal?.removeEventListener('abort',cancel);
+            if(error)try{cancelRead?.();}catch{}
+            error?reject(error):resolve(result);
+          };
+          const cancel=()=>finish(fileError('FILE_WRITE_ABORTED','ファイルの保存を中止しました'));
+          // Keep handlers on an uncancellable native Blob read after timeout.
+          // Its eventual completion cannot change the subsequent write.
+          Promise.resolve(reading).then(result=>finish(null,result),error=>finish(error));
+          signal?.addEventListener('abort',cancel,{once:true});
+          timer=setTimeout(()=>finish(fileError('FILE_COMPARE_TIMEOUT','同一ファイルの照合を打ち切りました')),Math.max(0,deadline-Date.now()));
+          if(signal?.aborted)cancel();
+        });
+      }
+      let before,sequence;
+      try{
+        const tx=transaction('readonly'),done=complete(tx);
+        tx.objectStore(STORE).get(key).onsuccess=e=>{before=e.target.result;};
+        tx.objectStore(CONTROL).get('file:'+key).onsuccess=e=>{sequence=Number(e.target.result)||0;};
+        await compareWait(done,()=>tx.abort());
+      }catch(error){check();return null;}
+      check();if(fileIdentity(before)!==identity||!Number.isSafeInteger(sequence)||sequence<0)return null;
+      for(let offset=0;offset<value.size;offset+=FILE_CHUNK_BYTES){
+        check();if(Date.now()>=deadline)return null;
+        const end=Math.min(value.size,offset+FILE_CHUNK_BYTES);let buffers;
+        try{
+          const parts=[before.slice(offset,end),value.slice(offset,end)];
+          if(parts.some(part=>part.size!==end-offset))return null;
+          buffers=await compareWait(Promise.all(parts.map(part=>part.arrayBuffer())));
+        }catch(error){check();return null;}
+        check();if(buffers.some(buffer=>Object.prototype.toString.call(buffer)!=='[object ArrayBuffer]'||buffer.byteLength!==end-offset))return null;
+        const a=new Uint8Array(buffers[0]),b=new Uint8Array(buffers[1]);
+        for(let i=0;i<a.length;i++)if(a[i]!==b[i])return null;
+      }
+      check();return {key,sequence,identity};
+    }
     let task;fileGenerations.set(key,(fileGenerations.get(key)||0)+1);
     // Register the task before a synchronous guard can reject it. Otherwise
     // finally deletes undefined, leaving a rejected task in fileTasks forever.
     task=Promise.resolve().then(async()=>{
       try{
         check();await connect();check();
+        const unchangedFile=await unchangedCandidate();check();
         const result=await new Promise((resolve,reject)=>{
           let tx;
           try{tx=transaction('readwrite');}catch(error){reject(error);return;}
@@ -1321,7 +1389,8 @@
             if(settled)return;
             try{
               check();
-              journalMutation(tx,{fileWrites:[{key,value}],kind:'file-write',contexts:[contextOf(options)]},()=>{
+              journalMutation(tx,{fileWrites:[{key,value}],kind:'file-write',contexts:[contextOf(options)],unchangedFile},result=>{
+                if(result?.unchanged){check();saved={written:false,value:result.value,unchanged:true};return;}
                 check();saved={written:true,value};const q=store.put(value,key);
                 q.onerror=()=>{reason=reason||q.error;};
                 q.onsuccess=()=>{if(settled)return;try{check();}catch(error){abort(error);}};
@@ -1437,7 +1506,7 @@
   }
   window.SentlogRecords={init,flush,settled,writeFile,retry,batch,replaceAll,stats,
     deltaJournal,openFilesDatabase,removeFiles,clearFiles,writerState,readFileStates,
-    getFileWriteCapabilities:()=>({guarded:true,onlyIfMissing:true,writerState:true,journaled:connection?.version===DB_VERSION}),
+    getFileWriteCapabilities:()=>({guarded:true,onlyIfMissing:true,writerState:true,fileWriteDedupVersion:1,journaled:connection?.version===DB_VERSION}),
     uncommittedFiles:()=>[...failedFiles].map(([key,value])=>({key,value})),
     get ready(){return initialized;},get pending(){return pending.size+inFlight>0||fileTasks.size>0||operation;},get failed(){return failures.size>0;},
     get issues(){return [...failures];},get migration(){return migrationInfo;},
