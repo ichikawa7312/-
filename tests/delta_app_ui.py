@@ -385,11 +385,40 @@ def run(engine, cloud, root):
                            for r in cloud.photo_requests) for asset in seed_assets)
             recovery=b.evaluate('()=>({rounds:__deltaPhotoDiagnostics.recovery,ui:__deltaPhotoDiagnostics.syncUi})')
             progress=next((row for row in recovery['rounds'] if row.get('recovered')==16 and row.get('remaining')==1),None)
-            assert progress and 700<=progress.get('nextStart',0)-progress['at']<25000, recovery
+            assert progress, recovery
+            batches=[json.loads('['+request['query']['client_key'][0][4:-1]+']') for request in cloud.photo_requests
+                     if request['device']==B and request['path'].endswith('/sentlog_assets') and request['method']=='GET'
+                     and request['query'].get('client_key',[''])[0].startswith('in.(')]
+            assert len(batches)>=2 and [len(batch) for batch in batches[:2]]==[16,1], batches
+            assert set(batches[0]).isdisjoint(batches[1]) and set(batches[0]+batches[1])==set(photo_keys), batches
+            final_asset=next(asset for asset in seed_assets if asset['client_key']==batches[1][0])
+            final_download=next(request for request in cloud.photo_requests if request['device']==B
+                                and request['method']=='GET' and request['path'].endswith('/'+final_asset['storage_path']))
+            resume_delay=round(final_download['at']*1000-progress['at'])
+            # An already queued all-project or manual-force request may run
+            # before the ordinary 800 ms defer. No further test action starts
+            # recovery; actual Storage must resume without the 30 s error wait.
+            assert 0<=resume_delay<30000, (resume_delay,recovery)
             assert any(row['level']=='pending' and '残り1件' in row['message'] for row in recovery['ui']), recovery
             b.locator('#sentlogCloudModal').get_by_role('button',name='閉じる',exact=True).click()
             print('PASS real 17-photo cutoff receives 16, shows pending recovery, resumes automatically after '
-                  +str(progress['nextStart']-progress['at'])+' ms, and verifies every byte before activation',flush=True)
+                  +str(resume_delay)+' ms, and verifies every byte before activation',flush=True)
+            # Complete the expanded baseline before the existing editing flow.
+            # Otherwise its rapid setting changes can exhaust the intentional
+            # snapshot fence retries while these 17 initial ACKs are in flight.
+            def baseline_received_by_both():
+                for asset in seed_assets:
+                    for device in (A,B):
+                        receipt=cloud.receipts.get((asset['id'],device))
+                        if not receipt or receipt['owner_id']!=OWNER or receipt['device_id']!=device \
+                                or receipt['sha256']!=asset['sha256'] or receipt['byte_size']!=asset['byte_size']:
+                            return False
+                return all(page.evaluate("""ids=>window.__deltaPhotoDiagnostics.events.some(event=>
+                  event.stage==='application.photos'&&event.event==='done'&&event.complete===true&&
+                  event.references?.length===ids.length&&ids.every(id=>event.references.some(ref=>ref.assetId===id)))""",
+                  [asset['id'] for asset in seed_assets]) for page in (a,b))
+            wait(cloud,a,baseline_received_by_both,'Baseline delivery did not produce all 34 exact-byte photo receipts')
+            print('PASS all 17 baseline photos have exact-byte ACKs from both devices before further editing',flush=True)
 
             for page,scale,rotation in [(a,125,None),(b,None,90)]:
                 page.evaluate("""async ({scale,rotation})=>{
