@@ -7,6 +7,9 @@ on:
       - 'scripts/build_*.py'
       - 'sentlog/delta-sync-*'
       - 'sentlog/record-store.js'
+      - 'sentlog/backup-format.js'
+      - 'sentlog/startup-backup-recovery.js'
+      - 'sentlog/storage-restore.html'
       - 'sentlog/blob-sha256.js'
       - 'tools/blob-hash-runtime/**'
       - 'sentlog/record-collaboration.js'
@@ -17,6 +20,8 @@ on:
       - 'tests/record_storage_scale_ui.py'
       - 'tests/record_rescue_ui.py'
       - 'tests/record_startup_guard_ui.py'
+      - 'tests/startup_backup_recovery.test.cjs'
+      - 'tests/startup_backup_recovery_ui.py'
       - 'tests/photo_grid_layout_ui.py'
       - 'tests/fixtures/render_selected_photos_v205.js'
       - 'tests/asset_download_budget.test.cjs'
@@ -100,6 +105,9 @@ jobs:
       - name: Verify startup protection preserves partial native records
         timeout-minutes: 3
         run: python tests/record_startup_guard_ui.py --engine ${{ matrix.engine }} --built-root . --report /tmp/sentlog-delta-app-startup-guard/${{ matrix.engine }}.json
+      - name: Verify startup backup recovery preserves native data and resumes safely
+        timeout-minutes: 3
+        run: python tests/startup_backup_recovery_ui.py --engine ${{ matrix.engine }} --built-root . --report /tmp/sentlog-delta-app-startup-backup/${{ matrix.engine }}.json
       - name: Verify delayed photo reads preserve the native delete target
         timeout-minutes: 3
         run: python tests/photo_grid_layout_ui.py --engine ${{ matrix.engine }} --built-root . --report /tmp/sentlog-delta-app-photo-grid/${{ matrix.engine }}.json

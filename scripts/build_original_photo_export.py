@@ -110,3 +110,6 @@ subprocess.run([sys.executable, 'scripts/build_photo_grid_layout.py'], cwd=ROOT,
 
 # Promptly reconcile new photo-file history through the existing scoped queue.
 subprocess.run([sys.executable, 'scripts/build_file_journal_wake.py'], cwd=ROOT, check=True)
+
+# Restore a verified backup only into an empty, previously used record store.
+subprocess.run([sys.executable, 'scripts/build_startup_backup_recovery.py'], cwd=ROOT, check=True)
