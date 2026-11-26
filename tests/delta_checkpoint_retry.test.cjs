@@ -119,6 +119,7 @@ function fixture({races=1,error=STALE,httpStatus=409}={}){
     h.switchAccount=()=>{context.session={user:{id:OTHER},access_token:'other-fixture-token'};h.authGeneration++;
       for(const fn of auth)fn('SIGNED_IN',context.session);h.api.reset();};
     context.window.SentlogSyncTraffic={withFileLock:async(key,fn)=>fn()};
+    context.window.SentlogDeltaMigrationRecovery=require('../sentlog/delta-sync-migration-recovery.js');
     context.window.SentlogDeltaAppMigration={createInstaller:()=>async()=>{throw Error('already active: migration must not run');}};
     context.window.SentlogDeltaAppRuntime={createRuntime:options=>{
       const runtime=Runtime.createRuntime({...options,fetch,network:()=>context.navigator.onLine,visible:()=>!context.document.hidden,

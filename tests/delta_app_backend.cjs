@@ -52,7 +52,8 @@ async function createBackend(){
   ALTER TABLE public.sentlog_assets ADD COLUMN updated_at timestamptz DEFAULT now();
   GRANT SELECT,INSERT,UPDATE,DELETE ON public.sentlog_project_snapshots,public.sentlog_projects,public.sentlog_devices TO authenticated;
   GRANT SELECT ON public.sentlog_assets,public.sentlog_pc_receipts TO authenticated;`);
- for(const file of ['db/collaboration_v1.sql','docs/sentlog-delta-checkpoint-prototype.sql','docs/sentlog-delta-app-lifecycle.sql'])await db.exec(read(file));
+ for(const file of ['db/collaboration_v1.sql','docs/sentlog-delta-checkpoint-prototype.sql','docs/sentlog-delta-app-lifecycle.sql',
+  'docs/sentlog-delta-activation-performance.sql'])await db.exec(read(file));
  const columns={};for(const table of tableNames){columns[table]=new Map((await db.query("SELECT column_name,udt_name FROM information_schema.columns WHERE table_schema='public' AND table_name=$1",[table])).rows.map(r=>[r.column_name,r.udt_name]));}
  function column(table,key){if(!columns[table]?.has(key))throw error('PGRST204','Unsupported test column: '+key);return '"'+key+'"';}
  function selection(table,query){const select=query.get('select')||'*';if(select==='*')return '*';return select.split(',').map(k=>column(table,k)).join(',');}

@@ -13,7 +13,15 @@
   const same=(a,b)=>a&&b&&SCOPE.every(k=>a[k]===b[k]);
   const fail=(code,message)=>Object.assign(Error(message),{code});
   function insist(ok,code,message){if(!ok)throw fail(code,message);}
-  function createInstaller({records,onProgress=()=>{},factories={}}={}){
+  function reviewFailure(prepared){
+    const issues=prepared.plan?.reviewItems?.filter(item=>item.blocking)||[],counts=new Map();
+    for(const issue of issues){const message=issue.message||'保存内容の確認が必要です';counts.set(message,(counts.get(message)||0)+1);}
+    const messages=[...counts].slice(0,3).map(([message,count])=>message+(count>1?'（'+count+'件）':''));
+    if(counts.size>3)messages.push('ほか'+(counts.size-3)+'種類の確認待ち');
+    return Object.assign(fail('DELTA_MIGRATION_REVIEW',messages.join(' / ')||
+      'コピー中に入力が更新されました。元の記録を保持し、最新の内容で引継ぎを再試行します'),{issues});
+  }
+  function createInstaller({records,onProgress=()=>{},recoverMissingFiles,factories={}}={}){
     insist(records?.deltaJournal,'DELTA_MIGRATION_WRITER','変更を保護する保存処理が必要です');
     const make={source:L.createSource,migrationStore:M.createStore,migration:M.createCoordinator,bootstrap:B.createCoordinator,...factories};
     return async function install({scope,localProjectId,transport,store,mode,revision,currentScope,actor}={}){
@@ -38,6 +46,26 @@
       const migration=make.migration({source,store:migrationStore,localProjectId,currentScope,onProgress});
       const bootstrap=make.bootstrap({source,migration,replicaStore:store,transport,localProjectId,currentScope,onProgress,timeoutMs:300000});
       try{
+        if(typeof recoverMissingFiles==='function'){
+          insist(typeof records.deltaJournal.missingCutoffFiles==='function'&&
+            typeof records.deltaJournal.restoreMissingCutoffFile==='function',
+            'DELTA_MIGRATION_RECOVERY_UPGRADE','不足ファイルの照合機能を読み込めません。元の記録を保持しています');
+          const missing=await records.deltaJournal.missingCutoffFiles({scope,localProjectId,bindingId:staged.bindingId});validate();
+          if(missing.length){
+            onProgress({status:'recovering-missing-files',localProjectId,total:missing.length});
+            await recoverMissingFiles({scope,localProjectId,bindingId:staged.bindingId,serverRevision:staged.serverRevision,
+              missing,validate,restore:async file=>{
+                validate();const restored=await records.deltaJournal.restoreMissingCutoffFile({...file,scope,localProjectId,
+                  bindingId:staged.bindingId,validate});validate();return restored;
+              }});validate();
+            const remaining=await records.deltaJournal.missingCutoffFiles({scope,localProjectId,bindingId:staged.bindingId});validate();
+            if(remaining.length)throw reviewFailure({plan:{reviewItems:remaining.map(item=>({
+              code:'LEGACY_SOURCE_FILE_MISSING',blocking:true,message:'写真または図面ファイルを確認できません',
+              sourceIssue:{code:'LEGACY_SOURCE_FILE_MISSING',blocking:true,key:item.key,kind:item.kind,
+                drawingId:item.drawingId,...(item.photoId?{photoId:item.photoId}:{})}
+            }))}});
+          }
+        }
         let receipt=mode.baseline||await transport.prepareBaseline(mode.snapshotRevision??revision??staged.serverRevision);validate();
         while(receipt.state==='prepared'||receipt.importedCount<receipt.recordCount){
           const before=receipt.importedCount;
@@ -46,8 +74,7 @@
             'DELTA_MIGRATION_PROGRESS','初期記録の検証が進んでいません。保存済みの内容を保持しています');
         }
         let prepared=await bootstrap.prepare({migrationId,receipt});validate();
-        insist(prepared.readyForInstall,'DELTA_MIGRATION_REVIEW',prepared.plan?.reviewItems?.filter(x=>x.blocking).map(x=>x.message).join(' / ')||
-          'コピー中に入力が更新されました。元の記録を保持し、最新の内容で引継ぎを再試行します');
+        if(!prepared.readyForInstall)throw reviewFailure(prepared);
         const assertFence=()=>{validate();return records.deltaJournal.assertFence({scope,localProjectId});};
         assertFence();
         if(!mode.enabled){

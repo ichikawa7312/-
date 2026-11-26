@@ -1,7 +1,35 @@
 // sentlog-delta-app-v1: the application journal, replica and certified PC view.
 const sentlogDeltaStatuses=new Map();
 const sentlogDeltaCheckpointTimes=new Map();
+const sentlogDeltaRecoveryFields='id,owner_id,project_id,client_key,kind,file_name,storage_path,mime_type,byte_size,sha256,status,metadata';
+const sentlogDeltaRecoverMissing=window.SentlogDeltaMigrationRecovery.createRecovery({
+  async listAssets(scope,keys){
+    const values='('+keys.map(key=>JSON.stringify(key)).join(',')+')';
+    return rest('/rest/v1/sentlog_assets?project_id=eq.'+enc(scope.projectId)+
+      '&client_key=in.'+enc(values)+'&select='+enc(sentlogDeltaRecoveryFields));
+  },
+  async readAsset(scope,id){
+    const rows=await rest('/rest/v1/sentlog_assets?project_id=eq.'+enc(scope.projectId)+
+      '&id=eq.'+enc(id)+'&select='+enc(sentlogDeltaRecoveryFields));
+    return rows?.length===1?rows[0]:null;
+  },
+  async download(asset,{signal}){
+    const parts=asset.storage_path.split('/').map(enc).join('/');
+    return syncStatus.track('不足している写真・図面を受信中',async()=>{
+      const response=await fetch(SUPABASE_URL+'/storage/v1/object/authenticated/'+BUCKET+'/'+parts,
+        {signal,redirect:'error',credentials:'omit',cache:'no-store',headers:headers()});
+      if(!response.ok)throw Error('不足ファイルの受信に失敗しました（'+response.status+'）。元の記録を保持しています');
+      const blob=await response.blob();
+      return asset.mime_type&&blob.type!==asset.mime_type?new Blob([blob],{type:asset.mime_type}):blob;
+    });
+  },
+  async readSnapshot(scope){
+    const rows=await rest('/rest/v1/sentlog_project_snapshots?project_id=eq.'+enc(scope.projectId)+'&select=revision,payload');
+    return rows?.length===1?rows[0]:null;
+  }
+});
 const sentlogDeltaInstaller=window.SentlogDeltaAppMigration.createInstaller({records:window.SentlogRecords,
+  recoverMissingFiles:sentlogDeltaRecoverMissing,
   onProgress:detail=>{if(detail.localProjectId)sentlogDeltaStatuses.set(detail.localProjectId,detail);}});
 const sentlogDeltaApp=window.SentlogDeltaAppRuntime.createRuntime({
   records:window.SentlogRecords,url:SUPABASE_URL,key:SUPABASE_KEY,session:()=>session,ensureSession,

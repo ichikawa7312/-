@@ -86,59 +86,66 @@
   async function run(snapshot,snapshotToken,signal){
    alive();const ctx={snapshotToken,controller:new AbortController(),queue:null,reason:null,generation:authGeneration()};active=ctx;
    const external=()=>cancel('ASSET_ABORTED');signal?.addEventListener('abort',external,{once:true});
-   function check(){
+   function checkFile(item){
+    const exclusive=localFiles.assertExclusive(fileKey(item));
+    if(exclusive&&typeof exclusive.then==='function')Promise.resolve(exclusive).catch(()=>{});
+    insist(exclusive===true,'ASSET_LEGACY_WRITER_ACTIVE','旧同期の写真保存・再試行が残っています。写真を保持して切替を待っています');
+   }
+   function check(item=currentItem){
     alive();if(ctx.reason)throw ctx.reason;
     insist(!ctx.controller.signal.aborted&&!signal?.aborted,'ASSET_ABORTED','写真の同期を中止しました');
     insist(Number.isSafeInteger(ctx.generation)&&authGeneration()===ctx.generation,'ASSET_AUTH_CHANGED','写真同期中にログイン情報が変わりました');
     insist(object(snapshotToken)&&currentSnapshotToken()===snapshotToken,'ASSET_SNAPSHOT_CHANGED','写真同期中に記録が変わりました。現在の記録を再確認します');
-    for(const item of descriptors){
-     const exclusive=localFiles.assertExclusive(fileKey(item));
-     if(exclusive&&typeof exclusive.then==='function')Promise.resolve(exclusive).catch(()=>{});
-     insist(exclusive===true,'ASSET_LEGACY_WRITER_ACTIVE','旧同期の写真保存・再試行が残っています。写真を保持して切替を待っています');
-    }
+    if(item)checkFile(item);
    }
+   // Each byte operation owns only its current photo. Re-scanning every
+   // unrelated photo at every network/IDB await makes a batch quadratic.
+   // Fence all files at entry/completion; fence the active file at every await.
+   // Other files are checked before their own work and their final readback.
+   function checkAll(){check(null);for(const item of descriptors)checkFile(item);}
    const options={signal:ctx.controller.signal,validate:check};
-   const issues=[],refs=[];let descriptors=[];
+   const issues=[],refs=[];let descriptors=[],currentItem=null;
    function issue(item,e){issues.push({drawingId:item?.drawingId||null,photoId:item?.photoId||null,
     code:typeof e?.code==='string'?e.code:e?.name==='QuotaExceededError'?'ASSET_QUOTA':'ASSET_LOCAL_FAILURE',
     message:typeof e?.code==='string'?String(e.message):'写真の保存・照合を完了できません。元の写真は保持しています'});}
    async function local(ref,allowMissing=true){
-    check();const value=await localFiles.read(fileKey(ref));check();
+    check(ref);const value=await localFiles.read(fileKey(ref));check(ref);
     if(value===undefined&&allowMissing)return undefined;
     insist(value instanceof root.Blob,'ASSET_LOCAL_COLLISION','写真の端末保存先に別の内容があります。上書きを止めました');
-    await A.verifyBlob(value,ref);check();return value;
+    await A.verifyBlob(value,ref);check(ref);return value;
    }
    async function mirror(ref,blob){
-    await A.verifyBlob(blob,ref);check();
+    const validate=()=>check(ref);
+    await A.verifyBlob(blob,ref);validate();
     await localFiles.withLock(fileKey(ref),async()=>{
-     check();let value=await local(ref);
+     validate();let value=await local(ref);
      if(value===undefined){
-      const saved=await localFiles.write(fileKey(ref),blob,{validate:check,onlyIfMissing:true,signal:ctx.controller.signal});check();
+      const saved=await localFiles.write(fileKey(ref),blob,{validate,onlyIfMissing:true,signal:ctx.controller.signal});validate();
       insist(object(saved)&&typeof saved.written==='boolean'&&saved.value instanceof root.Blob,
        'ASSET_LOCAL_COLLISION','端末へ保存された写真を確認できません');
-      await A.verifyBlob(saved.value,ref);check();
+      await A.verifyBlob(saved.value,ref);validate();
      }
-     await local(ref,false);check();
-    });check();
+     await local(ref,false);validate();
+    });validate();
    }
    const linked={online:()=>transport.online(),
     async download(ref,request){
-     check();let value;
-     await localFiles.withLock(fileKey(ref),async()=>{value=await local(ref);});check();
-     return value===undefined?transport.download(ref,{...request,validate:check}):value;
+     const validate=()=>check(ref);validate();let value;
+     await localFiles.withLock(fileKey(ref),async()=>{value=await local(ref);});validate();
+     return value===undefined?transport.download(ref,{...request,validate}):value;
     },
     async acknowledge(ref,request){
-     check();const row=await store.read(ref);check();
+     const validate=()=>check(ref);validate();const row=await store.read(ref);validate();
      insist(row?.phase==='received'||row?.phase==='acknowledged','ASSET_NOT_DURABLE','受信した写真の保存を確認できません');
-     await mirror(ref,row.blob);check();
-     const proof=await transport.acknowledge(ref,{...request,validate:check});check();
+     await mirror(ref,row.blob);validate();
+     const proof=await transport.acknowledge(ref,{...request,validate});validate();
      // A clear/import or another writer may have raced the network receipt.
      // Never promote that old result into a new local file state.
-     await localFiles.withLock(fileKey(ref),()=>local(ref,false));check();return proof;
+     await localFiles.withLock(fileKey(ref),()=>local(ref,false));validate();return proof;
     }};
    try{
     ctx.queue=A.createQueue({scope,store,transport:linked,currentScope,assertCurrent:check,timeoutMs,maxBytes,allowOriginals:false,allowArchivedRestore});
-    check();descriptors=collectPhotos(snapshot);check();let assets=[];
+    check();descriptors=collectPhotos(snapshot);checkAll();let assets=[];
     if(descriptors.length){
      try{assets=await transport.listPhotos(options);check();}
      catch(e){check();if(globalFailure(e))throw e;issue(null,e);}
@@ -149,6 +156,7 @@
      insist(!byTarget.has(id),'ASSET_COLLISION','同じ共有写真に複数の登録があります。写真を保持して確認を待っています');byTarget.set(id,ref);
     }
     for(const item of descriptors){
+     currentItem=item;
      check();try{
       let ref=byTarget.get(target(item));
       if(ref){
@@ -158,7 +166,7 @@
        let blob;await localFiles.withLock(fileKey(item),async()=>{check();blob=await localFiles.read(fileKey(item));check();});check();
        insist(blob!==undefined,'ASSET_REFERENCE_MISSING','共有写真の本体またはサーバー登録を取得待ちです');
        insist(blob instanceof root.Blob,'ASSET_LOCAL_COLLISION','写真の端末保存先に別の内容があります。上書きを止めました');
-       const uploaded=await transport.uploadPhoto(item,blob,options);check();ref=T.referenceFromAsset(uploaded.asset,scope);
+       const uploaded=await transport.uploadPhoto(item,blob,{...options,validate:()=>check(item)});check();ref=T.referenceFromAsset(uploaded.asset,scope);
        insist(target(ref)===target(item),'ASSET_BINDING','送信した写真と登録された対象が一致しません');
        for(const field of ['sha256','size','mimeType'])insist(!own(item,field)||item[field]===ref[field],
         'ASSET_COLLISION','送信した写真と登録された内容が異なります');
@@ -166,10 +174,12 @@
       }
       refs.push(ref);
      }catch(e){check();if(globalFailure(e))throw e;issue(item,e);}
+     finally{currentItem=null;}
     }
     refs.sort((a,b)=>a.assetId.localeCompare(b.assetId));
     await ctx.queue.ensure(refs);check();
     for(const ref of refs){
+     currentItem=ref;
      check();try{
       const row=await store.read(ref);check();
       if(row?.phase!=='waiting'&&row?.blob)await mirror(ref,row.blob);
@@ -181,13 +191,16 @@
        check();
       }
      }catch(e){check();if(globalFailure(e))throw e;issue(ref,e);}
+     finally{currentItem=null;}
     }
     const photoStatus=await ctx.queue.status(refs);check();
     // Recheck every mirror after the whole batch, including receipts restored
     // from a previous session. A cached receipt alone cannot certify this UI.
     for(const ref of refs){
+     currentItem=ref;
      try{const row=await store.read(ref);check();if(row?.phase==='acknowledged')await localFiles.withLock(fileKey(ref),()=>local(ref,false));check();}
      catch(e){check();if(globalFailure(e))throw e;issue(ref,e);}
+     finally{currentItem=null;}
     }
     const unresolved=descriptors.length-refs.length,issueTargets=new Set(issues.map(x=>JSON.stringify([x.drawingId,x.photoId])));
     const complete=unresolved===0&&issues.length===0&&photoStatus.complete;
@@ -197,7 +210,7 @@
     // photoStatus is the fully gated status too: a caller must not mistake an
     // empty resolved queue for successful delivery of unresolved photographs.
     const result={...delivered,references:copy(refs),photoStatus:delivered,queueStatus:photoStatus,issues};
-    check();return result;
+    checkAll();return result;
    }finally{
     ctx.queue?.close();signal?.removeEventListener('abort',external);if(active===ctx)active=null;
    }

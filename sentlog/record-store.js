@@ -591,6 +591,66 @@
       assertRestorationSnapshot(plan,data);tx.sentlogRestoreProof=plan;callback();
     },plan.recordKeys);
   }
+  function cutoffRecoveryReferences(binding){
+    bindingState(binding);
+    const raw=new Map(binding.cutoff.rawEntries),workspace=workspaceOf(raw.get(WS));
+    const projects=workspace.projects.filter(project=>project.id===binding.localProjectId);
+    if(projects.length!==1||!Array.isArray(projects[0].drawings))
+      throw journalError('JOURNAL_RECOVERY_PROJECT','保護した案件の図面一覧を確認できません');
+    const refs=new Map();
+    for(const drawing of projects[0].drawings){
+      const value=raw.get(DRAW+drawing.id),state=typeof value==='string'?JSON.parse(value):null;
+      if(!state||!Array.isArray(state.shapes))throw journalError('JOURNAL_RECOVERY_DRAWING','保護した図面の記録を確認できません');
+      const fileState=Object.fromEntries(Object.entries(state).filter(([key])=>!['shapes','collabDeletedRecords'].includes(key)));
+      const descriptor={drawingId:drawing.id,drawing:copy(drawing),state:copy(fileState)};
+      if(drawing.sourceType||drawing.fileName||state.sourceType||state.fileName){
+        const key='background:'+drawing.id;refs.set(key,{key,kind:'background',...descriptor,expected:[]});
+      }
+      for(const record of state.shapes)for(const photo of record.photos||[]){
+        if(typeof photo?.id!=='string'||!photo.id)continue;
+        const key='photo:'+drawing.id+':'+photo.id;
+        if(!refs.has(key))refs.set(key,{key,kind:'photo',...descriptor,photoId:photo.id,expected:[]});
+        refs.get(key).expected.push(copy(photo));
+      }
+    }
+    return refs;
+  }
+  function cutoffRecoveryCheck(validate){
+    if(typeof validate!=='function')throw journalError('JOURNAL_RECOVERY_GUARD','復旧する利用者・案件の確認が必要です');
+    const result=validate();
+    if(result&&typeof result.then==='function')Promise.resolve(result).catch(()=>{});
+    if(result===false||result&&typeof result.then==='function')
+      throw journalError('JOURNAL_RECOVERY_SCOPE','復旧中に利用者または案件が変わりました');
+  }
+  function cutoffRecoveryProof(ref,file,scope,serverRevision){
+    const proof=file.proof,kind=ref.kind==='background'?'drawing':'photo';
+    const clientKey=kind==='drawing'?'drawing:'+ref.drawingId:ref.key;
+    if(!(file.blob instanceof Blob)||!Number.isSafeInteger(file.size)||file.size<=0||file.blob.size!==file.size||
+      !/^[a-f0-9]{64}$/.test(file.sha256||'')||!proof||typeof proof.assetId!=='string'||!proof.assetId||
+      proof.projectId!==scope.projectId||proof.clientKey!==clientKey||proof.kind!==kind||
+      proof.drawingId!==ref.drawingId||(kind==='photo'&&proof.photoId!==ref.photoId)||
+      proof.sha256!==file.sha256||proof.size!==file.size)
+      throw journalError('JOURNAL_RECOVERY_PROOF','復旧ファイルの案件・識別情報・内容証明が一致しません');
+    for(const expected of ref.expected){
+      if(Object.prototype.hasOwnProperty.call(expected,'size')&&expected.size!==file.size||
+        Object.prototype.hasOwnProperty.call(expected,'sha256')&&String(expected.sha256).toLowerCase()!==file.sha256)
+        throw journalError('JOURNAL_RECOVERY_MISMATCH','保護した写真情報と復旧ファイルが一致しません。両方を保持しました');
+    }
+    if(kind==='drawing'){
+      const replacement=Object.values(ref.state?.pageReplacements||{}).filter(item=>item&&Number(item.updatedAt)>0)
+        .sort((a,b)=>Number(b.updatedAt)-Number(a.updatedAt))[0];
+      if(replacement){
+        if(!/^[a-f0-9]{64}$/i.test(replacement.pdfHash||'')||String(replacement.pdfHash).toLowerCase()!==file.sha256||
+          replacement.pdfSize&&Number(replacement.pdfSize)!==file.size||
+          String(proof.drawingRevision?.pdfHash||'').toLowerCase()!==file.sha256||
+          Number(proof.drawingRevision?.updatedAt)!==Number(replacement.updatedAt))
+          throw journalError('JOURNAL_RECOVERY_REVISION','差替え済み図面と復旧ファイルの版が一致しません');
+      }else if(!Number.isSafeInteger(serverRevision)||serverRevision<1||proof.snapshotRevision!==serverRevision||
+        proof.sourceType!==(ref.state?.sourceType??ref.drawing?.sourceType??null)||
+        proof.fileName!==(ref.state?.fileName??ref.drawing?.fileName??''))
+        throw journalError('JOURNAL_RECOVERY_REVISION','保護した図面の保存版・形式・ファイル名を照合できません');
+    }
+  }
   const deltaJournal={
     version:1,
     prepareArchivedRelease,
@@ -635,6 +695,66 @@
       const binding=bindings.get(localProjectId);
       if(!binding||!sameScope(binding.scope,scope))throw journalError('JOURNAL_SCOPE','保護した控えの共有先が一致しません');
       return hydrateBinding(binding).cutoff;
+    },
+    async missingCutoffFiles({scope:inputScope,localProjectId,bindingId}={}){
+      assertReady();const scope=checkedScope(inputScope);await connect();
+      const binding=await readControl('binding:'+localProjectId);
+      if(!binding||!sameScope(binding.scope,scope)||bindingId&&binding.id!==bindingId)
+        throw journalError('JOURNAL_RECOVERY_SCOPE','復旧する移行前の控えが一致しません');
+      if(binding.phase!=='staging')return [];
+      const existing=new Set((binding.cutoff.files||[]).map(file=>file.key));
+      // Existing protected bytes, including unreadable/empty ones, are never
+      // replaced by recovery. Only an absent referenced key can be appended.
+      return [...cutoffRecoveryReferences(binding).values()].filter(ref=>!existing.has(ref.key))
+        .map(ref=>({...ref,recoverable:true}));
+    },
+    async restoreMissingCutoffFile({scope:inputScope,localProjectId,bindingId,key,blob,size,sha256,proof,validate}={}){
+      assertReady();const scope=checkedScope(inputScope),file={key,blob,size,sha256,proof};
+      cutoffRecoveryCheck(validate);await connect();cutoffRecoveryCheck(validate);
+      const initial=await readControl('binding:'+localProjectId);
+      if(!initial||!sameScope(initial.scope,scope)||initial.id!==bindingId||initial.phase!=='staging')
+        throw journalError('JOURNAL_RECOVERY_SCOPE','復旧する控えの共有先または状態が変わりました');
+      const ref=cutoffRecoveryReferences(initial).get(key);
+      if(!ref)throw journalError('JOURNAL_RECOVERY_KEY','保護した記録に存在しないファイルは復旧できません');
+      cutoffRecoveryProof(ref,file,scope,initial.cutoff.serverRevision);
+      if(!await archiveReleaseMatches(blob,{size,sha256}))
+        throw journalError('JOURNAL_RECOVERY_BYTES','復旧ファイルの内容照合に失敗しました');
+      cutoffRecoveryCheck(validate);
+      // One transaction saves the add-only protected copy and, only when
+      // absent, the live file plus its journal. A crash cannot strand one half.
+      const tx=transaction('readwrite'),done=complete(tx),control=tx.objectStore(CONTROL),files=tx.objectStore(STORE);
+      let binding,live,waiting=2,result,row,next;
+      const ready=()=>{if(--waiting)return;try{
+        cutoffRecoveryCheck(validate);
+        if(!binding||!sameScope(binding.scope,scope)||binding.id!==bindingId||binding.phase!=='staging')
+          throw journalError('JOURNAL_RECOVERY_SCOPE','保存直前に復旧先が変わりました');
+        const currentRef=cutoffRecoveryReferences(binding).get(key);
+        if(!currentRef)throw journalError('JOURNAL_RECOVERY_KEY','保存直前に復旧する参照を確認できません');
+        cutoffRecoveryProof(currentRef,file,scope,binding.cutoff.serverRevision);
+        const prior=(binding.cutoff.files||[]).find(item=>item.key===key);
+        if(prior){
+          if(prior.recovery?.sha256!==sha256||prior.recovery?.size!==size)
+            throw journalError('JOURNAL_RECOVERY_EXISTS','保護済みのファイルを上書きせず保持しました');
+          result={restored:false,idempotent:true,liveWritten:false};return;
+        }
+        next=copy(binding);const index=next.cutoff.files.length,id=cutoffFileKey(bindingId,index);
+        const receipt={version:1,kind:'sentlog-cutoff-recovery',...copy(proof),recoveredAt:Date.now()};
+        row={version:1,kind:'cutoff-file',id,bindingId,localProjectId,scope:copy(scope),key,revision:1,
+          value:blob,sha256,recovery:receipt};
+        next.cutoff.files.push({key,valueRef:id,recovery:receipt});
+        const save=()=>{
+          cutoffRecoveryCheck(validate);control.add(row,id);control.put(next,'binding:'+localProjectId);
+          if(live===undefined)files.add(blob,key);
+          result={restored:true,idempotent:false,liveWritten:live===undefined};
+        };
+        if(live===undefined)journalMutation(tx,{fileWrites:[{key,value:blob}],kind:'cutoff-file-recovery',
+          contexts:[contextOf({origin:'remote',operation:'file-recovery',context:{localProjectId,assetId:proof.assetId,bindingId}})]},save);
+        else save();
+      }catch(error){tx.sentlogJournalError=error;tx.abort();}};
+      control.get('binding:'+localProjectId).onsuccess=e=>{binding=e.target.result;ready();};
+      files.get(key).onsuccess=e=>{live=e.target.result;ready();};await done;
+      if(next){bindings.set(localProjectId,next);cutoffFiles.set(row.id,row);committedBindings(tx);notify();}
+      cutoffRecoveryCheck(validate);return result;
     },
     async pending({scope:inputScope,localProjectId}={}){
       assertReady();const scope=checkedScope(inputScope);await connect();const tx=transaction('readonly'),done=complete(tx);let result;

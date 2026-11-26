@@ -45,6 +45,13 @@ add('untrusted raw display fields and projection cache are ignored',forged);
 
 (async()=>{const db=new PGlite();try{
   for(const file of ['tests/delta_schema_fixture.sql','docs/sentlog-delta-v1-schema-prototype.sql','docs/sentlog-delta-semantic-validation-prototype.sql','docs/sentlog-delta-projection-prototype.sql'])await db.exec(read(file));
+  // Unit-test the exact optimized projection definitions. Full installation
+  // prerequisites, checkpoint integration and atomicity are covered separately.
+  const optimized=read('docs/sentlog-delta-activation-performance.sql');
+  for(const name of ['revision_heads','project_register','normalize_collab','project_record']){
+    const match=optimized.match(new RegExp('CREATE OR REPLACE FUNCTION sentlog_delta_private\\.'+name+'\\([\\s\\S]*?END \\$fn\\$;'));
+    assert(match,'optimized function '+name);await db.exec(match[0]);
+  }
   for(const {label,record} of cases){
     const expected=C.upgrade(record),view=C.view(expected);
     for(const key of ['globalNo','typeNo','autoLabel','recordNo','labelPosEditedAt'])delete expected[key];

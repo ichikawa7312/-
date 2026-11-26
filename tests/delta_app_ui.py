@@ -164,13 +164,18 @@ class Cloud(collaboration.Cloud):
         # PostgREST quotes reserved characters in text equality filters. Match
         # the decoded value when the real asset transport looks up its upload.
         normalized = {}
+        values = list(values)
         for key, terms in query.items():
             normalized[key] = []
             for term in terms:
+                if term.startswith('in.(') and term.endswith(')') and '"' in term:
+                    identities = json.loads('[' + term[4:-1] + ']')
+                    values = [value for value in values if str(value.get(key)) in identities]
+                    continue
                 if term.startswith('eq."') and term.endswith('"'):
                     term = 'eq.' + json.loads(term[3:])
                 normalized[key].append(term)
-        return base.FakeCloud.rows(values, normalized)
+        return base.FakeCloud.rows(values, {key: terms for key, terms in normalized.items() if terms})
 
     def route(self, route, device):
         request, url = route.request, urlparse(route.request.url)
@@ -281,25 +286,47 @@ def run(engine, cloud, root):
               return editFixture.snapshots();
             }""")
             b.evaluate(base.SETUP, {**setup, 'packs': baseline})
-            b.evaluate('async()=>{for(const [key,value]of editFixture.files)await SentlogRecords.writeFile(key,value);await SentlogRecords.settled();}')
+            # Reproduce the reported deadlock: the other device has received
+            # the photo reference but has not received its bytes when a durable
+            # migration cutoff is made. Its later restart must keep that cutoff.
+            b.evaluate('async()=>{for(const [key,value]of editFixture.files)if(!key.startsWith("photo:"))await SentlogRecords.writeFile(key,value);await SentlogRecords.settled();}')
+            b.evaluate("""async ({owner,project,device})=>{
+              await SentlogRecords.deltaJournal.begin({scope:{ownerId:owner,projectId:project,deviceId:device},
+                localProjectId:'edit-project',serverRevision:1,actor:{deviceId:device,deviceName:'検証iPhone'}});
+            }""",dict(owner=OWNER,project=PID,device=B))
             # Existing users migrate database-backed Files after reopening the
             # app, not just the fresh in-memory objects from a file picker.
             # Keep the real native File/Blob path when creating the cutoff.
             legacy_keys = ['background:edit-plan', 'photo:edit-plan:retained-photo']
             for page in (a, b):
                 before_files = page.evaluate(READ_NATIVE_FILES, legacy_keys)
-                assert all(not item.get('missing') for item in before_files), before_files
+                assert all(not item.get('missing') for item in before_files if page==a or item.get('key')!='photo:edit-plan:retained-photo'), before_files
                 assert_native_writes(page)
                 page.reload(wait_until='domcontentloaded')
                 page.wait_for_function('window.sentlogDeltaRuntime&&SentlogRecords.ready', timeout=45000)
                 page.evaluate('async()=>await sentlogAppReady')
                 after_files = page.evaluate(READ_NATIVE_FILES, legacy_keys)
                 assert after_files == before_files, 'Legacy native files changed across a real page restart before migration'
-                assert page.evaluate("SentlogRecords.deltaJournal.bindingFor('edit-project')===null")
+                if page==a:
+                    assert page.evaluate("SentlogRecords.deltaJournal.bindingStateFor('edit-project')===null")
+                else:
+                    assert page.evaluate("SentlogRecords.deltaJournal.bindingStateFor('edit-project')?.phase==='staging'")
             print('PASS existing native File/Blob bytes survive restart before protected application migration', flush=True)
+            # Existing restored shared bytes must work with both the recovery
+            # reader and the normal delta asset transport after activation.
+            seed_bytes=base.photo_png()
+            seed_hash=hashlib.sha256(seed_bytes).hexdigest()
+            seed_id='77777777-7777-4777-8777-777777777778'
+            seed_path=f'{OWNER}/{PID}/active-restore/{seed_id}/{seed_hash}/'+('c'*64)+'/77777777-7777-4777-8777-777777777779.png'
+            seed_asset=dict(id=seed_id,owner_id=OWNER,project_id=PID,client_key='photo:edit-plan:retained-photo',
+                kind='photo',file_name='synthetic.png',mime_type='image/png',byte_size=len(seed_bytes),sha256=seed_hash,
+                status='uploaded',source_device_id=A,storage_path=seed_path,
+                metadata=dict(local_project_key=base.PROJECT,drawing_id=base.DRAWING,photo_id='retained-photo'))
+            cloud.assets[seed_id]=seed_asset
+            cloud.blobs[seed_path]=seed_bytes
             cloud.backend.admin(op='seed', ownerId=OWNER,
                 devices=[dict(id=A,name='検証iPad'),dict(id=B,name='検証iPhone'),dict(id=PC,name='検証PC',type='pc')],
-                projects=[dict(id=PID,client_key=base.PROJECT,payload=baseline[0])],rollout=True)
+                projects=[dict(id=PID,client_key=base.PROJECT,payload=baseline[0])],assets=[seed_asset],rollout=True)
             for page in (a,b):
                 page.evaluate("async()=>{showProjects();sentlogImporting=false;await sentlogArchiveSync({force:true});}")
             wait(cloud,a,lambda:all(p.evaluate("SentlogRecords.deltaJournal.bindingFor('edit-project')?.phase==='active'") for p in (a,b)),
@@ -310,6 +337,12 @@ def run(engine, cloud, root):
             state=cloud.backend.admin(op='state',ownerId=OWNER,projectId=PID)
             assert state['heads'][0]['enabled'],state['counts']
             print('PASS actual HTML activates both protected writers using the real SQL baseline and metadata seed',flush=True)
+            recovered=b.evaluate(READ_NATIVE_FILES,['photo:edit-plan:retained-photo'])
+            original=a.evaluate(READ_NATIVE_FILES,['photo:edit-plan:retained-photo'])
+            assert recovered==original,('missing frozen photo was not recovered exactly',recovered,original)
+            assert b.evaluate("SentlogRecords.deltaJournal.bindingStateFor('edit-project')?.phase")=='active'
+            assert any(r['path'].endswith('/'+seed_path) and r['method']=='GET' and r['device']==B for r in cloud.photo_requests)
+            print('PASS real restarted missing-photo cutoff recovers from authenticated restored storage and reaches active synchronization',flush=True)
 
             for page,scale,rotation in [(a,125,None),(b,None,90)]:
                 page.evaluate("""async ({scale,rotation})=>{

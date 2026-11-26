@@ -354,7 +354,8 @@
       async function addFile(descriptor,value,required,expected=[]){
         if(!isBlob(value)||value.size===0){
           if(value!==null&&value!==undefined||required){
-            issue(issues,'LEGACY_SOURCE_FILE_MISSING','写真または図面ファイルを確認できません',{key:descriptor.key});
+            issue(issues,'LEGACY_SOURCE_FILE_MISSING','写真または図面ファイルを確認できません',
+              {key:descriptor.key,kind:descriptor.kind,drawingId:descriptor.drawingId,...(descriptor.photoId?{photoId:descriptor.photoId}:{})});
             snapshot.manifest.push({...descriptor,status:'recovery-required'});
           }else snapshot.manifest.push({...descriptor,status:'not-present',required:false});
           return;
