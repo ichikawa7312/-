@@ -14,6 +14,7 @@ import json
 import sys
 import tempfile
 import threading
+import time
 import traceback
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -231,8 +232,21 @@ def verify_pack(snapshot, pack, complete):
         assert data[FILES][META]['startupRecovery']['backupSha256'] == intent['backupSha256']
 
 
+def wait_readonly(page, predicate, *, timeout):
+    # wait_for_function uses in-page eval, which this page's CSP forbids.
+    # Poll only the original read-only predicate through the browser protocol.
+    deadline = time.monotonic() + timeout / 1000
+    while time.monotonic() < deadline:
+        if page.evaluate(predicate) and time.monotonic() < deadline:
+            return
+        remaining = deadline - time.monotonic()
+        if remaining > 0:
+            time.sleep(min(0.05, remaining))
+    raise TimeoutError(f'Read-only predicate did not become true within {timeout} ms: {predicate}')
+
+
 def wait_idle(page):
-    page.wait_for_function("!document.getElementById('recoveryFile').disabled", timeout=70_000)
+    wait_readonly(page, "!document.getElementById('recoveryFile').disabled", timeout=70_000)
 
 
 def check_file(page, pack):
@@ -329,7 +343,7 @@ def run_case(browser_type, base, port, scenario, cleanup_errors):
                       window.__restoreBlobRead=()=>{Blob.prototype.arrayBuffer=native;window.__releaseRead?.();};
                     }""")
                     result['button'] = restore_click(page, wait=False)
-                    page.wait_for_function('window.__heldRead===true', timeout=15_000)
+                    wait_readonly(page, 'window.__heldRead===true', timeout=15_000)
                     page.locator('#recoveryCancel').tap()
                     wait_idle(page)
                     page.evaluate('window.__restoreBlobRead()')
