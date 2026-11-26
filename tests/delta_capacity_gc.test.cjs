@@ -28,7 +28,7 @@ async function fixture(){
  await records.writeFile('original:camera-photo',new Blob(['camera-original']));
  const cutoff=await records.deltaJournal.begin({scope,localProjectId:localId,actor:{deviceId:scope.deviceId,deviceName:'Phone'},serverRevision:1});
  let durable={version:2,scope:copy(scope),cursor:0,records:{[D.keyOf('drawing','record')]:record,...await M.seed(payload)},outbox:[]};
- const store={read:async()=>copy(durable),write:async value=>{durable=copy(value);},
+ const store={read:async()=>copy(durable),readForVerification:async()=>copy(durable),write:async value=>{durable=copy(value);},
   readProvenance:async()=>({baseline:{baselineId:records.deltaJournal.bindingFor(localId)?.baselineId}}),close(){}};
  await records.deltaJournal.activate({scope,localProjectId:localId,baselineId:'baseline',metadataRecords:M.metadataRecords(durable.records),baselineSnapshot:payload,proof:{verified:true}});
  let connectedTransport=null;
@@ -308,7 +308,7 @@ let count=0;async function test(name,fn){await fn();count++;console.log('PASS '+
     if(variant==='outbox')durable.outbox=[D.diffRecord(before,after,{drawingId:'drawing',eventId:'pending-record-edit',projectId:scope.projectId,deviceId:scope.deviceId})];
    }
    const captured=copy(durable),acked=f.records.deltaJournal.bindingFor(localId).ackedSeq;
-   const store={read:async()=>copy(durable),write:async value=>{durable=copy(value);}};
+   const store={read:async()=>copy(durable),readForVerification:async()=>copy(durable),write:async value=>{durable=copy(value);}};
    const transport={online:()=>false,push:async()=>{throw Error('offline');},pushGroup:async()=>{throw Error('offline');},list:async()=>[],getCapabilities:()=>({atomicGroups:true})};
    replica=D.createReplica({...scope,store,transport});bridge=B.createBridge({replica,scope,localProjectId:localId,currentScope:()=>scope});
    controller=J.createController({records:f.records,scope,localProjectId:localId,replica,replicaStore:store,bridge,metadata:M,currentScope:()=>scope});
