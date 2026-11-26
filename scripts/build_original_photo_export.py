@@ -89,3 +89,6 @@ subprocess.run([sys.executable, 'scripts/build_polygon_pointer_stability.py'], c
 
 # Recover missing staged files safely and bound repeated photograph auditing.
 subprocess.run([sys.executable, 'scripts/build_sync_recovery.py'], cwd=ROOT, check=True)
+
+# Keep modal controls responsive while the original single-flight saves finish.
+subprocess.run([sys.executable, 'scripts/build_sync_wait.py'], cwd=ROOT, check=True)

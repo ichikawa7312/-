@@ -67,9 +67,18 @@ const sentlogDrawingReview=window.SentlogDeltaDrawingReview.create({
     window.SentlogRecords.deltaJournal.cancelMissingDrawingRecovery(job.local);sentlogDrawingReviewJobs.delete(candidate);
   },
   async onResumed(entry){
+    const generation=sessionGuard.generation();
+    const sameOwner=()=>session?.user?.id===entry.scope?.ownerId&&generation===sessionGuard.generation()&&
+      localStorage.getItem(DEVICE_KEY)===entry.scope?.deviceId;
+    if(!sameOwner())return;
     const select=document.getElementById('sentlogSyncProjectSelect');if(select)select.value=entry.localProjectId;
-    const result=await syncNow({force:true,projectIds:[entry.localProjectId]});
-    if(!result?.started)throw Error('「この案件だけ同期」から再確認してください。');
+    const current=()=>sameOwner()&&document.getElementById('sentlogSyncProjectSelect')?.value===entry.localProjectId;
+    try{
+      const observed=await observeProjectSync(requestProjectSync(entry.localProjectId));
+      if(!current())return;
+      if(!observed.finished)throw Error('確認に時間がかかっています。処理状況をご確認ください。');
+      if(!observed.result?.started)throw Error('「この案件だけ同期」から再確認してください。');
+    }catch(error){if(current())throw error;}
   }
 });
 window.sentlogDrawingRecoveryReview=sentlogDrawingReview;
@@ -77,6 +86,31 @@ const sentlogDeltaInstaller=window.SentlogDeltaAppMigration.createInstaller({rec
   recoverMissingFiles:sentlogDeltaRecoverMissing,
   onProgress:detail=>{if(detail.localProjectId){
     sentlogDeltaStatuses.set(detail.localProjectId,detail);
+    const labels={
+      'waiting-records':'端末への保存が終わるのを待っています',
+      'protecting-records':'切替前の記録を保護しています',
+      'reading-local-copy':'保存済みの控えを確認しています',
+      'checking-missing-files':'写真・図面の不足を確認しています',
+      'recovering-missing-files':'不足している写真・図面を受信しています',
+      'missing-files-review':'図面の確認を待っています',
+      'preparing-baseline':'共有先の基準となる記録を確認しています',
+      'capturing-source':'端末の記録と原本を照合しています',
+      copying:'切替前の控えを保存しています',
+      'verified-copy':'保存した控えを確認しました',
+      reconciling:'端末と共有先の変更履歴を照合しています',
+      prepared:'照合した内容を再確認しています',
+      'needs-review':'記録の確認を待っています',
+      'activating-baseline':'共有先の保存方式を切り替えています',
+      installing:'照合した変更履歴を端末に保存しています',
+      installed:'保存した変更履歴を確認しました',
+      projecting:'受信した記録を画面用に整理しています',
+      activating:'端末の保存方式を切り替えています',
+      active:'端末の切替を確認しました。変更履歴の同期を続けています'
+    };
+    if(labels[detail.status]){
+      const name=workspace().projects.find(project=>project.id===detail.localProjectId)?.name||'案件';
+      syncStatus.updateProjectWork?.('metadata',detail.localProjectId,'「'+name+'」：'+labels[detail.status]);
+    }
     if(detail.status==='missing-files-review')sentlogDrawingReview.update({...detail,
       projectName:workspace().projects.find(project=>project.id===detail.localProjectId)?.name||'案件'});
   }}});
@@ -87,7 +121,11 @@ const sentlogDeltaApp=window.SentlogDeltaAppRuntime.createRuntime({
   actor:()=>({deviceId:localStorage.getItem(DEVICE_KEY),deviceName:window.SentlogCollaborationDevice?.name||'この端末'}),
   install:sentlogDeltaInstaller,readFile:dbGet,
   withFileLock:(key,fn)=>window.SentlogSyncTraffic.withFileLock(key,fn),
-  onStatus:status=>{sentlogDeltaStatuses.set(status.localProjectId,status);},
+  onStatus:status=>{sentlogDeltaStatuses.set(status.localProjectId,status);
+    const label={replaying:'端末に保存した変更履歴を確認しています',projecting:'受信した記録を画面に反映しています'}[status.phase];
+    if(label){const name=workspace().projects.find(project=>project.id===status.localProjectId)?.name||'案件';
+      syncStatus.updateProjectWork?.('metadata',status.localProjectId,'「'+name+'」：'+label);}
+  },
   onPhotoReceived:({reference})=>window.sentlogSyncView?.photoReceived(reference.drawingId),
   canProject:cp=>window.sentlogSyncView?.isBusy?.(cp.client_key)!==true,
   async applyProjection(cp,projection,options){

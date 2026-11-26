@@ -13,6 +13,12 @@ on:
       - 'sentlog/session-guard.js'
       - 'tests/delta_app_*'
       - 'tests/delta_drawing_*'
+      - 'tests/individual_sync_app.py'
+      - 'tests/asset_download_budget.test.cjs'
+      - 'tests/sync_work_status.test.cjs'
+      - 'sentlog/sync-work-status.js'
+      - 'sentlog/bounded-asset-download.txt'
+      - 'sentlog/project-sync-controls.txt'
       - 'tests/helpers/delta_recovery_fixture.cjs'
       - 'tests/pdf_recovery_budget.test.cjs'
       - 'tests/pdf_handover_guard.test.cjs'
@@ -32,7 +38,7 @@ jobs:
     runs-on: ubuntu-24.04
     container:
       image: mcr.microsoft.com/playwright/python:v1.57.0-noble@sha256:8331696befd3ee8b5baefca428446345f548e415a2408fe1d3d1224e9d919682
-    timeout-minutes: 12
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -78,11 +84,17 @@ jobs:
         run: python tests/delta_drawing_review_ui.py --engine ${{ matrix.engine }}
       - name: Verify actual drawing review through SQL and native storage
         run: NODE_PATH="$RUNNER_TEMP/sentlog-app-test-deps/node_modules" python tests/delta_drawing_review_app.py --engine ${{ matrix.engine }} --built-root .
+      - name: Verify scoped migration progress and isolated UI observers
+        run: NODE_PATH="$RUNNER_TEMP/sentlog-app-test-deps/node_modules" node tests/delta_migration_progress.test.cjs
+      - name: Verify individual synchronization through real workers and native save waits
+        run: NODE_PATH="$RUNNER_TEMP/sentlog-app-test-deps/node_modules" python tests/individual_sync_app.py --engine ${{ matrix.engine }} --built-root .
       - name: Verify two actual applications with native storage and real SQL
         run: NODE_PATH="$RUNNER_TEMP/sentlog-app-test-deps/node_modules" python tests/delta_app_ui.py --engine ${{ matrix.engine }} --built-root .
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: delta-application-${{ matrix.engine }}
-          path: /tmp/sentlog-delta-app-*
+          path: |
+            /tmp/sentlog-delta-app-*
+            /tmp/sentlog-individual-sync-app
           if-no-files-found: ignore

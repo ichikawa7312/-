@@ -1,0 +1,29 @@
+async function downloadPrivateAsset(asset){
+  // bounded-asset-download-v1: one budget includes headers, bytes and SHA-256.
+  const parts=String(asset.storage_path||'').split('/').map(enc).join('/');
+  const controller=new AbortController(),deadlineAt=Date.now()+180000;
+  const timeout=Object.assign(new Error('ファイルの受信・照合に時間がかかっています。保存済みの記録を保持して、通信を再確認します。'),{code:'ASSET_DOWNLOAD_TIMEOUT'});
+  let expired=false,timer;
+  const check=()=>{
+    if(expired||Date.now()>=deadlineAt){expired=true;controller.abort(timeout);throw timeout;}
+  };
+  const receive=async()=>{
+    check();
+    const r=await fetch(SUPABASE_URL+'/storage/v1/object/authenticated/'+BUCKET+'/'+parts,{headers:headers(),signal:controller.signal});
+    check();
+    if(!r.ok)throw new Error('クラウドファイル取得失敗: '+r.status);
+    const blob=await r.blob();check();
+    if(Number(asset.byte_size)!==blob.size)throw new Error('クラウドファイルのサイズ照合NG');
+    const hash=await sha256Hex(blob,{signal:controller.signal});check();
+    if(hash.toLowerCase()!==String(asset.sha256||'').toLowerCase())throw new Error('クラウドファイルのSHA-256照合NG');
+    return blob;
+  };
+  const deadline=new Promise((resolve,reject)=>{
+    timer=setTimeout(()=>{expired=true;reject(timeout);controller.abort(timeout);},180000);
+  });
+  try{
+    // The status tracker observes the bounded promise too, even when a browser
+    // or a delayed body read does not settle promptly after AbortController.
+    return await syncStatus.track((asset.kind==='drawing'?'PDF・図面':'写真')+'を受信中',()=>Promise.race([receive(),deadline]));
+  }finally{clearTimeout(timer);}
+}

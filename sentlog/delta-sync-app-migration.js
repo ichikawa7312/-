@@ -26,17 +26,33 @@
     const make={source:L.createSource,migrationStore:M.createStore,migration:M.createCoordinator,bootstrap:B.createCoordinator,...factories};
     return async function install({scope,localProjectId,transport,store,mode,revision,currentScope,actor}={}){
       const validate=()=>insist(same(scope,currentScope()),'DELTA_MIGRATION_SCOPE','引継ぎ中にログインまたは案件が変わりました');
-      validate();await records.settled();records.assertSafe();validate();
+      const progressScope=Object.fromEntries(SCOPE.map(key=>[key,scope?.[key]]));
+      function progress(detail){
+        // Coordinators report their own copy/reconciliation phases without an
+        // application ID. Bind every notification to this exact installation;
+        // display failures must never reject a saved or pending handover.
+        try{
+          const result=onProgress({...detail,scope:{...progressScope},localProjectId});
+          if(result&&typeof result.then==='function')Promise.resolve(result).catch(()=>{});
+        }catch{}
+      }
+      validate();progress({status:'waiting-records'});
+      await records.settled();records.assertSafe();validate();
+      progress({status:'protecting-records'});
       const staged=await records.deltaJournal.begin({scope,localProjectId,actor,
         serverRevision:revision??mode.snapshotRevision??mode.baseline?.snapshotRevision});validate();
+      progress({status:'reading-local-copy'});
       const existing=await store.readProvenance();validate();
       if(existing){
         insist(existing.baseline?.projectId===scope.projectId&&existing.baseline?.clientProjectId===localProjectId,
           'DELTA_MIGRATION_BINDING','保存済みの引継ぎ先が一致しません');
         const state=await store.read();validate();D.validateState(state,scope);
+        progress({status:'projecting'});
         const projection=await META.project({records:state.records,template:staged.snapshot,localProjectId});validate();
+        progress({status:'activating'});
         await records.deltaJournal.activate({scope,localProjectId,baselineId:existing.baseline.baselineId,
-          metadataRecords:projection.metadataRecords,baselineSnapshot:projection,proof:existing.source});validate();return {resumed:true};
+          metadataRecords:projection.metadataRecords,baselineSnapshot:projection,proof:existing.source});validate();
+        progress({status:'active',resumed:true});return {resumed:true};
       }
       const rawSource=make.source({journal:records.deltaJournal,allowPendingSharedPhotos:true});
       let captured=null;
@@ -48,16 +64,17 @@
         },
         recheck:snapshot=>rawSource.recheck(snapshot),close:()=>rawSource.close()};
       const migrationStore=make.migrationStore(scope);
-      const migration=make.migration({source,store:migrationStore,localProjectId,currentScope,onProgress});
-      const bootstrap=make.bootstrap({source,migration,replicaStore:store,transport,localProjectId,currentScope,onProgress,timeoutMs:300000});
+      const migration=make.migration({source,store:migrationStore,localProjectId,currentScope,onProgress:progress});
+      const bootstrap=make.bootstrap({source,migration,replicaStore:store,transport,localProjectId,currentScope,onProgress:progress,timeoutMs:300000});
       try{
         if(typeof recoverMissingFiles==='function'){
           insist(typeof records.deltaJournal.missingCutoffFiles==='function'&&
             typeof records.deltaJournal.restoreMissingCutoffFile==='function',
             'DELTA_MIGRATION_RECOVERY_UPGRADE','不足ファイルの照合機能を読み込めません。元の記録を保持しています');
+          progress({status:'checking-missing-files'});
           const missing=await records.deltaJournal.missingCutoffFiles({scope,localProjectId,bindingId:staged.bindingId});validate();
           if(missing.length){
-            onProgress({status:'recovering-missing-files',localProjectId,total:missing.length});
+            progress({status:'recovering-missing-files',total:missing.length});
             const recovery=await recoverMissingFiles({scope,localProjectId,bindingId:staged.bindingId,serverRevision:staged.serverRevision,
               missing,validate,restore:async file=>{
                 validate();const restored=await records.deltaJournal.restoreMissingCutoffFile({...file,scope,localProjectId,
@@ -73,7 +90,7 @@
               const pending=new Set(remaining.map(item=>item.key));
               const recovered=missing.filter(item=>!pending.has(item.key)).length;
               if(recovered>0){
-                onProgress({status:'recovering-missing-files',localProjectId,total:missing.length,recovered,remaining:remaining.length});
+                progress({status:'recovering-missing-files',total:missing.length,recovered,remaining:remaining.length});
                 throw Object.assign(fail('DELTA_MIGRATION_RECOVERING',
                   '不足している写真・図面を受信しています（残り'+remaining.length+'件）。'),
                   {localProjectId,scope:{...scope},bindingId:staged.bindingId,recovered,remaining:remaining.length});
@@ -88,19 +105,22 @@
                   drawingId:item.drawingId,...(item.photoId?{photoId:item.photoId}:{}),
                   ...(details.has(item.key)?{recovery:details.get(item.key)}:{})}
               }));
-              onProgress({status:'missing-files-review',localProjectId,scope:{...scope},bindingId:staged.bindingId,
+              progress({status:'missing-files-review',bindingId:staged.bindingId,
                 serverRevision:staged.serverRevision,issues:issues.map(issue=>issue.sourceIssue),remaining:blocking.length});
               throw reviewFailure({plan:{reviewItems:issues}});
             }
           }
         }
+        progress({status:'preparing-baseline'});
         let receipt=mode.baseline||await transport.prepareBaseline(mode.snapshotRevision??revision??staged.serverRevision);validate();
         while(receipt.state==='prepared'||receipt.importedCount<receipt.recordCount){
           const before=receipt.importedCount;
+          progress({status:'preparing-baseline',copied:before,total:receipt.recordCount});
           receipt=await transport.importBaselineBatch(receipt.baselineId,100);validate();
           insist(receipt.importedCount>before||receipt.state==='verified'||receipt.state==='active',
             'DELTA_MIGRATION_PROGRESS','初期記録の検証が進んでいません。保存済みの内容を保持しています');
         }
+        progress({status:'capturing-source'});
         captured=await rawSource.capture(localProjectId,{recordCutoff:staged});validate();
         insist(typeof staged.bindingId==='string'&&staged.bindingId&&typeof receipt.baselineId==='string'&&receipt.baselineId&&
           /^[a-f0-9]{64}$/.test(captured?.fingerprint||''),'DELTA_MIGRATION_ID','保護した控えと共有の基準を照合できません');
@@ -118,16 +138,20 @@
         const assertFence=()=>{validate();return records.deltaJournal.assertFence({scope,localProjectId});};
         assertFence();
         if(!mode.enabled){
+          progress({status:'activating-baseline'});
           receipt=await transport.activateBaseline(receipt.baselineId,{migrationId,sourceFingerprint:prepared.plan.sourceFingerprint,
             planSha256:prepared.plan.planSha256,writerVersion:2});validate();
           prepared=await bootstrap.prepare({migrationId,receipt});validate();
           insist(prepared.readyForInstall,'DELTA_MIGRATION_RETRY','切替中の入力を保持しています。最新の内容を再照合します');
         }
         const installed=await bootstrap.install({migrationId,plan:prepared.plan,assertLegacyWritesBlocked:assertFence});validate();
+        progress({status:'projecting'});
         const projection=await META.project({records:installed.state.records,template:staged.snapshot,localProjectId});validate();
+        progress({status:'activating'});
         await records.deltaJournal.activate({scope,localProjectId,baselineId:receipt.baselineId,
           metadataRecords:projection.metadataRecords,baselineSnapshot:projection,
           proof:{migrationId,sourceFingerprint:prepared.plan.sourceFingerprint,planSha256:prepared.plan.planSha256}});validate();
+        progress({status:'active',pending:installed.state.outbox.length});
         return {installed:true,baselineId:receipt.baselineId,pending:installed.state.outbox.length};
       }finally{bootstrap.close();migration.close();source.close();}
     };
