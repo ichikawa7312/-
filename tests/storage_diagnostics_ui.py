@@ -343,7 +343,7 @@ def file_metadata(page, base):
           "Updated writer capability must be available before initialization")
     outcome = page.evaluate(r"""async () => {
       const r=SentlogRecords;await r.init();const scope={ownerId:'o',projectId:'c',deviceId:'t'};
-      await r.deltaJournal.begin({scope,localProjectId:'p',actor:{deviceId:'t'},serverRevision:1});
+      await r.deltaJournal.begin({scope,localProjectId:'p',actor:{deviceId:'t',deviceName:'Native storage diagnostic fixture'},serverRevision:1});
       await r.deltaJournal.activate({scope,localProjectId:'p',baselineId:'b'});
       const file=(name,time,bytes='same')=>new File([bytes],name,{type:'application/pdf',lastModified:time});
       const key='background:d';await r.writeFile(key,file('original.pdf',123));
