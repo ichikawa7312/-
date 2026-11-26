@@ -147,10 +147,11 @@
         };
         const cancel=error=>{if(settled)return;try{cancelTask();}catch{}complete(error||failure('CANCELLED','診断を中止しました。'));};
         cleanupActions.add(cancel);
-        timer=setTimeout(()=>cancel(Date.now()>=deadline?
+        const remaining=deadline-Date.now(),globalTimeout=remaining<=requestTimeout;
+        timer=setTimeout(()=>cancel(globalTimeout?
           failure('TIME_LIMIT','計測時間の上限に達しました。表示は途中までの集計です。'):
           failure('REQUEST_TIMEOUT','保存先からの応答がないため、この診断を中止しました。')),
-          Math.max(1,Math.min(requestTimeout,deadline-Date.now())));
+          Math.max(1,Math.min(requestTimeout,remaining)));
         try{check();cancelTask=task((error,value)=>complete(error,value),()=>settled)||cancelTask;}catch(error){complete(error);}
       });
     }

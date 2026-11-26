@@ -98,3 +98,6 @@ subprocess.run([sys.executable, 'scripts/build_storage_diagnostics.py'], cwd=ROO
 
 # Keep emergency export usable after a failed save and fence legacy receivers.
 subprocess.run([sys.executable, 'scripts/build_storage_recovery.py'], cwd=ROOT, check=True)
+
+# Keep the protected startup screen linked to standalone storage diagnostics.
+subprocess.run([sys.executable, 'scripts/build_startup_storage.py'], cwd=ROOT, check=True)

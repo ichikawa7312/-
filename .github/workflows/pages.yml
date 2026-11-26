@@ -228,6 +228,7 @@ jobs:
           node tests/legacy_receive_scope.test.cjs
           node tests/storage_recovery_release.test.cjs
           node tests/service_worker_cache_failure.test.cjs
+          node tests/storage_diagnostics.test.cjs
           node --check sentlog/startup-storage-diagnostics.js
           node tests/test_startup_storage_diagnostics.cjs
       - name: Setup Pages
