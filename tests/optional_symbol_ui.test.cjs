@@ -16,7 +16,12 @@ const section=(source,from,to)=>{
 };
 const numbering=section(parts[8],'function rebuildNumberingState(){','function shapeAnchorPoint(s){');
 assert.equal(sha(numbering),'7e829b478d913a04321b319a9879ea3b373adcc5df0f5bb2472580ce1a9bd530');
-assert.equal(sha(parts[5]),'b9ead633058149a8d06251e16423df2ff70bb9721ccbee74f71dea9864e028cf');
+// Preserve the byte-level ownership guard while allowing the tested read-only
+// presentation order and the loader's release marker.
+const photoOwnershipSource=parts[5]
+ .replace('const photos=window.SentlogPhotoDisplayOrder?.ordered(s?.photos||[])||(s?.photos||[]).slice();','const photos=s?.photos||[];')
+ .replace('// sentlog-camera-order-return-v1\n','');
+assert.equal(sha(photoOwnershipSource),'b9ead633058149a8d06251e16423df2ff70bb9721ccbee74f71dea9864e028cf');
 assert.equal(sha(read('sentlog/sync.js')),'017fa1aa7311ee6dce33c8c29a97ba1ffb458badbec7af9086108b2afa53a070');
 const format=section(parts[7],'function formatTypeNo(n){','function formatGlobalNo(n){');
 const apply=section(parts[8],"$('applyBtn').onclick=()=>{","// A change of damage category");

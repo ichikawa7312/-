@@ -14,6 +14,8 @@ on:
       - 'tests/collaboration_ui.py'
       - 'tests/edit_sync_ui.py'
       - 'tests/continuous_camera_ui.py'
+      - 'tests/photo_capture_order_ui.py'
+      - 'tests/camera_return_ui.py'
       - 'tests/drawing_responsiveness_ui.py'
       - 'tests/field_record_memo_ui.py'
       - 'tests/photo_save_performance_ui.py'
@@ -131,6 +133,11 @@ jobs:
       - name: Verify identical field labels and interactions after render batching
         if: matrix.suite == 'camera'
         run: python tests/field_record_render_ui.py --engine ${{ matrix.engine }} --built-root . --report /tmp/sentlog-heavy-camera-${{ matrix.engine }}-labels.json
+      - name: Verify capture order, ledger order and reload return to the camera record
+        if: matrix.suite == 'camera'
+        run: |
+          python tests/photo_capture_order_ui.py --engine ${{ matrix.engine }} --built-root . --report /tmp/sentlog-heavy-camera-${{ matrix.engine }}-order.json
+          python tests/camera_return_ui.py --engine ${{ matrix.engine }} --built-root . --report /tmp/sentlog-heavy-camera-${{ matrix.engine }}-return.json
       - name: Verify heavy ${{ matrix.suite }} use in ${{ matrix.engine }}
         if: matrix.suite != 'originals'
         run: NODE_PATH="$RUNNER_TEMP/sentlog-heavy-deps/node_modules" python tests/heavy_${{ matrix.suite }}_ui.py --engine ${{ matrix.engine }} --built-root . --report /tmp/sentlog-heavy-${{ matrix.suite }}-${{ matrix.engine }}.json
