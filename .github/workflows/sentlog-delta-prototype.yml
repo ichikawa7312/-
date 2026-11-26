@@ -12,8 +12,13 @@ on:
       - 'scripts/build_management.py'
       - 'docs/sentlog-delta-*.sql'
       - 'db/collaboration_v1.sql'
+      - 'db/*.sql'
       - 'sentlog/photo-recovery.js'
       - 'sentlog/record-store.js'
+      - 'sentlog/blob-sha256.js'
+      - 'tools/blob-hash-runtime/**'
+      - 'tests/blob_sha256.test.cjs'
+      - 'tests/blob_hash_integration.test.cjs'
       - 'sentlog/part05.txt'
       - 'tests/file_database_compat.test.cjs'
       - 'sentlog/session-guard.js'
@@ -80,16 +85,24 @@ jobs:
           python3 scripts/assemble_delta_sync.py --check
       - name: Install pinned in-memory IndexedDB test adapter
         run: npm install --prefix "$RUNNER_TEMP/sentlog-prototype-deps" --ignore-scripts --no-audit --no-fund --save-exact fake-indexeddb@6.2.8 @electric-sql/pglite@0.5.17
+      - name: Rebuild the pinned offline file hashing runtime
+        run: |
+          npm ci --prefix tools/blob-hash-runtime --ignore-scripts --no-audit --no-fund
+          npm run --prefix tools/blob-hash-runtime build
+          git diff --exit-code -- sentlog/blob-sha256.js tools/blob-hash-runtime/noble-hashes-LICENSE.txt
       - name: Offline, concurrency and idempotency scenarios
         run: |
           export NODE_PATH="$RUNNER_TEMP/sentlog-prototype-deps/node_modules"
           node tests/delta_sync_protocol.test.cjs
+          node tests/blob_sha256.test.cjs
+          node tests/blob_hash_integration.test.cjs
           node tests/delta_sync_adversarial.test.cjs
           node tests/delta_interleavings.test.cjs
           node tests/delta_rejection_isolation.test.cjs
           node tests/delta_legacy_preflight.test.cjs
           node tests/delta_legacy_source.test.cjs
           node tests/delta_migration.test.cjs
+          node tests/delta_migration_retry.test.cjs
           node tests/delta_assets.test.cjs
           node tests/delta_seed.test.cjs
           node tests/delta_reconcile.test.cjs
@@ -161,6 +174,9 @@ jobs:
       - name: Recover protected missing files and preserve unsent edits after reload
         timeout-minutes: 2
         run: python tests/delta_cutoff_recovery_browser.py --browser ${{ matrix.browser }} --output release-diagnostics/delta-cutoff-recovery-${{ matrix.browser }}.json
+      - name: Convert large protected files with bounded buffers and resume interrupted startup
+        timeout-minutes: 3
+        run: python tests/delta_cutoff_materialization_browser.py --browser ${{ matrix.browser }} --output release-diagnostics/delta-cutoff-materialization-${{ matrix.browser }}.json
       - name: Verify photo bytes, atomic receipts and incomplete delivery
         timeout-minutes: 4
         run: python tests/delta_assets_browser.py --browser ${{ matrix.browser }} --output release-diagnostics/delta-assets-${{ matrix.browser }}.json
@@ -252,3 +268,41 @@ jobs:
         run: bash tests/delta_archive_races.sh
       - name: Verify certified snapshot and real archive races through separate connections
         run: bash tests/delta_checkpoint_races.sh
+
+  native-activation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    services:
+      postgres:
+        image: postgres:17.12
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: test_only
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      PGHOST: localhost
+      PGPORT: '5432'
+      PGUSER: postgres
+      PGPASSWORD: test_only
+      PGDATABASE: postgres
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install pinned native PostgreSQL test client
+        run: npm install --prefix "$RUNNER_TEMP/sentlog-native-deps" --ignore-scripts --no-audit --no-fund --save-exact pg@8.16.3
+      - name: Verify actual timeout, concentrated geometry, exact parity and concurrent activation
+        run: NODE_PATH="$RUNNER_TEMP/sentlog-native-deps/node_modules" node tests/delta_activation_native.cjs --activation-budget-ms=30000 --report=native-activation.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-activation
+          path: native-activation.json

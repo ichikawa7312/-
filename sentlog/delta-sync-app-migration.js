@@ -38,9 +38,14 @@
         await records.deltaJournal.activate({scope,localProjectId,baselineId:existing.baseline.baselineId,
           metadataRecords:projection.metadataRecords,baselineSnapshot:projection,proof:existing.source});validate();return {resumed:true};
       }
-      const migrationId='app:'+root.crypto.randomUUID();
-      const rawSource=make.source({journal:records.deltaJournal});
-      const source={capture:projectId=>rawSource.capture(projectId,{recordCutoff:staged}),
+      const rawSource=make.source({journal:records.deltaJournal,allowPendingSharedPhotos:true});
+      let captured=null;
+      const source={capture:projectId=>{
+          // The identity capture below is consumed exactly once. Later stage
+          // attempts and every recheck still read authoritative source bytes.
+          if(captured){const snapshot=captured;captured=null;return snapshot;}
+          return rawSource.capture(projectId,{recordCutoff:staged});
+        },
         recheck:snapshot=>rawSource.recheck(snapshot),close:()=>rawSource.close()};
       const migrationStore=make.migrationStore(scope);
       const migration=make.migration({source,store:migrationStore,localProjectId,currentScope,onProgress});
@@ -59,7 +64,10 @@
                   bindingId:staged.bindingId,validate});validate();return restored;
               }});validate();
             const remaining=await records.deltaJournal.missingCutoffFiles({scope,localProjectId,bindingId:staged.bindingId});validate();
-            if(remaining.length){
+            // Server reconciliation still has to prove every deferred photo
+            // reference. A candidate is neither a received file nor a receipt.
+            const blocking=remaining.filter(item=>typeof L.canDeferSharedPhoto!=='function'||!L.canDeferSharedPhoto(item));
+            if(blocking.length){
               // Only durable receipts in this exact protected binding count as
               // progress. A helper's reported totals cannot shorten a retry.
               const pending=new Set(remaining.map(item=>item.key));
@@ -71,7 +79,7 @@
                   {localProjectId,scope:{...scope},bindingId:staged.bindingId,recovered,remaining:remaining.length});
               }
             }
-            if(remaining.length)throw reviewFailure({plan:{reviewItems:remaining.map(item=>({
+            if(blocking.length)throw reviewFailure({plan:{reviewItems:blocking.map(item=>({
               code:'LEGACY_SOURCE_FILE_MISSING',blocking:true,message:'写真または図面ファイルを確認できません',
               sourceIssue:{code:'LEGACY_SOURCE_FILE_MISSING',blocking:true,key:item.key,kind:item.kind,
                 drawingId:item.drawingId,...(item.photoId?{photoId:item.photoId}:{})}
@@ -85,6 +93,18 @@
           insist(receipt.importedCount>before||receipt.state==='verified'||receipt.state==='active',
             'DELTA_MIGRATION_PROGRESS','初期記録の検証が進んでいません。保存済みの内容を保持しています');
         }
+        captured=await rawSource.capture(localProjectId,{recordCutoff:staged});validate();
+        insist(typeof staged.bindingId==='string'&&staged.bindingId&&typeof receipt.baselineId==='string'&&receipt.baselineId&&
+          /^[a-f0-9]{64}$/.test(captured?.fingerprint||''),'DELTA_MIGRATION_ID','保護した控えと共有の基準を照合できません');
+        // A server timeout must not create another durable copy of identical
+        // photos on every retry. Both the immutable binding and server baseline
+        // participate in the ID; any change to the exact source fingerprint
+        // gets a separate add-only copy. Store.begin still verifies its entire
+        // manifest and refuses collisions, and all byte checks remain enabled.
+        const identity=JSON.stringify([1,scope.ownerId,scope.projectId,scope.deviceId,localProjectId,
+          staged.bindingId,receipt.baselineId,captured.fingerprint]);
+        const migrationId='app:'+Array.from(new Uint8Array(await root.crypto.subtle.digest('SHA-256',
+          new TextEncoder().encode(identity))),byte=>byte.toString(16).padStart(2,'0')).join('');validate();
         let prepared=await bootstrap.prepare({migrationId,receipt});validate();
         if(!prepared.readyForInstall)throw reviewFailure(prepared);
         const assertFence=()=>{validate();return records.deltaJournal.assertFence({scope,localProjectId});};

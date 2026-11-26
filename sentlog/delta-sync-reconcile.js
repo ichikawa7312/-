@@ -239,6 +239,59 @@
     }catch(error){review(reviews,error.code||'RECONCILE_METADATA',error.message,{localMetadata:project.deltaMetadata});}
     return {project,drawings,records,localView};
   }
+  function reviewPendingSharedPhotos(snapshot,local,server,reviews,scope){
+    const pending=(snapshot.manifest||[]).filter(item=>item?.status==='shared-photo-pending');
+    const issues=snapshot.issues.filter(item=>item.code==='LEGACY_SOURCE_SHARED_PHOTO_PENDING');
+    if(!pending.length&&!issues.length)return;
+    const cutoff=snapshot.source?.journalCutoff,keys=new Set([...pending.map(item=>item.key),...issues.map(item=>item.key)]);
+    const pendingByKey=new Map(),issuesByKey=new Map(),refsByKey=new Map(),serverViews=new Map();
+    const append=(map,key,value)=>{const values=map.get(key)||[];values.push(value);map.set(key,values);};
+    for(const item of pending)append(pendingByKey,item.key,item);
+    for(const item of issues)append(issuesByKey,item.key,item);
+    for(const group of local.records.values())for(const row of group){
+      if(row.bucket!=='shapes'||!Array.isArray(row.record.photos))continue;
+      for(const photo of row.record.photos){const key='photo:'+row.drawingId+':'+photo?.id;
+        if(keys.has(key))append(refsByKey,key,{recordId:row.recordId,photo});}
+    }
+    for(const key of keys){
+      const entries=pendingByKey.get(key)||[],sourceIssues=issuesByKey.get(key)||[];
+      try{
+        insist(cutoff?.kind==='sentlog-journal-cutoff'&&cutoff.version===1&&valid(cutoff.bindingId)&&
+          cutoff.localProjectId===snapshot.projectId&&sameScope(cutoff.scope,scope)&&entries.length===1&&sourceIssues.length===1,
+          'RECONCILE_PENDING_PHOTO_UNVERIFIED','受信待ち写真を保護した案件・控えを確認できません');
+        const item=entries[0];
+        insist(item.kind==='photo'&&valid(item.drawingId)&&valid(item.photoId)&&key==='photo:'+item.drawingId+':'+item.photoId&&
+          item.sourceDatabase===snapshot.source.databaseName&&item.sourceKey===key&&item.required===true&&item.deliveryVerified===false&&
+          Array.isArray(item.references)&&item.references.length>0&&!(snapshot.files||[]).some(file=>file.key===key)&&
+          sourceIssues[0].kind==='photo'&&sourceIssues[0].drawingId===item.drawingId&&sourceIssues[0].photoId===item.photoId,
+          'RECONCILE_PENDING_PHOTO_UNVERIFIED','受信待ち写真の識別情報または保存状態を確認できません');
+        const refs=refsByKey.get(key)||[];
+        const ordered=values=>values.map(value=>JSON.stringify(lossless(value))).sort();
+        insist(refs.length>0&&exactEqual(ordered(refs),ordered(item.references)),
+          'RECONCILE_PENDING_PHOTO_UNVERIFIED','受信待ち写真の控えと記録内の参照が一致しません');
+        let identity=null;
+        for(const ref of refs){
+          const photo=ref.photo,sha256=typeof photo?.sha256==='string'?photo.sha256.toLowerCase():'';
+          insist(valid(ref.recordId)&&photo.id===item.photoId&&(!own(photo,'variant')||photo.variant==='shared')&&digest(sha256)&&integer(photo.size,1)&&
+            (!identity||identity.sha256===sha256&&identity.size===photo.size),
+            'RECONCILE_PENDING_PHOTO_UNVERIFIED','受信待ち写真の内容ハッシュまたは容量を確認できません');
+          identity={sha256,size:photo.size};
+          const recordKey=D.keyOf(item.drawingId,ref.recordId),row=server.get(recordKey);
+          insist(row,'RECONCILE_PENDING_PHOTO_UNSHARED','受信待ち写真の参照を共有済み記録で確認できません。端末の記録を保持しています');
+          // Consult only the authenticated baseline plus accepted history,
+          // before any local record is merged or placed in the outbox.
+          if(!serverViews.has(recordKey))serverViews.set(recordKey,C.view(normalizedRecord(row.record)));
+          const view=serverViews.get(recordKey),matches=view.photos.filter(value=>value.id===item.photoId);
+          const remote=matches[0],metadata=remote?.metadata;
+          insist(!view.deleted&&!view.pendingDelete&&matches.length===1&&!remote.deleted&&!remote.conflict&&
+            metadata?.id===item.photoId&&(!own(metadata,'variant')||metadata.variant==='shared')&&
+            typeof metadata.sha256==='string'&&metadata.sha256.toLowerCase()===sha256&&metadata.size===photo.size,
+            'RECONCILE_PENDING_PHOTO_UNSHARED','受信待ち写真の参照・版が共有済み記録と一致しません。端末の記録を保持しています');
+        }
+      }catch(error){review(reviews,error.code||'RECONCILE_PENDING_PHOTO_UNVERIFIED',
+        error.message||'受信待ち写真の共有済み参照を照合できません',{key});}
+    }
+  }
   function acceptedHead(value,r){return object(value)&&value.schema===1&&value.baselineId===r.baselineId&&
     r.state==='active'&&r.deltaEnabled===true&&integer(value.headSeq)&&value.eventCount===value.headSeq&&digest(value.eventsSha256);}
   async function readAccepted({state,receipt:r,transport,pinned,scope,signal,check}){
@@ -354,6 +407,7 @@
       for(const record of Object.values(M.metadataRecords(state.records))){const doc=await M.materializeDocument(record);if(doc.kind==='drawing')allowed.add(doc.identity.drawingId);}
     }catch(error){review(reviews,error.code||'RECONCILE_METADATA',error.message||'設定の照合を完了できません');}
     else try{await receiveAccepted();}catch(error){review(reviews,error.code||'RECONCILE_ACCEPTED_HEAD',error.message||'受信済み履歴を照合できません');}
+    reviewPendingSharedPhotos(snapshot,local,server,reviews,scope);
     for(const [key,group]of [...local.records].sort(([a],[b])=>a<b?-1:a>b?1:0)){
       check();const first=group[0],old=server.get(key),details={drawingId:first.drawingId,recordId:first.recordId,
         serverRecord:old?.record||null,localRecords:group.map(x=>({bucket:x.bucket,record:x.record}))};

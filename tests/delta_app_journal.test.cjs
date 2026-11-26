@@ -283,12 +283,13 @@ await test('actual runtime replays a binding activated in another tab without lo
   assert.equal(observer.records.deltaJournal.bindingFor(localProjectId),null);
   const other=await app({factory:seed.factory,local:seed.local}),bound=await bind(other,{metadata:true});
   assert.equal(bound.cutoff.files.length,1);
-  const r=runtimeFixture(observer,bound,{canProject:()=>false}),originalGetAll=IDBObjectStore.prototype.getAll;
-  let fullControlReads=0;
+  const r=runtimeFixture(observer,bound,{canProject:()=>false}),originalGetAll=IDBObjectStore.prototype.getAll,originalGet=IDBObjectStore.prototype.get;
+  let fullControlReads=0,protectedFileReads=0;
   IDBObjectStore.prototype.getAll=function(...args){if(this.name===CONTROL)fullControlReads++;return originalGetAll.apply(this,args);};
+  IDBObjectStore.prototype.get=function(key){if(this.name===CONTROL&&typeof key==='string'&&key.startsWith('cutoff-file:'))protectedFileReads++;return originalGet.call(this,key);};
   try{
     assert.equal((await r.runtime.inspect(r.cp)).enabled,true);
-    const discoveryReads=fullControlReads;
+    const discoveryReads=protectedFileReads;
     const memo='別画面で接続した案件への追記';edit(observer,memo);await observer.records.settled();
     const synced=await r.runtime.sync(r.cp);
     assert.equal(synced.enabled,true);assert.equal(synced.deferred,true);assert.equal(synced.pending,1);
@@ -299,10 +300,11 @@ await test('actual runtime replays a binding activated in another tab without lo
     assert(binding.ackedSeq>binding.cutoffSeq);assert(saved?.value instanceof Blob);
     assert.equal(saved.value.type,protectedFile.type);
     assert.deepEqual(new Uint8Array(await saved.value.arrayBuffer()),new Uint8Array(await protectedFile.arrayBuffer()));
-    assert.equal(discoveryReads,1,'First discovery hydrates the previously unknown cutoff references once');
+    assert.equal(discoveryReads,1,'First discovery reads only the selected project\'s protected file once');
     for(let index=0;index<3;index++)assert.equal((await r.runtime.inspect(r.cp)).enabled,true);
-    assert.equal(fullControlReads,1,'Known binding status and ordinary replay must stay on the lightweight path');
-  }finally{IDBObjectStore.prototype.getAll=originalGetAll;r.runtime.close();}
+    assert.equal(fullControlReads,0,'Discovery and ordinary replay must never load every project\'s protected files');
+    assert.equal(protectedFileReads,1,'Known binding status and ordinary replay reuse the validated project cache');
+  }finally{IDBObjectStore.prototype.getAll=originalGetAll;IDBObjectStore.prototype.get=originalGet;r.runtime.close();}
 });
 await test('actual app runtime resumes a staged journal against the latest inspected server revision',async()=>{
   const f=await app(),e=await bind(f,{metadata:true,staging:true,serverRevision:7});edit(f,'切替中も保存した入力');await f.records.settled();

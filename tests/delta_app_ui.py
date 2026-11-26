@@ -134,6 +134,40 @@ PHOTO_STATE = r"""async()=>{
       .filter(el=>el.offsetParent&&el.innerText&&el.innerText.length<500).map(el=>({id:el.id,text:el.innerText})).slice(-12)};
 }"""
 
+READ_DURABLE_PHOTO = r"""async ({scope,reference,key})=>{
+  // Read both real IndexedDB copies while the HTTP ACK is still unserved.
+  // This probe cannot manufacture a receipt or substitute downloaded bytes.
+  const store=SentlogDeltaAssets.createIndexedDBStore(scope);
+  const digest=async blob=>blob instanceof Blob?{size:blob.size,mimeType:blob.type,
+    sha256:[...new Uint8Array(await crypto.subtle.digest('SHA-256',await blob.arrayBuffer()))]
+      .map(value=>value.toString(16).padStart(2,'0')).join('')}:null;
+  try{
+    const row=await store.read(reference),db=await SentlogRecords.openFilesDatabase();
+    let local;
+    try{local=await new Promise((resolve,reject)=>{
+      const tx=db.transaction('files','readonly'),request=tx.objectStore('files').get(key);
+      tx.oncomplete=()=>resolve(request.result);tx.onabort=()=>reject(tx.error);
+    });}finally{db.close();}
+    return {scope:row?.scope,reference:row?.reference,phase:row?.phase,
+      localReceipt:row?.localReceipt,stored:await digest(row?.blob),local:await digest(local)};
+  }finally{store.close();}
+}"""
+
+READ_MIGRATION_PHOTOS = r"""async ({scope,localProjectId})=>{
+  const store=SentlogDeltaIndexedDB.createStore(scope);
+  const migration=SentlogDeltaMigration.createCoordinator({
+    source:{capture:async()=>{throw Error('read-only probe');},recheck:async()=>{throw Error('read-only probe');}},
+    store:SentlogDeltaMigration.createStore(scope),localProjectId,currentScope:()=>scope});
+  try{
+    const provenance=await store.readProvenance(),saved=await migration.readCopy(provenance.source.migrationId);
+    const cutoff=await SentlogRecords.deltaJournal.readCutoff({scope,localProjectId});
+    return {cutoff:{bindingId:cutoff.bindingId,cutoffSeq:cutoff.cutoffSeq,rawEntries:cutoff.rawEntries},
+      cutoffPhotos:cutoff.files.filter(file=>file.key.startsWith('photo:')).map(file=>file.key).sort(),
+      copiedPhotos:saved.snapshot.files.filter(file=>file.kind==='photo').map(({blob,...file})=>file),
+      pending:saved.snapshot.manifest.filter(file=>file.status==='shared-photo-pending')};
+  }finally{migration.close();store.close();}
+}"""
+
 
 class Backend:
     def __init__(self, root):
@@ -170,6 +204,7 @@ class Cloud(collaboration.Cloud):
         super().__init__(origin, root, engine)
         self.backend, self.offline, self.receipts, self.sql_errors = backend, set(), {}, []
         self.photo_requests = []
+        self.durable_ack_checks = []
         self.webkit_sources = {}  # Serve the exact built application source.
 
     @staticmethod
@@ -202,12 +237,32 @@ class Cloud(collaboration.Cloud):
         if '/storage/' in path or path.endswith(('/sentlog_assets','/sentlog_asset_device_receipts','/rpc/sentlog_ack_photo','/rpc/sentlog_request_photo')):
             self.photo_requests.append(dict(at=time.time(),device=device,path=path,method=request.method,query=query,
                 assetId=body.get('p_asset_id') if isinstance(body,dict) else None))
+        if '/storage/v1/object/authenticated/sentlog-temp/' in path and request.method == 'GET':
+            storage_key = path.split('/storage/v1/object/authenticated/sentlog-temp/', 1)[1]
+            data = self.blobs.get(storage_key)
+            asset = next((asset for asset in self.assets.values() if asset['storage_path'] == storage_key), None)
+            # The shared fixture's JPEG default would change the Blob MIME of
+            # a PNG delivered by the normal receiver after pending activation.
+            route.fulfill(status=200 if data is not None else 404,
+                content_type=asset['mime_type'] if asset else 'application/octet-stream',
+                headers={'Access-Control-Allow-Origin': '*'}, body=data or b'')
+            return
         if path.endswith('/sentlog_asset_device_receipts'):
             self.respond(route, self.rows(self.receipts.values(), query))
             return
         if path.endswith('/rpc/sentlog_ack_photo'):
             asset = self.assets[body['p_asset_id']]
-            assert asset['sha256'] == body['p_sha256'] and asset['byte_size'] == body['p_byte_size']
+            assert asset['sha256'] == body['p_sha256'] and asset['byte_size'] == body['p_byte_size'] and body['p_device_id'] == device
+            scope = dict(ownerId=OWNER, projectId=asset['project_id'], deviceId=device)
+            reference = dict(ownerId=asset['owner_id'], projectId=asset['project_id'], assetId=asset['id'],
+                drawingId=asset['metadata']['drawing_id'], photoId=asset['metadata']['photo_id'], variant='shared',
+                sha256=asset['sha256'], size=asset['byte_size'], mimeType=asset['mime_type'])
+            proof = request.frame.evaluate(READ_DURABLE_PHOTO, dict(scope=scope, reference=reference, key=asset['client_key']))
+            assert proof['scope'] == scope and proof['reference'] == reference and proof['phase'] in ('received','acknowledged'), proof
+            assert proof['localReceipt'] == {**reference, 'deviceId':device, 'verified':True}, proof
+            expected = dict(size=reference['size'], mimeType=reference['mimeType'], sha256=reference['sha256'])
+            assert proof['stored'] == expected and proof['local'] == expected, ('ACK preceded exact durable bytes', proof)
+            self.durable_ack_checks.append(dict(device=device, assetId=asset['id'], reference=reference))
             self.receipts[(asset['id'], device)] = dict(asset_id=asset['id'], owner_id=OWNER,
                 device_id=device, sha256=asset['sha256'], byte_size=asset['byte_size'], received_at='2026-11-20T12:00:00Z')
             self.respond(route, {'received': True})
@@ -321,9 +376,10 @@ def run(engine, cloud, root):
             # all 17 photo references but no photo bytes when a durable
             # migration cutoff is made. Its later restart must keep that cutoff.
             b.evaluate('async()=>{for(const [key,value]of editFixture.files)if(!key.startsWith("photo:"))await SentlogRecords.writeFile(key,value);await SentlogRecords.settled();}')
-            b.evaluate("""async ({owner,project,device})=>{
-              await SentlogRecords.deltaJournal.begin({scope:{ownerId:owner,projectId:project,deviceId:device},
+            receiver_cutoff = b.evaluate("""async ({owner,project,device})=>{
+              const cutoff=await SentlogRecords.deltaJournal.begin({scope:{ownerId:owner,projectId:project,deviceId:device},
                 localProjectId:'edit-project',serverRevision:1,actor:{deviceId:device,deviceName:'検証iPhone'}});
+              return {bindingId:cutoff.bindingId,cutoffSeq:cutoff.cutoffSeq,rawEntries:cutoff.rawEntries};
             }""",dict(owner=OWNER,project=PID,device=B))
             # Existing users migrate database-backed Files after reopening the
             # app, not just the fresh in-memory objects from a file picker.
@@ -377,32 +433,33 @@ def run(engine, cloud, root):
             print('PASS actual HTML activates both protected writers using the real SQL baseline and metadata seed',flush=True)
             recovered=b.evaluate(READ_NATIVE_FILES,photo_keys)
             original=a.evaluate(READ_NATIVE_FILES,photo_keys)
-            assert len(recovered)==17 and recovered==original,('missing frozen photos were not recovered exactly',recovered,original)
+            assert len(recovered)==17 and recovered==original,('all 17 photos must be durable with exact bytes and MIME',recovered,original)
             assert {item['key']:item['sha256'] for item in recovered}=={
                 'photo:edit-plan:'+photo_id:hashlib.sha256(data).hexdigest() for photo_id,data in photo_bytes.items()}
             assert b.evaluate("SentlogRecords.deltaJournal.bindingStateFor('edit-project')?.phase")=='active'
             assert all(any(r['path'].endswith('/'+asset['storage_path']) and r['method']=='GET' and r['device']==B
                            for r in cloud.photo_requests) for asset in seed_assets)
-            recovery=b.evaluate('()=>({rounds:__deltaPhotoDiagnostics.recovery,ui:__deltaPhotoDiagnostics.syncUi})')
-            progress=next((row for row in recovery['rounds'] if row.get('recovered')==16 and row.get('remaining')==1),None)
-            assert progress, recovery
+            migration=b.evaluate(READ_MIGRATION_PHOTOS,dict(
+                scope=dict(ownerId=OWNER,projectId=PID,deviceId=B),localProjectId=base.PROJECT))
+            assert migration['cutoff']==receiver_cutoff, 'Pending activation changed immutable source metadata'
+            assert len(migration['cutoffPhotos'])==16 and len(migration['copiedPhotos'])==16, migration
+            assert len(migration['pending'])==1, migration
+            pending=migration['pending'][0]
+            assert pending['required'] and pending['deliveryVerified'] is False and pending['kind']=='photo', pending
+            assert pending['key'] not in migration['cutoffPhotos'], 'Later runtime delivery must not rewrite the source cutoff'
+            assert set(migration['cutoffPhotos']+[pending['key']])==set(photo_keys), migration
+            expected_hashes={item['key']:item['sha256'] for item in original}
+            assert all(file['sha256']==expected_hashes[file['key']] and file['key'] in migration['cutoffPhotos']
+                       for file in migration['copiedPhotos']), migration
+            assert pending['references']==[dict(recordId='survey-b',photo=next(photo for photo in extra_photos
+                                                if photo['id']==pending['photoId']))], pending
             batches=[json.loads('['+request['query']['client_key'][0][4:-1]+']') for request in cloud.photo_requests
                      if request['device']==B and request['path'].endswith('/sentlog_assets') and request['method']=='GET'
                      and request['query'].get('client_key',[''])[0].startswith('in.(')]
-            assert len(batches)>=2 and [len(batch) for batch in batches[:2]]==[16,1], batches
-            assert set(batches[0]).isdisjoint(batches[1]) and set(batches[0]+batches[1])==set(photo_keys), batches
-            final_asset=next(asset for asset in seed_assets if asset['client_key']==batches[1][0])
-            final_download=next(request for request in cloud.photo_requests if request['device']==B
-                                and request['method']=='GET' and request['path'].endswith('/'+final_asset['storage_path']))
-            resume_delay=round(final_download['at']*1000-progress['at'])
-            # An already queued all-project or manual-force request may run
-            # before the ordinary 800 ms defer. No further test action starts
-            # recovery; actual Storage must resume without the 30 s error wait.
-            assert 0<=resume_delay<30000, (resume_delay,recovery)
-            assert any(row['level']=='pending' and '残り1件' in row['message'] for row in recovery['ui']), recovery
+            assert batches and len(batches[0])==16 and set(batches[0])==set(migration['cutoffPhotos']), batches
             b.locator('#sentlogCloudModal').get_by_role('button',name='閉じる',exact=True).click()
-            print('PASS real 17-photo cutoff receives 16, shows pending recovery, resumes automatically after '
-                  +str(resume_delay)+' ms, and verifies every byte before activation',flush=True)
+            print('PASS 16 verified cutoff photos and one preserved pending reference activate; normal receiver '
+                  'durably stores all 17 exact files without rewriting the source cutoff',flush=True)
             # Complete the expanded baseline before the existing editing flow.
             # Otherwise its rapid setting changes can exhaust the intentional
             # snapshot fence retries while these 17 initial ACKs are in flight.
@@ -418,6 +475,8 @@ def run(engine, cloud, root):
                   event.references?.length===ids.length&&ids.every(id=>event.references.some(ref=>ref.assetId===id)))""",
                   [asset['id'] for asset in seed_assets]) for page in (a,b))
             wait(cloud,a,baseline_received_by_both,'Baseline delivery did not produce all 34 exact-byte photo receipts')
+            assert all(any(check['assetId']==asset['id'] and check['device']==device
+                           for check in cloud.durable_ack_checks) for asset in seed_assets for device in (A,B)), cloud.durable_ack_checks
             print('PASS all 17 baseline photos have exact-byte ACKs from both devices before further editing',flush=True)
 
             for page,scale,rotation in [(a,125,None),(b,None,90)]:

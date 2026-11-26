@@ -14,6 +14,12 @@ async function edited(base,mutate,id,extra={}){const after=copy(input);mutate(af
    const match=optimized.match(new RegExp('CREATE OR REPLACE FUNCTION sentlog_delta_private\\.'+name+'\\([\\s\\S]*?END \\$fn\\$;'));
    assert(match,'optimized function '+name);await db.exec(match[0]);
  }
+ const scalable=read('docs/sentlog-delta-activation-scalability.sql');
+ for(const name of ['metadata_child_index','build_metadata_node_indexed','build_metadata_node','materialize_metadata_document','seed_metadata_document','seed_metadata_baseline']){
+   const match=scalable.match(new RegExp('CREATE OR REPLACE FUNCTION sentlog_delta_private\\.'+name+'\\([\\s\\S]*?\\$fn\\$;'));
+   assert(match,'scalable metadata function '+name);await db.exec(match[0]);
+ }
+ await db.exec('REVOKE ALL ON FUNCTION sentlog_delta_private.metadata_child_index(jsonb),sentlog_delta_private.build_metadata_node_indexed(jsonb,jsonb,jsonb,text,jsonb) FROM PUBLIC,anon,authenticated');
  const baseline=await M.seed(input),cases=[['baseline',baseline]];
  for(const spec of (await M.documentSpecs(input)).values()){
    const metadata=spec.identity.kind==='project'?{project:input.project}:{...input.drawings[0],order:0};

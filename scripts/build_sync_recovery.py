@@ -1,13 +1,44 @@
-"""Version the verified migration recovery and bounded photo audit as v1.99."""
+"""Version resumable migration, pending shared photos and bounded hashing as v2.00."""
 from pathlib import Path
 import re
 import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
-TOKEN = '20261126-sync-recovery-199'
-MARKER = 'sentlog-migration-recovery-v199'
+TOKEN = '20261126-sync-recurrence-200'
+MARKER = 'sentlog-sync-recurrence-v200'
 MODULES = ['record-store', 'cloud-sync', 'delta-sync-app-migration',
-           'delta-sync-migration-recovery', 'delta-sync-asset-runtime', 'delta-sync-asset-transport']
+           'delta-sync-migration-recovery', 'delta-sync-asset-runtime', 'delta-sync-asset-transport',
+           'delta-sync-legacy-source', 'delta-sync-migration', 'delta-sync-reconcile',
+           'delta-sync-assets', 'delta-sync-transport', 'pdf-recovery', 'blob-sha256']
+
+# The earlier archive/management builders bind exact historical source hashes.
+# Keep their reviewed inputs intact and connect these two completed runtimes
+# here, after those transformations, with exact integration-point guards.
+HASH_CHANGES = {
+    'sentlog/cloud-sync.js': (
+        'async function sha256Hex(blob){',
+        """async function sha256Hex(blob,options={}){
+  if(window.SentlogBlobSha256?.digest)return window.SentlogBlobSha256.digest(blob,{crypto,...options});
+  if(blob.size>2*1024*1024)throw Object.assign(Error('大きなファイルの内容照合機能を読み込めません。元の記録を保持しています'),{code:'BLOB_HASH_UPGRADE'});"""),
+    'sentlog/pdf-recovery.js': (
+        "async function hash(blob){if(localHashes.has(blob))return localHashes.get(blob);const bytes=await crypto.subtle.digest('SHA-256',await blob.arrayBuffer());const h=Array.from(new Uint8Array(bytes),b=>b.toString(16).padStart(2,'0')).join('');localHashes.set(blob,h);return h}",
+        """async function hash(blob){
+  if(localHashes.has(blob))return localHashes.get(blob);
+  let h;
+  if(window.SentlogBlobSha256?.digest)h=await window.SentlogBlobSha256.digest(blob,{crypto});
+  else{
+    if(blob.size>2*1024*1024)throw Object.assign(Error('大きな図面の内容照合機能を読み込めません。元の図面を保持しています'),{code:'BLOB_HASH_UPGRADE'});
+    const bytes=await crypto.subtle.digest('SHA-256',await blob.arrayBuffer());h=Array.from(new Uint8Array(bytes),b=>b.toString(16).padStart(2,'0')).join('');
+  }
+  localHashes.set(blob,h);return h;
+}""")
+}
+for filename, (old, new) in HASH_CHANGES.items():
+    path = ROOT / filename
+    source = path.read_text(encoding='utf-8')
+    if source.count(old) != 1:
+        raise RuntimeError('Bounded hashing integration changed: ' + filename)
+    path.write_text(source.replace(old, new), encoding='utf-8')
 
 for name in MODULES:
     path = ROOT / 'sentlog' / (name + '.js')
@@ -20,13 +51,28 @@ versions = set()
 for filename in ['sentlog/index.html', 'sentlog-pc/index.html', 'sentlog/drawing-export-view.html']:
     path = ROOT / filename
     source = path.read_text(encoding='utf-8')
+    prefix = '../sentlog/' if filename.startswith('sentlog-pc/') else './'
+    if 'blob-sha256.js' in source:
+        raise RuntimeError('Bounded blob hashing requires a pristine build')
+    blob_script = '<script src="' + prefix + 'blob-sha256.js?v=' + TOKEN + '"></script>'
+    if filename == 'sentlog/index.html':
+        boot_store = re.search(r'<script src="\./record-store\.js[^\"]*">', source)
+        if not boot_store:
+            raise RuntimeError('Missing boot-time record store')
+        source = source[:boot_store.start()] + blob_script + source[boot_store.start():]
+    else:
+        source = source.replace('</head>', blob_script + '</head>', 1)
+    if filename == 'sentlog/index.html':
+        if source.count('const deps=[') != 1:
+            raise RuntimeError('Missing complete-release dependency list')
+        source = source.replace('const deps=[', "const deps=[['blob-sha256.js?v=" + TOKEN + "','" + MARKER + "'],", 1)
     for name in MODULES:
         pattern = re.escape(name) + r'\.js\?v=([A-Za-z0-9._-]+)'
         versions.update((name, version) for version in re.findall(pattern, source))
         source = re.sub(pattern, name + '.js?v=' + TOKEN, source)
-    source = source.replace('phone-runtime.js?v=198', 'phone-runtime.js?v=199')
-    source = source.replace("'v1.98'", "'v1.99'")
-    source = source.replace('v1.98 · 多角形の確定方向を安定化', 'v1.99 · 同期開始・不足ファイル復旧を修正')
+    source = source.replace('phone-runtime.js?v=198', 'phone-runtime.js?v=200')
+    source = source.replace("'v1.98'", "'v2.00'")
+    source = source.replace('v1.98 · 多角形の確定方向を安定化', 'v2.00 · 同期の再試行と受信待ちを修正')
     if filename == 'sentlog/index.html':
         for name in MODULES:
             pattern = r"\['" + re.escape(name) + r"\.js\?v=" + re.escape(TOKEN) + r"','[^']+'\]"
@@ -39,22 +85,28 @@ path = ROOT / 'sentlog/phone-runtime.js'
 source = path.read_text(encoding='utf-8')
 if source.count('v1.98') != 4:
     raise RuntimeError('Unexpected preceding phone version')
-path.write_text(source.replace('v1.98', 'v1.99'), encoding='utf-8')
+path.write_text(source.replace('v1.98', 'v2.00'), encoding='utf-8')
 
 path = ROOT / 'sentlog/sw.js'
 source = path.read_text(encoding='utf-8')
 old_cache = re.search(r'sentlog-pwa-v\d+', source).group()
-new_cache = 'sentlog-pwa-v' + str(int(old_cache.rsplit('v', 1)[1]) + 1)
-path.write_text(source.replace(old_cache, new_cache), encoding='utf-8')
+# The same preceding build generated v1.99 with +1. This release must have its
+# own cache generation as well as new URLs for every changed runtime module.
+new_cache = 'sentlog-pwa-v' + str(int(old_cache.rsplit('v', 1)[1]) + 2)
+source = source.replace(old_cache, new_cache)
+if source.count('const FILES=[') != 1:
+    raise RuntimeError('Missing offline file inventory')
+source = source.replace('const FILES=[', "const FILES=['blob-sha256.js',", 1)
+path.write_text(source, encoding='utf-8')
 
 for path in (ROOT / 'tests').iterdir():
     if path.suffix not in ('.cjs', '.py'):
         continue
     old = path.read_text(encoding='utf-8')
-    source = old.replace(old_cache, new_cache).replace("'v1.98'", "'v1.99'")
-    source = source.replace('phone-runtime.js?v=198', 'phone-runtime.js?v=199')
-    source = source.replace(r'phone-runtime\.js\?v=198', r'phone-runtime\.js\?v=199')
-    source = source.replace('v1.98 · 多角形の確定方向を安定化', 'v1.99 · 同期開始・不足ファイル復旧を修正')
+    source = old.replace(old_cache, new_cache).replace("'v1.98'", "'v2.00'")
+    source = source.replace('phone-runtime.js?v=198', 'phone-runtime.js?v=200')
+    source = source.replace(r'phone-runtime\.js\?v=198', r'phone-runtime\.js\?v=200')
+    source = source.replace('v1.98 · 多角形の確定方向を安定化', 'v2.00 · 同期の再試行と受信待ちを修正')
     for name, version in versions:
         source = source.replace(name + '.js?v=' + version, name + '.js?v=' + TOKEN)
         source = source.replace(name + r'\.js\?v=' + version, name + r'\.js\?v=' + TOKEN)
@@ -64,4 +116,4 @@ for path in (ROOT / 'tests').iterdir():
 for name in MODULES:
     subprocess.run(['node', '--check', 'sentlog/' + name + '.js'], cwd=ROOT, check=True)
 subprocess.run(['node', 'tests/delta_migration_recovery.test.cjs'], cwd=ROOT, check=True)
-print('Built v1.99 protected migration recovery, bounded photo audit; ' + new_cache)
+print('Built v2.00 resumable migration, verified pending photos and bounded file work; ' + new_cache)

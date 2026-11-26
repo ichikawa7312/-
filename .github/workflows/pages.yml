@@ -247,12 +247,12 @@ jobs:
                  'pdf-quality.js','image-quality.js','field-records.js','page-management.js','drawing-export-view.html']
           names+=['part01.txt','part02.txt','part03.txt','part04.txt','part05.txt',
                   'part06.txt','part07.txt','part08.txt','part09.txt']
-          names+=['record-store.js','archive.js','archive-core.js','archive-capacity.js',
+          names+=['record-store.js','blob-sha256.js','pdf-recovery.js','archive.js','archive-core.js','archive-capacity.js',
                   'delta-sync-core.js','delta-sync-indexeddb.js','delta-sync-legacy-preflight.js',
                   'delta-sync-legacy-source.js','delta-sync-migration.js','delta-sync-metadata.js',
                   'delta-sync-reconcile.js','delta-sync-bootstrap.js','delta-sync-transport.js',
                   'delta-sync-app-bridge.js','delta-sync-assets.js','delta-sync-asset-transport.js',
-                  'delta-sync-asset-runtime.js','delta-sync-app-journal.js','delta-sync-app-migration.js',
+                  'delta-sync-asset-runtime.js','delta-sync-app-journal.js','delta-sync-app-migration.js','delta-sync-migration-recovery.js',
                   'delta-sync-app-runtime.js','delta-sync-metadata-ui.js','delta-sync-capacity.js','delta-sync-capacity-gc.js']
           base=os.environ['SENTLOG_DEPLOYMENT_URL'].rstrip('/')+'/'
           assert base.startswith('https://')

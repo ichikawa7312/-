@@ -8,6 +8,7 @@ const Source=require('../sentlog/delta-sync-legacy-source.js'),Installer=require
 const I=require('../sentlog/delta-sync-indexeddb.js'),Migration=require('../sentlog/delta-sync-migration.js');
 const Bridge=require('../sentlog/delta-sync-app-bridge.js'),Journal=require('../sentlog/delta-sync-app-journal.js'),Metadata=require('../sentlog/delta-sync-metadata.js');
 const Recovery=require('../sentlog/delta-sync-migration-recovery.js');
+const Assets=require('../sentlog/delta-sync-assets.js'),AssetRuntime=require('../sentlog/delta-sync-asset-runtime.js');
 const WS='surveyFieldNoteWorkspaceV1',DRAW='surveyFieldNoteDrawingV1:',LOG='sentlog_delta_journal_v1',CONTROL='sentlog_delta_control_v1';
 const scope={ownerId:'recovery-owner',projectId:'recovery-cloud',deviceId:'recovery-device'},localProjectId='recovery-local';
 const actor={deviceId:scope.deviceId,deviceName:'Synthetic recovery'},copy=structuredClone,json=JSON.stringify;
@@ -28,10 +29,10 @@ async function application(factory,local){
     });}finally{db.close();}
   }};
 }
-async function fixture(count=1){
+async function fixture(count=1,{legacyPhotoMetadata=false}={}){
   const files=new Map(),photos=[];
   for(let i=0;i<count;i++){const id='photo-'+i,blob=new Blob(['saved-photo-'+i],{type:'image/jpeg'}),digest=await sha(blob);
-    photos.push({id,name:id+'.jpg',size:blob.size,sha256:digest});files.set('photo:drawing:'+id,{blob,size:blob.size,sha256:digest});}
+    photos.push({id,name:id+'.jpg',...(!legacyPhotoMetadata?{size:blob.size,sha256:digest}:{})});files.set('photo:drawing:'+id,{blob,size:blob.size,sha256:digest});}
   const meta={id:'drawing',name:'Drawing',sourceType:null,fileName:'',pageCount:1};
   const state={sourceType:null,fileName:'',pageCount:1,shapes:[C.upgrade({id:'record',kind:'point',memo:'Original note',photos})],collabDeletedRecords:[]};
   const snapshot={version:1,kind:'sentlog-app-project',localProjectId,project:{id:localProjectId,name:'Recovery',drawings:[meta]},drawings:[{meta:copy(meta),state}]};
@@ -44,8 +45,8 @@ async function fixture(count=1){
     bindingId:cutoff.bindingId,validate:()=>true,...extra});
   return {...app,factory,local,files,snapshot,begin,source,payload,restore,restart:()=>application(factory,local)};
 }
-async function installerFixture(f,recoverMissingFiles,{currentScope=()=>scope}={}){
-  const server=f.snapshot,rows=[],metadata=[];
+async function installerFixture(f,recoverMissingFiles,{currentScope=()=>scope,server=f.snapshot,acceptedEvents=[]}={}){
+  const rows=[],metadata=[];
   for(const drawing of server.drawings)for(const record of drawing.state.shapes){
     const row={ordinal:rows.length+1,drawingId:drawing.meta.id,recordId:record.id,recordJson:json(record),sha256:await hash(json(record))};
     row.manifestEntryJson=json({ordinal:row.ordinal,drawingId:row.drawingId,recordId:row.recordId,sha256:row.sha256});rows.push(row);}
@@ -56,9 +57,11 @@ async function installerFixture(f,recoverMissingFiles,{currentScope=()=>scope}={
     snapshotRevision:9,cursor:0,recordCount:rows.length,importedCount:rows.length,metadataCount:metadata.length,
     snapshotSha256:await hash(json({project:server.project,drawings:server.drawings})),manifestSha256:await hash('['+rows.map(r=>r.manifestEntryJson).join(', ')+']'),
     metadataManifestSha256:await hash('['+metadata.map(r=>r.manifestEntryJson).join(', ')+']'),hashFormat:'postgres-jsonb-text-sha256-v1',
-    state:'verified',deltaEnabled:false,deviceMigrationVerified:false,assetDeliveryVerified:false};
+    state:acceptedEvents.length?'active':'verified',deltaEnabled:acceptedEvents.length>0,deviceMigrationVerified:false,assetDeliveryVerified:false};
   let baselineReads=0;
   const transport={getCapabilities:()=>({atomicGroups:true,sharedMetadata:true}),pushGroup:async()=>{},
+    inspect:async()=>({...scope,enabled:receipt.deltaEnabled,baseline:copy(receipt),headSeq:acceptedEvents.length}),
+    list:async(_,after,limit)=>acceptedEvents.slice(after,after+limit).map((event,index)=>({seq:after+index+1,event:copy(event)})),
     prepareBaseline:async revision=>{assert.equal(revision,9);baselineReads++;return copy(receipt);},
     activateBaseline:async()=>{receipt.state='active';receipt.deltaEnabled=true;return copy(receipt);},
     readBaselinePage:async(id,after,limit)=>({receipt:copy(receipt),records:rows.slice(after,after+limit),nextOrdinal:Math.min(after+limit,rows.length),hasMore:after+limit<rows.length}),
@@ -153,7 +156,7 @@ let passed=0;async function test(name,run){await run();passed++;console.log('PAS
     assert.equal((await f.disk()).has(key),false);assert.equal((await f.disk(LOG)).size,0);
   });
   await test('actual installer resumes bounded persisted recovery and installs only after all missing files verify',async()=>{
-    const f=await fixture(3),seen=[],initial=await f.begin(),inst=await installerFixture(f,async args=>{
+    const f=await fixture(3,{legacyPhotoMetadata:true}),seen=[],initial=await f.begin(),inst=await installerFixture(f,async args=>{
       assert.equal(args.serverRevision,9);assert.equal(args.bindingId,initial.bindingId);
       seen.push(args.missing.map(item=>item.key));await args.restore(f.payload(args.missing[0].key));
     });
@@ -177,7 +180,7 @@ let passed=0;async function test(name,run){await run();passed++;console.log('PAS
   });
   await test('a claimed helper count or a live-only receipt cannot shorten an unverified cutoff retry',async()=>{
     for(const liveOnly of [false,true]){
-      const f=await fixture(2),inst=await installerFixture(f,async args=>{
+      const f=await fixture(2,{legacyPhotoMetadata:true}),inst=await installerFixture(f,async args=>{
         if(liveOnly){const file=f.payload(args.missing[0].key);await f.records.writeFile(file.key,file.blob);}
         return {restored:2,remaining:0};
       });
@@ -223,6 +226,57 @@ let passed=0;async function test(name,run){await run();passed++;console.log('PAS
     const inst=await installerFixture(f,helper);try{assert.equal((await inst.run()).installed,true);
       for(const [key,file]of f.files)assert.equal(await sha((await f.disk()).get(key)),file.sha256);
     }finally{inst.store.close();}
+  });
+  await test('69 accepted photo references migrate without bytes and later use the guarded asset receiver before any acknowledgement',async()=>{
+    const f=await fixture(69),photos=f.snapshot.drawings[0].state.shapes[0].photos;
+    f.snapshot.drawings[0].state.shapes=Array.from({length:5},(_,i)=>C.upgrade({id:'record-'+i,kind:'point',memo:'Retained note '+i,
+      photos:photos.slice(i*14,(i+1)*14)}));
+    f.records.setItem(DRAW+'drawing',json(f.snapshot.drawings[0].state));await f.records.settled();
+    const initial=await f.begin(),server=copy(f.snapshot);server.drawings[0].state.shapes=[];
+    const acceptedEvents=f.snapshot.drawings[0].state.shapes.map((record,i)=>D.diffRecord(null,record,
+      {eventId:'accepted-photo-record-'+i,projectId:scope.projectId,drawingId:'drawing',deviceId:'peer'}));
+    const recovery=Recovery.createRecovery({listAssets:async()=>[],readAsset:async()=>{throw Error('no asset to read');},
+      readSnapshot:async()=>{throw Error('no PDF recovery');},download:async()=>{throw Error('no bytes to download');}});
+    const inst=await installerFixture(f,recovery,{server,acceptedEvents});
+    let assetRuntime,assetStore;
+    try{
+      assert.equal((await inst.run()).installed,true);const state=await inst.store.read(),provenance=await inst.store.readProvenance();
+      assert.equal(state.cursor,5);assert.equal(Object.values(state.records).reduce((n,record)=>n+(record.photos?.length||0),0),69);
+      assert.equal(state.outbox.length,0);assert.equal((await f.records.deltaJournal.readBindingState(localProjectId)).phase,'active');
+      const cutoff=await f.records.deltaJournal.readCutoff({scope,localProjectId});assert.deepEqual(cutoff.rawEntries,initial.rawEntries);assert.equal(cutoff.files.length,0);
+      const migration=Migration.createCoordinator({source:{capture:async()=>{},recheck:async()=>{}},
+        store:Migration.createStore({...scope,indexedDB:f.factory}),localProjectId,currentScope:()=>scope});
+      try{const saved=await migration.readCopy(provenance.source.migrationId),pending=saved.snapshot.manifest.filter(item=>item.status==='shared-photo-pending');
+        assert.equal(pending.length,69);assert(pending.every(item=>item.deliveryVerified===false));assert.equal(saved.snapshot.files.length,0);
+      }finally{migration.close();}
+      const rows=[],acks=[],owners=new Map(),token=Object.freeze({}),stats={uploads:0,downloads:0};
+      let corrupt=false;
+      const transport={getScope:()=>copy(scope),online:()=>true,listPhotos:async()=>copy(rows),
+        uploadPhoto:async()=>{stats.uploads++;throw Error('receiver has no photo bytes');},
+        download:async ref=>{stats.downloads++;return corrupt?new Blob(['corrupt download'],{type:ref.mimeType}):f.files.get('photo:'+ref.drawingId+':'+ref.photoId).blob;},
+        acknowledge:async ref=>{assert.equal(await sha((await f.disk()).get('photo:'+ref.drawingId+':'+ref.photoId)),ref.sha256);
+          acks.push(ref.assetId);return {...copy(ref),deviceId:scope.deviceId,durable:true};}};
+      const localFiles={getCapabilities:()=>f.records.getFileWriteCapabilities(),read:async key=>(await f.disk()).get(key),
+        assertExclusive:key=>{const value=f.records.writerState(key,{ownerToken:owners.get(key)});return value.exclusive&&!value.foreignPending&&!value.failed&&value.journaled;},
+        withLock:async(key,fn)=>{const owner={};assert(!owners.has(key));owners.set(key,owner);try{return await fn();}finally{owners.delete(key);}},
+        write:(key,blob,options)=>f.records.writeFile(key,blob,{...options,ownerToken:owners.get(key)})};
+      assetStore=Assets.createIndexedDBStore({...scope,indexedDB:f.factory});
+      assetRuntime=AssetRuntime.createRuntime({scope,transport,store:assetStore,localFiles,currentScope:()=>scope,
+        currentSnapshotToken:()=>token,authGeneration:()=>0,subscribeAuth:()=>()=>{}});
+      const waiting=await assetRuntime.sync({snapshot:state,snapshotToken:token});
+      assert.equal(waiting.complete,false);assert.equal(waiting.pending,69);assert.equal(waiting.references.length,0);
+      assert(waiting.issues.every(issue=>issue.code==='ASSET_REFERENCE_MISSING'));assert.equal(acks.length,0);assert.equal(stats.uploads,0);assert.equal(stats.downloads,0);
+      assert.equal((await f.disk()).has('photo:drawing:photo-0'),false);
+      const [key,file]=[...f.files][0],photoId=key.slice('photo:drawing:'.length);
+      rows.push({id:'10000000-0000-4000-8000-000000000001',owner_id:scope.ownerId,project_id:scope.projectId,kind:'photo',client_key:key,
+        file_name:'received.jpg',mime_type:file.blob.type,byte_size:file.size,sha256:file.sha256,status:'uploaded',metadata:{drawing_id:'drawing',photo_id:photoId}});
+      corrupt=true;const bad=await assetRuntime.sync({snapshot:state,snapshotToken:token});
+      assert.equal(bad.complete,false);assert.equal(acks.length,0);assert.equal((await f.disk()).has(key),false);
+      corrupt=false;const received=await assetRuntime.sync({snapshot:state,snapshotToken:token});
+      assert.equal(received.complete,false);assert.equal(received.pending,68);assert.equal(acks.length,1);
+      assert.equal(await sha((await f.disk()).get(key)),file.sha256);assert.equal((await f.records.deltaJournal.readCutoff({scope,localProjectId})).files.length,0);
+      assert.equal((await inst.store.read()).outbox.length,0,'receiving bytes cannot invent record changes or deletion permissions');
+    }finally{assetRuntime?.close();assetStore?.close();inst.store.close();}
   });
   console.log('PASS staged cutoff recovery:',passed,'durability and installer groups');
 })().catch(error=>{console.error(error.stack||error);process.exitCode=1;});

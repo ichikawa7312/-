@@ -14,6 +14,18 @@
   const object=x=>x!==null&&typeof x==='object'&&!Array.isArray(x);
   const own=(x,k)=>Object.prototype.hasOwnProperty.call(x,k);
   const isBlob=x=>x&&typeof x.size==='number'&&typeof x.type==='string'&&typeof x.arrayBuffer==='function';
+  const BlobHash=typeof module==='object'&&module.exports?require('./blob-sha256.js'):null;
+  // This is only eligibility for the later authenticated reconciliation. It
+  // does not prove that a photo has been uploaded, received, or safely stored.
+  function canDeferSharedPhoto(item){
+    if(item?.kind!=='photo'||item.recoverable===false||!valid(item.drawingId)||!valid(item.photoId)||
+      item.key!=='photo:'+item.drawingId+':'+item.photoId||!Array.isArray(item.expected)||!item.expected.length)return false;
+    const first=item.expected[0];
+    for(const photo of item.expected)if(!(photo?.id===item.photoId&&(!own(photo,'variant')||photo.variant==='shared')&&
+      typeof photo.sha256==='string'&&/^[a-f0-9]{64}$/i.test(photo.sha256)&&Number.isSafeInteger(photo.size)&&photo.size>0&&
+      photo.size===first.size&&photo.sha256.toLowerCase()===first.sha256.toLowerCase()))return false;
+    return true;
+  }
   function problem(code,message){return Object.assign(Error(message),{code});}
   function insist(ok,code,message){if(!ok)throw problem(code,message);}
   function sorted(values){return [...values].sort((a,b)=>String(a.key).localeCompare(String(b.key),'en'));}
@@ -54,6 +66,9 @@
       return value;
     }
     async function hash(blob){
+      active();const helper=root.SentlogBlobSha256||BlobHash;
+      if(helper?.digest)return helper.digest(blob,{crypto,validate:active});
+      insist(blob.size<=2*1024*1024,'LEGACY_SOURCE_HASH_UNAVAILABLE','大きなファイルの内容照合機能を読み込めません。元の記録を保持しています');
       active();const bytes=await blob.arrayBuffer();active();
       const digest=await crypto.subtle.digest('SHA-256',bytes);active();
       return [...new Uint8Array(digest)].map(x=>x.toString(16).padStart(2,'0')).join('');
@@ -210,7 +225,7 @@
     }
     function cutoffRecords(projectId,cutoff,issues){
       const all=new Map(cutoff.rawEntries),fileMap=new Map(cutoff.files.map(x=>[x.key,x.value])),entries=new Map(),blobs=new Map(),states=new Map();
-      const result={present:true,meta:copy(cutoff.sourceMeta),entries,blobs,drawings:[],states,photoRefs:[]};
+      const result={present:true,meta:copy(cutoff.sourceMeta),entries,blobs,drawings:[],states,photoRefs:[],absentFiles:new Set()};
       entries.set(WS,all.get(WS)??null);const workspace=parseRaw(all.get(WS),'案件一覧',issues),projects=workspace?.projects?.filter(p=>p?.id===projectId)||[];
       if(projects.length!==1||!Array.isArray(projects[0].drawings)){
         issue(issues,'LEGACY_SOURCE_PROJECT','移行前の控えから対象案件を一意に確認できません');return result;
@@ -237,6 +252,7 @@
             if(!valid(photo?.id)){issue(issues,'LEGACY_SOURCE_PHOTO_ID','写真IDを確認できません',{drawingId,recordId:record.id});continue;}
             result.photoRefs.push({drawingId,recordId:record.id,photo:copy(photo)});
             const fileKey='photo:'+drawingId+':'+photo.id;blobs.set(fileKey,fileMap.get(fileKey)??null);
+            if(!fileMap.has(fileKey))result.absentFiles.add(fileKey);
           }
         }
       }
@@ -351,8 +367,16 @@
         const key='photo:'+ref.drawingId+':'+ref.photo.id,rows=metadata.get(key)||[];
         rows.push(ref);metadata.set(key,rows);
       }
-      async function addFile(descriptor,value,required,expected=[]){
+      async function addFile(descriptor,value,required,expected=[],references=[]){
         if(!isBlob(value)||value.size===0){
+          if(options.allowPendingSharedPhotos===true&&cutoff&&records.absentFiles?.has(descriptor.key)&&
+            canDeferSharedPhoto({...descriptor,expected})){
+            issue(issues,'LEGACY_SOURCE_SHARED_PHOTO_PENDING','写真の実体は受信待ちです。共有済みの参照を照合して引き継ぎます',
+              {key:descriptor.key,kind:'photo',drawingId:descriptor.drawingId,photoId:descriptor.photoId,blocking:false});
+            snapshot.manifest.push({...descriptor,status:'shared-photo-pending',required:true,deliveryVerified:false,
+              references:references.map(ref=>({recordId:ref.recordId,photo:copy(ref.photo)}))});
+            return;
+          }
           if(value!==null&&value!==undefined||required){
             issue(issues,'LEGACY_SOURCE_FILE_MISSING','写真または図面ファイルを確認できません',
               {key:descriptor.key,kind:descriptor.kind,drawingId:descriptor.drawingId,...(descriptor.photoId?{photoId:descriptor.photoId}:{})});
@@ -382,7 +406,7 @@
         // Conflicting metadata are kept, never collapsed to the last record.
         const signatures=new Set(refs.map(r=>JSON.stringify(canonical([r.photo.name??null,r.photo.size??null,r.photo.sha256??null]))));
         if(signatures.size>1)issue(issues,'LEGACY_SOURCE_PHOTO_COLLISION','同じ写真IDに異なる保存情報があります',{key});
-        await addFile(descriptor,value,required,refs.map(r=>r.photo));
+        await addFile(descriptor,value,required,refs.map(r=>r.photo),refs);
       }
       for(const [key,value]of [...originals.blobs].sort((a,b)=>String(a[0]).localeCompare(String(b[0]),'en'))){
         const meta=originals.metas.get(key),drawingId=meta?.drawingId||[...drawingIds].find(id=>String(key).startsWith(id+':'))||'';
@@ -433,7 +457,7 @@
     function close(){closed=true;for(const db of connections)db.close();connections.clear();}
     return {capture,recheck,close};
   }
-  const api={version:1,createSource};
+  const api={version:1,createSource,canDeferSharedPhoto};
   if(typeof module==='object'&&module.exports)module.exports=api;
   else root.SentlogDeltaLegacySource=api;
 })(typeof window!=='undefined'?window:globalThis);

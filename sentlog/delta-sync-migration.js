@@ -9,6 +9,7 @@
   'use strict';
   const DB='sentlog-delta-migration-v1', SESSIONS='sessions', ITEMS='items';
   const fields=['ownerId','projectId','deviceId'], own=(o,k)=>Object.prototype.hasOwnProperty.call(o,k);
+  const BlobHash=typeof module==='object'&&module.exports?require('./blob-sha256.js'):null;
   const object=x=>!!x&&typeof x==='object'&&!Array.isArray(x), valid=x=>typeof x==='string'&&x.length>0&&x.length<=512;
   const digest=x=>typeof x==='string'&&/^[0-9a-f]{64}$/.test(x), copy=x=>root.structuredClone(x);
   const same=(a,b)=>object(a)&&object(b)&&fields.every(k=>a[k]===b[k]);
@@ -58,8 +59,13 @@
     }
     return result;
   }
-  async function hash(value){
+  async function hash(value,validate=()=>{}){
     insist(root.crypto?.subtle?.digest,'MIGRATION_HASH_UNAVAILABLE','内容の照合機能がありません');
+    if(typeof value!=='string'){
+      const helper=root.SentlogBlobSha256||BlobHash;
+      if(helper?.digest)return helper.digest(value,{crypto:root.crypto,validate});
+      insist(value.size<=2*1024*1024,'MIGRATION_HASH_UNAVAILABLE','大きなファイルの内容照合機能を読み込めません。元の控えを保持しています');
+    }
     const bytes=typeof value==='string'?new TextEncoder().encode(value):await value.arrayBuffer();
     return [...new Uint8Array(await root.crypto.subtle.digest('SHA-256',bytes))].map(x=>x.toString(16).padStart(2,'0')).join('');
   }
@@ -281,7 +287,7 @@
             }catch(e){abort(e);}};}
           }catch(e){abort(e);}};
         });check();
-        for(const {item,file}of captured){insist(await hash(item.value)===file.sha256,'MIGRATION_VERIFY','保管対象の控えの写真が一致しません');check();}
+        for(const {item,file}of captured){insist(await hash(item.value,check)===file.sha256,'MIGRATION_VERIFY','保管対象の控えの写真が一致しません');check();}
         if(captured.length)candidates.push({session,items:captured});
       }
       let releasedCopies=0,releasedBytes=0;
@@ -325,7 +331,7 @@
         const identity=JSON.stringify([file.kind,file.key]);
         insist(valid(file.key)&&valid(file.kind)&&!keys.has(identity)&&file.blob instanceof root.Blob&&
           file.size===file.blob.size&&digest(file.sha256),'MIGRATION_SOURCE','旧版の写真の識別情報が不正です');
-        keys.add(identity);const actual=await hash(file.blob);check();
+        keys.add(identity);const actual=await hash(file.blob,check);check();
         insist(actual===file.sha256,'MIGRATION_FILE_CHANGED','コピー前に写真の内容が変わっています');
         const descriptor={...file};delete descriptor.blob;metadata.files.push(descriptor);
         items.push({descriptor:{type:'blob',key:identity,size:file.size,sha256:actual,mimeType:file.blob.type},value:file.blob});
@@ -350,7 +356,7 @@
           insist((expected.type==='json'?typeof item.value==='string':item.value instanceof root.Blob)&&
             (expected.type==='json'?new TextEncoder().encode(item.value).byteLength:item.value.size)===expected.size&&
             (expected.type!=='blob'||item.value.type===expected.mimeType),'MIGRATION_VERIFY','保存した控えのサイズや種類が違います');
-          const actual=await hash(item.value);check();insist(actual===expected.sha256,'MIGRATION_VERIFY','保存した控えの内容が一致しません');
+          const actual=await hash(item.value,check);check();insist(actual===expected.sha256,'MIGRATION_VERIFY','保存した控えの内容が一致しません');
         }
       }
     }

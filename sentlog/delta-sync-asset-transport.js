@@ -149,7 +149,7 @@
     if(!r.ok){if(r.status===404){await request(ref,ctx);throw error('ASSET_REDELIVERY_WAIT','写真の再供給を確認しています');}
      throw error('ASSET_HTTP_'+r.status,'共有写真を取得できません。再取得待ちを保持しています',r.status);}
     const length=r.headers?.get?.('content-length');if(length!==null&&length!==undefined)insist(Number(length)===ref.size,'ASSET_CONTENT_MISMATCH','受信する写真のサイズが登録内容と異なります');
-    const blob=await r.blob();ctx.check();await A.verifyBlob(blob,ref);ctx.check();await asset(ref,ctx);return blob;
+    const blob=await r.blob();ctx.check();await A.verifyBlob(blob,ref,{validate:ctx.check,signal:ctx.signal});ctx.check();await asset(ref,ctx);return blob;
    },true);},
    acknowledge(input,options){const ref=checkReference(input);return run(options,async ctx=>{
     insist(same(options?.receipt,ref)&&options.receipt.deviceId===scope.deviceId&&options.receipt.verified===true,
@@ -170,7 +170,13 @@
      'ASSET_REFERENCE','送信する共有写真の内容を確認できません');
     return run(options,async ctx=>{
      insist(blob.size<=maxBytes,'ASSET_TOO_LARGE','共有写真の送信上限を超えています');
-     const sha=[...new Uint8Array(await root.crypto.subtle.digest('SHA-256',await blob.arrayBuffer()))].map(x=>x.toString(16).padStart(2,'0')).join('');ctx.check();
+     const helper=root.SentlogBlobSha256||(typeof module==='object'&&module.exports?require('./blob-sha256.js'):null);
+     let sha;
+     if(helper?.digest)sha=await helper.digest(blob,{crypto:root.crypto,validate:ctx.check,signal:ctx.signal});
+     else{
+      insist(blob.size<=2*1024*1024,'ASSET_HASH_UNAVAILABLE','大きな写真の内容照合機能を読み込めません。元の写真を保持しています');
+      sha=[...new Uint8Array(await root.crypto.subtle.digest('SHA-256',await blob.arrayBuffer()))].map(x=>x.toString(16).padStart(2,'0')).join('');
+     }ctx.check();
      const mime=String(item.mimeType||blob.type||'').toLowerCase();
      insist(Object.prototype.hasOwnProperty.call(MIME,mime)&&(item.sha256===undefined||String(item.sha256).toLowerCase()===sha)&&(item.size===undefined||item.size===blob.size),
       'ASSET_CONTENT_MISMATCH','端末の共有写真が記録と一致しません。元の写真を保持しています');
@@ -185,7 +191,7 @@
       insist(r.status===409||r.status===400&&['Duplicate','ResourceAlreadyExists'].includes(detail?.error||detail?.code),
        'ASSET_UPLOAD','共有写真の送信が完了していません。端末の写真を保持しています');
       const saved=await response('/storage/v1/object/authenticated/sentlog-temp/'+storagePath,{},ctx);
-      insist(saved.ok,'ASSET_UPLOAD','再試行先の写真を確認できません');const current=await saved.blob();ctx.check();await A.verifyBlob(current,{size:blob.size,sha256:sha});ctx.check();
+      insist(saved.ok,'ASSET_UPLOAD','再試行先の写真を確認できません');const current=await saved.blob();ctx.check();await A.verifyBlob(current,{size:blob.size,sha256:sha},{validate:ctx.check,signal:ctx.signal});ctx.check();
      }
      const payload={owner_id:scope.ownerId,project_id:scope.projectId,source_device_id:scope.deviceId,
       client_key:'photo:'+item.drawingId+':'+item.photoId,kind:'photo',file_name:item.name||'photo'+MIME[mime],storage_path:storagePath,

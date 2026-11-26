@@ -1,6 +1,8 @@
 'use strict';
 // Full legacy + delta protocols in disposable PostgreSQL/WASM; synthetic data.
 // No Supabase URL, credentials, customer rows or external network calls.
+// Wall-clock regression only: the native PostgreSQL job verifies real statement
+// cancellation, rollback and the production-shaped concentrated workloads.
 if(!globalThis.crypto)globalThis.crypto=require('node:crypto').webcrypto;
 const {PGlite}=require('@electric-sql/pglite');
 const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path');
@@ -10,7 +12,8 @@ const root=path.resolve(__dirname,'..'),read=p=>fs.readFileSync(path.join(root,p
 const owner='11000000-0000-4000-8000-000000000001',other='11000000-0000-4000-8000-000000000002';
 const phone='22000000-0000-4000-8000-000000000001',pid='33000000-0000-4000-8000-000000000001';
 const proof={writerVersion:2,migrationId:'activation-perf',sourceFingerprint:'a'.repeat(64),planSha256:'b'.repeat(64)};
-const patch='docs/sentlog-delta-activation-performance.sql';
+const patches=['docs/sentlog-delta-activation-performance.sql','docs/sentlog-delta-activation-scalability.sql'];
+const previousBudgetMs=8000,activationBudgetMs=30000;
 const legacy=['db/archive_v1.sql','db/management_v1.sql','db/device_registration_v1.sql','db/capacity_v1.sql',
  'db/resilience_v2.sql','db/collaboration_v1.sql','db/photo_redelivery_v1.sql','db/device_photo_redelivery_v1.sql'];
 const large=process.argv.includes('--larger');
@@ -43,18 +46,15 @@ snapshot.drawings[1].state.collabDeletedRecords.push(removed);
  const admin=()=>db.exec('RESET ROLE');
  const user=async(uid=owner)=>{await db.exec('SET ROLE authenticated');await db.query("SELECT set_config('request.jwt.claim.sub',$1,false),set_config('request.headers',$2,false)",[uid,JSON.stringify({'x-client-info':'sentlog-collaboration/1'})]);};
  await db.exec(read('tests/delta_release_legacy_fixture.sql'));
+ await db.exec("ALTER ROLE authenticated SET statement_timeout='8s';ALTER ROLE anon SET statement_timeout='3s'");
  for(const file of legacy)await db.exec(read(file));
- await db.exec(execFileSync('python3',['scripts/assemble_delta_sync.py'],{cwd:root,encoding:'utf8',maxBuffer:4*1024*1024}));
- // Reinstall the preserved pre-optimization definitions for the before/after
- // comparison, even once the release assembler includes the new patch.
- for(const [file,names] of [
-  ['docs/sentlog-delta-projection-prototype.sql',['revision_heads','project_register','normalize_collab','project_record']],
-  ['docs/sentlog-delta-checkpoint-prototype.sql',['project_snapshot']],
-  ['docs/sentlog-delta-metadata-prototype.sql',['validate_metadata_snapshot']]]){
-   const sql=read(file);
-   for(const name of names){const match=sql.match(new RegExp('CREATE OR REPLACE FUNCTION sentlog_delta_private\\.'+name+'\\([\\s\\S]*?AS \\$fn\\$[\\s\\S]*?\\$fn\\$;'));
-    assert(match,'original function '+name);await db.exec(match[0]);}
- }
+ // Assemble a consistent pre-optimization reference. Loading the complete
+ // current release and restoring only six old helpers would leave v2.00's
+ // metadata helpers and RPC timeout in the supposedly original comparison.
+ await db.exec(execFileSync('python3',['-c',
+  "import importlib.util; s=importlib.util.spec_from_file_location('delta_assemble','scripts/assemble_delta_sync.py'); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); "+
+  'm.PARTS=[part for part in m.PARTS if part[0] not in '+JSON.stringify(patches)+']; print(m.assemble()[0])'],
+  {cwd:root,encoding:'utf8',maxBuffer:4*1024*1024}));
  // Already deployed performance changes are part of the baseline comparison.
  await db.exec(read('docs/sentlog-delta-receipt-cache-prototype.sql'));
  await db.query('INSERT INTO auth.users(id) VALUES($1),($2)',[owner,other]);
@@ -71,25 +71,37 @@ snapshot.drawings[1].state.collabDeletedRecords.push(removed);
  console.log('Fixture prepared: '+drawingCount+' drawings, '+recordCount+' records, '+photoCount+' photos, '+Buffer.byteLength(JSON.stringify(snapshot))+' JSON bytes.');
  const timed=async label=>{const start=performance.now();const result=await activate();const ms=performance.now()-start;console.log(label+' '+ms.toFixed(1)+' ms');return {result,ms};};
  await db.exec('BEGIN');
- const before=await timed('Original activation');
+ const before=await timed('Pre-optimization activation (PGlite wall-clock comparison)');
+ console.log(JSON.stringify({previousBudgetMs,referenceMs:before.ms,referenceExceedsPreviousBudget:before.ms>=previousBudgetMs,
+  realStatementCancellationVerifiedBy:'tests/delta_activation_native.cjs'}));
  await admin();const oldSnapshot=await val('SELECT payload AS result FROM public.sentlog_project_snapshots WHERE project_id=$1',[pid]);
  const oldStates=(await db.query('SELECT drawing_id,record_id,collab,last_seq FROM sentlog_delta_private.record_states WHERE project_id=$1 ORDER BY drawing_id,record_id',[pid])).rows;
  await db.exec('ROLLBACK');await admin();
  const beforeInstall=await val('SELECT payload AS result FROM public.sentlog_project_snapshots WHERE project_id=$1',[pid]);
  const configuration=async()=>({roles:(await db.query("SELECT rolname,rolconfig FROM pg_roles WHERE rolname IN ('authenticated','anon') ORDER BY rolname")).rows,
+  ordinaryRpcSettings:(await db.query("SELECT proname,pg_get_function_identity_arguments(oid) AS args,proconfig FROM pg_proc WHERE pronamespace='public'::regnamespace AND proname LIKE 'sentlog_delta_%' AND proname<>'sentlog_delta_activate_baseline_v1' ORDER BY proname,args")).rows,
   rollouts:(await db.query('SELECT to_jsonb(r) AS row FROM sentlog_delta_private.rollouts r ORDER BY owner_id')).rows,
   heads:(await db.query('SELECT to_jsonb(h) AS row FROM sentlog_delta_private.heads h ORDER BY project_id')).rows,
   devices:(await db.query('SELECT to_jsonb(d) AS row FROM public.sentlog_devices d ORDER BY id')).rows,
   baselines:(await db.query('SELECT id,state,imported_count,snapshot_sha256,manifest_sha256 FROM sentlog_delta_private.baselines ORDER BY id')).rows});
  const configBefore=await configuration();
- await db.exec(read(patch));
+ const activationSettings=()=>val("SELECT proconfig AS result FROM pg_proc WHERE oid='public.sentlog_delta_activate_baseline_v1(uuid,uuid,uuid,jsonb)'::regprocedure");
+ const originalActivationSettings=await activationSettings();
+ assert(!(originalActivationSettings||[]).some(x=>x.startsWith('statement_timeout=')),'original public activation retains the ordinary role budget');
+ for(const patch of patches)await db.exec(read(patch));
  assert.deepEqual(await val('SELECT payload AS result FROM public.sentlog_project_snapshots WHERE project_id=$1',[pid]),beforeInstall);
- assert.deepEqual(await configuration(),configBefore,'install leaves roles, timeouts, rollouts, project modes, device registrations and migration progress unchanged');
+ assert.deepEqual(await configuration(),configBefore,'install leaves role timeouts, other RPC settings, rollouts, project modes, device registrations and migration progress unchanged');
+ assert.deepEqual([...(await activationSettings())].sort(),[...originalActivationSettings,'statement_timeout=30s'].sort(),
+  'only the public activation RPC gets its declared 30 s budget; existing function settings survive');
+ assert(configBefore.roles.find(r=>r.rolname==='authenticated').rolconfig.includes('statement_timeout=8s'));
+ assert(configBefore.roles.find(r=>r.rolname==='anon').rolconfig.includes('statement_timeout=3s'));
  assert.equal(await val("SELECT count(*)::int AS result FROM sentlog_delta_private.record_states WHERE project_id=$1",[pid]),0);
- await user();await db.exec("SET statement_timeout='8s'");
- const after=await timed('Optimized activation with statement_timeout=8s');
+ // PostgREST hoists the public RPC's declared setting before its main query.
+ // Mirror that setting here without treating WASM timing as cancellation proof.
+ await user();await db.exec("SET statement_timeout='30s'");
+ const after=await timed('Final v2.00 activation (PGlite wall-clock simulation, configured budget 30s)');
  assert.equal(after.result.state,'active');
- assert(after.ms<8000,'synthetic full activation must finish under the deployed 8 s request timeout');
+ assert(after.ms<activationBudgetMs,'synthetic activation must remain within the configured 30 s budget; native CI verifies real cancellation');
  await admin();
  const newSnapshot=await val('SELECT payload AS result FROM public.sentlog_project_snapshots WHERE project_id=$1',[pid]);
  const newStates=(await db.query('SELECT drawing_id,record_id,collab,last_seq FROM sentlog_delta_private.record_states WHERE project_id=$1 ORDER BY drawing_id,record_id',[pid])).rows;
@@ -107,10 +119,14 @@ snapshot.drawings[1].state.collabDeletedRecords.push(removed);
  await assert.rejects(()=>db.query('SELECT sentlog_delta_private.validate_metadata_snapshot($1::jsonb,$2::jsonb)',
   [JSON.stringify(invalid),JSON.stringify(invalid.project.deltaMetadata.records)]),e=>e.code==='22023'&&e.message.includes('DELTA_PROJECTION_RECORD_ID_INVALID'),
  'an already-visible drawing still rejects an invalid record identity');
- assert.equal(await val("SELECT bool_or(has_function_privilege('authenticated',p.oid,'EXECUTE') OR has_function_privilege('anon',p.oid,'EXECUTE')) AS result FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='sentlog_delta_private' AND p.proname IN ('revision_heads','project_register','normalize_collab','project_record','project_snapshot','validate_metadata_snapshot')"),false);
+ const helperNames=[...new Set(patches.flatMap(file=>[...read(file).matchAll(/CREATE OR REPLACE FUNCTION sentlog_delta_private\.([a-z_]+)\(/g)].map(m=>m[1])))];
+ assert(helperNames.length>=6);
+ assert.equal(await val("SELECT bool_or(has_function_privilege('authenticated',p.oid,'EXECUTE') OR has_function_privilege('anon',p.oid,'EXECUTE')) AS result FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='sentlog_delta_private' AND p.proname=ANY($1::text[])",[helperNames]),false);
  await user(other);await assert.rejects(activate,e=>e.code==='42501');
  await user();const repeat=await activate();assert.equal(repeat.baselineId,receipt.baselineId);
  assert.equal(await val('SELECT revision AS result FROM public.sentlog_project_snapshots WHERE project_id=$1',[pid]),2);
- console.log('PASS exact pre/post state and snapshot parity; deleted records and conflicting fields preserved; foreign owner denied; retry does not duplicate checkpoint; helper ACLs unchanged.');
- console.log(JSON.stringify({drawings:drawingCount,records:recordCount,photos:photoCount,beforeMs:before.ms,afterMs:after.ms,speedup:before.ms/after.ms}));
+ console.log('PASS final v2.00 SQL; exact pre/post snapshot and history parity; deleted/conflicting records preserved; owner/identity/graph guards; idempotent retry; private helper ACLs; activation-only 30 s setting with ordinary timeouts unchanged.');
+ console.log(JSON.stringify({engine:'PGlite wall-clock simulation',patches,drawings:drawingCount,records:recordCount,photos:photoCount,
+  previousBudgetMs,activationBudgetMs,beforeMs:before.ms,afterMs:after.ms,speedup:before.ms/after.ms,
+  realStatementCancellationVerifiedBy:'tests/delta_activation_native.cjs'}));
 }finally{await db.close();}})().catch(e=>{console.error(e);process.exitCode=1;});

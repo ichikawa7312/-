@@ -115,6 +115,13 @@
   function init(){if(!boot)boot=initialize();return boot;}
   const copy=value=>structuredClone(value);
   const scopeKeys=['ownerId','projectId','deviceId'];
+  const FILE_CHUNK_BYTES=2*1024*1024;
+  async function recordBlobHash(blob){
+    if(window.SentlogBlobSha256?.digest)return window.SentlogBlobSha256.digest(blob,{crypto});
+    if(blob.size>FILE_CHUNK_BYTES)throw journalError('JOURNAL_HASH_UNAVAILABLE','大きなファイルを安全に照合する機能を読み込めません。保存済みデータを保持して停止しました。画面を更新してください。');
+    const digest=await crypto.subtle.digest('SHA-256',await blob.arrayBuffer());
+    return [...new Uint8Array(digest)].map(x=>x.toString(16).padStart(2,'0')).join('');
+  }
   const sameScope=(a,b)=>a&&b&&scopeKeys.every(k=>a[k]===b[k]);
   const cutoffFileKey=(bindingId,index)=>'cutoff-file:'+JSON.stringify([bindingId,index]);
   function checkedCutoffFile(binding,file,index,rows=cutoffFiles){
@@ -157,7 +164,10 @@
   function cacheControls(rows){
     const files=new Map(rows.filter(row=>row?.kind==='cutoff-file').map(row=>[row.id,row]));
     const next=new Map(rows.filter(row=>row?.kind==='binding').map(row=>[row.localProjectId,row]));
-    for(const binding of next.values())hydrateBinding(binding,files);
+    // Validate references directly. Hydrating and discarding every project's
+    // full cutoff cloned all retained record snapshots and Blob handles.
+    for(const binding of next.values())for(const [index,file]of (binding.cutoff?.files||[]).entries())
+      if(Object.prototype.hasOwnProperty.call(file,'valueRef'))checkedCutoffFile(binding,file,index,files);
     cutoffFiles=files;bindings=next;
   }
   async function readControls(){
@@ -168,17 +178,45 @@
     const tx=transaction('readonly'),done=complete(tx);let value;
     tx.objectStore(CONTROL).get(key).onsuccess=e=>value=e.target.result;await done;return value;
   }
+  async function readProjectBinding(localProjectId){
+    const tx=transaction('readonly'),done=complete(tx),control=tx.objectStore(CONTROL),files=new Map();let binding;
+    control.get('binding:'+localProjectId).onsuccess=e=>{
+      try{
+        binding=e.target.result;if(binding===undefined)return;
+        if(!binding||binding.localProjectId!==localProjectId)throw journalError('JOURNAL_BINDING','案件の保存接続を確認できません');
+        bindingState(binding);
+        for(const [index,file]of (binding.cutoff.files||[]).entries()){
+          if(!Object.prototype.hasOwnProperty.call(file,'valueRef'))continue;
+          const id=cutoffFileKey(binding.id,index);
+          control.get(id).onsuccess=event=>files.set(id,event.target.result);
+        }
+      }catch(error){tx.sentlogJournalError=error;tx.abort();}
+    };await done;
+    if(binding===undefined){bindings.delete(localProjectId);return null;}
+    // One readonly transaction supplies the binding and all of its protected
+    // file rows. Never mix one tab's binding with another tab's newer files.
+    const hydrated=hydrateBinding(binding,files);
+    bindings.set(localProjectId,binding);for(const [id,row]of files)cutoffFiles.set(id,row);
+    return hydrated;
+  }
   async function splitEmbeddedCutoff(binding){
     const beforeText=archiveReleaseText(binding),files=binding.cutoff?.files||[],refs=new Map();
     // Old embedded cutoffs are converted once, one file at a time. A crash
     // leaves the original binding intact and add-only staged rows reusable.
     for(const [index,file]of files.entries()){
       if(file.valueRef||!(file.value instanceof Blob))continue;
-      const bytes=await file.value.arrayBuffer();
-      if(bytes.byteLength!==file.value.size)throw journalError('JOURNAL_CUTOFF_BYTES','移行前の控えを読み取れません');
-      const sha256=[...new Uint8Array(await crypto.subtle.digest('SHA-256',bytes))].map(x=>x.toString(16).padStart(2,'0')).join('');
+      // Safari cannot reliably re-put some native database-backed Blobs. Keep
+      // creating independent byte-backed parts, without one giant JS buffer.
+      // This bounds temporary ArrayBuffers, not the final Blob's total bytes.
+      const parts=[];
+      for(let offset=0;offset<file.value.size;offset+=FILE_CHUNK_BYTES){
+        const end=Math.min(offset+FILE_CHUNK_BYTES,file.value.size),bytes=await file.value.slice(offset,end).arrayBuffer();
+        if(bytes.byteLength!==end-offset)throw journalError('JOURNAL_CUTOFF_BYTES','移行前の控えを読み取れません');
+        parts.push(new Blob([bytes]));
+      }
       const value=typeof File==='function'&&typeof file.value.name==='string'?
-        new File([bytes],file.value.name,{type:file.value.type,lastModified:file.value.lastModified}):new Blob([bytes],{type:file.value.type});
+        new File(parts,file.value.name,{type:file.value.type,lastModified:file.value.lastModified}):new Blob(parts,{type:file.value.type});
+      parts.length=0;const sha256=await recordBlobHash(value);
       const id=cutoffFileKey(binding.id,index),row={version:1,kind:'cutoff-file',id,bindingId:binding.id,
         localProjectId:binding.localProjectId,scope:copy(binding.scope),key:file.key,revision:1,value,sha256};
       const expected=archiveReleaseText(row),prior=await readControl(id);
@@ -331,20 +369,36 @@
       tx.sentlogArchiveRelease.status='committed';tx.sentlogArchiveRelease.result={
       releasedCopies:tx.sentlogArchiveRelease.releasedCopies,releasedBytes:tx.sentlogArchiveRelease.releasedBytes,
       avoidedPreimageCopies:tx.sentlogArchiveRelease.current.size};}}
-  function collectJournal(tx,includeFiles,callback){
+  function collectJournal(tx,callback){
     const data={raw:new Map(),rows:[],controls:[],meta:null,files:[]},s=tx.objectStore(STORE);
-    let keys=[],values=[],allKeys=[],allValues=[],waiting=includeFiles?7:5;
+    let keys=[],values=[],waiting=5;
     const range=IDBKeyRange.bound(PREFIX,PREFIX+'\uffff');
     function done(){if(--waiting)return;try{
       data.raw=new Map(keys.map((key,i)=>[key.slice(PREFIX.length),values[i]]));
-      if(includeFiles)data.files=allKeys.map((key,i)=>({key,value:allValues[i]})).filter(x=>x.value instanceof Blob);
       callback(data);
     }catch(error){tx.sentlogJournalError=error;tx.abort();}}
     s.getAllKeys(range).onsuccess=e=>{keys=e.target.result;done();};s.getAll(range).onsuccess=e=>{values=e.target.result;done();};
     s.get(META).onsuccess=e=>{data.meta=e.target.result;done();};
     journalRows(tx.objectStore(JOURNAL)).onsuccess=e=>{data.rows=e.target.result.filter(x=>x.kind==='sentlog-app-intent');done();};
     journalControls(tx.objectStore(CONTROL)).onsuccess=e=>{data.controls=e.target.result;done();};
-    if(includeFiles){s.getAllKeys().onsuccess=e=>{allKeys=e.target.result;done();};s.getAll().onsuccess=e=>{allValues=e.target.result;done();};}
+  }
+  function collectProjectFiles(tx,drawingIds,callback){
+    const store=tx.objectStore(STORE),ids=[...drawingIds];
+    const fail=error=>{tx.sentlogJournalError=error;tx.abort();};
+    store.getAllKeys().onsuccess=e=>{
+      try{
+        const keys=e.target.result.filter(key=>typeof key==='string'&&ids.some(id=>
+          key==='background:'+id||key==='dxf:'+id||key.startsWith('photo:'+id+':')));
+        let waiting=keys.length;const files=new Array(waiting);
+        if(!waiting){callback([]);return;}
+        keys.forEach((key,index)=>{
+          store.get(key).onsuccess=event=>{try{
+            files[index]={key,value:event.target.result};
+            if(!--waiting)callback(files.filter(file=>file.value instanceof Blob));
+          }catch(error){fail(error);}};
+        });
+      }catch(error){fail(error);}
+    };
   }
   function projectSnapshot(raw,localProjectId,fallback){
     const workspace=workspaceOf(raw.get(WS)),matches=workspace.projects.filter(p=>p.id===localProjectId);
@@ -385,8 +439,7 @@
     localProjectId:plan.localProjectId,jobId:plan.jobId,operationId:plan.operationId,certificate:copy(plan.certificate),file:copy(file)};}
   async function archiveReleaseMatches(blob,file){
     if(!(blob instanceof Blob)||blob.size!==file.size)return false;
-    const digest=await crypto.subtle.digest('SHA-256',await blob.arrayBuffer());
-    return [...new Uint8Array(digest)].map(x=>x.toString(16).padStart(2,'0')).join('')===file.sha256;
+    return await recordBlobHash(blob)===file.sha256;
   }
   function archiveReleaseSnapshot(tx,keys,callback,recordKeys=[]){
     const data={rows:[],binding:null,cutoffRows:new Map(),claim:null,clock:0,meta:null,workspace:null,files:new Map(),raw:new Map(),recordKeys:new Set()},s=tx.objectStore(STORE),c=tx.objectStore(CONTROL);
@@ -678,7 +731,7 @@
           try{checkedCutoffFile(binding,file,index);}
           catch(error){if(error.code!=='JOURNAL_CUTOFF_REF')throw error;refresh=true;break;}
         }
-        if(refresh){await this.listBindings();return bindingState(bindings.get(localProjectId));}
+        if(refresh){await readProjectBinding(localProjectId);return bindingState(bindings.get(localProjectId));}
       }
       if(binding)bindings.set(localProjectId,binding);else bindings.delete(localProjectId);
       return state;
@@ -691,10 +744,9 @@
     },
     async listBindings(){assertReady();await connect();cacheControls(await readControls());return this.listBindingsSync();},
     async readCutoff({scope:inputScope,localProjectId}={}){
-      const scope=checkedScope(inputScope);await this.listBindings();
-      const binding=bindings.get(localProjectId);
+      assertReady();const scope=checkedScope(inputScope);await connect();const binding=await readProjectBinding(localProjectId);
       if(!binding||!sameScope(binding.scope,scope))throw journalError('JOURNAL_SCOPE','保護した控えの共有先が一致しません');
-      return hydrateBinding(binding).cutoff;
+      return binding.cutoff;
     },
     async missingCutoffFiles({scope:inputScope,localProjectId,bindingId}={}){
       assertReady();const scope=checkedScope(inputScope);await connect();
@@ -758,7 +810,7 @@
     },
     async pending({scope:inputScope,localProjectId}={}){
       assertReady();const scope=checkedScope(inputScope);await connect();const tx=transaction('readonly'),done=complete(tx);let result;
-      collectJournal(tx,false,data=>{
+      collectJournal(tx,data=>{
         const binding=bindingIn(data,localProjectId,scope),workspace=workspaceOf(data.raw.get(WS)),owners=new Map();
         for(const project of workspace.projects)for(const drawing of project.drawings||[]){if(!owners.has(drawing.id))owners.set(drawing.id,new Set());owners.get(drawing.id).add(project.id);}
         const relevant=data.rows.filter(row=>{
@@ -782,7 +834,7 @@
       assertReady();const scope=checkedScope(inputScope);if(typeof localProjectId!=='string'||!localProjectId)throw journalError('JOURNAL_PROJECT','端末内の案件を確認できません');
       if(!actor||actor.deviceId!==scope.deviceId||typeof actor.deviceName!=='string')throw journalError('JOURNAL_ACTOR','編集する端末を確認できません');
       await settled();const tx=transaction('readwrite'),done=complete(tx);let result;
-      collectJournal(tx,true,data=>{
+      const create=()=>collectJournal(tx,data=>{
         const existing=data.controls.find(x=>x?.kind==='binding'&&x.localProjectId===localProjectId);
         if(existing){if(!sameScope(existing.scope,scope))throw journalError('JOURNAL_SCOPE','この端末の案件は別の共有先に接続済みです');
           result=copy(existing.cutoff);return;}
@@ -790,14 +842,13 @@
         const snapshot=projectSnapshot(data.raw,localProjectId),seq=Math.max(0,...data.rows.map(x=>x.seq));
         // The numeric clock may be newer than the last retained row before the
         // first project is bound. Read it in this same transaction.
-        tx.objectStore(CONTROL).get('clock').onsuccess=e=>{
+        const drawingIds=new Set(snapshot.project.drawings.map(d=>d.id));
+        for(const drawing of snapshot.project.deltaMetadata?.retainedDrawings||[])if(drawing?.meta?.id)drawingIds.add(drawing.meta.id);
+        collectProjectFiles(tx,drawingIds,files=>{tx.objectStore(CONTROL).get('clock').onsuccess=e=>{try{
           const cutoffSeq=Math.max(seq,Number(e.target.result)||0),bindingId='binding:'+crypto.randomUUID();
-          const drawingIds=new Set(snapshot.project.drawings.map(d=>d.id));
-          for(const drawing of snapshot.project.deltaMetadata?.retainedDrawings||[])if(drawing?.meta?.id)drawingIds.add(drawing.meta.id);
           const rawEntries=[...data.raw].filter(([key])=>key===WS||key===SYNC+localProjectId||key==='sentlogArchiveLocalV1'||
             (key.startsWith(DRAW)&&drawingIds.has(key.slice(DRAW.length)))||
             [...drawingIds].some(id=>key==='sentlogReplaceBackupV1:'+id)||key.startsWith('sentlogSyncMergeCheckpointV1:'+localProjectId+':'));
-          const files=data.files.filter(file=>[...drawingIds].some(id=>file.key==='background:'+id||file.key==='dxf:'+id||file.key.startsWith('photo:'+id+':')));
           result={version:1,kind:'sentlog-journal-cutoff',bindingId,scope:copy(scope),localProjectId,cutoffSeq,
             sourceRevision:revision,sourceMeta:copy(data.meta),snapshot,rawEntries,files,metadataRecords:{},
             ...(Number.isSafeInteger(serverRevision)&&serverRevision>=1?{serverRevision}:{})};
@@ -808,14 +859,22 @@
           const binding={version:1,kind:'binding',id:bindingId,scope:copy(scope),localProjectId,phase:'staging',actor:copy(actor),
             cutoffSeq,ackedSeq:cutoffSeq,metadataRecords:{},createdAt:Date.now(),cutoff:storedCutoff};
           tx.objectStore(CONTROL).put(binding,'binding:'+localProjectId);
-        };
+        }catch(error){tx.sentlogJournalError=error;tx.abort();}};});
       });
-      await done;await this.listBindings();notify();return hydrateBinding(bindings.get(localProjectId)).cutoff;
+      // Most retries already have a protected cutoff. Read that small binding
+      // before collecting journal history or touching any live photo Blob.
+      tx.objectStore(CONTROL).get('binding:'+localProjectId).onsuccess=e=>{try{
+        const existing=e.target.result;
+        if(existing!==undefined){if(!sameScope(existing?.scope,scope))throw journalError('JOURNAL_SCOPE','この端末の案件は別の共有先に接続済みです');
+          bindingState(existing);return;}
+        create();
+      }catch(error){tx.sentlogJournalError=error;tx.abort();}};
+      await done;const cutoff=await this.readCutoff({scope,localProjectId});notify();return cutoff;
     },
     async activate({scope:inputScope,localProjectId,baselineId,metadataRecords={},baselineSnapshot,proof}={}){
       const scope=checkedScope(inputScope);if(typeof baselineId!=='string'||!baselineId)throw journalError('JOURNAL_BASELINE','共有の基準を確認できません');
       const tx=transaction('readwrite'),done=complete(tx);let result;
-      collectJournal(tx,false,data=>{const binding=bindingIn(data,localProjectId,scope);
+      collectJournal(tx,data=>{const binding=bindingIn(data,localProjectId,scope);
         if(binding.baselineId&&binding.baselineId!==baselineId)throw journalError('JOURNAL_BASELINE','異なる共有の基準に変更できません');
         result={...binding,phase:binding.phase==='detached'?'detached':'active',baselineId,activatedAt:binding.activatedAt||Date.now(),
           metadataRecords:copy(metadataRecords),baselineProof:proof?copy(proof):null};
@@ -825,7 +884,7 @@
     },
     async claim({scope:inputScope,localProjectId}={}){
       const scope=checkedScope(inputScope);await settled();const tx=transaction('readwrite'),done=complete(tx);let result=null;
-      collectJournal(tx,false,data=>{
+      collectJournal(tx,data=>{
         const binding=bindingIn(data,localProjectId,scope);if(binding.phase!=='active')return;
         const existing=data.controls.find(x=>x?.kind==='claim'&&x.localProjectId===localProjectId);
         if(existing){if(!sameScope(existing.scope,scope))throw journalError('JOURNAL_SCOPE','処理中の共有先が一致しません');result=existing;return;}
@@ -877,18 +936,17 @@
         const value=state.records[key],parts=JSON.parse(key);if(!value)throw journalError('JOURNAL_PROOF','編集履歴が保存先にありません');
         D.diffRecord(required,value,{eventId:'journal-proof',drawingId:parts[0],projectId:scope.projectId,deviceId:scope.deviceId});
       }
-      const bytes=await crypto.subtle.digest('SHA-256',await new Blob([JSON.stringify(requiredRecords)]).arrayBuffer());
-      const replicaBytes=await crypto.subtle.digest('SHA-256',await new Blob([JSON.stringify(state)]).arrayBuffer());
+      const requiredSha256=await recordBlobHash(new Blob([JSON.stringify(requiredRecords)]));
+      const replicaSha256=await recordBlobHash(new Blob([JSON.stringify(state)]));
       const proof={version:1,kind:'durable-replay-proof',claimId,scope:copy(scope),
-        requiredSha256:[...new Uint8Array(bytes)].map(x=>x.toString(16).padStart(2,'0')).join(''),recordCount:Object.keys(requiredRecords).length,
-        replicaSha256:[...new Uint8Array(replicaBytes)].map(x=>x.toString(16).padStart(2,'0')).join(''),cursor:state.cursor,outboxCount:state.outbox.length};
+        requiredSha256,recordCount:Object.keys(requiredRecords).length,replicaSha256,cursor:state.cursor,outboxCount:state.outbox.length};
       replayProofs.set(proof,{scope:copy(scope),claimId,projection:copy(normalizedAfter||projection)});return proof;
     },
     async acknowledge({scope:inputScope,localProjectId,claimId,proof}={}){
       const scope=checkedScope(inputScope),verified=replayProofs.get(proof);
       if(!verified||verified.claimId!==claimId||!sameScope(verified.scope,scope))throw journalError('JOURNAL_PROOF','端末内への保存を照合した証明が必要です');
       const tx=transaction('readwrite'),done=complete(tx);let result;
-      collectJournal(tx,false,data=>{const binding=bindingIn(data,localProjectId,scope),claim=data.controls.find(x=>x?.kind==='claim'&&x.localProjectId===localProjectId);
+      collectJournal(tx,data=>{const binding=bindingIn(data,localProjectId,scope),claim=data.controls.find(x=>x?.kind==='claim'&&x.localProjectId===localProjectId);
         if(!claim||claim.id!==claimId||!sameScope(claim.scope,scope))throw journalError('JOURNAL_CLAIM','保存を確認する操作が変わっています');
         result={...binding,ackedSeq:claim.throughSeq,lastProof:copy(proof),replayBaseline:{before:copy(claim.after),after:copy(verified.projection)}};
         tx.objectStore(CONTROL).put(result,'binding:'+localProjectId);tx.objectStore(CONTROL).delete('claim:'+localProjectId);
@@ -950,7 +1008,7 @@
       const unchanged=()=>!pending.size&&!inFlight&&!exclusive&&expected.every(([key,value])=>(memory.get(key)??null)===value)&&validate()===true;
       if(!unchanged())return {applied:false,deferred:true};
       const tx=transaction('readwrite'),done=complete(tx);let nextRevision=null,nextBinding=null,deferred=false;
-      collectJournal(tx,false,data=>{
+      collectJournal(tx,data=>{
         const binding=bindingIn(data,localProjectId,scope),project=data.raw.get(WS),owned=new Set(workspaceOf(project).projects.find(p=>p.id===localProjectId)?.drawings?.map(d=>d.id)||[]);
         const workspaceWrite=updates.find(x=>x[0]===WS),targetWorkspace=workspaceWrite?workspaceWrite[1]:project;
         const incomingIds=new Set(workspaceOf(targetWorkspace).projects.find(p=>p.id===localProjectId)?.drawings?.map(d=>d.id)||[]);

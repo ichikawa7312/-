@@ -30,6 +30,7 @@ PARTS = [
     ("db/capacity_v1.sql", "sentlog_archive_private.capacity_gateway"),
     ("docs/sentlog-delta-app-lifecycle.sql", None),
     ("docs/sentlog-delta-activation-performance.sql", None),
+    ("docs/sentlog-delta-activation-scalability.sql", None),
 ]
 
 
