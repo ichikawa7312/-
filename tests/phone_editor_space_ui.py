@@ -449,22 +449,43 @@ def phone_actions(page, report, report_path=None):
         page.locator(selector).click()
         assert page.evaluate('tool') == 'pan'
 
-    # Actual undo/redo preserves the existing history handler and photo relationship.
-    page.evaluate("pushHistory();state.shapes[0].memo='一時的な検証編集';persist();updateHistoryButtons()")
+    # The production editor appends immutable comments. Use its actual input
+    # and Save control; a raw memo assignment is also imported as an append,
+    # so expecting the original comment to be replaced would be incorrect.
+    page.evaluate("clearAllHistory();selectShape('phone-record-1');$('inspector').classList.add('open')")
+    original_memo = page.evaluate("state.shapes.find(s=>s.id==='phone-record-1').memo")
+    appended_memo = original_memo+'\n\n一時的な検証追記'
+    page.locator('#slCollabDraft').fill('一時的な検証追記')
+    page.locator('#slCollabComments [data-actions]').get_by_role('button', name='保存', exact=True).click()
+
+    def committed_memo(expected):
+        page.wait_for_function("expected=>state.shapes.find(s=>s.id==='phone-record-1').memo===expected", arg=expected)
+        result = evaluate(page, """async()=>{
+          await SentlogRecords.settled();SentlogRecords.assertSafe();
+          const saved=JSON.parse(SentlogRecords.getItem(drawingStorageKey('phone-space-pdf')));
+          const record=saved.shapes.find(s=>s.id==='phone-record-1');
+          return {memo:record.memo,photos:record.photos.map(p=>p.id)};
+        }""")
+        assert result == {'memo': expected, 'photos': ['phone-retained-photo']}, result
+
+    committed_memo(appended_memo)
+    page.locator('#mobileHandle').click()
     page.locator('#undoBtn').click()
-    assert page.evaluate('state.shapes[0].memo') == '保持する所見 1'
+    committed_memo(original_memo)
     page.locator('#redoBtn').click()
-    assert page.evaluate('state.shapes[0].memo') == '一時的な検証編集'
+    committed_memo(appended_memo)
     page.locator('#undoBtn').click()
+    committed_memo(original_memo)
+    report['history'] = {'realCommentInputAndSave': True, 'undoRedoUndo': True, 'photoLinkPreserved': True}
 
     # Browser height changes model the resize path, not a real iOS keyboard.
     page.evaluate("selectShape('phone-record-1');$('inspector').classList.add('open')")
-    page.locator('#memo').focus()
+    page.locator('#slCollabDraft').focus()
     transform = page.evaluate('({scale,tx,ty})')
     resize(page, 390, 480)
     assert page.evaluate('({scale,tx,ty})') == transform
-    page.locator('#memo').scroll_into_view_if_needed()
-    expect(page.locator('#memo')).to_be_focused()
+    page.locator('#slCollabDraft').scroll_into_view_if_needed()
+    expect(page.locator('#slCollabDraft')).to_be_focused()
     resize(page, 390, 844)
     assert page.evaluate('({scale,tx,ty})') == transform
     page.locator('#mobileHandle').click()
