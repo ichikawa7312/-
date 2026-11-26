@@ -261,6 +261,59 @@ CHECKS = r"""async engine=>{
     equal((await sa.read()).outbox.map(e=>e.eventId),['one'],'first pending event was replaced');
     equal(two.id,'two','second caller lost draft');a.close();b.close();sa.close();sb.close();
   });
+  await test('proof reads preserve stale replica CAS and explicit reload retains both edits',async()=>{
+    const name=database(),server=cloud(),sa=store(name),sb=store(name),b=replica(sb,server.transport);
+    let a=replica(sa,server.transport);
+    const recordKey=D.keyOf('d','proof-record');
+    const append=(record,id)=>C.appendComment(record,'Synthetic '+id,{actor:{deviceId:scope.deviceId,
+      deviceName:'Synthetic writer'},at:2,commentId:id,revisionId:id+'-revision'});
+    const sha256=async value=>Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',
+      new TextEncoder().encode(JSON.stringify(value)))),byte=>byte.toString(16).padStart(2,'0')).join('');
+    // Observe the raw envelope without adopting its revision in either store.
+    // Wait for the readonly transaction to finish before comparing its bytes.
+    const durable=()=>raw(name,db=>new Promise((resolve,reject)=>{
+      let result;const tx=db.transaction('replicas','readonly'),request=tx.objectStore('replicas').get(key);
+      request.onsuccess=()=>{result=request.result;};
+      tx.oncomplete=()=>resolve(result);tx.onabort=()=>reject(tx.error||Error('proof fixture read aborted'));
+    }));
+    try{
+      await a.start();await a.change({drawingId:'d',before:null,after:initial('proof-record'),eventId:'proof-seed'});
+      await b.start();const stale=await a.snapshot();equal(await b.snapshot(),stale,'replicas did not share the seed');
+      const fromB=append(stale.records[recordKey],'proof-comment-b');
+      await b.change({drawingId:'d',before:stale.records[recordKey],after:fromB,eventId:'proof-event-b'});
+      const committed=await durable(),committedSha=await sha256(committed);
+      equal(committed.revision,2,'B did not commit the second revision');
+      equal(committed.state.records[recordKey],fromB,'B record was not durable');
+      equal(committed.state.outbox.map(event=>event.eventId),['proof-seed','proof-event-b'],'B event was not durable');
+
+      equal(await sa.readForVerification(),committed.state,'proof read did not observe the latest durable state');
+      equal(await a.snapshot(),stale,'proof read unexpectedly refreshed the stale replica cache');
+      equal(await durable(),committed,'proof read itself changed durable data');
+      const staleEdit=append(stale.records[recordKey],'proof-comment-a');
+      await expect(()=>a.change({drawingId:'d',before:stale.records[recordKey],after:staleEdit,
+        eventId:'proof-event-a'}),'DELTA_STORE_STALE');
+      const retained=await durable();equal(retained,committed,'stale edit replaced the durable envelope');
+      equal(await sha256(retained),committedSha,'stale edit changed durable envelope SHA-256');
+      equal(retained.state.records[recordKey],fromB,'stale edit lost B comment graph');
+      equal(retained.state.outbox,committed.state.outbox,'stale edit lost B pending event payload');
+      equal(await a.snapshot(),stale,'rejected edit changed the stale replica cache');
+
+      // A normal refresh adopts disk together with a replacement replica cache.
+      equal(await sa.read(),committed.state,'explicit reload did not read the committed state');
+      a.close();a=replica(sa,server.transport);await a.start();
+      equal(await a.snapshot(),committed.state,'replacement replica did not use the refreshed state');
+      const merged=append(fromB,'proof-comment-a');
+      await a.change({drawingId:'d',before:fromB,after:merged,eventId:'proof-event-a'});
+      const final=await durable();equal(final.revision,3,'explicit reload did not permit the next revision');
+      equal(final.state.records[recordKey],merged,'refreshed edit changed the combined comment graph');
+      assert(final.state.records[recordKey].collab.comments['proof-comment-a']&&
+        final.state.records[recordKey].collab.comments['proof-comment-b'],'refreshed edit lost one writer comment');
+      equal(final.state.outbox.slice(0,2),committed.state.outbox,'explicit reload changed earlier pending event payloads');
+      equal(final.state.outbox.map(event=>event.eventId),['proof-seed','proof-event-b','proof-event-a'],
+        'explicit reload lost one writer pending event');
+      equal(server.stats,{push:0,read:0},'offline CAS regression unexpectedly contacted its synthetic server');
+    }finally{a.close();b.close();sa.close();sb.close();}
+  });
   await test('a hanging network request does not block a second durable local edit',async()=>{
     const name=database(),server=cloud(),s=store(name);server.flag.online=true;
     let entered=false;server.transport.push=async()=>{entered=true;return new Promise(()=>{});};

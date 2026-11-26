@@ -37,7 +37,7 @@ async function bind(f,options={}){
   const base=copy(cutoff.snapshot),records={};for(const drawing of base.drawings)for(const record of [...drawing.state.shapes,...drawing.state.collabDeletedRecords])records[D.keyOf(drawing.meta.id,record.id)]=C.upgrade(record);
   if(options.metadata)Object.assign(records,await M.seed(base));
   let durable={version:2,scope:copy(scope),cursor:0,records,outbox:[]},writes=0,fail=false;
-  const store={read:async()=>copy(durable),write:async value=>{if(fail){fail=false;throw Error('quota');}durable=copy(value);writes++;}};
+  const store={read:async()=>copy(durable),readForVerification:async()=>copy(durable),write:async value=>{if(fail){fail=false;throw Error('quota');}durable=copy(value);writes++;}};
   if(!options.staging)await f.records.deltaJournal.activate({scope,localProjectId,baselineId:'baseline',baselineSnapshot:base,metadataRecords:options.metadata?M.metadataRecords(records):{}});
   function controller(extra={}){
     const transport={online:()=>false,push:async()=>{throw Error('offline');},pushGroup:async()=>{throw Error('offline');},list:async()=>[],getCapabilities:()=>({atomicGroups:true})};
@@ -493,7 +493,7 @@ await test('shared workspace row remains until every affected project has durabl
   f.records.batch([[WS,json(workspace)],[DRAW+'other-drawing',json({shapes:[],collabDeletedRecords:[]})]]);await f.records.settled();
   const e=await bind(f,{metadata:true}),otherCutoff=await f.records.deltaJournal.begin({scope:otherScope,localProjectId:otherId,actor});
   let otherState={version:2,scope:otherScope,cursor:0,outbox:[],records:await M.seed(otherCutoff.snapshot)};
-  const otherStore={read:async()=>copy(otherState),write:async value=>{otherState=copy(value);}};
+  const otherStore={read:async()=>copy(otherState),readForVerification:async()=>copy(otherState),write:async value=>{otherState=copy(value);}};
   await f.records.deltaJournal.activate({scope:otherScope,localProjectId:otherId,baselineId:'other-baseline',baselineSnapshot:otherCutoff.snapshot,metadataRecords:M.metadataRecords(otherState.records)});
   const next=JSON.parse(f.records.getItem(WS));next.projects[0].name='変更した主案件';next.projects[1].name='変更した別案件';f.records.setItem(WS,json(next));await f.records.settled();
   const c=e.controller();await c.controller.drain();assert.equal([...(await f.disk(LOG)).values()].filter(x=>x.kind==='sentlog-app-intent').length,1);

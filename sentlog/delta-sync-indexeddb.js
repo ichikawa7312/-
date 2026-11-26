@@ -166,7 +166,7 @@
         try{action(tx.objectStore(STORE),context,abort);}catch(error){abort(error);}
       });
     }
-    async function read(){
+    function readState(adoptRevision){
       return serialized(async()=>{
         const connection=await connect();
         const result=await operate(connection,'readonly',(store,context,abort)=>{
@@ -180,10 +180,14 @@
         if(expectedRevision!==null&&expectedRevision>0&&result.revision===0)
           throw problem('DELTA_STORE_MISSING','以前の保存データを確認できません。空のデータでは上書きしません');
         await verifyInitialState(result);assertOpen();
-        expectedRevision=result.revision;
+        if(adoptRevision)expectedRevision=result.revision;
         return copy(result.state);
       });
     }
+    async function read(){return readState(true);}
+    // A proof caller observes disk without refreshing the replica's cached
+    // state. It must not adopt another writer's revision for a later CAS save.
+    async function readForVerification(){return readState(false);}
     function write(next){
       // Snapshot before any await, so a caller cannot mutate an in-flight save.
       let candidate;
@@ -284,7 +288,7 @@
       for(const context of [...active.values()])context.cancel(problem('DELTA_STORE_CLOSED','保存処理を中止しました'));
       closeWhenIdle();
     }
-    return {read,write,installBaseline,readProvenance,close,getScope:()=>copy(scope)};
+    return {read,readForVerification,write,installBaseline,readProvenance,close,getScope:()=>copy(scope)};
   }
   const api={version:1,createStore};
   if(typeof module==='object'&&module.exports)module.exports=api;

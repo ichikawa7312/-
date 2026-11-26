@@ -112,7 +112,7 @@ async function replay(app,id='a'){
  const {records}=app,scope=scopeFor(id),binding=records.deltaJournal.bindingFor(id),base=copy(binding.cutoff.snapshot),entries={...await M.seed(base)};
  for(const d of base.drawings)for(const record of [...d.state.shapes,...d.state.collabDeletedRecords])entries[D.keyOf(d.meta.id,record.id)]=record;
  let durable={version:2,scope:copy(scope),cursor:0,records:entries,outbox:[],blockedOutbox:[]};
- const store={read:async()=>copy(durable),write:async next=>{durable=copy(next);}};
+ const store={read:async()=>copy(durable),readForVerification:async()=>copy(durable),write:async next=>{durable=copy(next);}};
  const transport={online:()=>false,push:async()=>{throw Error('offline');},pushGroup:async()=>{throw Error('offline');},list:async()=>[],getCapabilities:()=>({atomicGroups:true})};
  const replica=D.createReplica({...scope,store,transport}),bridge=B.createBridge({replica,scope,localProjectId:id,currentScope:()=>scope});
  const controller=J.createController({records,scope,localProjectId:id,replica,replicaStore:store,bridge,metadata:M,currentScope:()=>scope});

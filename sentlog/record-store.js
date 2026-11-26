@@ -1212,10 +1212,10 @@
     },
     async verifyReplay({scope:inputScope,claimId,replica,replicaStore,requiredRecords={},projection,normalizedAfter,expectedSnapshotToken}={}){
       const scope=checkedScope(inputScope),D=window.SentlogDeltaSyncCore;
-      if(typeof replicaStore?.read!=='function'||typeof replica?.snapshotWithStatus!=='function'||!D?.diffRecord)throw journalError('JOURNAL_PROOF','保存済みの差分履歴を照合する方法がありません');
+      if(typeof replicaStore?.readForVerification!=='function'||typeof replica?.snapshotWithStatus!=='function'||!D?.diffRecord)throw journalError('JOURNAL_PROOF','保存済みの差分履歴を照合する方法がありません');
       let state=null;
       for(let attempt=0;attempt<8;attempt++){
-        const before=await replica.snapshotWithStatus(),durable=await replicaStore.read(),after=await replica.snapshotWithStatus();
+        const before=await replica.snapshotWithStatus(),durable=await replicaStore.readForVerification(),after=await replica.snapshotWithStatus();
         if(before.snapshotToken!==after.snapshotToken)continue;
         if(expectedSnapshotToken!==undefined&&before.snapshotToken!==expectedSnapshotToken)
           throw journalError('JOURNAL_RESTORE_CHANGED','復旧照合の途中で差分保存が変更されました');

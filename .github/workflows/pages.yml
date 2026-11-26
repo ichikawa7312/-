@@ -232,6 +232,7 @@ jobs:
           node --check sentlog/startup-storage-diagnostics.js
           node tests/test_startup_storage_diagnostics.cjs
           node tests/record_startup_guard.test.cjs
+          node tests/delta_replay_verification.test.cjs
           node tests/startup_protection_release.test.cjs
       - name: Setup Pages
         uses: actions/configure-pages@v5

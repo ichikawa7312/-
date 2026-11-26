@@ -3,10 +3,14 @@
 // even when an independent dependency fetch could return the newest bytes.
 const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
 const token='20261127-startup-protection-206',marker='sentlog-startup-protection-v206';
+const proofToken='20261127-durable-proof-read-206',proofMarker='sentlog-durable-proof-read-v206';
 const index=fs.readFileSync('sentlog/index.html','utf8');
 assert(index.includes("['record-store.js?v="+token+"','"+marker+"']"));
 assert(index.includes('./record-store.js?v='+token));
 assert(fs.readFileSync('sentlog/record-store.js','utf8').startsWith('// '+marker+'\n'));
+assert(index.includes("['delta-sync-indexeddb.js?v="+proofToken+"','"+proofMarker+"']"));
+assert(index.includes('./delta-sync-indexeddb.js?v='+proofToken));
+assert(fs.readFileSync('sentlog/delta-sync-indexeddb.js','utf8').startsWith('// '+proofMarker+'\n'));
 assert(index.includes("[5,'sentlog-photo-grid-layout-v1']"));
 assert(fs.readFileSync('sentlog/part06.txt','utf8').includes('// sentlog-photo-grid-layout-v1\n'));
 assert.equal(index.split("storageCheck.href='./storage-check.html'").length-1,1);
