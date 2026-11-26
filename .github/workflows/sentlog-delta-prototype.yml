@@ -148,6 +148,8 @@ jobs:
           node tests/recovery_queue.test.cjs
           node tests/delta_realtime_privileges.cjs
           node tests/delta_batch_paging.test.cjs
+          node tests/delta_receive_batch.test.cjs
+          node tests/delta_journal_receive_contention.test.cjs
           node tests/delta_group_sync.test.cjs
           node tests/delta_group_contract.cjs
           node tests/delta_archive_pglite.cjs

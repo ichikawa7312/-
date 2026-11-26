@@ -1,4 +1,4 @@
-"""Version the bounded photo-file journal wake after the complete v2.06 build."""
+"""Version bounded receive persistence and photo-file wake after v2.06."""
 from pathlib import Path
 import re
 import subprocess
@@ -7,18 +7,24 @@ import subprocess
 ROOT = Path(__file__).resolve().parents[1]
 TOKEN = '20261127-file-journal-wake-207'
 MARKER = 'sentlog-file-journal-wake-v207'
+RECEIVE_TOKEN = '20261127-bounded-receive-207'
+RECEIVE_MARKER = 'sentlog-bounded-receive-v207'
 OLD_LABEL = 'v2.06 · 記録保護・写真表示の安定化'
-NEW_LABEL = 'v2.07 · 写真受信後の同期待ちを改善'
+NEW_LABEL = 'v2.07 · 記録受信・写真同期の待機を改善'
 OLD_CACHE = 'sentlog-pwa-v248'
 NEW_CACHE = 'sentlog-pwa-v249'
 OLD_URLS = {
     'delta-sync-app-runtime': '20261125-retain-media-5',
     'cloud-sync': '20261127-storage-recovery-204',
+    'delta-sync-core': '20261121-heavy-sync',
 }
 OLD_MARKERS = {
     'delta-sync-app-runtime': 'SentlogDelta',
     'cloud-sync': 'sentlog-storage-recovery-v204',
+    'delta-sync-core': 'SentlogDeltaSyncCore',
 }
+NEW_TOKENS = {module: RECEIVE_TOKEN if module == 'delta-sync-core' else TOKEN for module in OLD_URLS}
+NEW_MARKERS = {module: RECEIVE_MARKER if module == 'delta-sync-core' else MARKER for module in OLD_URLS}
 pending = {}
 
 
@@ -48,8 +54,9 @@ if ('sentlog-startup-protection-v206' not in index
 
 for module, old_token in OLD_URLS.items():
     filename = 'sentlog/' + module + '.js'
-    pending[filename] = '// ' + MARKER + '\n' + source(filename)
-    old_url, new_url = module + '.js?v=' + old_token, module + '.js?v=' + TOKEN
+    marker = NEW_MARKERS[module]
+    pending[filename] = '// ' + marker + '\n' + source(filename)
+    old_url, new_url = module + '.js?v=' + old_token, module + '.js?v=' + NEW_TOKENS[module]
     for page, count in [('sentlog/index.html', 2), ('sentlog-pc/index.html', 0),
                         ('sentlog/drawing-export-view.html', 0)]:
         references = re.findall(re.escape(module) + r'\.js\?v=[A-Za-z0-9._-]+', source(page))
@@ -58,7 +65,7 @@ for module, old_token in OLD_URLS.items():
         if count:
             change(page, old_url, new_url, count)
     change('sentlog/index.html', "['" + new_url + "','" + OLD_MARKERS[module] + "']",
-           "['" + new_url + "','" + MARKER + "']")
+           "['" + new_url + "','" + marker + "']")
 
 change('sentlog/index.html', 'phone-runtime.js?v=206', 'phone-runtime.js?v=207', 2)
 change('sentlog/index.html', "'v2.06'", "'v2.07'")
@@ -80,8 +87,8 @@ for path in (ROOT / 'tests').iterdir():
     value = value.replace(OLD_LABEL, NEW_LABEL)
     value = value.replace('PASS v2.06 loader,', 'PASS v2.07 loader,')
     for module, old_token in OLD_URLS.items():
-        value = value.replace(module + '.js?v=' + old_token, module + '.js?v=' + TOKEN)
-        value = value.replace(module + r'\.js\?v=' + old_token, module + r'\.js\?v=' + TOKEN)
+        value = value.replace(module + '.js?v=' + old_token, module + '.js?v=' + NEW_TOKENS[module])
+        value = value.replace(module + r'\.js\?v=' + old_token, module + r'\.js\?v=' + NEW_TOKENS[module])
     if value != old:
         pending[name] = value
 
@@ -95,6 +102,6 @@ change(test_name,
 
 for name, value in pending.items():
     (ROOT / name).write_text(value, encoding='utf-8')
-for name in ['delta-sync-app-runtime', 'cloud-sync', 'phone-runtime']:
+for name in ['delta-sync-app-runtime', 'cloud-sync', 'delta-sync-core', 'phone-runtime']:
     subprocess.run(['node', '--check', 'sentlog/' + name + '.js'], cwd=ROOT, check=True)
-print('Built v2.07: wake the scoped journal once after changed photo-file batches; ' + NEW_CACHE)
+print('Built v2.07: persist bounded receive pages and wake changed photo-file journals; ' + NEW_CACHE)

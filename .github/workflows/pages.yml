@@ -235,6 +235,8 @@ jobs:
           node tests/delta_replay_verification.test.cjs
           node tests/startup_protection_release.test.cjs
           node tests/delta_file_journal_wake.test.cjs
+          node tests/delta_receive_batch.test.cjs
+          node tests/delta_journal_receive_contention.test.cjs
           node tests/file_journal_wake_release.test.cjs
       - name: Setup Pages
         uses: actions/configure-pages@v5
