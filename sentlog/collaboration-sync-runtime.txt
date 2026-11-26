@@ -165,7 +165,10 @@ function collaborationNormalizeStored(ids,context){
         for(const p of out.photos||[])for(const cache of ['localBlob','data'])if(Object.prototype.hasOwnProperty.call(original.get(p.id)||{},cache))p[cache]=original.get(p.id)[cache];
         return out;
       });
-      const next=JSON.stringify(st);if(next!==text){writes.push([key,next]);beforeRecords.push([key,text]);}
+      const next=JSON.stringify(st);
+      // Materializing revisions can reorder object keys without changing JSON values.
+      // Keep the durable bytes to avoid redundant record rewrites.
+      if(next!==text&&!window.SentlogRecordCollaboration.equal(JSON.parse(text),st)){writes.push([key,next]);beforeRecords.push([key,text]);}
     }
     if(lp.collaborationVersion!==1){lp.collaborationVersion=1;changed=true;}
   }
