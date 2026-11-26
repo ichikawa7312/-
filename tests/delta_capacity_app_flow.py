@@ -115,6 +115,16 @@ def _wait(cloud, page, predicate, description, timeout=60):
         page.wait_for_timeout(80)
 
 
+def _wait_manual_sync_complete(cloud, page):
+    # Asset ACKs complete before archive.manual() finishes its cloud-idle,
+    # certified-PC proof and final renderProjects() stages. Observe the real
+    # completion message as well before issuing the next capacity operation.
+    # This does not change the application's handlers or retry a lost click.
+    _wait(cloud, page, lambda: page.locator('#slArchiveMessage').inner_text() ==
+          '選んだ案件の同期を確認しました。保管中の自動同期は停止したままです。',
+          'Archived manual-sync UI did not finish its final verification and rendering')
+
+
 def _keys(payload):
     result = set()
     drawings = payload['drawings'] + payload['project'].get('deltaMetadata', {}).get('retainedDrawings', [])
@@ -298,6 +308,7 @@ def run(cloud, page, peer, certificate, cloud_project, owner, device, peer_devic
             page.get_by_role('button', name='この案件を手動同期', exact=True).click()
             _wait(cloud, page, lambda: all(row['phase'] == 'acknowledged' for row in page.evaluate(BLOB_STATS, context)['assets']),
                   'Explicit archived manual sync did not rehydrate and acknowledge delta asset copies')
+            _wait_manual_sync_complete(cloud, page)
             final = page.evaluate(BLOB_STATS, context)
             diagnostics['afterRestore'] = final
             assert final['assetBlobBytes'] == before['assetBlobBytes'], (before, final)
@@ -369,6 +380,7 @@ def run(cloud, page, peer, certificate, cloud_project, owner, device, peer_devic
                         and not state['replica']['outbox'] and not state['replica']['blocked']
                         and bool(assets) and all(row['phase'] == 'acknowledged' for row in assets))
             _wait(cloud, page, whole_restore_synced, 'Manual sync did not finish detached cache replay and exact photo ACKs')
+            _wait_manual_sync_complete(cloud, page)
             whole_final = page.evaluate(PROJECT_STATE, project_context)
             whole_final_bytes = page.evaluate(BLOB_STATS, context)
             diagnostics['afterWholeManualSync'] = _state_summary(whole_final)
@@ -394,6 +406,14 @@ def run(cloud, page, peer, certificate, cloud_project, owner, device, peer_devic
         finally:
             try:
                 diagnostics['message'] = page.locator('.sl-capacity-dialog .sl-capacity-message').all_text_contents()
+                diagnostics['uiBoundary'] = page.evaluate("""()=>({
+                  archiveMessage:(document.getElementById('slArchiveMessage')?.textContent||'').slice(0,400),
+                  capacityDialogCount:document.querySelectorAll('.sl-capacity-dialog').length,
+                  openCapacityDialogCount:document.querySelectorAll('.sl-capacity-dialog[open]').length,
+                  recordsReady:!!window.SentlogRecords?.ready,
+                  recordsPending:!!window.SentlogRecords?.pending,
+                  recordsFailed:!!window.SentlogRecords?.failed
+                })""")
             except Exception:
                 pass
             print('DELTA_CAPACITY_UI', json.dumps({'operations': pc.operations, 'downloads': pc.downloads, **diagnostics}, ensure_ascii=False), flush=True)
