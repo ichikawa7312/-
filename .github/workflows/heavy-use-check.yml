@@ -18,6 +18,7 @@ on:
       - 'tests/camera_return_ui.py'
       - 'tests/polygon_pointer_ui.py'
       - 'tests/polygon_pointer.test.cjs'
+      - 'tests/phone_editor_space_ui.py'
       - 'tests/drawing_responsiveness_ui.py'
       - 'tests/field_record_memo_ui.py'
       - 'tests/photo_save_performance_ui.py'
@@ -96,7 +97,7 @@ jobs:
       fail-fast: false
       matrix:
         engine: [chromium, webkit]
-        suite: [camera, sync, durability, delta, originals]
+        suite: [camera, sync, durability, delta, originals, phone]
         # The Linux WebKit port does not implement native OPFS access handles.
         # Exercise that suite on Cocoa below, keeping every storage assertion.
         exclude:
@@ -143,8 +144,11 @@ jobs:
       - name: Verify polygon preview and released edge agree
         if: matrix.suite == 'camera'
         run: python tests/polygon_pointer_ui.py --engine ${{ matrix.engine }} --built-root . --report /tmp/sentlog-heavy-camera-${{ matrix.engine }}-polygon.json
+      - name: Verify compact phone drawing space and original controls
+        if: matrix.suite == 'phone'
+        run: python tests/phone_editor_space_ui.py --engine ${{ matrix.engine }} --built-root . --report /tmp/sentlog-heavy-phone-${{ matrix.engine }}.json
       - name: Verify heavy ${{ matrix.suite }} use in ${{ matrix.engine }}
-        if: matrix.suite != 'originals'
+        if: matrix.suite != 'originals' && matrix.suite != 'phone'
         run: NODE_PATH="$RUNNER_TEMP/sentlog-heavy-deps/node_modules" python tests/heavy_${{ matrix.suite }}_ui.py --engine ${{ matrix.engine }} --built-root . --report /tmp/sentlog-heavy-${{ matrix.suite }}-${{ matrix.engine }}.json
       - name: Verify complete original-photo ZIP exports in ${{ matrix.engine }}
         if: matrix.suite == 'originals'

@@ -240,7 +240,7 @@ jobs:
           import os,time
           names=['index.html','sw.js','record-collaboration.js','collaboration-editor.js',
                  'collaboration-channel.js','collaboration-photos.js','continuous-camera.js','cloud-sync.js',
-                 'photo-display-order.js','camera-return.js','phone-runtime.js',
+                 'photo-display-order.js','camera-return.js','phone-runtime.js','phone-editor-space.js',
                  'sync-merge.js','sync-view.js','original-photo-store.js',
                  'original-photo-export.js','original-photo-export-worker.js','original-photo-zip.js','record-transfer.js',
                  'photo-ledger.js','photo-ledger-visual3.js','photo-viewer.js',
