@@ -107,3 +107,6 @@ subprocess.run([sys.executable, 'scripts/build_startup_protection.py'], cwd=ROOT
 
 # Keep known photo rows stable while their Blob data arrives.
 subprocess.run([sys.executable, 'scripts/build_photo_grid_layout.py'], cwd=ROOT, check=True)
+
+# Promptly reconcile new photo-file history through the existing scoped queue.
+subprocess.run([sys.executable, 'scripts/build_file_journal_wake.py'], cwd=ROOT, check=True)
