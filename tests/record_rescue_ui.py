@@ -246,6 +246,13 @@ def main():
             def log_message(self, *_args):
                 pass
 
+            def end_headers(self):
+                self.send_header('Cache-Control', 'no-store')
+                # HTTP routing below blocks external resources; connect-src
+                # also prevents external WebSocket/EventSource connections.
+                self.send_header('Content-Security-Policy', "connect-src 'self' blob: data:")
+                super().end_headers()
+
         server = ThreadingHTTPServer(('127.0.0.1', 0), functools.partial(Handler, directory=str(built)))
         threading.Thread(target=server.serve_forever, daemon=True).start()
         origin = f'http://127.0.0.1:{server.server_port}'
@@ -313,12 +320,23 @@ def main():
                         report['inspectionError'] = str(inspection_error)
                 raise
             finally:
+                active_failure = sys.exc_info()[0] is not None
                 try:
                     if page and not page.is_closed():
                         page.evaluate('window.__recordRescueUi?.restoreFault?.()')
+                except Exception as cleanup_error:
+                    # The temporary browser is closed below regardless. Keep
+                    # the actual test failure when its page is already gone.
+                    report['faultCleanupError'] = str(cleanup_error)
                 finally:
-                    context.close()
-                    context = None
+                    try:
+                        context.close()
+                    except Exception as cleanup_error:
+                        report['contextCleanupError'] = str(cleanup_error)
+                        if not active_failure:
+                            raise
+                    finally:
+                        context = None
     except Exception as error:
         if report['status'] != 'blocked':
             report['status'] = 'failed'

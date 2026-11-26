@@ -5,6 +5,8 @@ create 52 real staging bindings plus the clock row, reload, and compare every
 record and the native control-store SHA-256. No quota errors are injected.
 This does not test physical iOS hardware, real accounts, or a full-disk device.
 Missing browser binaries or OS dependencies are BLOCKED, never passing tests.
+StorageManager.estimate() is optional diagnostic information; unsupported,
+failed or timed-out measurements never skip the mandatory storage/hash checks.
 """
 import argparse
 import hashlib
@@ -31,6 +33,18 @@ CHECKS = r"""
   const assert=(condition,message)=>{if(!condition)throw Error(message);};
   const hash=async value=>Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',encoder.encode(JSON.stringify(value)))))
     .map(value=>value.toString(16).padStart(2,'0')).join('');
+  async function storageEstimate(){
+    let timer;
+    try{
+      const storage=navigator.storage;
+      if(typeof storage?.estimate!=='function')return {status:'unsupported'};
+      const result=await Promise.race([storage.estimate(),new Promise((_,reject)=>{
+        timer=setTimeout(()=>reject(Object.assign(Error('Storage estimate exceeded 2 seconds'),{name:'TimeoutError'})),2000);
+      })]);
+      return {...result,status:'available'};
+    }catch(error){return {status:'error',error:{name:error?.name||'Error',message:String(error?.message||error)}};}
+    finally{clearTimeout(timer);}
+  }
   function text(length,seed){
     const output=new Uint8Array(length),alphabet='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
     let state=seed|0;
@@ -93,11 +107,11 @@ CHECKS = r"""
     return {schemaVersion:2,drawings:drawingCount,projects:projectCount,managedEntries:stored.size,
       recordBytes,controlRows:controls.length,bindingRows:bindings.length,journalRows:native[LOG].length,
       controlJsonBytes:bytes(JSON.stringify(controls)),recordsSHA256:await hash(rows),controlsSHA256:await hash(controls),
-      storageEstimate:await navigator.storage.estimate(),ready:SentlogRecords.ready,pending:SentlogRecords.pending,failed:SentlogRecords.failed};
+      storageEstimate:await storageEstimate(),ready:SentlogRecords.ready,pending:SentlogRecords.pending,failed:SentlogRecords.failed};
   }
   window.nativeScaleProbe={
     async save(){
-      const before=await navigator.storage.estimate(),start=performance.now();
+      const before=await storageEstimate(),start=performance.now();
       await SentlogRecords.init();
       SentlogRecords.batch(entries());await SentlogRecords.settled();
       const recordSaveMs=Math.round(performance.now()-start);
