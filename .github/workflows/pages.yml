@@ -4,6 +4,7 @@ on:
     branches: [main]
   workflow_dispatch:
 permissions:
+  actions: read
   contents: read
   pages: write
   id-token: write
@@ -13,6 +14,8 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    env:
+      SENTLOG_PAGES_ARTIFACT_NAME: github-pages-${{ github.run_id }}-${{ github.run_attempt }}
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
@@ -221,13 +224,33 @@ jobs:
         uses: actions/configure-pages@v5
         with:
           enablement: true
+      - name: Verify Pages artifact readiness checks
+        run: python3 tests/pages_artifact_readiness_test.py
       - name: Upload artifact
+        id: pages_artifact
         uses: actions/upload-pages-artifact@v4
         with:
           path: '.'
+          name: ${{ env.SENTLOG_PAGES_ARTIFACT_NAME }}
+      - name: Wait for the exact uploaded Pages artifact
+        env:
+          SENTLOG_PAGES_TOKEN: ${{ github.token }}
+          SENTLOG_PAGES_REPOSITORY: ${{ github.repository }}
+          SENTLOG_PAGES_RUN_ID: ${{ github.run_id }}
+          SENTLOG_PAGES_RUN_ATTEMPT: ${{ github.run_attempt }}
+          SENTLOG_PAGES_HEAD_SHA: ${{ github.sha }}
+          SENTLOG_PAGES_ARTIFACT_ID: ${{ steps.pages_artifact.outputs.artifact_id }}
+        run: python3 scripts/wait_pages_artifact.py
+      - name: Confirm Pages artifact is downloadable by name
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.SENTLOG_PAGES_ARTIFACT_NAME }}
+          path: ${{ runner.temp }}/sentlog-pages-artifact-probe
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
+        with:
+          artifact_name: ${{ env.SENTLOG_PAGES_ARTIFACT_NAME }}
       - name: Verify published collaboration resources
         env:
           SENTLOG_DEPLOYMENT_URL: ${{ steps.deployment.outputs.page_url }}
