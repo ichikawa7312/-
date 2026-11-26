@@ -12,7 +12,7 @@ const readers=[
  {name:'cloud file readback',code:part('sentlog/cloud-sync.js','function openDB(){','async function sha256Hex('),fn:'dbGet',prefix:"const DB_NAME='surveyFieldNoteDB';"},
  {name:'shared-photo recovery',code:part('sentlog/photo-recovery.js',' async function localPhoto(key){',' async function downloaded('),fn:'localPhoto'},
  {name:'peer-photo recovery',code:part('sentlog/peer-photo-recovery.js',' async function readLocal(key){',' async function digest('),fn:'readLocal'},
- {name:'PDF recovery',code:part('sentlog/pdf-recovery.js','async function db(name,store,key,value){','async function hash('),fn:"key=>db('surveyFieldNoteDB','files',key)"},
+ {name:'PDF recovery',code:part('sentlog/pdf-recovery.js','async function db(name,store,key,value','async function hash('),fn:"key=>db('surveyFieldNoteDB','files',key)"},
  {name:'standalone rescue',code:read('sentlog/rescue.html').split('\n').find(line=>line.startsWith('const open=()=>')),
   prefix:"const DB='surveyFieldNoteDB';",fn:"async key=>{const db=await open();try{return await new Promise((resolve,reject)=>{const q=db.transaction('files','readonly').objectStore('files').get(key);q.onsuccess=()=>resolve(q.result);q.onerror=()=>reject(q.error);});}finally{db.close();}}"}
 ];

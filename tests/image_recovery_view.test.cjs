@@ -22,7 +22,10 @@ async function fixture({source='image',visible=true}={}){
     addEventListener(){},document:{hidden:false,activeElement:null,querySelector:()=>null,
       getElementById:()=>null,addEventListener(){}},
     localStorage:{getItem:k=>local[k]||null},
-    SentlogRecords:{ready:true,getItem:()=>JSON.stringify({projects:[project]})},
+    SentlogRecords:{ready:true,getItem:()=>JSON.stringify({projects:[project]}),
+      deltaJournal:{listBindingStatesSync:()=>[],assertLegacyPdfReceive:async({projectId,key})=>{
+        assert.equal(projectId,asset.project_id);assert.equal(key,'background:drawing');
+      }}},
     SentlogArchive:{ready:true,isAuto:id=>id===asset.project_id},
     sentlogAppReady:Promise.resolve(),
     currentView:'editor',activeProjectId:'project',activeDrawingId:'drawing',
