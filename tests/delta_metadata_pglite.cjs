@@ -9,6 +9,11 @@ const merge=(a,b)=>{const out=copy(a);for(const [k,r]of Object.entries(b)){const
 async function edited(base,mutate,id,extra={}){const after=copy(input);mutate(after);return M.edit({before:input,after,currentRecords:base,operationId:id,actor,at:1,...extra});}
 (async()=>{const db=new PGlite();let checks=0;try{
  for(const file of ['tests/delta_schema_fixture.sql','docs/sentlog-delta-v1-schema-prototype.sql','docs/sentlog-delta-semantic-validation-prototype.sql','tests/delta_baseline_fixture.sql','docs/sentlog-delta-baseline-prototype.sql','docs/sentlog-delta-projection-prototype.sql','docs/sentlog-delta-metadata-prototype.sql'])await db.exec(read(file));
+ const optimized=read('docs/sentlog-delta-activation-performance.sql');
+ for(const name of ['revision_heads','project_register','normalize_collab','project_record','validate_metadata_snapshot']){
+   const match=optimized.match(new RegExp('CREATE OR REPLACE FUNCTION sentlog_delta_private\\.'+name+'\\([\\s\\S]*?END \\$fn\\$;'));
+   assert(match,'optimized function '+name);await db.exec(match[0]);
+ }
  const baseline=await M.seed(input),cases=[['baseline',baseline]];
  for(const spec of (await M.documentSpecs(input)).values()){
    const metadata=spec.identity.kind==='project'?{project:input.project}:{...input.drawings[0],order:0};

@@ -86,3 +86,6 @@ subprocess.run([sys.executable, 'scripts/build_camera_reliability.py'], cwd=ROOT
 
 # Keep a polygon's displayed candidate through a small finger/Pencil release.
 subprocess.run([sys.executable, 'scripts/build_polygon_pointer_stability.py'], cwd=ROOT, check=True)
+
+# Recover missing staged files safely and bound repeated photograph auditing.
+subprocess.run([sys.executable, 'scripts/build_sync_recovery.py'], cwd=ROOT, check=True)

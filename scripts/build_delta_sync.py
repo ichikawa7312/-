@@ -208,7 +208,7 @@ change(capacity, "'件／合計'+bytes(counter2.bytes)+'。'+",
 change(capacity, '        finally{view.locked(false);}',
        '        finally{resumePhotos?.();view.locked(false);}')
 
-modules = ['delta-sync-core', 'delta-sync-indexeddb', 'delta-sync-legacy-preflight', 'delta-sync-legacy-source',
+modules = ['delta-sync-core', 'delta-sync-indexeddb', 'delta-sync-legacy-preflight', 'delta-sync-legacy-source', 'delta-sync-migration-recovery',
            'delta-sync-migration', 'delta-sync-metadata', 'delta-sync-reconcile', 'delta-sync-bootstrap',
            'delta-sync-transport', 'delta-sync-app-bridge', 'delta-sync-assets', 'delta-sync-asset-transport',
            'delta-sync-asset-runtime', 'delta-sync-app-journal', 'delta-sync-app-migration',

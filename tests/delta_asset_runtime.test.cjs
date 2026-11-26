@@ -49,6 +49,6 @@ async function actualFiles(){
  };
 }
 require('./delta_asset_runtime_cases.js').run({A,T,R,D,C,indexedDB:fake.indexedDB,IDBObjectStore:fake.IDBObjectStore,
- pcSupply,actualFiles,onPass:name=>console.log('PASS',name)}).then(results=>console.log('PASS shared photo runtime:',results.length,
+ pcSupply,actualFiles,onPass:name=>console.log('PASS',name),onMeasure:detail=>console.log('MEASURE',JSON.stringify(detail))}).then(results=>console.log('PASS shared photo runtime:',results.length,
  'cases including actual PC photo recovery and actual guarded record-store; synthetic accounts and bytes only'))
  .catch(e=>{console.error(e.stack||e);if(e.cause)console.error(e.cause.stack||e.cause);process.exitCode=1;});

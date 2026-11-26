@@ -102,6 +102,8 @@ jobs:
           node tests/delta_metadata_bridge.test.cjs
           node tests/delta_large_operations.test.cjs
           node tests/delta_app_journal.test.cjs
+          node tests/delta_cutoff_recovery.test.cjs
+          node tests/delta_migration_recovery.test.cjs
           BINDING_BENCHMARK=1 node tests/delta_cutoff_files.test.cjs
           node tests/delta_app_mode.test.cjs
           node tests/delta_photo_lease.test.cjs
@@ -115,6 +117,8 @@ jobs:
           node tests/delta_app_backend.test.cjs
           node tests/delta_release_pglite.cjs
           node tests/delta_receipt_cache_pglite.cjs
+          node tests/delta_activation_performance_pglite.cjs
+          node tests/delta_activation_performance_pglite.cjs --larger
           node tests/delta_notify_noop_pglite.cjs
           node tests/delta_active_media_inventory_pglite.cjs
           node tests/delta_active_media_restore_pglite.cjs
@@ -154,6 +158,9 @@ jobs:
       - name: Check real IndexedDB durability and offline restart
         timeout-minutes: 6
         run: python tests/delta_indexeddb_browser.py --browser ${{ matrix.browser }} --output release-diagnostics/delta-indexeddb-${{ matrix.browser }}.json
+      - name: Recover protected missing files and preserve unsent edits after reload
+        timeout-minutes: 2
+        run: python tests/delta_cutoff_recovery_browser.py --browser ${{ matrix.browser }} --output release-diagnostics/delta-cutoff-recovery-${{ matrix.browser }}.json
       - name: Verify photo bytes, atomic receipts and incomplete delivery
         timeout-minutes: 4
         run: python tests/delta_assets_browser.py --browser ${{ matrix.browser }} --output release-diagnostics/delta-assets-${{ matrix.browser }}.json

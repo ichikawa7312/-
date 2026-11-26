@@ -5,7 +5,7 @@
  'use strict';
  async function run({A=root.SentlogDeltaAssets,T=root.SentlogDeltaAssetTransport,R=root.SentlogDeltaAssetRuntime,
   D=root.SentlogDeltaSyncCore,C=root.SentlogRecordCollaboration,indexedDB=root.indexedDB,IDBObjectStore=root.IDBObjectStore,
-  suffix='node',onStart=()=>{},onPass=()=>{},pcSupply=null,actualFiles=null}={}){
+  suffix='node',onStart=()=>{},onPass=()=>{},onMeasure=()=>{},pcSupply=null,actualFiles=null}={}){
   const results=[],clone=x=>structuredClone(x),scope={ownerId:'10000000-0000-4000-8000-000000000001',
    projectId:'10000000-0000-4000-8000-000000000002',deviceId:'10000000-0000-4000-8000-000000000003'};
   const assert=(ok,message='assertion failed')=>{if(!ok)throw Error(message);};
@@ -95,7 +95,7 @@
     session:()=>context.session,ensureSession:async()=>context.session,subscribeAuth:fn=>{listeners.add(fn);return()=>listeners.delete(fn);},
     authGeneration:()=>context.auth,currentScope:()=>context.scope,fetch:fetcher,online:()=>server.online,timeoutMs:extra.timeoutMs||1000,pageLimit:extra.pageLimit||400});
    const store=A.createIndexedDBStore({...scope,indexedDB,databaseName:name}),locks=new Map();
-   const local={getCapabilities:()=>({guarded:true,onlyIfMissing:true}),assertExclusive:()=>true,read:async key=>files.get(key),
+   const local={writerChecks:0,getCapabilities:()=>({guarded:true,onlyIfMissing:true}),assertExclusive(){this.writerChecks++;return true;},read:async key=>files.get(key),
     withLock(key,fn){const work=(locks.get(key)||Promise.resolve()).catch(()=>{}).then(fn);locks.set(key,work);return work.finally(()=>{if(locks.get(key)===work)locks.delete(key);});},
     async write(key,blob,options){
      assert(options.onlyIfMissing===true,'unguarded legacy overwrite attempted');options.validate();
@@ -277,6 +277,48 @@
    const f=await fixture();try{f.server.rows[0].storage_path=uuid(99)+'/'+scope.projectId+'/photos/photo.jpg';
     const result=await f.sync();assert(!result.complete&&result.issues.some(i=>i.code==='ASSET_PATH'));equal(f.server.stats.downloads,0);}finally{f.close();}
   });
+  await test('published active-restore photo paths receive and verify all supported shared image formats',async()=>{
+   for(const [mime,extension]of [['image/jpeg','.jpg'],['image/png','.png'],['image/webp','.webp'],['image/heic','.heic'],['image/heif','.heif']]){
+    const row={...clone(base),mime_type:mime,status:mime==='image/jpeg'?'pc_verified':'uploaded',
+     storage_path:[scope.ownerId,scope.projectId,'active-restore',base.id,sha,'a'.repeat(64),uuid(88)+extension].join('/')};
+    const f=await fixture({rows:[row],snapshot:snapshot([metadata(row)])});try{
+     f.server.objects.set(row.storage_path,new Blob([bytes],{type:mime}));const status=await f.sync();assert(status.complete,JSON.stringify(status.issues));
+     await A.verifyBlob(f.files.get('photo:drawing:photo'),f.ref(row));equal((await f.store.read(f.ref(row))).phase,'acknowledged');
+     equal([f.server.stats.downloads,f.server.stats.acks],[1,1]);assert((await f.sync()).complete);
+     equal([f.server.stats.downloads,f.server.stats.acks],[1,1]);
+    }finally{f.close();}
+   }
+  });
+  await test('active-restore paths reject foreign identity, content hash, version, claim token and extension before download',async()=>{
+   const valid=[scope.ownerId,scope.projectId,'active-restore',base.id,sha,'a'.repeat(64),uuid(88)+'.jpg'];
+   const invalid=[
+    [0,uuid(99)],[1,uuid(99)],[2,'other-folder'],[3,uuid(99)],[4,'0'.repeat(64)],
+    [4,sha.toUpperCase()],[5,'a'.repeat(63)],[5,'g'.repeat(64)],[5,'A'.repeat(64)],
+    [6,'claim.jpg'],[6,uuid(88)+'.png'],[6,uuid(88)+'.jpg.extra'],[6,uuid(88)+'.jpg?other'],
+    [6,'../'+uuid(88)+'.jpg'],[6,'%2e%2e%2f'+uuid(88)+'.jpg'],[6,uuid(88)+'\\.jpg'],[6,uuid(88)+'\u0000.jpg']
+   ].map(([index,value])=>valid.map((part,i)=>i===index?value:part).join('/'));
+   invalid.push(valid.slice(0,-1).join('/'),valid.concat('extra').join('/'),valid.concat('').join('/'));
+   for(const storage_path of invalid){const f=await fixture({rows:[{...clone(base),storage_path}]});try{
+    await expect(()=>f.transport.download(f.ref()),'ASSET_PATH');equal([f.server.stats.downloads,f.server.stats.acks],[0,0]);equal(f.files.size,0);
+   }finally{f.close();}}
+  });
+  await test('active-restore content still requires matching bytes before any receipt and can retry safely',async()=>{
+   const row={...clone(base),storage_path:[scope.ownerId,scope.projectId,'active-restore',base.id,sha,'a'.repeat(64),uuid(88)+'.jpg'].join('/')};
+   const f=await fixture({rows:[row]});try{
+    f.server.objects.set(row.storage_path,new Blob(['x'.repeat(bytes.size)],{type:'image/jpeg'}));
+    const first=await f.sync();assert(!first.complete&&first.issues.some(i=>i.code==='ASSET_CONTENT_MISMATCH'));
+    equal(f.server.stats.acks,0);equal(f.files.size,0);equal((await f.store.read(f.ref())).phase,'waiting');
+    f.server.objects.set(row.storage_path,bytes);assert((await f.sync()).complete);await A.verifyBlob(f.files.get('photo:drawing:photo'),f.ref());
+    equal([f.server.stats.downloads,f.server.stats.acks],[2,1]);
+   }finally{f.close();}
+  });
+  await test('registered PC and device redelivery photo paths remain supported',async()=>{
+   for(const folder of ['redelivery','device-redelivery']){const row={...clone(base),
+    storage_path:[scope.ownerId,scope.projectId,folder,base.id,uuid(88)+'.jpg'].join('/')};
+    const f=await fixture({rows:[row]});try{assert((await f.sync()).complete);await A.verifyBlob(f.files.get('photo:drawing:photo'),f.ref());
+     equal([f.server.stats.downloads,f.server.stats.acks],[1,1]);}finally{f.close();}
+   }
+  });
   await test('any existing non-Blob legacy value remains untouched and cannot acquire a receipt',async()=>{
    for(const value of [null,'keep-this-existing-value']){const f=await fixture({files:[['photo:drawing:photo',value]]});try{
     assert(!(await f.sync()).complete);equal(f.files.get('photo:drawing:photo'),value);equal(f.server.stats.acks,0);equal(f.server.stats.downloads,0);}finally{f.close();}}
@@ -307,6 +349,66 @@
   await test('legacy retry appearing during ACK leaves its earlier receipt pending',async()=>{
    const f=await fixture();try{f.server.afterAck=()=>{f.local.assertExclusive=()=>false;};await expect(()=>f.sync(),'ASSET_LEGACY_WRITER_ACTIVE');
     equal((await f.store.read(f.ref())).phase,'received');equal(f.events.length,0);}finally{f.close();}
+  });
+  await test('an active photo writer appearing during a late download blocks bytes and receipts, then retries',async()=>{
+   const f=await fixture();let release,started;const began=new Promise(resolve=>started=resolve);
+   try{f.server.hook=({path})=>path.includes('/authenticated/')?new Promise(resolve=>{release=()=>resolve(new Response(bytes));started();}):undefined;
+    const running=f.sync();await began;f.local.assertExclusive=key=>key!=='photo:drawing:photo';release();
+    await expect(()=>running,'ASSET_LEGACY_WRITER_ACTIVE');equal((await f.store.read(f.ref())).phase,'waiting');
+    equal(f.server.stats.acks,0);assert(!f.files.has('photo:drawing:photo'));equal(f.events.length,0);
+    f.local.assertExclusive=()=>true;f.server.hook=null;assert((await f.sync()).complete);
+    await A.verifyBlob(f.files.get('photo:drawing:photo'),f.ref());equal(f.server.stats.acks,1);
+   }finally{release?.();f.close();}
+  });
+  await test('a different photo writer blocks that file and whole-batch completion without discarding earlier receipts',async()=>{
+   const other={...clone(base),id:uuid(2),client_key:'photo:drawing:other',storage_path:base.storage_path+'2',metadata:{...base.metadata,photo_id:'other'}};
+   for(const busyKey of ['photo:drawing:other','photo:drawing:photo']){
+    const f=await fixture({rows:[base,other],snapshot:snapshot([metadata(base),metadata(other)])});
+    try{f.server.afterAck=()=>{if(f.server.stats.acks===(busyKey.endsWith(':other')?1:2))f.local.assertExclusive=key=>key!==busyKey;};
+     await expect(()=>f.sync(),'ASSET_LEGACY_WRITER_ACTIVE');
+     equal((await f.store.read(f.ref())).phase,'acknowledged');await A.verifyBlob(f.files.get('photo:drawing:photo'),f.ref());
+     equal((await f.store.read(f.ref(other))).phase,busyKey.endsWith(':other')?'waiting':'acknowledged');
+     f.local.assertExclusive=()=>true;f.server.afterAck=null;assert((await f.sync()).complete);
+     for(const row of [base,other])await A.verifyBlob(f.files.get(row.client_key),f.ref(row));
+    }finally{f.close();}
+   }
+  });
+  await test('a deleted earlier mirror cannot complete the batch and is restored from verified bytes on retry',async()=>{
+   const other={...clone(base),id:uuid(2),client_key:'photo:drawing:other',storage_path:base.storage_path+'2',metadata:{...base.metadata,photo_id:'other'}};
+   const f=await fixture({rows:[base,other],snapshot:snapshot([metadata(base),metadata(other)])});
+   try{f.server.afterAck=()=>{if(f.server.stats.acks===2)f.files.delete(base.client_key);};
+    const first=await f.sync();assert(!first.complete&&first.issues.some(item=>item.photoId==='photo'));
+    equal((await f.store.read(f.ref())).phase,'acknowledged');assert(!f.files.has(base.client_key));
+    const downloads=f.server.stats.downloads;f.server.afterAck=null;assert((await f.sync()).complete);equal(f.server.stats.downloads,downloads);
+    for(const row of [base,other])await A.verifyBlob(f.files.get(row.client_key),f.ref(row));
+   }finally{f.close();}
+  });
+  await test('offline interruption preserves completed bytes and resumes the remaining photo exactly once',async()=>{
+   const other={...clone(base),id:uuid(2),client_key:'photo:drawing:other',storage_path:base.storage_path+'2',metadata:{...base.metadata,photo_id:'other'}};
+   const f=await fixture({rows:[base,other],snapshot:snapshot([metadata(base),metadata(other)])});
+   try{f.server.afterAck=()=>{if(f.server.stats.acks===1)f.server.online=false;};
+    const first=await f.sync();assert(!first.complete&&first.pending>0);await A.verifyBlob(f.files.get(base.client_key),f.ref());
+    equal((await f.store.read(f.ref(other))).phase,'waiting');
+    f.server.afterAck=null;f.server.online=true;assert((await f.sync()).complete);
+    for(const row of [base,other])await A.verifyBlob(f.files.get(row.client_key),f.ref(row));
+    equal([f.server.stats.downloads,f.server.stats.acks],[2,3]);
+   }finally{f.close();}
+  });
+  await test('completed photo audits use linear writer checks while retaining exact-byte verification',async()=>{
+   const counts=[];
+   for(const count of [48,96]){
+    const rows=Array.from({length:count},(_,i)=>({...clone(base),id:uuid(i+100),client_key:'photo:drawing:p'+i,
+     storage_path:base.storage_path+i,metadata:{...base.metadata,photo_id:'p'+i}}));
+    const f=await fixture({rows,snapshot:snapshot(rows.map(metadata)),files:rows.map(row=>[row.client_key,bytes])});
+    try{assert((await f.sync()).complete);f.local.writerChecks=0;const before={...f.server.stats};
+     assert((await f.sync()).complete);counts.push({photos:count,checks:f.local.writerChecks});
+     equal([f.server.stats.downloads,f.server.stats.uploads,f.server.stats.acks],[before.downloads,before.uploads,before.acks]);
+     for(const row of rows)await A.verifyBlob(f.files.get(row.client_key),f.ref(row));
+    }finally{f.close();}
+   }
+   onMeasure({kind:'writer-check-counts',counts});
+   assert(counts[1].checks<=counts[0].checks*2.2&&counts[1].checks<=counts[1].photos*150,
+    'writer checks must scale linearly: '+JSON.stringify(counts));
   });
   await test('an async rejecting writer fence is consumed and refused without an unhandled rejection',async()=>{
    const f=await fixture();try{f.local.assertExclusive=async()=>{throw Error('synthetic late fence rejection');};

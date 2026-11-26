@@ -286,6 +286,86 @@ function snapshotWrites(h,id){return h.calls.filter(c=>c.options.method&&c.path.
 function failProjectWrite(h,id,error){h.restHook=async(path,options)=>{
   if(options.method&&path.includes('sentlog_project_snapshots')&&(path.includes('project_id=eq.cloud-'+id+'&')||JSON.parse(options.body||'{}').project_id==='cloud-'+id))throw error;
 };}
+function recoveryProgress(id,remaining,extra={}){
+  return Object.assign(Error('不足ファイルを受信中'),{code:'DELTA_MIGRATION_RECOVERING',localProjectId:id,bindingId:'protected-'+id,
+    scope:{ownerId:'owner-a',projectId:'cloud-'+id,deviceId:'device-id'},recovered:16,remaining},extra);
+}
+
+test('bounded recovery progress automatically repeats at 800 ms while another project completes independently',async()=>{
+  const h=fixture();addFixtureProject(h,'p2',{existing:true});editFixtureProject(h,'p2');
+  const pull=h.context.collaborationPullProject,rounds=[];
+  h.context.collaborationPullProject=async(cp,...args)=>{
+    if(cp.client_key==='p1'){
+      rounds.push(h.time.now());if(rounds.length<=3)throw recoveryProgress('p1',[33,17,1][rounds.length-1]);
+    }
+    return pull(cp,...args);
+  };
+  try{
+    const first=h.api.metadata.wait(['p1','p2']);await h.time.tick(0);const result=await first;
+    assert.deepEqual([...result.deferredIds],['p1']);assert.deepEqual([...result.failedIds],[]);assert.deepEqual([...result.readyIds],['p2']);
+    assert.equal(result.blocked.has('cloud-p1'),true);assert.equal(result.recoveringFiles,33);
+    assert.equal(h.otherServers.get('cloud-p2').revision,2);assert.equal(h.fileCalls.includes('cloud-p1'),false);
+    assert.equal(h.statuses.at(-1).label,'写真・図面の受信中');assert.match(h.statuses.at(-1).message,/残り33件/);
+    for(let n=1;n<=3;n++){
+      await h.time.tick(799);assert.equal(rounds.length,n);await h.time.tick(1);assert.equal(rounds.length,n+1);
+    }
+    assert.deepEqual(rounds,[100000,100800,101600,102400]);assert.equal(h.api.metadata.pending.length,0);
+    assert.equal(snapshotWrites(h,'p2').length,1,'another project is not repeated for this recovery');
+    assert.notEqual(h.statuses.at(-1).level,'error');
+  }finally{h.stop();}
+});
+test('zero recovery progress keeps the 30 second review backoff and later progress clears that failure',async()=>{
+  const h=fixture(),pull=h.context.collaborationPullProject;let rounds=0;
+  h.context.collaborationPullProject=async(cp,...args)=>{
+    if(cp.client_key==='p1'){
+      rounds++;if(rounds===1||rounds===3)throw recoveryProgress('p1',rounds===1?18:2);
+      if(rounds===2)throw Object.assign(Error('写真または図面ファイルを確認できません（18件）'),{code:'DELTA_MIGRATION_REVIEW'});
+    }
+    return pull(cp,...args);
+  };
+  try{
+    h.api.metadata.request(['p1']);await h.time.tick(0);assert.equal(rounds,1);
+    await h.time.tick(800);assert.equal(rounds,2);assert.equal(h.statuses.at(-1).level,'error');
+    assert.equal(h.api.metadata.retryAt,h.time.now()+30000);
+    h.api.metadata.request(['p1']);await h.time.tick(29999);assert.equal(rounds,2,'a notification cannot shorten the failed round');
+    await h.time.tick(1);assert.equal(rounds,3);assert.equal(h.statuses.at(-1).label,'写真・図面の受信中');
+    assert.equal(h.statuses.at(-1).level,'pending');assert.match(h.statuses.at(-1).message,/残り2件/);
+    await h.time.tick(800);assert.equal(rounds,4);assert.equal(h.api.metadata.pending.length,0);
+  }finally{h.stop();}
+});
+test('manual file rounds retain the recovery status and do not start files for an incomplete project',async()=>{
+  const h=fixture();h.context.collaborationPullProject=async()=>{throw recoveryProgress('p1',17);};
+  try{
+    const first=h.api.files.wait(['p1']);await h.time.tick(0);const result=await first;
+    assert.deepEqual([...result.failedIds],[]);assert.deepEqual([...result.deferredIds],['p1']);assert.equal(h.fileCalls.length,0);
+    assert.equal(h.statuses.at(-1).level,'pending');assert.equal(h.statuses.at(-1).label,'写真・図面の受信中');
+    assert.match(h.statuses.at(-1).message,/残り17件/);
+  }finally{h.stop();}
+});
+test('recovery signals cannot override auth, durable-store, permanent or foreign-scope failures',async()=>{
+  for(const kind of ['auth','store','permanent','foreign']){
+    const h=fixture();addFixtureProject(h,'p2',{existing:true});editFixtureProject(h,'p2');
+    const pull=h.context.collaborationPullProject;let unsafe=false;
+    if(kind==='store')h.context.window.SentlogRecords.assertSafe=()=>{if(unsafe)throw Error('端末に保存できません');};
+    h.context.collaborationPullProject=async(cp,...args)=>{
+      if(cp.client_key==='p1'){
+        unsafe=true;throw recoveryProgress('p1',17,kind==='auth'?{status:401}:kind==='permanent'?{retryable:false}:
+          kind==='foreign'?{scope:{ownerId:'other-owner',projectId:cp.id,deviceId:'device-id'}}:{});
+      }
+      return pull(cp,...args);
+    };
+    try{
+      h.api.metadata.request(['p1','p2']);await h.time.tick(0);
+      assert.equal(h.statuses.at(-1).level,'error',kind);
+      if(kind==='auth'||kind==='store'){
+        assert.equal(snapshotWrites(h,'p2').length,0);assert.equal(h.api.metadata.globalRetryAt,h.time.now()+30000);
+      }else{
+        assert.equal(h.otherServers.get('cloud-p2').revision,2);
+        assert.equal(h.api.metadata.retryAt,kind==='permanent'?Infinity:h.time.now()+30000);
+      }
+    }finally{h.stop();}
+  }
+});
 
 test('timeout in an existing project does not block a new project registration or its photos',async()=>{
   const h=fixture();editFixtureProject(h,'p1');addFixtureProject(h,'p2');

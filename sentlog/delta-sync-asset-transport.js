@@ -106,9 +106,15 @@
   function pathOf(row){
    const parts=String(row.storage_path||'').split('/');
    insist(parts.length>=4&&parts[0]===scope.ownerId&&parts[1]===scope.projectId&&
-    ['photos','redelivery','device-redelivery'].includes(parts[2])&&parts.every(p=>p&&p!=='.'&&p!=='..'&&!/[\\\u0000-\u001f]/.test(p)),
+    ['photos','redelivery','device-redelivery','active-restore'].includes(parts[2])&&parts.every(p=>p&&p!=='.'&&p!=='..'&&!/[\\\u0000-\u001f]/.test(p)),
     'ASSET_PATH','写真の保存先が対象の案件と一致しません');
-   if(parts[2]!=='photos')insist(parts.length===5&&parts[3]===row.id,'ASSET_PATH','写真の再供給先を確認できません');
+   if(parts[2]==='active-restore'){
+    // Published repair objects bind their path to the immutable registered
+    // asset and bytes; the version hash and UUID claim keep attempts isolated.
+    const token=parts[6]?.slice(0,36),extension=MIME[String(row.mime_type||'').toLowerCase()];
+    insist(parts.length===7&&parts[3]===row.id&&parts[4]===String(row.sha256).toLowerCase()&&digest(parts[5])&&
+     uuid(token)&&parts[6]===token+extension,'ASSET_PATH','補完した写真の案件・ファイル・内容を確認できません');
+   }else if(parts[2]!=='photos')insist(parts.length===5&&parts[3]===row.id,'ASSET_PATH','写真の再供給先を確認できません');
    return parts.map(encodeURIComponent).join('/');
   }
   async function request(ref,ctx){

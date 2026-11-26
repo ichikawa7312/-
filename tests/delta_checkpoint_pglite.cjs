@@ -43,6 +43,7 @@ const original={project:{id:localId,name:'Server checkpoint',collaborationVersio
   await db.exec(read('db/collaboration_v1.sql'));
   await db.exec(read('docs/sentlog-delta-checkpoint-prototype.sql'));
   await db.exec(read('docs/sentlog-delta-app-lifecycle.sql'));
+  await db.exec(read('docs/sentlog-delta-activation-performance.sql'));
   await db.query("SELECT set_config('request.jwt.claim.sub',$1,false),set_config('request.headers',$2,false)",[owner,JSON.stringify({'x-client-info':'sentlog-collaboration/1'})]);
   await db.query("INSERT INTO public.sentlog_projects(id,owner_id,status,client_key,name) VALUES($1,$2,'active',$3,'Checkpoint fixture')",[pid,owner,localId]);
   await db.query('INSERT INTO public.sentlog_project_snapshots(project_id,owner_id,revision,payload,updated_by_device) VALUES($1,$2,1,$3::jsonb,$4)',[pid,owner,JSON.stringify(original),phone]);
