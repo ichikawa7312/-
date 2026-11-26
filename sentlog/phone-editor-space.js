@@ -64,6 +64,7 @@ html.sentlog-phone.sl-phone-editor header #sentlogCloudStatus{grid-row:1;grid-co
 html.sentlog-phone.sl-phone-editor #sentlogCloudStatus .sl-sync-spinner{position:absolute;right:3px;top:3px;width:8px;height:8px}
 html.sentlog-phone.sl-phone-editor #editorView{height:auto!important;flex:1 1 0;min-height:0;grid-template-columns:minmax(0,1fr)}
 html.sentlog-phone.sl-phone-editor #editorView>.workspace{box-sizing:border-box;height:100%!important;min-height:0}
+html.sentlog-phone.sl-phone-editor #inspector{border-top:0;box-shadow:0 -1px 0 var(--line)}
 html.sentlog-phone.sl-phone-editor #stageWrap{padding:0;margin:0 max(4px,env(safe-area-inset-right,0px)) 4px max(4px,env(safe-area-inset-left,0px))}
 html.sentlog-phone #sentlogDrawingToolbar{display:flex;flex-wrap:wrap;gap:4px!important;padding:4px max(8px,env(safe-area-inset-right,0px)) 4px max(8px,env(safe-area-inset-left,0px))!important;overflow:visible}
 html.sentlog-phone #sentlogDrawingToolbar .sl-memo-switch-row{flex:1 1 100%;width:100%;gap:4px;min-height:44px}

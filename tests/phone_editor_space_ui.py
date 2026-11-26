@@ -310,6 +310,11 @@ def phone_actions(page, report, report_path=None):
     report['measurements'] = []
     for width, height in PORTRAITS:
         resize(page, width, height)
+        # Each portrait is an independent initial-open view. The application's
+        # ordinary resize intentionally retains pan/zoom (tested separately
+        # below), so reopen through the real file path before visual evidence.
+        evaluate(page, "async()=>{await openDrawing('phone-space-project','phone-space-pdf');}")
+        settle(page)
         report['measurements'].append(phone_layout(page, f'{width}x{height}'))
         screenshot(page, report_path, f'phone-{width}x{height}')
     resize(page, 844, 390, orientation=True)
@@ -561,6 +566,9 @@ def main():
                             report['baseline'] = {'version': page.evaluate('window.SENTLOG_BUILD'), 'measurements': []}
                             for width, height in PORTRAITS+[(844, 390)]:
                                 resize(page, width, height, orientation=width > height)
+                                if width < height:
+                                    evaluate(page, "async()=>{await openDrawing('phone-space-project','phone-space-pdf');}")
+                                    settle(page)
                                 report['baseline']['measurements'].append(page.evaluate(MEASURE))
                         finally:
                             context.close()
