@@ -52,6 +52,7 @@ async function fixture(sizes,{missing=new Set(),corruptLocal=new Set(),corruptDo
   context.SentlogArchive={ready:true,isAuto:()=>true};
   context.SentlogSyncTraffic={ack:async(kind,a,id,send,options)=>{receipts.push({id:a.id,owner,force:options.force});return {received:true};},forget:async()=>{}};
   context.SentlogRecords={ready:true,getItem:()=>JSON.stringify({projects:[{id:'project',drawings:assets.map(a=>({id:a.id}))}]}),
+    deltaJournal:{listBindingStatesSync:()=>[],assertLegacyPdfReceive:async()=>true},
     openFilesDatabase:()=>open(factory),writeFile:async(key,blob)=>{
       writes.push(key);const db=await open(factory);try{await new Promise((resolve,reject)=>{
         const tx=db.transaction('files','readwrite');tx.objectStore('files').put(blob,key);tx.oncomplete=resolve;tx.onabort=()=>reject(tx.error);

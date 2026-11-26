@@ -143,6 +143,7 @@ jobs:
           node --check sentlog/photo-ledger-damage.js
           node tests/drawing_export.test.cjs
           node tests/peer_photos.test.cjs
+          node tests/peer_photo_diagnostics.test.cjs
           node tests/sync_review.test.cjs
           node tests/sync_network.test.cjs
           node tests/sync_asset_paging.test.cjs
@@ -253,7 +254,8 @@ jobs:
                   'delta-sync-reconcile.js','delta-sync-bootstrap.js','delta-sync-transport.js',
                   'delta-sync-app-bridge.js','delta-sync-assets.js','delta-sync-asset-transport.js',
                   'delta-sync-asset-runtime.js','delta-sync-app-journal.js','delta-sync-app-migration.js','delta-sync-migration-recovery.js',
-                  'delta-sync-app-runtime.js','delta-sync-metadata-ui.js','delta-sync-capacity.js','delta-sync-capacity-gc.js']
+                  'delta-sync-app-runtime.js','delta-sync-metadata-ui.js','delta-sync-capacity.js','delta-sync-capacity-gc.js',
+                  'delta-sync-drawing-review.js']
           base=os.environ['SENTLOG_DEPLOYMENT_URL'].rstrip('/')+'/'
           assert base.startswith('https://')
           def verify(name):

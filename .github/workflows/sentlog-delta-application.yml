@@ -12,7 +12,10 @@ on:
       - 'sentlog/record-collaboration.js'
       - 'sentlog/session-guard.js'
       - 'tests/delta_app_*'
+      - 'tests/delta_drawing_*'
+      - 'tests/helpers/delta_recovery_fixture.cjs'
       - 'tests/pdf_recovery_budget.test.cjs'
+      - 'tests/pdf_handover_guard.test.cjs'
       - 'tests/delta_capacity_app_flow.py'
       - 'tests/collaboration_ui.py'
       - 'tests/edit_sync_ui.py'
@@ -64,7 +67,17 @@ jobs:
           python -m pip install playwright==1.57.0 pillow==11.3.0
           npm install --prefix "$RUNNER_TEMP/sentlog-app-test-deps" --ignore-scripts --no-audit --no-fund --save-exact @electric-sql/pglite@0.5.17 fake-indexeddb@6.2.8
       - name: Verify bounded PDF recovery against the production build
-        run: NODE_PATH="$RUNNER_TEMP/sentlog-app-test-deps/node_modules" node tests/pdf_recovery_budget.test.cjs
+        run: |
+          NODE_PATH="$RUNNER_TEMP/sentlog-app-test-deps/node_modules" node tests/pdf_recovery_budget.test.cjs
+          NODE_PATH="$RUNNER_TEMP/sentlog-app-test-deps/node_modules" node tests/pdf_handover_guard.test.cjs
+      - name: Verify explicit drawing recovery preserves pending photo references
+        run: |
+          NODE_PATH="$RUNNER_TEMP/sentlog-app-test-deps/node_modules" node tests/delta_drawing_review_integration.test.cjs
+          SENTLOG_BUILT_ROOT=. NODE_PATH="$RUNNER_TEMP/sentlog-app-test-deps/node_modules" node tests/delta_drawing_upload_guard.test.cjs
+      - name: Verify drawing review and cancellation in the browser
+        run: python tests/delta_drawing_review_ui.py --engine ${{ matrix.engine }}
+      - name: Verify actual drawing review through SQL and native storage
+        run: NODE_PATH="$RUNNER_TEMP/sentlog-app-test-deps/node_modules" python tests/delta_drawing_review_app.py --engine ${{ matrix.engine }} --built-root .
       - name: Verify two actual applications with native storage and real SQL
         run: NODE_PATH="$RUNNER_TEMP/sentlog-app-test-deps/node_modules" python tests/delta_app_ui.py --engine ${{ matrix.engine }} --built-root .
       - uses: actions/upload-artifact@v4

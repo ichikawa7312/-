@@ -45,6 +45,20 @@ async function fixture(count=1,{legacyPhotoMetadata=false}={}){
     bindingId:cutoff.bindingId,validate:()=>true,...extra});
   return {...app,factory,local,files,snapshot,begin,source,payload,restore,restart:()=>application(factory,local)};
 }
+async function drawingReviewFixture({markers,protectedBlob}={}){
+  const f=await fixture(0),blob=new Blob(['reviewed-current-pdf'],{type:'application/pdf'}),digest=await sha(blob);
+  const ws=JSON.parse(f.records.getItem(WS)),state=JSON.parse(f.records.getItem(DRAW+'drawing'));
+  Object.assign(ws.projects[0].drawings[0],{sourceType:'pdf',fileName:'drawing.pdf'});
+  Object.assign(state,{sourceType:'pdf',fileName:'drawing.pdf'});if(markers!==undefined)state.pageReplacements=markers;
+  f.records.batch([[WS,json(ws)],[DRAW+'drawing',json(state)]]);await f.records.settled();
+  if(protectedBlob!==undefined)await f.records.writeFile('background:drawing',protectedBlob);
+  const cutoff=await f.begin(),proof={assetId:'current-drawing-asset',ownerId:scope.ownerId,projectId:scope.projectId,
+    clientKey:'drawing:drawing',kind:'drawing',drawingId:'drawing',sha256:digest,size:blob.size,
+    snapshotRevision:10,fileName:'drawing.pdf',sourceType:'pdf',
+    source:{id:'drawing',fileName:'drawing.pdf',sourceType:'pdf',pageCount:1,pageReplacements:markers??{}}};
+  const args={scope,localProjectId,bindingId:cutoff.bindingId,key:'background:drawing',blob,size:blob.size,sha256:digest,proof,validate:()=>true};
+  return {...f,cutoff,blob,digest,args,prepare:extra=>f.records.deltaJournal.prepareMissingDrawingRecovery({...args,...extra})};
+}
 async function installerFixture(f,recoverMissingFiles,{currentScope=()=>scope,server=f.snapshot,acceptedEvents=[]}={}){
   const rows=[],metadata=[];
   for(const drawing of server.drawings)for(const record of drawing.state.shapes){
@@ -142,6 +156,135 @@ let passed=0;async function test(name,run){await run();passed++;console.log('PAS
       assert.equal((await f.disk()).has(args.key),false);assert.equal((await f.records.deltaJournal.restoreMissingCutoffFile(args)).restored,true);
       assert.equal(await sha((await f.disk()).get(args.key)),digest);
     }
+  });
+  await test('drawing review preparation and cancellation never write and forged or consumed tickets cannot confirm',async()=>{
+    const f=await drawingReviewFixture(),before=await f.disk(),controls=await f.disk(CONTROL),journal=await f.disk(LOG);
+    const ticket=await f.prepare();assert(Object.isFrozen(ticket));assert.deepEqual(Object.keys(ticket),[]);
+    assert.deepEqual(await f.disk(),before);assert.deepEqual(await f.disk(CONTROL),controls);assert.deepEqual(await f.disk(LOG),journal);
+    assert.equal(f.records.deltaJournal.confirmedDrawingSource(localProjectId,'drawing'),null);
+    assert.equal(f.records.deltaJournal.cancelMissingDrawingRecovery(ticket),true);
+    assert.equal(f.records.deltaJournal.cancelMissingDrawingRecovery(ticket),false);
+    for(const value of [ticket,{},Object.freeze({}),copy(ticket),null])
+      await assert.rejects(()=>f.records.deltaJournal.confirmMissingDrawingRecovery(value),error=>error.code==='JOURNAL_RECOVERY_REVIEW_TICKET');
+    assert.deepEqual(await f.disk(),before);assert.deepEqual(await f.disk(CONTROL),controls);assert.deepEqual(await f.disk(LOG),journal);
+  });
+  await test('explicit confirmation appends selected PDF atomically without rewriting the old cutoff or newer local notes',async()=>{
+    const f=await drawingReviewFixture(),state=JSON.parse(f.records.getItem(DRAW+'drawing'));
+    state.shapes[0].memo='Later unsent local note';f.records.setItem(DRAW+'drawing',json(state));await f.records.settled();
+    const raw=f.records.getItem(DRAW+'drawing'),beforeJournal=await f.disk(LOG),ticket=await f.prepare();
+    assert.deepEqual(copy(await f.records.deltaJournal.confirmMissingDrawingRecovery(ticket)),
+      {restored:true,idempotent:false,liveWritten:true,sourceKind:'user-confirmed-current-drawing'});
+    const after=await f.records.deltaJournal.readCutoff({scope,localProjectId});
+    assert.deepEqual(after.rawEntries,f.cutoff.rawEntries);assert.deepEqual(after.snapshot,f.cutoff.snapshot);
+    assert.equal(after.cutoffSeq,f.cutoff.cutoffSeq);assert.equal(after.serverRevision,9);assert.equal(f.records.getItem(DRAW+'drawing'),raw);
+    assert.equal(await sha((await f.disk()).get(f.args.key)),f.digest);assert.equal(after.files.length,1);
+    const receipt=after.files[0].recovery;assert.equal(receipt.sourceKind,'user-confirmed-current-drawing');
+    assert.equal(receipt.originalSnapshotRevision,9);assert.equal(receipt.selectedSnapshotRevision,10);assert.equal(receipt.exactOriginalVerified,false);
+    const journal=await f.disk(LOG);assert.equal(journal.size,beforeJournal.size+1);
+    for(const [seq,row]of beforeJournal)assert.deepEqual(journal.get(seq),row);
+    const added=[...journal.values()].at(-1);assert.equal(added.mutationKind,'cutoff-drawing-recovery-confirmed');
+    assert.equal(added.files[0].before,null);assert.equal(await sha(added.files[0].after),f.digest);
+    const expected={sha256:f.digest,size:f.blob.size,assetId:'current-drawing-asset',selectedSnapshotRevision:10};
+    assert.deepEqual(copy(f.records.deltaJournal.confirmedDrawingSource(localProjectId,'drawing')),expected);
+    const restarted=await f.restart();assert.deepEqual(copy(restarted.records.deltaJournal.confirmedDrawingSource(localProjectId,'drawing')),expected);
+    assert.equal(restarted.records.getItem(DRAW+'drawing'),raw);
+    await assert.rejects(()=>f.records.deltaJournal.confirmMissingDrawingRecovery(ticket),error=>error.code==='JOURNAL_RECOVERY_REVIEW_TICKET');
+  });
+  await test('matching live PDF is retained without another live write and a different live PDF is rejected',async()=>{
+    const f=await drawingReviewFixture();await f.records.writeFile(f.args.key,f.blob);
+    const journal=await f.disk(LOG),ticket=await f.prepare();
+    assert.equal((await f.records.deltaJournal.confirmMissingDrawingRecovery(ticket)).liveWritten,false);
+    assert.deepEqual(await f.disk(LOG),journal);assert.equal(await sha((await f.disk()).get(f.args.key)),f.digest);
+    const conflict=await drawingReviewFixture(),other=new Blob(['different-live-pdf'],{type:'application/pdf'});
+    await conflict.records.writeFile(conflict.args.key,other);const before=await conflict.disk(CONTROL);
+    await assert.rejects(()=>conflict.prepare(),error=>/^JOURNAL_RECOVERY_REVIEW_/.test(error.code));
+    assert.deepEqual(await conflict.disk(CONTROL),before);assert.equal(await sha((await conflict.disk()).get(conflict.args.key)),await sha(other));
+  });
+  await test('only one concurrent confirmation can consume a drawing ticket and a started confirmation cannot report cancellation',async()=>{
+    const f=await drawingReviewFixture(),ticket=await f.prepare(),first=f.records.deltaJournal.confirmMissingDrawingRecovery(ticket);
+    assert.equal(f.records.deltaJournal.cancelMissingDrawingRecovery(ticket),false);
+    await assert.rejects(()=>f.records.deltaJournal.confirmMissingDrawingRecovery(ticket),error=>error.code==='JOURNAL_RECOVERY_REVIEW_TICKET');
+    assert.equal((await first).restored,true);assert.equal((await f.records.deltaJournal.readCutoff({scope,localProjectId})).files.length,1);
+    assert.equal((await f.disk(LOG)).size,1);
+  });
+  await test('drawing review refuses foreign identities, wrong source, stale revisions and unverified bytes',async()=>{
+    for(const variant of ['scope','owner','project','binding','key','kind','client-key','drawing','hash','bytes','zero','size','revision',
+      'source-missing','source-id','source-file','source-type','source-pages','source-markers','filename','sourcetype','photo']){
+      const f=await drawingReviewFixture(),args={...f.args,proof:copy(f.args.proof)},before=await f.disk(CONTROL);
+      if(variant==='scope')args.scope={...scope,deviceId:'other-device'};
+      if(variant==='owner')args.proof.ownerId='foreign';
+      if(variant==='project')args.proof.projectId='foreign';
+      if(variant==='binding')args.bindingId='foreign';
+      if(variant==='key')args.key='background:unknown';
+      if(variant==='kind')args.proof.kind='photo';
+      if(variant==='client-key')args.proof.clientKey='drawing:other';
+      if(variant==='drawing')args.proof.drawingId='other';
+      if(variant==='hash')args.sha256=args.proof.sha256='f'.repeat(64);
+      if(variant==='bytes')args.blob=new Blob(['x'.repeat(f.blob.size)],{type:'application/pdf'});
+      if(variant==='zero'){args.blob=new Blob([]);args.size=args.proof.size=0;}
+      if(variant==='size')args.size=args.proof.size=f.blob.size+1;
+      if(variant==='revision')args.proof.snapshotRevision=8;
+      if(variant==='source-missing')delete args.proof.source;
+      if(variant==='source-id')args.proof.source.id='other';
+      if(variant==='source-file')args.proof.source.fileName='other.pdf';
+      if(variant==='source-type')args.proof.source.sourceType='image';
+      if(variant==='source-pages')args.proof.source.pageCount=2;
+      if(variant==='source-markers')args.proof.source.pageReplacements={1:{updatedAt:1}};
+      if(variant==='filename')args.proof.fileName='other.pdf';
+      if(variant==='sourcetype')args.proof.sourceType='image';
+      if(variant==='photo')args.key='photo:drawing:photo-0';
+      await assert.rejects(()=>f.records.deltaJournal.prepareMissingDrawingRecovery(args),error=>/^JOURNAL_RECOVERY_REVIEW_/.test(error.code),variant);
+      assert.deepEqual(await f.disk(CONTROL),before,variant);assert.equal((await f.disk(LOG)).size,0,variant);assert.equal((await f.disk()).has(f.args.key),false,variant);
+    }
+  });
+  await test('drawing review cannot bypass existing protected bytes, page replacement history or an already changed local source',async()=>{
+    for(const options of [{protectedBlob:new Blob([])},{protectedBlob:new Blob(['existing'])},{markers:{1:{updatedAt:1}}}]){
+      const f=await drawingReviewFixture(options),before=await f.disk(CONTROL);
+      await assert.rejects(()=>f.prepare(),error=>/^JOURNAL_RECOVERY_REVIEW_/.test(error.code));assert.deepEqual(await f.disk(CONTROL),before);
+    }
+    const f=await drawingReviewFixture(),state=JSON.parse(f.records.getItem(DRAW+'drawing'));
+    state.fileName='new-local.pdf';f.records.setItem(DRAW+'drawing',json(state));await f.records.settled();
+    await assert.rejects(()=>f.prepare(),error=>error.code==='JOURNAL_RECOVERY_REVIEW_CHANGED');
+    assert.equal(JSON.parse(f.records.getItem(DRAW+'drawing')).fileName,'new-local.pdf');
+    const automatic=await drawingReviewFixture();
+    await assert.rejects(()=>automatic.records.deltaJournal.restoreMissingCutoffFile({...automatic.args,
+      confirmed:true,allowNewerRevision:true,proof:{...automatic.args.proof,sourceKind:'user-confirmed-current-drawing',confirmed:true}}),
+      error=>error.code==='JOURNAL_RECOVERY_REVISION');
+    assert.equal((await automatic.disk()).has(automatic.args.key),false);
+  });
+  await test('editing, authentication, live-file and binding changes invalidate a prepared drawing ticket without writes',async()=>{
+    for(const variant of ['note','other-tab','auth','live-different','live-same','live-removal','binding']){
+      const f=await drawingReviewFixture();let valid=true;
+      if(variant==='live-removal')await f.records.writeFile(f.args.key,f.blob);
+      const ticket=await f.prepare({validate:()=>valid});
+      if(variant==='note'){const state=JSON.parse(f.records.getItem(DRAW+'drawing'));state.shapes[0].memo='New note after preview';
+        f.records.setItem(DRAW+'drawing',json(state));await f.records.settled();}
+      if(variant==='other-tab'){const other=await f.restart(),state=JSON.parse(other.records.getItem(DRAW+'drawing'));state.shapes[0].memo='Note from another tab';
+        other.records.setItem(DRAW+'drawing',json(state));await other.records.settled();}
+      if(variant==='auth')valid=false;
+      if(variant==='live-different')await f.records.writeFile(f.args.key,new Blob(['other PDF'],{type:'application/pdf'}));
+      if(variant==='live-same')await f.records.writeFile(f.args.key,f.blob);
+      if(variant==='live-removal')await f.records.writeFile(f.args.key,null);
+      if(variant==='binding'){
+        const db=await f.records.openFilesDatabase();await new Promise((resolve,reject)=>{
+          const tx=db.transaction(CONTROL,'readwrite'),s=tx.objectStore(CONTROL);s.get('binding:'+localProjectId).onsuccess=e=>{
+            const b=e.target.result;b.cutoff.serverRevision=10;s.put(b,'binding:'+localProjectId);};tx.oncomplete=resolve;tx.onabort=()=>reject(tx.error);
+        });db.close();
+      }
+      const before=await f.disk(),controls=await f.disk(CONTROL),journal=await f.disk(LOG);
+      await assert.rejects(()=>f.records.deltaJournal.confirmMissingDrawingRecovery(ticket),error=>/^JOURNAL_RECOVERY_/.test(error.code),variant);
+      assert.deepEqual(await f.disk(),before,variant);assert.deepEqual(await f.disk(CONTROL),controls,variant);assert.deepEqual(await f.disk(LOG),journal,variant);
+      await assert.rejects(()=>f.records.deltaJournal.confirmMissingDrawingRecovery(ticket),error=>error.code==='JOURNAL_RECOVERY_REVIEW_TICKET');
+    }
+  });
+  await test('drawing confirmation rollback is atomic and requires a fresh review after quota failure',async()=>{
+    const f=await drawingReviewFixture(),ticket=await f.prepare(),original=IDBObjectStore.prototype.add;
+    const before=await f.disk(),controls=await f.disk(CONTROL),journal=await f.disk(LOG);
+    IDBObjectStore.prototype.add=function(value,...args){if(this.name===CONTROL&&value?.kind==='cutoff-file')throw Object.assign(Error('review quota'),{name:'QuotaExceededError'});return original.call(this,value,...args);};
+    try{await assert.rejects(()=>f.records.deltaJournal.confirmMissingDrawingRecovery(ticket),/review quota/);}finally{IDBObjectStore.prototype.add=original;}
+    assert.deepEqual(await f.disk(),before);assert.deepEqual(await f.disk(CONTROL),controls);assert.deepEqual(await f.disk(LOG),journal);
+    await assert.rejects(()=>f.records.deltaJournal.confirmMissingDrawingRecovery(ticket),error=>error.code==='JOURNAL_RECOVERY_REVIEW_TICKET');
+    assert.equal((await f.records.deltaJournal.confirmMissingDrawingRecovery(await f.prepare())).restored,true);
   });
   await test('quota failure rolls back live file, cutoff append and journal together, then ordinary retry succeeds',async()=>{
     const f=await fixture(),cutoff=await f.begin(),key=[...f.files.keys()][0],original=IDBObjectStore.prototype.add;

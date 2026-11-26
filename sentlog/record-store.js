@@ -286,6 +286,12 @@
     if(affectedProjects(changes,before,after).projectIds.some(id=>bindings.has(id)))
       throw journalError('JOURNAL_REMOTE_WRITER','この案件は差分共有に移行済みです。旧方式の受信による上書きを止めました');
   }
+  function assertLegacyPdfHandover(bound,projectIds,cloudProjectIds,fileKeys){
+    if(!fileKeys.some(key=>typeof key==='string'&&key.startsWith('background:')))return;
+    if(bound.some(binding=>binding.phase==='staging'&&
+      (projectIds.includes(binding.localProjectId)||cloudProjectIds.includes(binding.scope?.projectId))))
+      throw journalError('JOURNAL_PDF_HANDOVER','この図面は同期の確認・復旧処理で保護しています。同期画面で図面を確認してください。');
+  }
   // Read preimages, append the immutable intent, and mutate the legacy view in
   // ONE transaction. A completed canvas save therefore always has a replayable
   // intent, even if the process dies before the independent replica is written.
@@ -313,6 +319,11 @@
         });
         const workspaceChange=changes.find(x=>x.key===WS),workspaceAfter=workspaceChange?workspaceChange.after:workspaceBefore;
         const affected=affectedProjects(changes,workspaceBefore,workspaceAfter,fileChanges),bound=allBindings.filter(x=>x?.kind==='binding');
+        const legacyPdf=contexts.filter(context=>context.operation==='legacy-pdf-receive');
+        // The cached lifecycle can be stale when a different tab starts the
+        // handover. Check its durable authority in this SAME file/WAL tx.
+        if(legacyPdf.length)assertLegacyPdfHandover(bound,affected.projectIds,
+          legacyPdf.map(context=>context.context?.projectId),fileKeys);
         if(archiveContext){
           const projectId=archiveContext.context.localProjectId||archiveContext.context.projectId,binding=bound.find(b=>b.localProjectId===projectId);
           if(binding){
@@ -704,6 +715,89 @@
         throw journalError('JOURNAL_RECOVERY_REVISION','保護した図面の保存版・形式・ファイル名を照合できません');
     }
   }
+  // A user may choose the current shared PDF when the old, unversioned PDF
+  // cannot be identified. Keep that decision distinct from an automatic
+  // proof of the original file; the immutable cutoff records are unchanged.
+  const drawingRecoveryReviews=new WeakMap();
+  function recoveryDrawingSource(ref){
+    return {id:ref.drawingId,fileName:ref.state?.fileName??ref.drawing?.fileName??'',
+      sourceType:ref.state?.sourceType??ref.drawing?.sourceType??null,
+      pageCount:ref.state?.pageCount??ref.drawing?.pageCount??null,
+      pageReplacements:ref.state?.pageReplacements??{}};
+  }
+  function reviewedDrawingCandidate(binding,file,scope,localProjectId,bindingId){
+    if(!binding||!sameScope(binding.scope,scope)||binding.localProjectId!==localProjectId||
+      binding.id!==bindingId||binding.phase!=='staging')
+      throw journalError('JOURNAL_RECOVERY_REVIEW_SCOPE','確認する図面の案件または保存状態が変わりました');
+    bindingState(binding);
+    const ref=cutoffRecoveryReferences(binding).get(file.key),proof=file.proof;
+    if(!ref||ref.kind!=='background'||file.key!=='background:'+ref.drawingId)
+      throw journalError('JOURNAL_RECOVERY_REVIEW_KEY','保護した記録にない図面は選択できません');
+    if((binding.cutoff.files||[]).some(item=>item.key===file.key))
+      throw journalError('JOURNAL_RECOVERY_REVIEW_EXISTS','保護済みの図面は上書きせず保持しています');
+    const source=recoveryDrawingSource(ref),markers=source.pageReplacements;
+    if(!markers||typeof markers!=='object'||Array.isArray(markers)||Object.keys(markers).length)
+      throw journalError('JOURNAL_RECOVERY_REVIEW_VERSION','差替え履歴のある図面は、この操作では変更できません');
+    if(!(file.blob instanceof Blob)||!Number.isSafeInteger(file.size)||file.size<=0||file.blob.size!==file.size||
+      !/^[a-f0-9]{64}$/.test(file.sha256||'')||!proof||typeof proof.assetId!=='string'||!proof.assetId||
+      proof.ownerId!==scope.ownerId||proof.projectId!==scope.projectId||proof.clientKey!=='drawing:'+ref.drawingId||
+      proof.kind!=='drawing'||proof.drawingId!==ref.drawingId||proof.sha256!==file.sha256||proof.size!==file.size||
+      proof.fileName!==source.fileName||proof.sourceType!==source.sourceType)
+      throw journalError('JOURNAL_RECOVERY_REVIEW_PROOF','選択する図面の案件・識別情報・内容を照合できません');
+    const selected=proof.source;
+    if(!selected||['id','fileName','sourceType','pageCount','pageReplacements'].some(key=>!Object.prototype.hasOwnProperty.call(selected,key))||
+      selected.id!==source.id||selected.fileName!==source.fileName||selected.sourceType!==source.sourceType||selected.pageCount!==source.pageCount||
+      !selected.pageReplacements||typeof selected.pageReplacements!=='object'||Array.isArray(selected.pageReplacements)||Object.keys(selected.pageReplacements).length)
+      throw journalError('JOURNAL_RECOVERY_REVIEW_SOURCE','選択する図面の名前・形式・ページ構成が保護した記録と一致しません');
+    const original=binding.cutoff.serverRevision;
+    if(!Number.isSafeInteger(original)||original<1||!Number.isSafeInteger(proof.snapshotRevision)||proof.snapshotRevision<original)
+      throw journalError('JOURNAL_RECOVERY_REVIEW_REVISION','選択する図面の共有版を確認できません');
+    return ref;
+  }
+  async function readDrawingRecoveryState(localProjectId,key){
+    const tx=transaction('readonly'),done=complete(tx),control=tx.objectStore(CONTROL),files=tx.objectStore(STORE);
+    const data={};
+    control.get('binding:'+localProjectId).onsuccess=e=>data.binding=e.target.result;
+    control.get('file:'+key).onsuccess=e=>data.fileSequence=Number(e.target.result)||0;
+    files.get(META).onsuccess=e=>data.meta=e.target.result;
+    files.get(key).onsuccess=e=>data.live=e.target.result;
+    files.get(PREFIX+WS).onsuccess=e=>data.workspace=e.target.result;
+    files.get(PREFIX+DRAW+String(key).slice('background:'.length)).onsuccess=e=>data.drawing=e.target.result;
+    await done;return data;
+  }
+  function drawingRecoveryStateCheck(plan,data){
+    cutoffRecoveryCheck(plan.validate);
+    if(!['prepared','confirming'].includes(plan.status)||failure||failures.size||pending.size||inFlight||operation||exclusive||
+      fileWriters.get(plan.file.key)?.size||revision!==plan.recordRevision||Number(data.meta?.revision)!==plan.recordRevision||
+      data.fileSequence!==plan.fileSequence||(fileGenerations.get(plan.file.key)||0)!==plan.generation||
+      archiveReleaseText(data.binding)!==plan.bindingText||
+      (data.live===undefined)!==plan.liveMissing||
+      (!plan.liveMissing&&(!(data.live instanceof Blob)||data.live.size!==plan.file.size||data.live.type!==plan.liveType))){
+      // Preserve a small, non-content diagnostic for a refused confirmation.
+      // The conditions and the user-facing error remain exactly as guarded.
+      const recoveryState=[
+        ['ticket-status',!['prepared','confirming'].includes(plan.status)],
+        ['writer-error',failure||failures.size],['pending-records',pending.size||inFlight],
+        ['record-operation',operation||exclusive],['file-writer',fileWriters.get(plan.file.key)?.size],
+        ['memory-record-revision',revision!==plan.recordRevision],
+        ['stored-record-revision',Number(data.meta?.revision)!==plan.recordRevision],
+        ['file-sequence',data.fileSequence!==plan.fileSequence],
+        ['file-generation',(fileGenerations.get(plan.file.key)||0)!==plan.generation],
+        ['binding',archiveReleaseText(data.binding)!==plan.bindingText],
+        ['live-existence',(data.live===undefined)!==plan.liveMissing],
+        ['live-bytes',!plan.liveMissing&&(!(data.live instanceof Blob)||data.live.size!==plan.file.size||data.live.type!==plan.liveType)]
+      ].filter(([,changed])=>changed).map(([name])=>name);
+      throw Object.assign(journalError('JOURNAL_RECOVERY_REVIEW_CHANGED',
+        '図面の確認中に記録またはファイルが変わりました。もう一度候補を確認してください'),{recoveryState});
+    }
+    const ref=reviewedDrawingCandidate(data.binding,plan.file,plan.scope,plan.localProjectId,plan.bindingId);
+    const projects=workspaceOf(data.workspace).projects,project=projects.filter(item=>item.id===plan.localProjectId);
+    const drawing=project.length===1?(project[0].drawings||[]).filter(item=>item.id===ref.drawingId):[];
+    const state=typeof data.drawing==='string'?JSON.parse(data.drawing):null;
+    if(drawing.length!==1||!state||projects.filter(item=>(item.drawings||[]).some(d=>d.id===ref.drawingId)).length!==1||
+      archiveReleaseText(recoveryDrawingSource({drawingId:ref.drawingId,drawing:drawing[0],state}))!==archiveReleaseText(recoveryDrawingSource(ref)))
+      throw journalError('JOURNAL_RECOVERY_REVIEW_CHANGED','端末内で図面の構成が変更されています。新しい記録を保持して確認を中止しました');
+  }
   const deltaJournal={
     version:1,
     prepareArchivedRelease,
@@ -714,6 +808,21 @@
     listBindingsSync:()=>[...bindings.values()].map(binding=>hydrateBinding(binding)),
     bindingStateFor:localProjectId=>bindingState(bindings.get(localProjectId)),
     listBindingStatesSync:()=>[...bindings.values()].map(bindingState),
+    async assertLegacyPdfReceive({projectId,key}={}){
+      assertReady();
+      if(typeof projectId!=='string'||!projectId||typeof key!=='string'||!/^background:[^:]+$/.test(key))
+        throw journalError('JOURNAL_PDF_HANDOVER_SCOPE','受信する図面と案件を確認できません。');
+      await connect();const tx=transaction('readonly'),done=complete(tx);
+      let raw=null,rows=[],waiting=2;
+      function check(){if(--waiting)return;try{
+        const affected=affectedProjects([],raw,raw,[{key}]);
+        assertLegacyPdfHandover(rows.filter(row=>row?.kind==='binding'),affected.projectIds,[projectId],[key]);
+      }catch(error){tx.sentlogJournalError=error;tx.abort();}}
+      tx.objectStore(STORE).get(PREFIX+WS).onsuccess=e=>{raw=e.target.result??null;check();};
+      journalControls(tx.objectStore(CONTROL)).onsuccess=e=>{rows=e.target.result;check();};
+      // This read never hydrates protected files or updates their references.
+      await done;return true;
+    },
     async readBindingState(localProjectId){
       assertReady();if(typeof localProjectId!=='string'||!localProjectId)
         throw journalError('JOURNAL_PROJECT','端末内の案件を確認できません');
@@ -759,6 +868,83 @@
       // replaced by recovery. Only an absent referenced key can be appended.
       return [...cutoffRecoveryReferences(binding).values()].filter(ref=>!existing.has(ref.key))
         .map(ref=>({...ref,recoverable:true}));
+    },
+    confirmedDrawingSource(localProjectId,drawingId){
+      assertReady();const binding=bindings.get(localProjectId);if(!binding)return null;bindingState(binding);
+      const files=(binding.cutoff.files||[]).filter(file=>file.key==='background:'+drawingId);
+      if(files.length>1)throw journalError('JOURNAL_RECOVERY_REVIEW_RECEIPT','選択した図面の保存証明が重複しています');
+      const proof=files[0]?.recovery;if(proof?.sourceKind!=='user-confirmed-current-drawing')return null;
+      if(proof.kind!=='sentlog-cutoff-recovery'||proof.ownerId!==binding.scope.ownerId||proof.projectId!==binding.scope.projectId||
+        proof.clientKey!=='drawing:'+drawingId||proof.drawingId!==drawingId||typeof proof.assetId!=='string'||!proof.assetId||
+        !/^[a-f0-9]{64}$/.test(proof.sha256||'')||!Number.isSafeInteger(proof.size)||proof.size<1||proof.exactOriginalVerified!==false||
+        proof.originalSnapshotRevision!==binding.cutoff.serverRevision||!Number.isSafeInteger(proof.selectedSnapshotRevision)||
+        proof.selectedSnapshotRevision<proof.originalSnapshotRevision||proof.snapshotRevision!==proof.selectedSnapshotRevision)
+        throw journalError('JOURNAL_RECOVERY_REVIEW_RECEIPT','選択した図面の保存証明を照合できません');
+      return {sha256:proof.sha256,size:proof.size,assetId:proof.assetId,selectedSnapshotRevision:proof.selectedSnapshotRevision};
+    },
+    async prepareMissingDrawingRecovery({scope:inputScope,localProjectId,bindingId,key,blob,size,sha256,proof,validate}={}){
+      assertReady();const scope=checkedScope(inputScope),file={key,blob,size,sha256,proof:copy(proof)};
+      cutoffRecoveryCheck(validate);await settled();window.SentlogRecords.assertSafe();await connect();cutoffRecoveryCheck(validate);
+      const data=await readDrawingRecoveryState(localProjectId,key);cutoffRecoveryCheck(validate);
+      reviewedDrawingCandidate(data.binding,file,scope,localProjectId,bindingId);
+      const plan={status:'prepared',scope,localProjectId,bindingId,file,validate,
+        recordRevision:Number(data.meta?.revision),fileSequence:data.fileSequence,generation:fileGenerations.get(key)||0,
+        bindingText:archiveReleaseText(data.binding),liveMissing:data.live===undefined,liveType:data.live?.type,
+        originalSnapshotRevision:data.binding.cutoff.serverRevision};
+      drawingRecoveryStateCheck(plan,data);
+      if(!await archiveReleaseMatches(blob,{size,sha256})||!plan.liveMissing&&!await archiveReleaseMatches(data.live,{size,sha256}))
+        throw journalError('JOURNAL_RECOVERY_REVIEW_BYTES','候補または端末内の図面が確認した内容と異なります。上書きせず保持しています');
+      drawingRecoveryStateCheck(plan,await readDrawingRecoveryState(localProjectId,key));
+      const ticket=Object.freeze({});drawingRecoveryReviews.set(ticket,plan);return ticket;
+    },
+    cancelMissingDrawingRecovery(ticket){
+      const plan=drawingRecoveryReviews.get(ticket);
+      // Once confirmation starts, its guarded transaction owns the decision.
+      // Never report a successful cancellation after writes may have begun.
+      if(!plan||plan.status!=='prepared')return false;
+      plan.status='cancelled';drawingRecoveryReviews.delete(ticket);return true;
+    },
+    async confirmMissingDrawingRecovery(ticket){
+      const plan=drawingRecoveryReviews.get(ticket);
+      if(!plan||plan.status!=='prepared')throw journalError('JOURNAL_RECOVERY_REVIEW_TICKET','この図面確認は無効または使用済みです。もう一度候補を確認してください');
+      plan.status='confirming';
+      try{
+        assertReady();cutoffRecoveryCheck(plan.validate);await settled();window.SentlogRecords.assertSafe();await connect();
+        let data=await readDrawingRecoveryState(plan.localProjectId,plan.file.key);drawingRecoveryStateCheck(plan,data);
+        if(!await archiveReleaseMatches(plan.file.blob,plan.file)||!plan.liveMissing&&!await archiveReleaseMatches(data.live,plan.file))
+          throw journalError('JOURNAL_RECOVERY_REVIEW_BYTES','確認した図面の内容が変わりました。上書きせず保持しています');
+        data=await readDrawingRecoveryState(plan.localProjectId,plan.file.key);drawingRecoveryStateCheck(plan,data);
+        const tx=transaction('readwrite'),done=complete(tx),control=tx.objectStore(CONTROL),files=tx.objectStore(STORE),current={};
+        let waiting=6,next,row,result;
+        const ready=()=>{if(--waiting)return;try{
+          drawingRecoveryStateCheck(plan,current);
+          const {key,blob,size,sha256,proof}=plan.file;
+          const receipt={...copy(proof),version:1,kind:'sentlog-cutoff-recovery',sourceKind:'user-confirmed-current-drawing',
+            originalSnapshotRevision:plan.originalSnapshotRevision,selectedSnapshotRevision:proof.snapshotRevision,
+            exactOriginalVerified:false,recoveredAt:Date.now()};
+          next=copy(current.binding);const index=next.cutoff.files.length,id=cutoffFileKey(plan.bindingId,index);
+          row={version:1,kind:'cutoff-file',id,bindingId:plan.bindingId,localProjectId:plan.localProjectId,scope:copy(plan.scope),
+            key,revision:1,value:blob,sha256,recovery:receipt};
+          next.cutoff.files.push({key,valueRef:id,recovery:receipt});
+          const save=()=>{
+            drawingRecoveryStateCheck(plan,current);control.add(row,id);control.put(next,'binding:'+plan.localProjectId);
+            if(plan.liveMissing)files.add(blob,key);
+            result={restored:true,idempotent:false,liveWritten:plan.liveMissing,sourceKind:receipt.sourceKind};
+          };
+          if(plan.liveMissing)journalMutation(tx,{fileWrites:[{key,value:blob}],kind:'cutoff-drawing-recovery-confirmed',
+            contexts:[contextOf({origin:'remote',operation:'file-recovery',context:{localProjectId:plan.localProjectId,
+              assetId:proof.assetId,bindingId:plan.bindingId,sourceKind:receipt.sourceKind}})]},save);
+          else save();
+        }catch(error){tx.sentlogJournalError=error;tx.abort();}};
+        control.get('binding:'+plan.localProjectId).onsuccess=e=>{current.binding=e.target.result;ready();};
+        control.get('file:'+plan.file.key).onsuccess=e=>{current.fileSequence=Number(e.target.result)||0;ready();};
+        files.get(META).onsuccess=e=>{current.meta=e.target.result;ready();};
+        files.get(plan.file.key).onsuccess=e=>{current.live=e.target.result;ready();};
+        files.get(PREFIX+WS).onsuccess=e=>{current.workspace=e.target.result;ready();};
+        files.get(PREFIX+DRAW+plan.file.proof.drawingId).onsuccess=e=>{current.drawing=e.target.result;ready();};await done;
+        plan.status='committed';bindings.set(plan.localProjectId,next);cutoffFiles.set(row.id,row);committedBindings(tx);notify();
+        cutoffRecoveryCheck(plan.validate);return result;
+      }finally{drawingRecoveryReviews.delete(ticket);if(plan.status!=='committed')plan.status='consumed';}
     },
     async restoreMissingCutoffFile({scope:inputScope,localProjectId,bindingId,key,blob,size,sha256,proof,validate}={}){
       assertReady();const scope=checkedScope(inputScope),file={key,blob,size,sha256,proof};

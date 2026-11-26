@@ -7,6 +7,7 @@ on:
       - 'sentlog/archive-core.js'
       - 'sentlog/record-collaboration.js'
       - 'scripts/build_delta_sync.py'
+      - 'scripts/build_sync_recovery.py'
       - 'scripts/assemble_delta_sync.py'
       - 'scripts/build_capacity.py'
       - 'scripts/build_management.py'
@@ -24,6 +25,7 @@ on:
       - 'sentlog/session-guard.js'
       - 'tests/delta_*'
       - 'tests/record_file_guard*'
+      - 'tests/pdf_handover_guard.test.cjs'
       - 'tests/session_guard.test.cjs'
       - 'tests/photo_redelivery_adversarial.test.cjs'
       - 'tests/delta_rejection_isolation.test.cjs'
@@ -117,6 +119,8 @@ jobs:
           node tests/delta_app_journal.test.cjs
           node tests/delta_cutoff_recovery.test.cjs
           node tests/delta_migration_recovery.test.cjs
+          node tests/delta_drawing_review_integration.test.cjs
+          node tests/delta_drawing_upload_guard.test.cjs
           BINDING_BENCHMARK=1 node tests/delta_cutoff_files.test.cjs
           node tests/delta_app_mode.test.cjs
           node tests/delta_photo_lease.test.cjs

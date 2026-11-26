@@ -58,7 +58,7 @@
           const missing=await records.deltaJournal.missingCutoffFiles({scope,localProjectId,bindingId:staged.bindingId});validate();
           if(missing.length){
             onProgress({status:'recovering-missing-files',localProjectId,total:missing.length});
-            await recoverMissingFiles({scope,localProjectId,bindingId:staged.bindingId,serverRevision:staged.serverRevision,
+            const recovery=await recoverMissingFiles({scope,localProjectId,bindingId:staged.bindingId,serverRevision:staged.serverRevision,
               missing,validate,restore:async file=>{
                 validate();const restored=await records.deltaJournal.restoreMissingCutoffFile({...file,scope,localProjectId,
                   bindingId:staged.bindingId,validate});validate();return restored;
@@ -79,11 +79,19 @@
                   {localProjectId,scope:{...scope},bindingId:staged.bindingId,recovered,remaining:remaining.length});
               }
             }
-            if(blocking.length)throw reviewFailure({plan:{reviewItems:blocking.map(item=>({
-              code:'LEGACY_SOURCE_FILE_MISSING',blocking:true,message:'写真または図面ファイルを確認できません',
-              sourceIssue:{code:'LEGACY_SOURCE_FILE_MISSING',blocking:true,key:item.key,kind:item.kind,
-                drawingId:item.drawingId,...(item.photoId?{photoId:item.photoId}:{})}
-            }))}});
+            if(blocking.length){
+              const details=new Map((recovery?.issues||[]).map(issue=>[issue.key,issue]));
+              const issues=blocking.map(item=>({
+                code:'LEGACY_SOURCE_FILE_MISSING',blocking:true,
+                message:details.get(item.key)?.message||'写真または図面ファイルを確認できません',
+                sourceIssue:{code:'LEGACY_SOURCE_FILE_MISSING',blocking:true,key:item.key,kind:item.kind,
+                  drawingId:item.drawingId,...(item.photoId?{photoId:item.photoId}:{}),
+                  ...(details.has(item.key)?{recovery:details.get(item.key)}:{})}
+              }));
+              onProgress({status:'missing-files-review',localProjectId,scope:{...scope},bindingId:staged.bindingId,
+                serverRevision:staged.serverRevision,issues:issues.map(issue=>issue.sourceIssue),remaining:blocking.length});
+              throw reviewFailure({plan:{reviewItems:issues}});
+            }
           }
         }
         let receipt=mode.baseline||await transport.prepareBaseline(mode.snapshotRevision??revision??staged.serverRevision);validate();

@@ -47,7 +47,8 @@ async function pdfRound({pc=false,checking=false,archiveReady=true,registered=tr
     throw Error('Unexpected PDF operation '+path);
   };
   const ctx=vm.createContext({IS_PC:pc,busy:false,navigator:{onLine:true},document:{hidden:false},console,Set,Map,Date,Blob,
-    window:{SentlogRecords:{ready:true},SentlogArchive:{ready:archiveReady,isAuto:id=>C.maySync(controls.find(c=>c.id===id),null)}},
+    window:{SentlogRecords:{ready:true,deltaJournal:{listBindingStatesSync:()=>[],assertLegacyPdfReceive:async()=>true}},
+      SentlogArchive:{ready:archiveReady,isAuto:id=>C.maySync(controls.find(c=>c.id===id),null)}},
     session:()=>({access_token:'synthetic',user:{id:'owner'}}),device:()=>'self',enc:encodeURIComponent,api,
     drawingIds:()=>new Set(['drawing-active','drawing-archived','drawing-foreign']),
     supply:async a=>{events.push(['supply',a.project_id]);return true;},
@@ -55,6 +56,15 @@ async function pdfRound({pc=false,checking=false,archiveReady=true,registered=tr
     acknowledge:async a=>events.push(['ack',a.project_id]),status:()=>{},panels:()=>[]});
   vm.runInContext(fs.readFileSync('sentlog/recovery-throttle.js','utf8'),ctx);
   vm.runInContext(fs.readFileSync('sentlog/recovery-queue.js','utf8'),ctx);
+  // This lifecycle fixture evaluates the real run() in isolation. Include its
+  // actual handover helpers when present; durable staging races are exercised
+  // with the real Records implementation in pdf_handover_guard.test.cjs.
+  const helperStart=pdf.indexOf('const PDF_HANDOVER_STATUS=');
+  if(helperStart>=0){
+    const helperEnd=pdf.indexOf('\nfunction session()',helperStart),fileKey=pdf.match(/^const fileKey=.*;$/m);
+    assert(helperEnd>helperStart&&fileKey,'production PDF handover dependencies must be present');
+    vm.runInContext(pdf.slice(helperStart,helperEnd)+'\n'+fileKey[0],ctx);
+  }
   vm.runInContext('const deliveryGuard=createSentlogDeliveryGuard();const receiveGuard=createSentlogDeliveryGuard({maxPerCycle:8,cooldownMs:0});\n'+pdf.slice(start,end),ctx);
   await ctx.run();return events;
 }

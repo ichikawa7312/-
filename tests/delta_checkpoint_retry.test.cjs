@@ -23,8 +23,8 @@ const STALE={code:'40001',message:'DELTA_CHECKPOINT_STALE_HEAD private server de
 
 function productionRuntime(){
   // Read the actual build substitutions, without running a build or maintaining
-  // a second copy of the delta branch. The one excluded substitution belongs
-  // to the legacy asset downloader, outside collaboration-sync-runtime.txt.
+  // a second copy of the delta branch. UI and legacy asset substitutions are
+  // outside this worker slice and have separate native/application coverage.
   const changes=JSON.parse(execFileSync('python',['-c',String.raw`
 import ast,json,pathlib
 root=pathlib.Path.cwd()
@@ -41,12 +41,21 @@ for node in ast.parse((root/'scripts/build_delta_sync.py').read_text()).body:
 print(json.dumps(changes))
 `],{cwd:root,encoding:'utf8'}));
   let result=fs.readFileSync(path.join(root,'sentlog/collaboration-sync-runtime.txt'),'utf8'),applied=0;
+  const outsideWorker=new Set([
+    "    if(a.kind!=='drawing'&&a.kind!=='photo')continue;",
+    '  renderProjectSyncControls();',
+    'style="width:min(420px,100%);max-height:90dvh;overflow-y:auto;background:#fff;',
+    '>案件を選んで同期</label>',
+    '新しく作った案件も個別に同期できます。',
+    "  if(!(blob instanceof Blob))return {status:'missing'};\n  const revision=expectedDrawingRevision(item.drawingId);"
+  ]);
   for(const [before,after] of changes){
-    if(before==="    if(a.kind!=='drawing'&&a.kind!=='photo')continue;")continue;
+    if(outsideWorker.has(before)){outsideWorker.delete(before);continue;}
     assert.equal(result.split(before).length-1,1,'production delta worker integration anchor: '+before);
     result=result.replace(before,after);applied++;
   }
   assert.equal(applied,8,'all production worker integration substitutions must be exercised');
+  assert.equal(outsideWorker.size,0,'external integration exclusions must match real builder entries');
   return result;
 }
 
@@ -120,6 +129,9 @@ function fixture({races=1,error=STALE,httpStatus=409}={}){
       for(const fn of auth)fn('SIGNED_IN',context.session);h.api.reset();};
     context.window.SentlogSyncTraffic={withFileLock:async(key,fn)=>fn()};
     context.window.SentlogDeltaMigrationRecovery=require('../sentlog/delta-sync-migration-recovery.js');
+    context.document.getElementById=()=>null; // This worker fixture has no mounted modal.
+    context.window.SentlogDeltaDrawingReview={create:options=>require('../sentlog/delta-sync-drawing-review.js')
+      .create({...options,document:context.document})};
     context.window.SentlogDeltaAppMigration={createInstaller:()=>async()=>{throw Error('already active: migration must not run');}};
     context.window.SentlogDeltaAppRuntime={createRuntime:options=>{
       const runtime=Runtime.createRuntime({...options,fetch,network:()=>context.navigator.onLine,visible:()=>!context.document.hidden,

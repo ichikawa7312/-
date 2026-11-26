@@ -15,13 +15,28 @@
      el.textContent=text;
    }
  }
+ async function responseData(response,path){
+   try{return await response.json();}
+   catch(cause){
+     // Aborting after successful response headers is still a cancelled read.
+     // Do not convert it to an empty object and lose the retry/backoff cause.
+     if(cause?.name==='AbortError')throw cause;
+     if(!response.ok){const error=Error('通信エラー '+response.status);error.status=response.status;error.cause=cause;throw error;}
+     const label=path.startsWith('sentlog_pdf_requests?')?'写真の受信待ち一覧':'写真補完';
+     const invalid=cause?.name==='SyntaxError';
+     const error=new TypeError(label+(invalid?'の応答形式を確認できません。':'の応答を最後まで読み取れませんでした。')+
+       '次回の確認で再試行します。');
+     error.code=invalid?'PEER_PHOTO_RESPONSE_JSON':'PEER_PHOTO_RESPONSE_READ';
+     error.status=response.status;error.resource=path.split('?')[0];error.cause=cause;throw error;
+   }
+ }
  async function api(path,body){
    const s=sessions();if(!s?.access_token)throw Error('ログインを確認してください。');
    const c=new AbortController(),timer=setTimeout(()=>c.abort(),30000);
    try{
      const options={cache:'no-store',signal:c.signal,headers:{apikey:KEY,Authorization:'Bearer '+s.access_token}};
      if(body!==undefined){options.method='POST';options.headers['Content-Type']='application/json';options.body=JSON.stringify(body);}
-     const r=await fetch(BASE+'/rest/v1/'+path,options),data=await r.json().catch(()=>({}));
+     const r=await fetch(BASE+'/rest/v1/'+path,options),data=await responseData(r,path);
      if(!r.ok)throw Error(data.message||('通信エラー '+r.status));return data;
    }finally{clearTimeout(timer);}
  }
@@ -41,7 +56,8 @@
    for(;;){
      const cursor=last?'&or='+enc('(asset_id.gt.'+last.asset_id+',and(asset_id.eq.'+last.asset_id+',device_id.gt.'+last.device_id+'))'):'';
      const rows=await api('sentlog_pdf_requests?received_at=is.null&select=asset_id,device_id,expected_sha256,requested_at&order=asset_id.asc,device_id.asc&limit=400'+peerFilter+cursor);
-     if(!Array.isArray(rows))throw Error('写真の受信待ちを確認できません。');if(!rows.length)return out;
+     if(!Array.isArray(rows))throw Object.assign(new TypeError('写真の受信待ち一覧の応答形式を確認できません。次回の確認で再試行します。'),
+       {code:'PEER_PHOTO_REQUESTS_FORMAT'});if(!rows.length)return out;
      for(const row of rows){
        if(!row.asset_id||!row.device_id||(last&&(row.asset_id<last.asset_id||(row.asset_id===last.asset_id&&row.device_id<=last.device_id))))throw Error('写真の受信待ち一覧を確認できません。');
        last=row;out.push(row);
@@ -119,6 +135,7 @@
      if(errors.length)show('写真補完の確認：'+errors[0]);
      else if(sent)show('端末間の写真補完：この端末から'+uploadedTotal+'枚を送信しました。受信確認を続けています。');
      else if(checked)show('写真補完：この端末から送れる写真を確認しています。写真が残っているもう一方の端末も開いてください。');
+     else show('写真補完：受信待ち一覧を確認しました。今回はこの端末から写真を送信していません。受信状況は各端末の写真確認欄で確認できます。');
      // Receiving is already hash-verified and durable in photo-recovery.js.
      window.sentlogCheckPhotoRecovery?.();
    }catch(e){show('写真補完の確認：'+(e.name==='AbortError'?'通信が途中で止まりました。次回の確認で再試行します。':e.message));}
