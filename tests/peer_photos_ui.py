@@ -7,6 +7,14 @@ from http.server import SimpleHTTPRequestHandler,ThreadingHTTPServer
 from urllib.parse import urlparse,parse_qs
 from playwright.sync_api import sync_playwright
 ROOT=Path(__file__).resolve().parents[1]
+receive_scope=scope_dependency=''
+if 'window.sentlogCaptureAssetReceiveScope(' in (ROOT/'sentlog/photo-recovery.js').read_text():
+ cloud=(ROOT/'sentlog/cloud-sync.js').read_text()
+ scope_start=cloud.index('function captureAssetReceiveScope(')
+ scope_export='window.sentlogCaptureAssetReceiveScope=captureAssetReceiveScope;'
+ scope_end=cloud.index(scope_export,scope_start)+len(scope_export)
+ receive_scope="const DEVICE_KEY='sentlogCloudDeviceV1';\nconst sessionGuard=window.SentlogSessionGuard.create({key:'sentlogCloudSessionV1',fetcher:async()=>{throw Error('Unexpected authentication request in peer fixture');}});\n"+cloud[scope_start:scope_end]
+ scope_dependency="<script src='/sentlog/session-guard.js'></script>"
 class Handler(SimpleHTTPRequestHandler):
  def log_message(self,*args):pass
  def do_POST(self):
@@ -31,6 +39,7 @@ for i in range(2):
 state={'id':'drawing','shapes':[{'id':'defect-1','type':'欠損・損傷','page':3,'photos':[{'id':'p0'},{'id':'p1'}]}]}
 workspace={'projects':[{'id':'local','name':'Synthetic survey','drawings':[{'id':'drawing'}]}]}
 html='''<!doctype html><html><body><main id="projectsView"><div class="manager-shell"></div></main><div id="sentlogCloudLoggedIn"></div>
+SCOPE_DEPENDENCY
 <script>
  // WebKit omits Blob bodies from Playwright's intercepted request metadata.
  // Send uploads through native fetch to the test HTTP server and verify actual bytes.
@@ -42,13 +51,14 @@ html='''<!doctype html><html><body><main id="projectsView"><div class="manager-s
  const device=new URL(location.href).searchParams.get('device');
  localStorage.setItem('sentlogCloudDeviceV1',device);
  localStorage.setItem('sentlogCloudSessionV1',JSON.stringify({access_token:'synthetic',expires_at:9999999999,user:{id:'OWNER'}}));
+ RECEIVE_SCOPE
  async function database(){return await new Promise((resolve,reject)=>{const q=indexedDB.open('surveyFieldNoteDB',1);q.onupgradeneeded=()=>q.result.createObjectStore('files');q.onsuccess=()=>resolve(q.result);q.onerror=()=>reject(q.error);});}
  async function put(key,file){const db=await database();try{await new Promise((resolve,reject)=>{const tx=db.transaction('files','readwrite');tx.objectStore('files').put(file,key);tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error);});}finally{db.close();}}
  window.readPhotos=async()=>{const db=await database();try{return await Promise.all(['p0','p1'].map(p=>new Promise((resolve,reject)=>{const q=db.transaction('files','readonly').objectStore('files').get('photo:drawing:'+p);q.onsuccess=async()=>resolve(q.result?await q.result.text():null);q.onerror=()=>reject(q.error);})));}finally{db.close();}};
  window.sentlogAppReady=database().then(db=>db.close());
  window.SentlogRecords={ready:true,getItem:k=>k==='surveyFieldNoteWorkspaceV1'?JSON.stringify(workspace):k==='surveyFieldNoteDrawingV1:drawing'?JSON.stringify(state):null,writeFile:put};
  window.putPhoto=put;window.sentlogManagementSession=async()=>{};window.sentlogSyncView={photoReceived(){}};
-</script><script src="/sentlog/sync-traffic.js"></script><script src="/sentlog/photo-recovery.js"></script><script src="/sentlog/peer-photo-recovery.js"></script></body></html>'''.replace('STATE',json.dumps(state)).replace('WORKSPACE',json.dumps(workspace)).replace('OWNER',owner)
+</script><script src="/sentlog/sync-traffic.js"></script><script src="/sentlog/photo-recovery.js"></script><script src="/sentlog/peer-photo-recovery.js"></script></body></html>'''.replace('STATE',json.dumps(state)).replace('WORKSPACE',json.dumps(workspace)).replace('OWNER',owner).replace('RECEIVE_SCOPE',receive_scope).replace('SCOPE_DEPENDENCY',scope_dependency)
 try:
  with sync_playwright() as p:
   engines=[(name,getattr(p,name)) for name in os.getenv('SENTLOG_TEST_BROWSERS','chromium').split(',')]

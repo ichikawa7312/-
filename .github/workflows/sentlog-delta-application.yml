@@ -14,6 +14,8 @@ on:
       - 'tests/delta_app_*'
       - 'tests/delta_drawing_*'
       - 'tests/individual_sync_app.py'
+      - 'tests/record_storage_scale_ui.py'
+      - 'tests/record_rescue_ui.py'
       - 'tests/asset_download_budget.test.cjs'
       - 'tests/sync_work_status.test.cjs'
       - 'sentlog/sync-work-status.js'
@@ -88,6 +90,12 @@ jobs:
         run: NODE_PATH="$RUNNER_TEMP/sentlog-app-test-deps/node_modules" node tests/delta_migration_progress.test.cjs
       - name: Verify individual synchronization through real workers and native save waits
         run: NODE_PATH="$RUNNER_TEMP/sentlog-app-test-deps/node_modules" python tests/individual_sync_app.py --engine ${{ matrix.engine }} --built-root .
+      - name: Verify native record storage at the observed scale without quota injection
+        timeout-minutes: 3
+        run: python tests/record_storage_scale_ui.py --engine ${{ matrix.engine }} --built-root .
+      - name: Verify emergency rescue remains usable after native save failure
+        timeout-minutes: 3
+        run: python tests/record_rescue_ui.py --engine ${{ matrix.engine }} --built-root . --report /tmp/sentlog-delta-app-record-rescue/${{ matrix.engine }}.json
       - name: Verify two actual applications with native storage and real SQL
         run: NODE_PATH="$RUNNER_TEMP/sentlog-app-test-deps/node_modules" python tests/delta_app_ui.py --engine ${{ matrix.engine }} --built-root .
       - uses: actions/upload-artifact@v4

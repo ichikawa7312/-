@@ -7,6 +7,14 @@ from http.server import SimpleHTTPRequestHandler,ThreadingHTTPServer
 from urllib.parse import urlparse,parse_qs
 from playwright.sync_api import sync_playwright
 ROOT=Path(__file__).resolve().parents[1]
+receive_scope=scope_dependency=''
+if 'window.sentlogCaptureAssetReceiveScope(' in (ROOT/'sentlog/photo-recovery.js').read_text():
+ cloud=(ROOT/'sentlog/cloud-sync.js').read_text()
+ scope_start=cloud.index('function captureAssetReceiveScope(')
+ scope_export='window.sentlogCaptureAssetReceiveScope=captureAssetReceiveScope;'
+ scope_end=cloud.index(scope_export,scope_start)+len(scope_export)
+ receive_scope="const DEVICE_KEY='sentlogCloudDeviceV1';\nconst sessionGuard=window.SentlogSessionGuard.create({key:'sentlogCloudSessionV1',fetcher:async()=>{throw Error('Unexpected authentication request in photo fixture');}});\n"+cloud[scope_start:scope_end]
+ scope_dependency="<script src='/sentlog/session-guard.js'></script>"
 class Handler(SimpleHTTPRequestHandler):
  def log_message(self,*args): pass
 server=ThreadingHTTPServer(('127.0.0.1',0),functools.partial(Handler,directory=str(ROOT)))
@@ -24,7 +32,7 @@ asset={'id':asset_id,'project_id':cloud_id,'kind':'photo','status':'storage_dele
        'metadata':{'drawing_id':drawing_id,'photo_id':photo_id}}
 project={'id':'local-photo-case','name':'写真の再取得テスト','drawings':[{'id':drawing_id,'name':'図面A'}]}
 state={'id':drawing_id,'shapes':[{'id':'shape-1','photos':[{'id':photo_id,'name':'image.jpg'}]}]}
-script_prefix="""<!doctype html><html lang='ja'><head><meta charset='utf-8'></head>
+script_prefix="""<!doctype html><html lang='ja'><head><meta charset='utf-8'>SCOPE_DEPENDENCY</head>
 <body><main id='projectsView'><div class='manager-shell'></div></main><script>
  localStorage.setItem('sentlogCloudSessionV1',JSON.stringify({access_token:'test-token',expires_at:9999999999,user:{id:'test-owner'}}));
  localStorage.setItem('sentlogCloudDeviceV1','test-phone');
@@ -40,9 +48,10 @@ script_prefix="""<!doctype html><html lang='ja'><head><meta charset='utf-8'></he
       tx.objectStore('files').put(file,key);tx.oncomplete=res;tx.onerror=()=>rej(tx.error)})}finally{db.close()}
   }};
  window.photoNotices=0;
+ RECEIVE_SCOPE
  window.sentlogSyncView={photoReceived:()=>window.photoNotices++};
 </script><script src='/sentlog/sync-traffic.js'></script><script src='/sentlog/photo-recovery.js'></script></body></html>"""
-html=script_prefix.replace('REPLACE_PROJECT',json.dumps(project,ensure_ascii=False)).replace('REPLACE_STATE',json.dumps(state,ensure_ascii=False))
+html=script_prefix.replace('REPLACE_PROJECT',json.dumps(project,ensure_ascii=False)).replace('REPLACE_STATE',json.dumps(state,ensure_ascii=False)).replace('RECEIVE_SCOPE',receive_scope).replace('SCOPE_DEPENDENCY',scope_dependency)
 try:
  with sync_playwright() as p:
   launch={'headless':True}

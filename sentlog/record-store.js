@@ -13,6 +13,8 @@
   let memory=new Map(), durableMemory=new Map(), pending=new Map(), pendingOptions=[], revision=0, connection=null;
   let initialized=false, boot=null, flight=null, queued=false, inFlight=0, exclusive=false;
   let migrationInfo=null, operation=false, failure=null;
+  let recordFailure=null;
+  const recordTransactions=new WeakMap();
   const listeners=new Set(), failures=new Map(), fileTasks=new Set(), failedFiles=new Map(), fileWriters=new Map(), fileGenerations=new Map(), fileTaskOwners=new Map();
   let bindings=new Map(),cutoffFiles=new Map();
   function notify(){for(const fn of listeners){try{fn()}catch(e){console.warn('Storage status',e)}}}
@@ -29,6 +31,53 @@
     tx.oncomplete=resolve;tx.onabort=()=>reject(tx.sentlogJournalError||tx.error||Error('端末への保存が中断されました'));
     tx.onerror=()=>{};
   });}
+  // Observe record batches without changing request/transaction error handling.
+  // No keys, values, account IDs, messages or Blob contents enter this detail.
+  function recordStoreName(source){
+    const name=source?.name;return [STORE,JOURNAL,CONTROL].includes(name)?name:null;
+  }
+  function observeRecordTransaction(tx){
+    const probe={requested:0,succeeded:0,queued:false,covered:true,cause:null};recordTransactions.set(tx,probe);
+    try{tx.addEventListener('error',event=>{
+      try{const request=event.target;
+        if(request!==tx&&!probe.cause&&request.error?.name!=='AbortError')probe.cause={phase:'request',
+          store:recordStoreName(request.source)||recordStoreName(request.source?.objectStore),operation:null};
+      }catch{}
+    });}catch{probe.covered=false;}
+    return probe;
+  }
+  function recordRequest(tx,store,operation,...args){
+    const probe=recordTransactions.get(tx);if(!probe)return store[operation](...args);
+    let request;
+    try{request=store[operation](...args);}
+    catch(error){probe.cause=probe.cause||{phase:'request-create',store:recordStoreName(store),operation};throw error;}
+    probe.requested++;
+    try{
+      request.addEventListener('success',()=>{probe.succeeded++;});
+      request.addEventListener('error',()=>{
+        try{if(!probe.cause&&request.error?.name!=='AbortError')probe.cause={phase:'request',store:recordStoreName(store),operation};}catch{}
+      });
+    }catch{probe.covered=false;}
+    return request;
+  }
+  function rememberRecordFailure(error,batch,tx){
+    // Diagnostics are secondary: even failure to measure a large string must
+    // preserve the original exception and the retryable editor state.
+    try{
+      const probe=tx&&recordTransactions.get(tx),cause=probe?.cause||{
+        phase:!tx?'transaction-open':probe?.covered&&probe.queued&&probe.requested>0&&probe.succeeded===probe.requested&&!tx.sentlogJournalError?'commit':'transaction',
+        store:null,operation:null};
+      let recordValueBytes=0,recordsToWrite=0,recordsToDelete=0;
+      for(const value of batch.values()){
+        if(value===null){recordsToDelete++;continue;}recordsToWrite++;
+        if(recordValueBytes!==null)try{recordValueBytes+=new Blob([value]).size;}catch{recordValueBytes=null;}
+      }
+      const names=['AbortError','ConstraintError','DataCloneError','DataError','InvalidAccessError','InvalidStateError','NotFoundError',
+        'NotReadableError','QuotaExceededError','ReadOnlyError','SecurityError','TimeoutError','TransactionInactiveError','UnknownError','VersionError','TypeError','Error'];
+      recordFailure={error,detail:{version:1,errorName:names.includes(error?.name)?error.name:'Error',...cause,
+        requestedRecords:batch.size,recordsToWrite,recordsToDelete,recordValueBytes}};
+    }catch{recordFailure=null;}
+  }
   async function connect(){
     if(connection)return;
     connection=await new Promise((resolve,reject)=>{
@@ -362,7 +411,7 @@
             workspaceBefore,workspaceAfter,...affected};
           if(tx.sentlogRestoreProof){const proof=tx.sentlogRestoreProof;
             row.archiveRestore={version:1,scope:copy(proof.scope),localProjectId:proof.localProjectId,jobId:proof.jobId,certificate:copy(proof.certificate)};}
-          log.add(row,seq);
+          recordRequest(tx,log,'add',row,seq);
         }
         const archived=archiveContext;
         const restored=contexts.some(x=>x.operation==='restore');
@@ -372,12 +421,12 @@
           if(!localArchive&&!localRestore)continue;
           const next={...binding,phase:localArchive&&archived.context.mode==='project'?'detached':'active',
             ...(localArchive?{ackedSeq:seq,lastLocalArchiveSeq:seq,archive:{seq,at:Date.now(),context:copy(archived.context)}}:{restoredAt:Date.now()})};
-          control.put(next,'binding:'+binding.localProjectId);
+          recordRequest(tx,control,'put',next,'binding:'+binding.localProjectId);
           (tx.sentlogBindingUpdates||(tx.sentlogBindingUpdates=[])).push(next);
         }
         tx.sentlogFileKeys=fileKeys;
-        for(const key of fileKeys)control.put(seq,'file:'+key);
-        control.put(seq,'clock');mutate();
+        for(const key of fileKeys)recordRequest(tx,control,'put',seq,'file:'+key);
+        recordRequest(tx,control,'put',seq,'clock');mutate();
       }catch(error){stop(error);}
     }
     control.get('clock').onsuccess=e=>{clock=Number(e.target.result)||0;ready();};
@@ -1246,15 +1295,18 @@
     }
   };
   async function commitBatch(batch,options=[]){
-    const tx=transaction('readwrite'),done=complete(tx),s=tx.objectStore(STORE);let conflict=false;
+    let tx;try{tx=transaction('readwrite');}catch(error){rememberRecordFailure(error,batch,null);throw error;}
+    const done=complete(tx),s=tx.objectStore(STORE),probe=observeRecordTransaction(tx);let conflict=false;
     s.get(META).onsuccess=e=>{
       if(!e.target.result || Number(e.target.result.revision)!==revision){conflict=true;tx.abort();return;}
       journalMutation(tx,{writes:[...batch],kind:'batch',contexts:options},()=>{
-        for(const [key,value] of batch){if(value===null)s.delete(PREFIX+key);else s.put(value,PREFIX+key);}
-        s.put({...e.target.result,revision:revision+1,updatedAt:new Date().toISOString()},META);
+        for(const [key,value] of batch){if(value===null)recordRequest(tx,s,'delete',PREFIX+key);else recordRequest(tx,s,'put',value,PREFIX+key);}
+        recordRequest(tx,s,'put',{...e.target.result,revision:revision+1,updatedAt:new Date().toISOString()},META);probe.queued=true;
       });
     };
-    try{await done;}catch(e){if(conflict)throw Error('別の画面で記録が変更されています。上書きを止めました。未保存の記録を退避してから画面を更新してください。');throw e;}
+    try{await done;}catch(e){const error=conflict?Error('別の画面で記録が変更されています。上書きを止めました。未保存の記録を退避してから画面を更新してください。'):e;
+      rememberRecordFailure(error,batch,tx);throw error;}
+    recordFailure=null;
     committedBindings(tx);revision++;for(const [key,value] of batch)if(value===null)durableMemory.delete(key);else durableMemory.set(key,value);
   }
   function kick(){if(queued || failure)return;queued=true;queueMicrotask(()=>{queued=false;flush().catch(()=>{});});}
@@ -1510,6 +1562,7 @@
     uncommittedFiles:()=>[...failedFiles].map(([key,value])=>({key,value})),
     get ready(){return initialized;},get pending(){return pending.size+inFlight>0||fileTasks.size>0||operation;},get failed(){return failures.size>0;},
     get issues(){return [...failures];},get migration(){return migrationInfo;},
+    get recordFailureDetails(){return recordFailure?.error===failure&&failures.has('records')?{...recordFailure.detail}:null;},
     getItem:k=>{assertReady();return memory.get(k)??null;},
     setItem:(k,v,options)=>batch([[k,String(v)]],options),removeItem:(k,options)=>batch([[k,null]],options),keys:()=>[...memory.keys()],
     subscribe(fn){listeners.add(fn);return()=>listeners.delete(fn);},report,recovered,

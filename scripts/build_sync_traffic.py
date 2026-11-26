@@ -12,19 +12,51 @@ def section(path,start,end,new):
  if s.count(start)!=1 or s.count(end)!=1:raise RuntimeError('Unknown sync traffic section: '+path)
  a=s.index(start);b=s.index(end,a);p.write_text(s[:a]+new+'\n'+s[b:])
 
+receive_scope='''function captureAssetReceiveScope(deviceId){
+  const generation=sessionGuard.generation(),ownerId=sessionGuard.read()?.user?.id;
+  const validate=()=>{
+    const currentGeneration=sessionGuard.generation(),current=sessionGuard.read();
+    if(!ownerId||!current?.access_token||current.user?.id!==ownerId||currentGeneration!==generation||
+      !deviceId||localStorage.getItem(DEVICE_KEY)!==deviceId||window.sentlogImporting)
+      throw Object.assign(Error('ログイン・端末または保存対象が変わったため受信を中止しました。保存済みのファイルは保持しています。'),{code:'FILE_RECEIVE_SCOPE_CHANGED'});
+  };
+  validate();return validate;
+}
+// Share the real SessionGuard generation: owner equality alone cannot detect
+// logout followed by login to the same account while a download is pending.
+window.sentlogCaptureAssetReceiveScope=captureAssetReceiveScope;
+async function ensureSession(){session=await sessionGuard.ensure();return session;}
+'''
+# Each page owns a different SessionGuard and device key. The PC page does not
+# load cloud-sync.js, so publish the same closure from its own inline runtime.
+for p in ['sentlog/cloud-sync.js','sentlog-pc/index.html']:
+ change(p,'async function ensureSession(){session=await sessionGuard.ensure();return session;}',receive_scope)
 p='sentlog/cloud-sync.js'
+# ACK callers must revalidate after session refresh, immediately before the
+# actual request. A check before entering this async helper is insufficient.
+change(p,'async function rest(path,opts={}){\n  await ensureSession();',
+       'async function rest(path,opts={},validate=()=>{}){\n  await ensureSession();validate();')
+change(p,'  const {response:r,text:txt}=await readSyncResponse(path,opts);',
+       '  const {response:r,text:txt}=await readSyncResponse(path,opts);\n  validate();')
 section(p,'async function ackAsset(','async function pullRemoteProjects(','''async function ackAsset(asset,deviceId,force=false){
+  const validate=window.sentlogCaptureAssetReceiveScope(deviceId);
   const kind=asset.kind==='photo'?'photo':'asset';
-  return window.SentlogSyncTraffic.ack(kind,asset,deviceId,args=>rest('/rest/v1/rpc/sentlog_ack_'+kind,{method:'POST',body:JSON.stringify(args)}),{force});
+  const result=await window.SentlogSyncTraffic.ack(kind,asset,deviceId,args=>{
+    validate();return rest('/rest/v1/rpc/sentlog_ack_'+kind,{method:'POST',body:JSON.stringify(args)},validate);
+  },{force});
+  validate();return result;
 }
 async function pullProjectAssets(cloudProject,deviceId,cycleAssets=null){
+  const validate=window.sentlogCaptureAssetReceiveScope(deviceId);
   const ws=workspace(),localProject=(ws.projects||[]).find(p=>p.id===cloudProject.client_key);
   const allowedDrawingIds=new Set((localProject?.drawings||[]).map(d=>d.id));
   const fields='id,client_key,kind,file_name,storage_path,mime_type,byte_size,sha256,status,source_device_id,metadata';
   const assets=await readProjectAssets(cloudProject.id,fields);
+  validate();
   if(cycleAssets)cycleAssets.set(cloudProject.id,assets);
   let received=0;const errors=[];
   for(const a of assets||[]){
+    validate();
     if(a.status==='storage_deleted')continue;
     const drawingId=a.metadata?.drawing_id;
     if(!drawingId||!allowedDrawingIds.has(drawingId))continue;
@@ -33,26 +65,34 @@ async function pullProjectAssets(cloudProject,deviceId,cycleAssets=null){
     const key=a.kind==='drawing'?'background:'+drawingId:'photo:'+drawingId+':'+a.metadata.photo_id;
     try{
       await window.SentlogSyncTraffic.withFileLock(key,async()=>{
+        validate();
         // Re-read after taking the lock: photo/PDF recovery may have just saved it.
         const local=await dbGet(key);
+        validate();
         const same=local instanceof Blob&&local.size===Number(a.byte_size)&&
           (await sha256Hex(local)).toLowerCase()===String(a.sha256).toLowerCase();
+        validate();
         if(!same){
           if(a.kind==='drawing'&&local instanceof Blob&&local.size&&window.sentlogSyncView&&!window.sentlogSyncView.canReplaceDrawing(drawingId))return;
           // A different photo may be an unsent edit. Never replace it on a stale read.
           if(a.kind==='photo'&&local instanceof Blob&&local.size)throw Error('端末内に内容が異なる写真があります。上書きせず保持しました。');
-          const file=await downloadPrivateAsset(a);await dbPut(key,file);
+          const file=await downloadPrivateAsset(a);validate();
+          await window.SentlogRecords.writeFile(key,file,{validate,onlyIfMissing:a.kind==='photo'});validate();
           const saved=await dbGet(key);
           if(!(saved instanceof Blob)||saved.size!==Number(a.byte_size)||(await sha256Hex(saved)).toLowerCase()!==String(a.sha256).toLowerCase())
             throw Error('端末への保存照合が完了していません。');
+          validate();
           received++;
           if(a.kind==='drawing')await window.sentlogSyncView?.fileReceived(drawingId,file);
           else window.sentlogSyncView?.photoReceived(drawingId);
         }
+        validate();
         if(a.source_device_id!==deviceId)await ackAsset(a,deviceId,!same);
-      });
-    }catch(e){errors.push((a.file_name||'ファイル')+'：'+e.message);console.warn('asset pull failed',a?.id,e);}
+        validate();
+      });validate();
+    }catch(e){if(e?.code==='FILE_RECEIVE_SCOPE_CHANGED')throw e;errors.push((a.file_name||'ファイル')+'：'+e.message);console.warn('asset pull failed',a?.id,e);}
   }
+  validate();
   if(errors.length)throw Error('図面・写真の受信確認が未完了です：'+errors.slice(0,3).join(' / '));
   return received;
 }''')
@@ -79,31 +119,42 @@ change(p,"syncTimer=setInterval(()=>{if(session&&navigator.onLine)syncNow()},500
 
 p='sentlog/photo-recovery.js'
 section(p,' async function receive(id){',' async function provide(id,ownerId){',''' async function acknowledgePhoto(a,id,force=false){
-  return window.SentlogSyncTraffic.ack('photo',a,id,args=>rpc('sentlog_ack_photo',args),{force});
+  const validate=window.sentlogCaptureAssetReceiveScope(id);
+  const result=await window.SentlogSyncTraffic.ack('photo',a,id,args=>{validate();return rpc('sentlog_ack_photo',args);},{force});
+  validate();return result;
  }
  async function receive(id){
+  const validate=window.sentlogCaptureAssetReceiveScope(id);
   const refs=currentPhotoKeys().keys;
   if(!refs.size){show('');return;}
   const active=await activeProjectIds(),assets=await assetList();
+  validate();
   let seen=0,good=0,waiting=0,errors=[],newFiles=0;
   for(const a of assets||[]){
+   validate();
    if(!active.has(a.project_id))continue;
    const drawing=a.metadata?.drawing_id,photo=a.metadata?.photo_id;
    if(!drawing||!photo||!refs.has(photoKey(drawing,photo)))continue;
    seen++;const key=photoKey(drawing,photo);
    try{await window.SentlogSyncTraffic.withFileLock(key,async()=>{
+    validate();
     const local=await localPhoto(key);
-    if(await matches(local,a)){
+    validate();const same=await matches(local,a);validate();
+    if(same){
      if(a.status!=='storage_deleted')await acknowledgePhoto(a,id);
      good++;return;
     }
     if(local instanceof Blob&&local.size>0)throw Error('内容が異なる写真があります。上書きせず停止しました。');
     if(a.status!=='storage_deleted'){
      const blob=await downloaded(a);
+     validate();
      if(!window.SentlogRecords?.ready)throw Error('保存先が未準備です。');
-     await window.SentlogRecords.writeFile(key,new File([blob],a.file_name||'photo.jpg',{type:a.mime_type||blob.type}));
+     await window.SentlogRecords.writeFile(key,new File([blob],a.file_name||'photo.jpg',{type:a.mime_type||blob.type}),{validate});
+     validate();
      if(!await matches(await localPhoto(key),a))throw Error('端末内の写真照合に失敗しました。');
+     validate();
      await acknowledgePhoto(a,id,true);
+     validate();
      good++;newFiles++;
      window.sentlogSyncView?.photoReceived?.(drawing);
      if(typeof window.renderSelectedPhotos==='function'&&window.activeDrawingId===drawing)window.renderSelectedPhotos();
@@ -112,13 +163,15 @@ section(p,' async function receive(id){',' async function provide(id,ownerId){',
      if(Date.now()-(lastRequested.get(a.id)||0)>25000){
       // A genuinely missing file must be re-ACKed after a later redelivery.
       await window.SentlogSyncTraffic.forget('photo',a,id);
+      validate();
       const request=await rpc('sentlog_request_photo',{p_asset_id:a.id,p_device_id:id});
       if(!request?.requested)throw Error(request?.reason||'PCの写真保存を確認できません。');
       lastRequested.set(a.id,Date.now());
      }
     }
-   });}catch(e){errors.push((a.file_name||'写真')+'：'+e.message);}
+   });validate();}catch(e){if(e?.code==='FILE_RECEIVE_SCOPE_CHANGED')throw e;errors.push((a.file_name||'写真')+'：'+e.message);}
   }
+  validate();
   if(!seen){show('');return;}
   if(errors.length)show('写真の確認が必要です：'+errors.slice(0,3).join(' / ')+'（保存済み '+good+'/'+seen+' 件）');
   else if(waiting)show('写真 '+waiting+' 件を再取得待ち。写真が残っている端末でセントログを開いてください。会社PCからも再取得できます。（確認済み '+good+'/'+seen+' 件）');

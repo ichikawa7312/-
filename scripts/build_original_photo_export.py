@@ -95,3 +95,6 @@ subprocess.run([sys.executable, 'scripts/build_sync_wait.py'], cwd=ROOT, check=T
 
 # Diagnose retained copies without deleting or decoding user photographs.
 subprocess.run([sys.executable, 'scripts/build_storage_diagnostics.py'], cwd=ROOT, check=True)
+
+# Keep emergency export usable after a failed save and fence legacy receivers.
+subprocess.run([sys.executable, 'scripts/build_storage_recovery.py'], cwd=ROOT, check=True)
