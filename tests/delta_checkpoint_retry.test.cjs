@@ -91,7 +91,7 @@ function fixture({races=1,error=STALE,httpStatus=409}={}){
     records.deltaJournal={readBindingState:async()=>copy(binding),bindingStateFor:()=>copy(binding),
       bindingFor:()=>copy(binding),listBindingStatesSync:()=>[copy(binding)]};
     let durable={version:2,scope:copy(scope),cursor:0,outbox:[],records:{[D.keyOf('d1','r1')]:copy(h.base.drawings[0].state.shapes[0])}};
-    const store={read:async()=>copy(durable),write:async value=>{durable=copy(value);},
+    const store={read:async()=>copy(durable),readForVerification:async()=>copy(durable),write:async value=>{durable=copy(value);},
       readProvenance:async()=>({baseline:{baselineId:BASELINE}}),close(){}};
     h.read=()=>copy(durable);h.rpc=[];h.checkpoints=[];h.photos=[];h.authGeneration=1;
     const events=[];h.append=()=>{

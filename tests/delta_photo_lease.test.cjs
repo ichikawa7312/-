@@ -32,7 +32,7 @@ async function fixture({hold=null,onWrite=null}={}){
  const seeded={[D.keyOf('drawing','record')]:record,...await M.seed(cutoff.snapshot)};
  let state={version:2,scope:copy(scope),cursor:0,records:seeded,outbox:[]};
  await records.deltaJournal.activate({scope,localProjectId:cp.client_key,baselineId:'baseline',baselineSnapshot:cutoff.snapshot,metadataRecords:M.metadataRecords(seeded)});
- const replicaStore={read:async()=>copy(state),write:async value=>{state=copy(value);},readProvenance:async()=>({baseline:{baselineId:'baseline'}}),close(){}};
+ const replicaStore={read:async()=>copy(state),readForVerification:async()=>copy(state),write:async value=>{state=copy(value);},readProvenance:async()=>({baseline:{baselineId:'baseline'}}),close(){}};
  const transport={getScope:()=>copy(scope),online:()=>false,ready:async()=>true,close(){},wake(){},push:async()=>{throw Error('Unexpected record send');},
   pushGroup:async()=>{throw Error('Unexpected record send');},list:async()=>[],getCapabilities:()=>({atomicGroups:true,sharedMetadata:true,certifiedArchive:true,writerJournal:2}),
   inspect:async()=>({schema:1,...scope,enabled:true,canActivate:false,headSeq:0,snapshotRevision:1,checking:false,baseline:{baselineId:'baseline',snapshotRevision:1}})};

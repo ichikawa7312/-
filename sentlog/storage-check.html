@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="referrer" content="no-referrer">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'none'; img-src 'none'; font-src 'none'; object-src 'none'; frame-src 'none'; worker-src 'none'; base-uri 'none'; form-action 'none'">
+  <meta name="color-scheme" content="light">
+  <title>セントログ 保存領域の確認</title>
+  <style>
+    *{box-sizing:border-box}body{margin:0;background:#f1f5f9;color:#172534;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;line-height:1.75;overflow-wrap:anywhere}
+    main{width:min(100%,760px);margin:auto;padding:28px 18px 64px}h1{font-size:1.6rem;line-height:1.4;margin:0 0 12px}h2{font-size:1.2rem;margin:22px 0 12px}h3{font-size:1rem;margin:0 0 10px}p{margin:10px 0}
+    .tag{display:inline-block;background:#e1efe8;color:#175b3e;border-radius:6px;padding:3px 9px;font-size:.85rem;font-weight:700;margin-bottom:12px}
+    .notice,.result-card{background:#fff;border:1px solid #cbd5e1;border-radius:12px;padding:16px;margin:16px 0}.notice{border-left:4px solid #256a50}.notice p:first-child{margin-top:0}.notice p:last-child{margin-bottom:0}
+    .hint{color:#475569;font-size:.9rem}.actions{display:flex;flex-wrap:wrap;gap:10px;margin:22px 0 14px}button{min-height:48px;padding:11px 16px;border:1px solid #234e77;border-radius:9px;background:#234e77;color:#fff;font:inherit;font-weight:600;cursor:pointer;touch-action:manipulation}
+    button.secondary{background:#fff;color:#234e77}button:disabled{opacity:.5;cursor:default}button:focus-visible{outline:3px solid #e89c28;outline-offset:3px}[hidden]{display:none!important}
+    #storageCheckStatus{min-height:3.4em;font-weight:600}#storageCheckResult p{font-size:.95rem}#storageCheckResult>h2{margin-top:28px}
+    @media(max-width:420px){main{padding:22px 14px 48px}h1{font-size:1.4rem}.actions{flex-direction:column}.actions button{width:100%}.notice,.result-card{padding:14px}}
+  </style>
+  <script src="./startup-storage-diagnostics.js?v=1" defer></script>
+</head>
+<body>
+<main>
+  <span class="tag">読取り専用</span>
+  <h1>セントログ<br>保存領域の確認</h1>
+  <p>セントログを起動できないときも、このブラウザ内の保存領域の有無と件数を確認できます。</p>
+  <div class="notice">
+    <p><strong>保存済みデータの書き込み・削除や、同期・復元は行いません。</strong></p>
+    <p>案件名・記録本文・写真・ログイン情報は読み取りません。確認するのは、保存領域ごとの件数、起動用管理項目の有無、ブラウザが返す保存情報です。</p>
+    <p>別の画面に未保存の記録がある場合は、その画面を開いたままにしてください。</p>
+  </div>
+  <p class="hint">ボタンを押すと確認を始めます。未対応・時間切れ・読取りエラーは「未確認」と表示します。結果はこのブラウザ・このサイトの確認時点の状態です。確認中に別の画面で保存すると、領域ごとの確認時点は異なる場合があります。</p>
+  <div class="actions">
+    <button type="button" id="storageCheckStart">保存領域を確認する</button>
+    <button type="button" id="storageCheckStop" class="secondary" hidden>確認を中止</button>
+    <button type="button" id="storageCheckSave" class="secondary" disabled>診断JSONを保存</button>
+  </div>
+  <p id="storageCheckStatus" role="status" aria-live="polite">まだ確認していません。</p>
+  <div id="storageCheckResult"></div>
+  <noscript><p>診断にはJavaScriptが必要です。この画面では保存データを変更していません。</p></noscript>
+  <p class="hint">診断結果からデータが見つからない原因や復旧可否は確定できません。診断JSONには、個別の案件・図面・アカウントの識別情報や記録本文を含めません。</p>
+</main>
+</body>
+</html>

@@ -1,6 +1,7 @@
 'use strict';
 // Disposable databases only. The diagnostic must never mutate app data/schema.
 const assert=require('node:assert/strict');
+const fs=require('node:fs'),vm=require('node:vm');
 const {IDBFactory,IDBKeyRange,IDBObjectStore}=require('fake-indexeddb');
 const D=require('../sentlog/storage-diagnostics.js');
 const tests=[];const test=(name,run)=>tests.push({name,run});
@@ -20,6 +21,31 @@ async function contents(factory,name,store){
 const scan=(factory,options={})=>D.scan({indexedDB:factory,IDBKeyRange,...options});
 const blob=n=>new Blob([new Uint8Array(n)]);
 function store(result,name){for(const db of result.databases)for(const item of db.stores)if(item.name===name)return item;throw Error('missing '+name);}
+
+// Advance the timer independently of the wall clock. Native clocks may still
+// report the preceding millisecond when a deadline timer has already fired.
+for(const scenario of [
+  {name:'global budget with a coarse clock',max:50,request:500,elapsed:49,global:true},
+  {name:'request budget with a coarse clock',max:500,request:50,elapsed:49,global:false},
+  {name:'equal budgets with a coarse clock',max:50,request:50,elapsed:49,global:true},
+  {name:'request timer delayed beyond the global deadline',max:500,request:50,elapsed:501,global:false}
+])test('timeout reason follows the scheduled '+scenario.name,async()=>{
+  const start=1700000000000,timers=new Map();let now=start,serial=0,enumerated=0,opened=0;
+  class CoarseDate extends Date{constructor(...args){super(...(args.length?args:[now]));}static now(){return now;}}
+  const context={module:{exports:{}},Date:CoarseDate,
+    setTimeout(fn,delay){const id=++serial;timers.set(id,{fn,delay});return id;},clearTimeout(id){timers.delete(id);}};
+  vm.runInNewContext(fs.readFileSync(require.resolve('../sentlog/storage-diagnostics.js'),'utf8'),context,{filename:'storage-diagnostics.js'});
+  const resultPromise=context.module.exports.scan({indexedDB:{
+    databases(){enumerated++;return new Promise(()=>{});},open(){opened++;throw Error('must not open');}
+  },IDBKeyRange,maxDurationMs:scenario.max,requestTimeoutMs:scenario.request});
+  assert.equal(enumerated,1);assert.equal(timers.size,1);
+  const [id,timer]=[...timers][0];assert.equal(timer.delay,Math.min(scenario.max,scenario.request));
+  now=start+scenario.elapsed;timers.delete(id);timer.fn();
+  const result=await resultPromise;
+  assert.equal(result.status,'failed');assert.equal(result.complete,false);assert.equal(result.records,0);assert.equal(opened,0);
+  assert.equal(result.reason,scenario.global?'計測時間の上限に達しました。表示は途中までの集計です。':'保存先からの応答がないため、この診断を中止しました。');
+  assert.equal(timers.size,0,'the completed scan must not leave a pending timer');
+});
 
 test('counts all known hidden stores without reading image bytes, bulk reads, writes or unrelated databases',async()=>{
   const f=new IDBFactory(),secret='PRIVATE CASE AND PHOTO NAME';

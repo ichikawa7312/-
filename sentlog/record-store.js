@@ -102,14 +102,19 @@
   }
   async function readAll(){
     const tx=transaction('readonly'),done=complete(tx),s=tx.objectStore(STORE);
-    let meta=null,archive=null,keys=[],values=[];
+    let meta=null,archive=null,metaExists=false,archiveExists=false,journalCount=0,controlCount=0,keys=[],values=[];
     s.get(META).onsuccess=e=>meta=e.target.result;
     s.get(ARCHIVE).onsuccess=e=>archive=e.target.result;
+    s.count(META).onsuccess=e=>metaExists=e.target.result>0;
+    s.count(ARCHIVE).onsuccess=e=>archiveExists=e.target.result>0;
+    tx.objectStore(JOURNAL).count().onsuccess=e=>journalCount=e.target.result;
+    tx.objectStore(CONTROL).count().onsuccess=e=>controlCount=e.target.result;
     const range=IDBKeyRange.bound(PREFIX,PREFIX+'\uffff');
     s.getAllKeys(range).onsuccess=e=>keys=e.target.result;
     s.getAll(range).onsuccess=e=>values=e.target.result;
     await done;
-    return {meta,archive,map:new Map(keys.map((k,i)=>[k.slice(PREFIX.length),values[i]]))};
+    return {meta,archive,metaExists,archiveExists,recordCount:keys.length,journalCount,controlCount,
+      map:new Map(keys.map((k,i)=>[k.slice(PREFIX.length),values[i]]))};
   }
   function legacy(){
     const out=new Map();
@@ -127,27 +132,64 @@
     // Delete only exact copies verified after the IndexedDB transaction committed.
     for(const [key,value] of entries){if(localStorage.getItem(key)===value)localStorage.removeItem(key);}
   }
+  function startupUnsafe(detail){return Object.assign(Error(detail+'保存済みデータを変更せず起動を停止しました。バックアップを保全してから確認してください。'),{code:'RECORD_STARTUP_UNSAFE'});}
+  function requireNewStorage(disk){
+    // This marker is written only after a completed initialization. Legacy
+    // localStorage copies cannot authorize a fresh migration after its DB loss.
+    if(localStorage.getItem(MARKER)!==null)throw Error('以前の端末内データを確認できません。空のデータで上書きせず起動を停止しました。バックアップの復旧が必要です。');
+    if(disk.metaExists||disk.archiveExists||disk.recordCount||disk.journalCount||disk.controlCount)
+      throw startupUnsafe('管理情報と残っている記録の整合を確認できません。');
+  }
+  function validateStoredRecords(disk){
+    if(!disk.metaExists||!disk.meta||typeof disk.meta!=='object'||Array.isArray(disk.meta))
+      throw startupUnsafe('端末内の管理情報を確認できません。');
+    if(!disk.map.has(WS))throw startupUnsafe('端末内の案件一覧を確認できません。');
+    for(const [key,value] of disk.map){
+      if(!managed(key)||typeof value!=='string')throw startupUnsafe('保存記録の形式を確認できません。');
+      if(key===WS){
+        let workspace;try{workspace=JSON.parse(value);}catch{throw startupUnsafe('案件一覧の形式を確認できません。');}
+        if(!workspace||typeof workspace!=='object'||Array.isArray(workspace)||!Array.isArray(workspace.projects))
+          throw startupUnsafe('案件一覧の形式を確認できません。');
+      }else JSON.parse(value);
+    }
+  }
   async function initialize(){
     await editorLock();await connect();
     let disk=await readAll();
-    const old=legacy();
-    if(!disk.meta){
-      if(localStorage.getItem(MARKER) && !old.size)throw Error('以前の端末内データを確認できません。空のデータで上書きせず起動を停止しました。バックアップの復旧が必要です。');
+    const old=legacy();let migrated=false;
+    if(!disk.metaExists){
+      requireNewStorage(disk);
       const tx=transaction('readwrite'),done=complete(tx),s=tx.objectStore(STORE);
       const info={schema:1,revision:0,migratedAt:new Date().toISOString(),legacyCount:old.size};
-      let already=false;
-      s.get(META).onsuccess=e=>{
-        if(e.target.result){already=true;return;}
-        for(const [key,value] of old)s.put(value,PREFIX+key);
-        if(!old.has(WS))s.put('{"projects":[]}',PREFIX+WS);
-        s.put({migratedAt:info.migratedAt,entries:[...old]},ARCHIVE);
-        s.put(info,META);
-      };
-      await done;disk=await readAll();
-      if(!already){
-        for(const [key,value] of old)if(disk.map.get(key)!==value)throw Error('移行後の記録照合に失敗しました。元データは削除していません。');
-        cleanLegacy(old);
+      const current={metaExists:false,archiveExists:false,recordCount:0,journalCount:0,controlCount:0};let waiting=5;
+      const stop=error=>{tx.sentlogJournalError=error;try{tx.abort();}catch{}};
+      function checked(field,value){
+        current[field]=value;if(--waiting)return;
+        try{
+          // All five checks share the migration write transaction. A writer
+          // arriving after readAll() must be observed before any initialization.
+          requireNewStorage(current);
+          for(const [key,value] of old)s.put(value,PREFIX+key);
+          if(!old.has(WS))s.put('{"projects":[]}',PREFIX+WS);
+          s.put({migratedAt:info.migratedAt,entries:[...old]},ARCHIVE);
+          s.put(info,META);
+        }catch(error){stop(error);}
       }
+      try{
+        s.count(META).onsuccess=e=>checked('metaExists',e.target.result>0);
+        s.count(ARCHIVE).onsuccess=e=>checked('archiveExists',e.target.result>0);
+        s.count(IDBKeyRange.bound(PREFIX,PREFIX+'\uffff')).onsuccess=e=>checked('recordCount',e.target.result);
+        tx.objectStore(JOURNAL).count().onsuccess=e=>checked('journalCount',e.target.result);
+        tx.objectStore(CONTROL).count().onsuccess=e=>checked('controlCount',e.target.result);
+      }catch(error){stop(error);}
+      await done;disk=await readAll();
+      migrated=true;
+    }
+    // Validate before deleting any old local copies or converting retained files.
+    validateStoredRecords(disk);
+    if(migrated){
+      for(const [key,value] of old)if(disk.map.get(key)!==value)throw Error('移行後の記録照合に失敗しました。元データは削除していません。');
+      cleanLegacy(old);
     }else if(old.size){
       // A pre-migration tab must not silently revive/overwrite newer records.
       const archived=new Map(disk.archive?.entries||[]);
@@ -155,7 +197,6 @@
         throw Error('旧版の画面で変更された記録があります。どちらも上書きせず停止しました。旧版の控えを書き出してから確認してください。');
       cleanLegacy(old);
     }
-    for(const [key,value] of disk.map){if(!managed(key)||typeof value!=='string')throw Error('保存記録の形式を確認できません');JSON.parse(value);}
     memory=disk.map;durableMemory=new Map(memory);revision=Number(disk.meta.revision)||0;migrationInfo=disk.meta;
     await ensureCutoffFiles();
     try{localStorage.setItem(MARKER,'1');}catch(_){}
@@ -1171,10 +1212,10 @@
     },
     async verifyReplay({scope:inputScope,claimId,replica,replicaStore,requiredRecords={},projection,normalizedAfter,expectedSnapshotToken}={}){
       const scope=checkedScope(inputScope),D=window.SentlogDeltaSyncCore;
-      if(typeof replicaStore?.read!=='function'||typeof replica?.snapshotWithStatus!=='function'||!D?.diffRecord)throw journalError('JOURNAL_PROOF','保存済みの差分履歴を照合する方法がありません');
+      if(typeof replicaStore?.readForVerification!=='function'||typeof replica?.snapshotWithStatus!=='function'||!D?.diffRecord)throw journalError('JOURNAL_PROOF','保存済みの差分履歴を照合する方法がありません');
       let state=null;
       for(let attempt=0;attempt<8;attempt++){
-        const before=await replica.snapshotWithStatus(),durable=await replicaStore.read(),after=await replica.snapshotWithStatus();
+        const before=await replica.snapshotWithStatus(),durable=await replicaStore.readForVerification(),after=await replica.snapshotWithStatus();
         if(before.snapshotToken!==after.snapshotToken)continue;
         if(expectedSnapshotToken!==undefined&&before.snapshotToken!==expectedSnapshotToken)
           throw journalError('JOURNAL_RESTORE_CHANGED','復旧照合の途中で差分保存が変更されました');
@@ -1558,6 +1599,7 @@
   }
   window.SentlogRecords={init,flush,settled,writeFile,retry,batch,replaceAll,stats,
     deltaJournal,openFilesDatabase,removeFiles,clearFiles,writerState,readFileStates,
+    startupProtectionVersion:1,
     getFileWriteCapabilities:()=>({guarded:true,onlyIfMissing:true,writerState:true,fileWriteDedupVersion:1,journaled:connection?.version===DB_VERSION}),
     uncommittedFiles:()=>[...failedFiles].map(([key,value])=>({key,value})),
     get ready(){return initialized;},get pending(){return pending.size+inFlight>0||fileTasks.size>0||operation;},get failed(){return failures.size>0;},

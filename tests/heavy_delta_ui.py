@@ -49,6 +49,8 @@ class Cloud(delta.Cloud):
         self.drop_delta_ack, self.lost_ack = None, None
         self.duplicate_acks, self.notification_deliveries, self.head_seq = 0, 0, 0
         self.stale_notifications = []
+        self.convergence_expected, self.convergence_started_at = None, None
+        self.failure_mirror_pages = set()
 
     def route(self, route, device):
         request, parsed = route.request, urlparse(route.request.url)
@@ -249,6 +251,49 @@ def brief_native(proof):
     return result
 
 
+def comment_difference(summary, expected):
+    """Small diagnostic only; never include comment text in the trace."""
+    observed = heavy.comment_set(summary)
+    missing, extra = expected-observed, observed-expected
+    def fingerprints(values):
+        return [hashlib.sha256(json.dumps(row, ensure_ascii=False).encode()).hexdigest()[:16]
+                for row in sorted(values)[:3]]
+    return dict(expected=len(expected), observed=len(observed), rows=len(summary['comments']),
+                missing=len(missing), extra=len(extra), missingExamples=fingerprints(missing), extraExamples=fingerprints(extra))
+
+
+def retain_convergence_sample(trace, *, started, head, head_after_native, head_after,
+                              durable, summaries, expected, summary_reached, native_seconds, summary_seconds, matched):
+    # These values come from the existing predicate reads. No browser query,
+    # sync, timer or retry is added to the normal convergence loop.
+    try:
+        devices = []
+        for number, proof in enumerate(durable or []):
+            journal = proof.get('journal') or {}
+            devices.append(dict(deviceIndex=number, cursor=proof.get('cursor'), outbox=proof.get('outbox'), blocked=proof.get('blocked'),
+                phase=(proof.get('binding') or {}).get('phase'), journalCount=journal.get('count'),
+                hasClaim=journal.get('claimId') is not None, detached=journal.get('detached'),
+                throughSeq=journal.get('throughSeq'), ackedSeq=journal.get('ackedSeq')))
+        sample = dict(sample=trace['samples']+1, seconds=time.monotonic()-trace['started'],
+            durationSeconds=time.monotonic()-started, nativeReadSeconds=native_seconds, summaryReadSeconds=summary_seconds,
+            headBefore=head, headAfterNative=head_after_native, headAfter=head_after, devices=devices,
+            summaryReached=summary_reached, matched=matched,
+            comments=[comment_difference(summary, expected) for summary in summaries] if summaries is not None else None)
+        trace['samples'] += 1
+        trace['summarySamples'] += int(summary_reached)
+        trace['maximumSampleSeconds'] = max(trace['maximumSampleSeconds'], sample['durationSeconds'])
+        trace['maximumNativeReadSeconds'] = max(trace['maximumNativeReadSeconds'], native_seconds or 0)
+        if trace['firstSample'] is None:
+            trace['firstSample'] = sample
+        trace['recentSamples'].append(sample)
+        if len(trace['recentSamples']) > 40:
+            del trace['recentSamples'][0]
+            trace['droppedSamples'] += 1
+    except Exception:
+        # Observation must not replace a predicate exception or its result.
+        trace['diagnosticErrors'] = trace.get('diagnosticErrors', 0)+1
+
+
 def observe_complete(cloud, pages, drawings, report, phase):
     """Wait for file-receive WAL work, then capture a fenced final proof.
 
@@ -366,6 +411,20 @@ def capture_failure(cloud, report, report_path):
                 report.setdefault('failureNativeProofs', []).append(native_state(page, device, full=True))
             except Exception as error:
                 report.setdefault('diagnosticErrors', []).append('Native failure proof: '+str(error))
+            if page not in cloud.failure_mirror_pages:
+                cloud.failure_mirror_pages.add(page)
+                try:
+                    summary = page.evaluate(SUMMARY)
+                    # This is explicitly after failure. A late-drained mirror
+                    # cannot satisfy or change the expired convergence gate.
+                    report.setdefault('failureMirrorProofs', []).append(dict(device=device, capturedAfterFailure=True,
+                        secondsSinceConvergenceStart=(time.monotonic()-cloud.convergence_started_at)
+                            if cloud.convergence_started_at is not None else None,
+                        comments=comment_difference(summary, cloud.convergence_expected)
+                            if cloud.convergence_expected is not None else None,
+                        summary=summary))
+                except Exception as error:
+                    report.setdefault('diagnosticErrors', []).append('Mirror failure proof: '+type(error).__name__)
             page.screenshot(path=str(report_path.with_name(report_path.stem+'-'+str(DEVICES.index(device))+'.png')), full_page=True)
         except Exception as error:
             report.setdefault('diagnosticErrors', []).append(str(error))
@@ -513,17 +572,38 @@ def run(engine, cloud, report, report_path):
                 cloud.drop_delta_ack = DEVICES[0]
             for device, page in zip(DEVICES, pages):
                 heavy.offline(cloud, device, page, False)
+            cloud.convergence_expected = set(expected)
+            cloud.convergence_started_at = time.monotonic()
+            convergence_trace = dict(round=round_index+1, started=cloud.convergence_started_at,
+                samples=0, summarySamples=0, maximumSampleSeconds=0, maximumNativeReadSeconds=0,
+                firstSample=None, recentSamples=[], droppedSamples=0)
+            report.setdefault('automaticConvergence', []).append(convergence_trace)
             def converged():
+                sample_started = time.monotonic()
                 head = cloud.head_seq
-                durable = [native_state(page, device) for device, page in zip(DEVICES, pages)]
-                if head != cloud.head_seq or not all(is_drained(proof, head) for proof in durable):
-                    return False
-                # Observe the canvas only after the durable sender/receiver
-                # queues drain. Stable mirror corruption still fails the
-                # reader immediately; continuous incoming work is not mistaken
-                # for an atomic canvas snapshot.
-                summaries = [page.evaluate(SUMMARY) for page in pages]
-                return all(heavy.comment_set(summary) == expected for summary in summaries) and head == cloud.head_seq
+                durable = summaries = head_after_native = None
+                native_seconds = summary_seconds = matched = None
+                summary_reached = False
+                try:
+                    durable = [native_state(page, device) for device, page in zip(DEVICES, pages)]
+                    native_seconds = time.monotonic()-sample_started
+                    head_after_native = cloud.head_seq
+                    if head != cloud.head_seq or not all(is_drained(proof, head) for proof in durable):
+                        return False
+                    # Observe the canvas only after the durable sender/receiver
+                    # queues drain. Stable mirror corruption still fails the
+                    # reader immediately; continuous incoming work is not mistaken
+                    # for an atomic canvas snapshot.
+                    summary_reached, summary_started = True, time.monotonic()
+                    summaries = [page.evaluate(SUMMARY) for page in pages]
+                    summary_seconds = time.monotonic()-summary_started
+                    matched = all(heavy.comment_set(summary) == expected for summary in summaries) and head == cloud.head_seq
+                    return matched
+                finally:
+                    retain_convergence_sample(convergence_trace, started=sample_started, head=head,
+                        head_after_native=head_after_native, head_after=cloud.head_seq, durable=durable, summaries=summaries,
+                        expected=expected, summary_reached=summary_reached, native_seconds=native_seconds,
+                        summary_seconds=summary_seconds, matched=matched)
             heavy.wait(cloud, pages[0], converged, 'Active journals did not automatically replay and converge', timeout=180)
             heavy.wait(cloud, pages[0], lambda:all(page.evaluate(heavy.PHOTO_PROOF, photos) is not False for page in pages),
                        'Active-delta photo bytes did not reach both native profiles', timeout=180)

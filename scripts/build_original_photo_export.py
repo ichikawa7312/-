@@ -98,3 +98,12 @@ subprocess.run([sys.executable, 'scripts/build_storage_diagnostics.py'], cwd=ROO
 
 # Keep emergency export usable after a failed save and fence legacy receivers.
 subprocess.run([sys.executable, 'scripts/build_storage_recovery.py'], cwd=ROOT, check=True)
+
+# Keep the protected startup screen linked to standalone storage diagnostics.
+subprocess.run([sys.executable, 'scripts/build_startup_storage.py'], cwd=ROOT, check=True)
+
+# Refuse inconsistent record initialization before any migration writes.
+subprocess.run([sys.executable, 'scripts/build_startup_protection.py'], cwd=ROOT, check=True)
+
+# Keep known photo rows stable while their Blob data arrives.
+subprocess.run([sys.executable, 'scripts/build_photo_grid_layout.py'], cwd=ROOT, check=True)

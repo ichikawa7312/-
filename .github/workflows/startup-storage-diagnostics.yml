@@ -1,0 +1,62 @@
+name: Sentlog read-only startup storage diagnostics
+on:
+  pull_request:
+    paths:
+      - 'sentlog/storage-check.html'
+      - 'sentlog/startup-storage-diagnostics.js'
+      - 'tests/test_startup_storage_diagnostics.cjs'
+      - 'tests/startup_storage_diagnostics_ui.py'
+      - '.github/workflows/startup-storage-diagnostics.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'sentlog/storage-check.html'
+      - 'sentlog/startup-storage-diagnostics.js'
+      - 'tests/test_startup_storage_diagnostics.cjs'
+      - 'tests/startup_storage_diagnostics_ui.py'
+      - '.github/workflows/startup-storage-diagnostics.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: startup-storage-diagnostics-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  read-only:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install pinned synthetic storage adapter
+        run: npm install --prefix "$RUNNER_TEMP/sentlog-startup-test-deps" --ignore-scripts --no-audit --no-fund --save-exact fake-indexeddb@6.2.8
+      - name: Verify metadata-only reads and failure isolation
+        run: |
+          node --check sentlog/startup-storage-diagnostics.js
+          NODE_PATH="$RUNNER_TEMP/sentlog-startup-test-deps/node_modules" node tests/test_startup_storage_diagnostics.cjs
+  browser:
+    runs-on: ubuntu-24.04
+    container:
+      image: mcr.microsoft.com/playwright/python:v1.57.0-noble@sha256:8331696befd3ee8b5baefca428446345f548e415a2408fe1d3d1224e9d919682
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: [chromium, webkit]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install pinned browser adapter
+        run: python -m pip install playwright==1.57.0
+      - name: Verify the standalone mobile diagnostic UI and unchanged native data
+        run: python tests/startup_storage_diagnostics_ui.py --engine ${{ matrix.engine }} --report /tmp/sentlog-startup-diagnostics/${{ matrix.engine }}.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: startup-storage-diagnostics-${{ matrix.engine }}
+          path: /tmp/sentlog-startup-diagnostics
+          if-no-files-found: ignore

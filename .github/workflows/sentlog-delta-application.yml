@@ -16,6 +16,9 @@ on:
       - 'tests/individual_sync_app.py'
       - 'tests/record_storage_scale_ui.py'
       - 'tests/record_rescue_ui.py'
+      - 'tests/record_startup_guard_ui.py'
+      - 'tests/photo_grid_layout_ui.py'
+      - 'tests/fixtures/render_selected_photos_v205.js'
       - 'tests/asset_download_budget.test.cjs'
       - 'tests/sync_work_status.test.cjs'
       - 'sentlog/sync-work-status.js'
@@ -94,6 +97,12 @@ jobs:
       - name: Verify emergency rescue remains usable after native save failure
         timeout-minutes: 3
         run: python tests/record_rescue_ui.py --engine ${{ matrix.engine }} --built-root . --report /tmp/sentlog-delta-app-record-rescue/${{ matrix.engine }}.json
+      - name: Verify startup protection preserves partial native records
+        timeout-minutes: 3
+        run: python tests/record_startup_guard_ui.py --engine ${{ matrix.engine }} --built-root . --report /tmp/sentlog-delta-app-startup-guard/${{ matrix.engine }}.json
+      - name: Verify delayed photo reads preserve the native delete target
+        timeout-minutes: 3
+        run: python tests/photo_grid_layout_ui.py --engine ${{ matrix.engine }} --built-root . --report /tmp/sentlog-delta-app-photo-grid/${{ matrix.engine }}.json
       - name: Verify individual synchronization through real workers and native save waits
         run: NODE_PATH="$RUNNER_TEMP/sentlog-app-test-deps/node_modules" python tests/individual_sync_app.py --engine ${{ matrix.engine }} --built-root .
       - name: Verify two actual applications with native storage and real SQL
