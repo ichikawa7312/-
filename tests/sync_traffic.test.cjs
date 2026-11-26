@@ -54,7 +54,7 @@ async function receiverTests({saveBroken=false,different=false}={}){
  const read=async key=>local.get(key),write=async(key,blob)=>{calls.write++;if(!saveBroken)local.set(key,blob);};
  const download=async()=>{calls.download++;await new Promise(r=>setImmediate(r));return original;};
  const send=async()=>{calls.ack++;return {received:true};};
- const win={sentlogDeltaOwnsProject:()=>false,sentlogDeltaOwnsPhoto:()=>false,SentlogSyncTraffic:traffic,SentlogRecords:{ready:true,writeFile:write},sentlogSyncView:{photoReceived(){}}};
+ const win={sentlogDeltaOwnsProject:()=>false,sentlogDeltaOwnsPhoto:()=>false,sentlogCaptureAssetReceiveScope:()=>()=>{},SentlogSyncTraffic:traffic,SentlogRecords:{ready:true,writeFile:write},sentlogSyncView:{photoReceived(){}}};
  const cloud=fs.readFileSync('sentlog/cloud-sync.js','utf8');
  const source=cloud.slice(cloud.indexOf('async function ackAsset('),cloud.indexOf(cloud.includes('collaboration-sync-v1')?'async function syncNow(':'async function pullRemoteProjects('));
  const cloudApi=vm.runInNewContext(source+';({pullProjectAssets})',{collaborationAssetOwner:'',

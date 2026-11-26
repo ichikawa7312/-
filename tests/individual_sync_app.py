@@ -43,6 +43,14 @@ window.__individualSyncRead=()=>({
   button:document.getElementById('sentlogSyncProjectNow')?.textContent,
   message:document.getElementById('sentlogCloudMsg')?.textContent,
   notice:document.getElementById('sentlogDrawingRecoveryNotice')?.textContent,
+  drawingReview:(()=>{
+    const dialog=document.getElementById('sentlogDrawingRecoveryDialog'),
+      checked=document.getElementById('sentlogDrawingRecoveryChecked'),
+      confirm=document.getElementById('sentlogDrawingRecoveryConfirm'),rect=confirm?.getBoundingClientRect();
+    return {open:!!dialog?.open,message:dialog?.querySelector('[role="status"]')?.textContent,
+      checked:checked?.checked,checkedDisabled:checked?.disabled,confirmDisabled:confirm?.disabled,
+      confirmRect:rect?{x:rect.x,y:rect.y,width:rect.width,height:rect.height}:null};
+  })(),
   records:{pending:SentlogRecords.pending,failed:SentlogRecords.failed,
     writer:SentlogRecords.writerState('photo:edit-plan:synthetic-photo-1')},
   binding:SentlogRecords.deltaJournal.bindingStateFor('edit-project')
@@ -83,6 +91,7 @@ class Cloud(review.Cloud):
         super().__init__(*args)
         self.hold_path, self.held = None, []
         self.pdf_ack_proofs = []
+        self.review_before_confirm = None
 
     def route(self, route, device):
         path = urlparse(route.request.url).path
@@ -185,10 +194,22 @@ def concurrency(page, cloud):
     notice.get_by_role('button', name='図面を確認して復旧').click()
     checked = page.locator('#sentlogDrawingRecoveryChecked')
     checked.wait_for(timeout=45000)
-    page.wait_for_function("()=>document.querySelector('#sentlogDrawingRecoveryDialog canvas')?.width>100", timeout=45000)
+    page.wait_for_function("""()=>{
+      const dialog=document.getElementById('sentlogDrawingRecoveryDialog'),canvas=dialog?.querySelector('canvas');
+      // A new canvas already has width=300 before PDF.js changes its layout.
+      if(!canvas?.width||canvas.width<100||!dialog.textContent.includes('1 / 1 ページ'))return false;
+      const pixels=canvas.getContext('2d').getImageData(0,0,canvas.width,canvas.height).data;
+      let dark=0;for(let i=0;i<pixels.length;i+=4)if(pixels[i+3]>0&&pixels[i]<100&&pixels[i+1]<100&&pixels[i+2]<100)dark++;
+      return dark>50;
+    }""", timeout=45000)
     checked.check()
+    accept = page.locator('#sentlogDrawingRecoveryConfirm')
+    assert checked.is_checked() and checked.is_enabled(), state(page)
+    assert accept.is_enabled(), state(page)
+    accept.scroll_into_view_if_needed()
+    cloud.review_before_confirm = state(page)['drawingReview']
     cloud.hold_path = '/rest/v1/rpc/sentlog_delta_read_baseline_page_v1'
-    page.locator('#sentlogDrawingRecoveryConfirm').click()
+    accept.click()
     page.locator('#sentlogDrawingRecoveryDialog').wait_for(state='hidden', timeout=45000)
     review.app.wait(cloud, page, lambda: bool(cloud.held), 'Adoption did not resume the actual baseline installer')
     resumed = state(page)
@@ -278,6 +299,7 @@ def run_case(engine, cloud, name, test, output):
             page.screenshot(path=str(output / f'{name}-{cloud.engine}.png'), full_page=True)
             diagnostics = dict(state=state(page), events=page.evaluate('window.__individualSyncEvents'), errors=errors,
                 unexpected=cloud.unexpected, sql_errors=cloud.sql_errors[-8:], requests=cloud.requests[-30:],
+                review_before_confirm=cloud.review_before_confirm,
                 pdf_ack_proofs=cloud.pdf_ack_proofs,
                 runtime=page.evaluate('window.__deltaPhotoDiagnostics?.events.slice(-30)'))
             (output / f'{name}-{cloud.engine}.json').write_text(json.dumps(diagnostics, ensure_ascii=False, indent=2, default=str))

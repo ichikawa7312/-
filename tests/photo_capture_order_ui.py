@@ -92,9 +92,18 @@ def open_ledger(page):
       const project=workspace.projects.find(p=>p.id==='memo-project');
       const group=SentlogDrawingGroups.groupsForProject(project).find(g=>g.sheets.some(s=>s.id==='memo-plan-a'));
       if(!group)throw Error('Synthetic ledger group missing');
+      // The fixture enters the editor directly. Mount the same ledger UI that
+      // renderDrawings() normally installs before a user can press its button.
+      SentlogPhotoLedger.enhance();
       await SentlogPhotoLedger.open(project.id,group.id);
     }""")
     page.locator('.ledger-item').first.wait_for()
+    presentation = page.locator('.ledger-overlay').evaluate("""overlay=>({
+      styleInstalled:!!document.getElementById('sentlogPhotoLedgerStyle'),
+      position:getComputedStyle(overlay).position,
+      display:getComputedStyle(overlay).display
+    })""")
+    assert presentation == {'styleInstalled': True, 'position': 'fixed', 'display': 'flex'}, presentation
 
 
 PHOTO_PROOF = r"""async()=>{
@@ -170,9 +179,12 @@ def run(page, engine):
             assert len(labels) == 3 and all(name in labels[i] for i, name in enumerate(NAMES)), labels
     # Deliberate manual order must override the new chronological default.
     page.locator('.ledger-item').nth(2).locator('.ledger-order button').first.click()
+    after_first_move = ledger_order(page)
+    assert after_first_move == [IDS[0], IDS[2], IDS[1]], {'afterFirstMove': after_first_move}
     page.locator('.ledger-item').nth(1).locator('.ledger-order button').first.click()
     manual = [IDS[2], IDS[0], IDS[1]]
-    assert ledger_order(page) == manual
+    after_second_move = ledger_order(page)
+    assert after_second_move == manual, {'afterSecondMove': after_second_move, 'expected': manual}
     page.locator('.ledger-save').click()
     page.locator('.ledger-close').click()
     open_ledger(page)

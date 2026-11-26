@@ -1,4 +1,4 @@
-/* SentlogProjectRescue v1.95: choose one local project and export records only. */
+/* SentlogProjectRescue v2.04: read-only rescue remains available after save failure. */
 (function(root){
   'use strict';
   if(!root.document||root.SentlogProjectRescue)return;
@@ -8,18 +8,21 @@
   function safe(v){return String(v||'案件').replace(/[<>:"/\\|?*\x00-\x1f]/g,'_').replace(/[. ]+$/g,'').trim()||'案件';}
   function workspace(){return JSON.parse(root.SentlogRecords.getItem(WS)||'{"projects":[]}');}
   async function build(projectId){
-    await root.SentlogRecords.settled();root.SentlogRecords.assertSafe();
+    // Capture the synchronous memory mirror; a failing or stalled file/record
+    // writer must never prevent the user from rescuing the records it holds.
+    const unsaved=!!(root.SentlogRecords.pending||root.SentlogRecords.failed);
     const full=workspace(),project=(full.projects||[]).find(p=>p.id===projectId);
     if(!project)throw Error('案件が見つかりません。');
-    const states={};let shapes=0,photos=0;
+    const states={};let shapes=0,photos=0,missingDrawingStateCount=0;
     for(const d of project.drawings||[]){
-      const raw=root.SentlogRecords.getItem(DRAW+d.id);if(!raw)continue;
+      const raw=root.SentlogRecords.getItem(DRAW+d.id);if(!raw){missingDrawingStateCount++;continue;}
       const st=JSON.parse(raw);states[d.id]=st;
       const list=Array.isArray(st.shapes)?st.shapes:[];
       shapes+=list.length;photos+=list.reduce((n,s)=>n+(Array.isArray(s.photos)?s.photos.length:0),0);
     }
-    return {payload:{format:'sentlog-project-rescue',version:1,exportedAt:new Date().toISOString(),workspace:{...clone(full),projects:[clone(project)]},drawingStates:states},
-      stats:{project:project.name||'案件',drawings:Object.keys(states).length,shapes,photos}};
+    return {payload:{format:'sentlog-project-rescue',version:1,exportedAt:new Date().toISOString(),workspace:{...clone(full),projects:[clone(project)]},drawingStates:states,
+      recovery:{source:'current-memory',pendingOrFailedStorage:unsaved,includesFileData:false,missingDrawingStateCount}},
+      stats:{project:project.name||'案件',drawings:Object.keys(states).length,shapes,photos,unsaved,missingDrawingStateCount}};
   }
   async function save(projectId){
     const {payload,stats}=await build(projectId),text=JSON.stringify(payload),blob=new Blob([text],{type:'application/json'});
@@ -36,15 +39,15 @@
     b.onclick=async()=>{
       const projects=workspace().projects||[];
       if(!projects.length){alert('端末内に案件がありません。');return;}
-      const overlay=document.createElement('div');overlay.className='modal-backdrop open';
+      const overlay=document.createElement('div');overlay.className='modal-backdrop open';overlay.style.zIndex='11010';
       const card=document.createElement('div');card.className='modal-card';
       const h=document.createElement('h2');h.textContent='救出する案件を選択';
-      const note=document.createElement('div');note.className='hint-box';note.textContent='選んだ案件だけを書き出します。PDF・写真画像そのものは含めず、変状・メモ・写真リンクを保存します。クラウド同期は行いません。';
+      const note=document.createElement('div');note.className='hint-box';note.textContent='選んだ案件の、画面に保持している記録を書き出します。未保存の変状・メモ・写真リンクも対象です。PDF・写真画像そのものは含みません。クラウド同期は行いません。';
       const select=document.createElement('select');for(const p of projects)select.append(new Option(p.name||'案件',p.id));
       const actions=document.createElement('div');actions.className='modal-actions';
       const cancel=document.createElement('button');cancel.textContent='キャンセル';cancel.onclick=()=>overlay.remove();
       const go=document.createElement('button');go.textContent='この案件だけ保存';go.style.cssText='background:#111827;color:#fff';
-      go.onclick=async()=>{go.disabled=true;try{const s=await save(select.value);overlay.remove();alert(s.project+'だけを保存しました。\n図面 '+s.drawings+'枚 / 記録 '+s.shapes+'件 / 写真リンク '+s.photos+'件\n\n共有先で「ファイルに保存」を選んでください。');}catch(e){if(e?.name!=='AbortError')alert('保存できませんでした。端末内データは変更していません。\n'+(e?.message||e));}finally{go.disabled=false;}};
+      go.onclick=async()=>{go.disabled=true;try{const s=await save(select.value);overlay.remove();alert(s.project+'の記録を書き出しました。\n図面 '+s.drawings+'枚 / 記録 '+s.shapes+'件 / 写真リンク '+s.photos+'件\nPDF・写真画像そのものは含みません。'+(s.missingDrawingStateCount?'\n記録を保持していない図面が '+s.missingDrawingStateCount+'枚あります。取得できた記録のみを書き出しました。':'')+(s.unsaved?'\n端末内への保存完了は確認できていません。この画面は開いたままにしてください。':''));}catch(e){if(e?.name!=='AbortError')alert('保存できませんでした。端末内データは変更していません。\n'+(e?.message||e));}finally{go.disabled=false;}};
       actions.append(cancel,go);card.append(h,note,select,actions);overlay.append(card);document.body.append(overlay);
     };
     host.append(b);

@@ -74,7 +74,8 @@ async function fixture({corrupt=false,unknownMime=false,staleRequest=false,recen
  await context.sentlogCheckPhotoRecovery();
  return {root,calls,posts,errors,sha,original};
 }
-(async()=>{
+module.exports={fixture};
+if(require.main===module)(async()=>{
  const pcPage=fs.readFileSync('sentlog-pc/index.html','utf8');
  assert(pcPage.includes('photo-recovery.js?v=143'),'PC must load the fresh stale-request guard, not cached v1.41');
  assert(pcPage.includes('v1.43 · 写真再送ループ対策'),'PC must show latest loop-fix version');

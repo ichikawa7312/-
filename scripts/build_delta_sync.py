@@ -144,8 +144,8 @@ change(photo, ' async function acknowledgePhoto(a,id,force=false){',
        " async function acknowledgePhoto(a,id,force=false){\n  if(!IS_PC&&window.sentlogDeltaOwnsPhoto?.(a.project_id,a.metadata?.drawing_id))return;")
 change(photo, '   if(!active.has(a.project_id))continue;',
        "   if(!active.has(a.project_id)||(!IS_PC&&window.sentlogDeltaOwnsPhoto?.(a.project_id,a.metadata?.drawing_id)))continue;")
-change(photo, "await window.SentlogRecords.writeFile(key,new File([blob],a.file_name||'photo.jpg',{type:a.mime_type||blob.type}));",
-       "await window.SentlogRecords.writeFile(key,new File([blob],a.file_name||'photo.jpg',{type:a.mime_type||blob.type}),{onlyIfMissing:true,validate:()=>{if(window.sentlogDeltaOwnsPhoto?.(a.project_id,a.metadata?.drawing_id))throw Error('写真の受信を新しい保存処理へ引き継ぎました');}});")
+change(photo, "await window.SentlogRecords.writeFile(key,new File([blob],a.file_name||'photo.jpg',{type:a.mime_type||blob.type}),{validate});",
+       "await window.SentlogRecords.writeFile(key,new File([blob],a.file_name||'photo.jpg',{type:a.mime_type||blob.type}),{onlyIfMissing:true,validate:()=>{validate();if(window.sentlogDeltaOwnsPhoto?.(a.project_id,a.metadata?.drawing_id))throw Error('写真の受信を新しい保存処理へ引き継ぎました');}});")
 
 # A delta archive uses the exact independently generated checkpoint. Local
 # viewport/label sizes are not shared metadata and cannot block this proof.

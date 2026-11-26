@@ -30,6 +30,9 @@ jobs:
           python-version: '3.12'
       - name: Build archive, management and capacity integration
         run: |
+          SENTLOG_TEST_DEPS="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/sentlog-validation"
+          npm install --prefix "$SENTLOG_TEST_DEPS" --ignore-scripts --no-audit --no-fund --save-exact fake-indexeddb@6.2.8
+          export NODE_PATH="$SENTLOG_TEST_DEPS/node_modules${NODE_PATH:+:$NODE_PATH}"
           python3 scripts/build_archive.py
           python3 scripts/build_management.py
           python3 scripts/build_capacity.py
@@ -220,6 +223,11 @@ jobs:
           node tests/plain_numbers.test.cjs
           node tests/single_number_ui.test.cjs
           node tests/optional_symbol_ui.test.cjs
+          node tests/record_save_diagnostics.test.cjs
+          node tests/record_rescue_failure.test.cjs
+          node tests/legacy_receive_scope.test.cjs
+          node tests/storage_recovery_release.test.cjs
+          node tests/service_worker_cache_failure.test.cjs
       - name: Setup Pages
         uses: actions/configure-pages@v5
         with:
@@ -271,7 +279,7 @@ jobs:
                  'pdf-quality.js','image-quality.js','field-records.js','page-management.js','drawing-export-view.html']
           names+=['part01.txt','part02.txt','part03.txt','part04.txt','part05.txt',
                   'part06.txt','part07.txt','part08.txt','part09.txt']
-          names+=['record-store.js','blob-sha256.js','storage-ui.js','storage-diagnostics.js','storage-diagnostics-ui.js',
+          names+=['record-store.js','record-rescue.js','photo-recovery.js','blob-sha256.js','storage-ui.js','storage-diagnostics.js','storage-diagnostics-ui.js',
                   'pdf-recovery.js','archive.js','archive-core.js','archive-capacity.js',
                   'delta-sync-core.js','delta-sync-indexeddb.js','delta-sync-legacy-preflight.js',
                   'delta-sync-legacy-source.js','delta-sync-migration.js','delta-sync-metadata.js',
