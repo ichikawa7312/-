@@ -208,6 +208,122 @@ def offline(cloud, device, page, value):
 OPEN = """async did=>{await openDrawing('edit-project',did);SentlogFieldRecords.selectRecord('survey-a');
   $('inspector').classList.add('open');await SentlogRecords.settled();}"""
 
+# Observe both delete attempts without changing their input, waits or app
+# handlers. Only fixed classifications, booleans and numbers leave the page.
+DELETE_TRACE_INSTALL = r"""did=>{
+  const entries=[],removers=[],started=performance.now();let observer=null,stopped=false,dropped=0,callbackErrors=0;
+  const phases=new Set(['before-first-delete-click','after-first-delete-click','before-first-confirm-click','after-first-confirm-click',
+    'before-reconfirm-click','after-reconfirm-click','before-undo-click','after-undo-click',
+    'before-second-open','after-second-open','before-delete-click','after-delete-click',
+    'after-confirm-click','after-cancel-click','cancelled-late-response-verified','before-context-close']);
+  function targetKind(target){
+    const el=target?.nodeType===1?target:target?.parentElement;
+    if(!el)return 'other';
+    if(el.closest('#deleteBtn'))return 'delete';
+    if(el.closest('.sl-collab-dialog')){
+      const button=el.closest('button');
+      return button?.textContent==='削除する'?'confirm':button?.textContent==='キャンセル'?'cancel':button?'dialog-button':'dialog';
+    }
+    for(const [selector,kind] of [['#photoGrid','photo'],['#inspector','inspector'],['#stageWrap','drawing'],['.toolbar','toolbar']])
+      if(el.closest(selector))return kind;
+    return 'other';
+  }
+  function snapshot(){
+    const button=document.getElementById('deleteBtn'),rect=button?.getBoundingClientRect();
+    const handler=typeof button?.onclick==='function'?Function.prototype.toString.call(button.onclick):'';
+    const dialogs=[...document.querySelectorAll('.sl-collab-dialog')],dialog=dialogs[0];
+    const buttons=dialog?[...dialog.querySelectorAll('button')]:[];
+    const record=typeof state!=='undefined'?state.shapes?.find(row=>row.id==='survey-a'):null;
+    const pending=Number(window.SentlogRecords?.pending);
+    return {editor:typeof currentView!=='undefined'&&currentView==='editor',
+      drawingMatches:typeof activeDrawingId!=='undefined'&&activeDrawingId===did,
+      hasSelection:typeof selected!=='undefined'&&!!selected,targetSelected:typeof selected!=='undefined'&&selected==='survey-a',
+      targetPresent:!!record,expectedPhotos:record?.photos?.length||0,
+      photoItems:document.getElementById('photoGrid')?.children.length||0,
+      photoRenderSequence:typeof photoRenderSeq==='number'?photoRenderSeq:null,
+      pending:Number.isFinite(pending)?pending:null,storageFailed:!!window.SentlogRecords?.failed,
+      deletePresent:!!button,deleteDisabled:button?button.disabled:null,deleteHandler:typeof button?.onclick==='function',
+      deleteHandlerKind:!handler?'missing':handler.includes('showDecision')?'collaboration':handler.includes('pushHistory')?'legacy':'other',
+      deleteRect:rect?[rect.x,rect.y,rect.width,rect.height].map(n=>Math.round(n)):null,
+      inspectorOpen:!!document.getElementById('inspector')?.classList.contains('open'),
+      focused:targetKind(document.activeElement),dialogCount:dialogs.length,dialogHidden:dialog?dialog.hidden:null,
+      dialogVisible:!!dialog&&!dialog.hidden&&dialog.getClientRects().length>0,
+      dialogButtons:buttons.length,visibleDialogButtons:buttons.filter(b=>!b.hidden&&b.getClientRects().length>0).length,
+      confirmButtons:buttons.filter(b=>b.textContent==='削除する').length};
+  }
+  function record(kind,detail={}){
+    if(stopped)return;
+    try{
+      const entry={ms:Math.round(performance.now()-started),kind,...detail,state:snapshot()};
+      if(entries.length===120){entries.shift();dropped++;}entries.push(entry);
+    }catch{callbackErrors++;}
+  }
+  function listen(target,type,phase,capture){
+    if(!target)return;
+    const callback=event=>{try{record('input',{event:type,phase,target:targetKind(event.target),
+      defaultPrevented:event.defaultPrevented,trusted:event.isTrusted,eventPhase:event.eventPhase,
+      pointerType:['mouse','touch','pen'].includes(event.pointerType)?event.pointerType:'other',
+      point:[event.clientX,event.clientY].map(n=>Number.isFinite(n)?Math.round(n):null)});}catch{callbackErrors++;}};
+    target.addEventListener(type,callback,{capture,passive:true});
+    removers.push(()=>target.removeEventListener(type,callback,capture));
+  }
+  const read=()=>({entries:entries.slice(),dropped,callbackErrors,stopped});
+  const stop=()=>{
+    if(!stopped){stopped=true;try{observer?.disconnect();}catch{callbackErrors++;}
+      for(const remove of removers)try{remove();}catch{callbackErrors++;}}
+    return read();
+  };
+  window.__heavyDeleteTrace={mark:phase=>record('checkpoint',{phase:phases.has(phase)?phase:'observation'}),read,stop};
+  try{
+    for(const type of ['pointerdown','pointerup','click']){
+      listen(window,type,'window-capture',true);
+      listen(document.getElementById('deleteBtn'),type,'delete-target',false);
+      listen(window,type,'window-bubble',false);
+    }
+    let watchedDialog=null;
+    const watchDialog=()=>{
+      const dialog=document.querySelector('.sl-collab-dialog');
+      if(dialog&&dialog!==watchedDialog){
+        watchedDialog=dialog;
+        observer.observe(dialog,{attributes:true,attributeFilter:['hidden'],attributeOldValue:true,childList:true,subtree:true});
+        record('dialog-observed');
+      }
+    };
+    observer=new MutationObserver(mutations=>{try{
+        if(mutations.some(m=>m.type==='childList'&&m.target===document.body))watchDialog();
+        const hidden=mutations.filter(m=>m.type==='attributes'&&m.attributeName==='hidden'&&m.target===watchedDialog);
+        const buttonsChanged=mutations.some(m=>m.type==='childList'&&m.target.closest?.('[data-buttons]'));
+        if(hidden.length||buttonsChanged)record('dialog-mutation',{hiddenChanges:hidden.length,
+          previouslyHidden:hidden.slice(0,8).map(m=>m.oldValue!==null),buttonsChanged});
+      }catch{callbackErrors++;}});
+    // The first click creates the dialog. Watch only direct body additions
+    // until it exists; photo/comment subtree updates are not observed here.
+    observer.observe(document.body,{childList:true});watchDialog();
+    record('checkpoint',{phase:'before-first-delete-click'});
+  }catch{callbackErrors++;stop();}
+}"""
+
+
+def delete_trace(page, report, operation, phase=None):
+    """Diagnostics cannot turn a passing step into failure or hide its error."""
+    try:
+        if operation == 'install':
+            page.evaluate(DELETE_TRACE_INSTALL, base.DRAWING)
+            return
+        result=page.evaluate("""({operation,phase})=>{
+          const trace=window.__heavyDeleteTrace;if(!trace)return null;
+          if(phase)trace.mark(phase);
+          return operation==='stop'?trace.stop():null;
+        }""", dict(operation=operation,phase=phase))
+        if result is not None:report['deleteDecisionTrace']=result
+    except Exception as error:
+        errors=report.setdefault('deleteDecisionTraceErrors',[])
+        if len(errors)<8:
+            name=type(error).__name__
+            errors.append(dict(operation=operation,phase=phase,
+                errorType=name if name in ('Error','TimeoutError','RuntimeError','TypeError','ValueError') else 'Exception'))
+
+
 BURST = r"""async ({operations,geometry})=>{
   const start=performance.now(),M=SentlogRecordCollaboration;
   for(const [n,op] of operations.entries()){
@@ -490,37 +606,55 @@ def run(engine, cloud, report):
 
         # A large record is deleted only after a fresh peer change is shown.
         a,b=pages[:2]
+        # LIFO cleanup captures evidence before the existing contexts close,
+        # including when any original deletion locator/assertion fails.
+        stack.callback(delete_trace,a,report,'stop','before-context-close')
+        delete_trace(a,report,'install')
         a.locator('#deleteBtn').click()
+        delete_trace(a,report,'mark','after-first-delete-click')
         cloud.suspend_notifications=True
         peer=dict(drawing=base.DRAWING,record='survey-a',id='heavy-peer-before-delete',text='削除確認中の別端末からの追記',at=123)
         b.evaluate(BURST,dict(operations=[peer],geometry=None))
         wait(cloud,b,lambda:'heavy-peer-before-delete' in json.dumps(cloud.snapshots[base.CLOUD_PROJECT]['payload']),
              'Peer edit did not reach canonical server state before confirmation')
         expected.add((peer['drawing'],peer['record'],peer['id'],peer['text']))
+        delete_trace(a,report,'mark','before-first-confirm-click')
         a.locator('.sl-collab-dialog').get_by_role('button',name='削除する',exact=True).click()
+        delete_trace(a,report,'mark','after-first-confirm-click')
         wait(cloud,a,lambda:'もう一度' in a.locator('.sl-collab-dialog [data-status]').inner_text(),
              'Heavy record deletion did not re-confirm new peer history',timeout=20)
         assert a.evaluate("state.shapes.some(r=>r.id==='survey-a')")
+        delete_trace(a,report,'mark','before-reconfirm-click')
         a.locator('.sl-collab-dialog').get_by_role('button',name='削除する',exact=True).click()
+        delete_trace(a,report,'mark','after-reconfirm-click')
         wait(cloud,a,lambda:not a.evaluate("state.shapes.some(r=>r.id==='survey-a')"),'Confirmed deletion did not finish',timeout=20)
         cloud.suspend_notifications=False
         wait(cloud,a,lambda:all(page.evaluate("(state.collabDeletedRecords||[]).some(r=>r.id==='survey-a')") for page in pages),
              'Deleted record and preserved history did not synchronize')
         for page in pages:
             assert page.evaluate(PHOTO_PROOF,photos) is not False,'Deleting a heavy record discarded retained photo bytes'
+        delete_trace(a,report,'mark','before-undo-click')
         a.locator('#undoBtn').click()
+        delete_trace(a,report,'mark','after-undo-click')
         wait(cloud,a,lambda:all(page.evaluate("state.shapes.some(r=>r.id==='survey-a')") for page in pages),'Deletion undo did not restore the heavy record')
         report['freshDeleteReconfirmationAndUndo']=True
 
+        delete_trace(a,report,'mark','before-second-open')
         a.evaluate(OPEN,base.DRAWING)
+        delete_trace(a,report,'mark','after-second-open')
         cloud.hold_head=(DEVICES[0],base.CLOUD_PROJECT)
+        delete_trace(a,report,'mark','before-delete-click')
         a.locator('#deleteBtn').click()
+        delete_trace(a,report,'mark','after-delete-click')
         a.locator('.sl-collab-dialog').get_by_role('button',name='削除する',exact=True).click()
+        delete_trace(a,report,'mark','after-confirm-click')
         wait(cloud,a,lambda:bool(cloud.held_heads),'Confirmation did not reach delayed fresh-read barrier')
         a.locator('.sl-collab-dialog').get_by_role('button',name='キャンセル',exact=True).click()
+        delete_trace(a,report,'mark','after-cancel-click')
         cloud.release_heads();a.wait_for_timeout(250)
         assert a.evaluate("state.shapes.some(r=>r.id==='survey-a')")
         report['cancelledLateResponseProtected']=True
+        delete_trace(a,report,'stop','cancelled-late-response-verified')
 
         before_echo=len(cloud.accepted)
         old_hints=list(reversed(cloud.stale_notifications))*10

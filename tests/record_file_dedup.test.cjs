@@ -64,7 +64,7 @@ test('the mobile boot guard stops a stale executed writer before init or depende
   const boot=/<script>([\s\S]*?)<\/script>/.exec(html)[1];
   for(const capability of [undefined,null,{}, {fileWriteDedupVersion:0},{fileWriteDedupVersion:1}]){
     let initialized=0,fetched=0;const saved=new Map([['existing-record','preserved']]),nodes=[];
-    const records={init(){initialized++;saved.set('existing-record','initialization ran');throw Error('CURRENT_WRITER_INIT');}};
+    const records={startupProtectionVersion:1,init(){initialized++;saved.set('existing-record','initialization ran');throw Error('CURRENT_WRITER_INIT');}};
     if(capability!==undefined)records.getFileWriteCapabilities=()=>capability;
     const context={window:{SentlogRecords:records},fetch(){fetched++;throw Error('unexpected fetch');},
       document:{body:{replaceChildren(){},append(){}},createElement(tag){const node={tag,style:{},append(){}};nodes.push(node);return node;}}};
