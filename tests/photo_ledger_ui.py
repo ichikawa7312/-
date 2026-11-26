@@ -113,6 +113,7 @@ try:
         page=context.new_page()
         errors=[]
         page.on('pageerror',lambda e:errors.append(str(e)))
+        page.on('dialog',lambda d:d.accept() if d.message.startswith('前回のExcelは保存済みですか？') else d.dismiss())
         page.goto(origin+'/sentlog/',wait_until='domcontentloaded')
         page.wait_for_function("window.SentlogPhotoLedger&&window.SentlogDrawingGroups&&window.SentlogRecords?.ready",timeout=30000)
         if engine=='webkit':
@@ -250,20 +251,37 @@ try:
         page.locator('[data-tensile-field="loadKn"]').first.fill('25.5')
         page.locator('[data-tensile-field="judgement"]').first.select_option('合格')
         page.locator('[data-tensile-field="after"]').first.select_option('異常なし')
+        expect(page.locator('[data-tensile-field="loadKn"]').first).to_have_value('25.5')
+        expect(page.locator('[data-tensile-field="judgement"]').first).to_have_value('合格')
+        expect(page.locator('[data-tensile-field="anchorNo"]').first).to_have_value('A-101')
+        previous_href=page.locator('.ledger-download-ready').get_attribute('href')
+        # Force a delayed record-store check, as on a slower device. The old
+        # download/status must not be mistaken for the new workbook.
+        page.evaluate("""()=>{
+          const original=SentlogRecords.settled;
+          let resume;const gate=new Promise(resolve=>{resume=resolve;});
+          SentlogRecords.settled=async function(...args){await gate;return original.apply(this,args);};
+          window.__resumeLedgerExport=()=>{SentlogRecords.settled=original;resume();};
+        }""")
         page.locator('.ledger-export').click()
+        expect(page.locator('.ledger-status')).to_contain_text('Excelを作成しています')
+        expect(page.locator('.ledger-download-ready')).not_to_be_visible()
+        page.evaluate('window.__resumeLedgerExport()')
         page.wait_for_function("""()=>{
           const s=document.querySelector('.ledger-status')?.textContent||'';
           return s.includes('Excelを出力しました')||s.includes('出力できませんでした');
         }""",timeout=45000)
         tensile_status=page.locator('.ledger-status').inner_text()
         assert 'Excelを出力しました' in tensile_status,('Tensile ledger browser export failed',tensile_status)
+        assert page.locator('.ledger-download-ready').get_attribute('href')!=previous_href,'Tensile export reused the previous download link'
+        expect(page.locator('.ledger-download-ready')).to_be_visible()
         with page.expect_download(timeout=20000) as tensile_event:
             page.locator('.ledger-download-ready').click()
         tensile_dest=OUT/f'photo-ledger-tensile-{engine}-{width}.xlsx'
         tensile_event.value.save_as(tensile_dest)
         with zipfile.ZipFile(tensile_dest,'r') as z:
             assert z.testzip() is None,'Tensile-format XLSX corrupt'
-            assert '引張試験結果 25.5kN 合格' in z.read('xl/worksheets/sheet1.xml').decode()
+            assert '引張試験結果 25.5kN 合格' in z.read('xl/worksheets/sheet1.xml').decode(),('Tensile values not found',z.namelist()[:20],z.read('xl/worksheets/sheet1.xml').decode()[:4500])
             assert 'A-101' in z.read('xl/worksheets/sheet1.xml').decode()
             assert z.read('xl/drawings/drawing1.xml').decode().count('<xdr:sp ')==4,'Original numbered ovals lost'
             assert len([n for n in z.namelist() if n.startswith('xl/media/tensile-')])==9
