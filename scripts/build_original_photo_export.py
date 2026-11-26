@@ -116,3 +116,6 @@ subprocess.run([sys.executable, 'scripts/build_startup_backup_recovery.py'], cwd
 
 # Preserve durable bytes when collaborative normalization only reorders keys.
 subprocess.run([sys.executable, 'scripts/build_normalization_noop.py'], cwd=ROOT, check=True)
+
+# Preserve in-memory records when the database connection closes abnormally.
+subprocess.run([sys.executable, 'scripts/build_storage_lifecycle.py'], cwd=ROOT, check=True)

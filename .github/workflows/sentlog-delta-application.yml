@@ -25,6 +25,8 @@ on:
       - 'tests/startup_backup_recovery_ui.py'
       - 'tests/cloud_normalization_noop.test.cjs'
       - 'tests/cloud_normalization_release.test.cjs'
+      - 'tests/record_connection_lifecycle.test.cjs'
+      - 'tests/storage_lifecycle_release.test.cjs'
       - 'tests/photo_grid_layout_ui.py'
       - 'tests/fixtures/render_selected_photos_v205.js'
       - 'tests/asset_download_budget.test.cjs'
