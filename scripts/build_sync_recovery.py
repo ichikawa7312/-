@@ -110,6 +110,8 @@ for path in (ROOT / 'tests').iterdir():
     for name, version in versions:
         source = source.replace(name + '.js?v=' + version, name + '.js?v=' + TOKEN)
         source = source.replace(name + r'\.js\?v=' + version, name + r'\.js\?v=' + TOKEN)
+    source = source.replace("['peer-photo-recovery.js?v=" + TOKEN + "','sentlogCheckPeerPhotos']",
+                            "['peer-photo-recovery.js?v=" + TOKEN + "','" + MARKER + "']")
     if source != old:
         path.write_text(source, encoding='utf-8')
 
