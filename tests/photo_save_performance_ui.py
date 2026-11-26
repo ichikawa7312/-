@@ -375,8 +375,21 @@ def profile_case(playwright, engine, built_root, workload, encoded, shots, *, ca
                     result['durableOriginalBytes'] = proof['originalBytes']
                     result['durableSharedBytes'] = proof['sharedBytes']
                     results.append(result);proofs.append(proof)
-                visible_photos = page.evaluate("""()=>JSON.parse(SentlogRecords.getItem(drawingStorageKey('memo-plan-a')))
-                  .shapes.find(row=>row.id==='survey-a').photos.map(photo=>({id:photo.id,name:photo.name||'変状写真'}))""")
+                photo_metadata = """()=>JSON.parse(SentlogRecords.getItem(drawingStorageKey('memo-plan-a')))
+                  .shapes.find(row=>row.id==='survey-a').photos"""
+                stored_metadata = page.evaluate(photo_metadata)
+                stored_photos = [{'id': photo['id'], 'name': photo.get('name') or '変状写真'} for photo in stored_metadata]
+                stored_ids = [photo['id'] for photo in stored_photos]
+                visible_photos = stored_photos
+                if candidate:
+                    # v1.97 presents photos chronologically while retaining the
+                    # collaboration store's canonical order. Derive the expected
+                    # display from fixture/capture order, independently of the
+                    # production ordering helper. The fixed baseline predates it.
+                    display_ids = seeded['photoIds']+[proof['photoId'] for proof in proofs]
+                    assert len(display_ids) == len(stored_ids) and set(display_ids) == set(stored_ids)
+                    by_id = {photo['id']: photo for photo in stored_photos}
+                    visible_photos = [by_id[photo_id] for photo_id in display_ids]
                 page.evaluate('({label,photos})=>photoPerformance.start(label,photos.map(p=>p.id),photos.map(p=>p.name))',
                               {'label': workload['name']+'-close', 'photos': visible_photos})
                 page.locator('#slCameraDone').click()
@@ -396,8 +409,10 @@ def profile_case(playwright, engine, built_root, workload, encoded, shots, *, ca
                 assert not close_result['idbErrors'], close_result
                 if candidate:
                     assert close_result['renderCalls'] == close_result['photoListRenders'] == 1, close_result
-                assert saved_photo_ids(page, 'memo-plan-a') == [photo['id'] for photo in visible_photos]
+                assert saved_photo_ids(page, 'memo-plan-a') == stored_ids, 'Camera close changed the canonical stored photo order'
+                assert page.evaluate(photo_metadata) == stored_metadata, 'Camera close changed stored photo metadata'
                 close_result['visiblePhotoIds'] = [photo['id'] for photo in visible_photos]
+                close_result['storedPhotoIds'] = stored_ids
                 assert page.evaluate('SentlogCollaborationPhotos.listPending()') == []
                 retained = page.evaluate("""async()=>({
                   originals:(await SentlogOriginalPhotos.listMeta()).length,

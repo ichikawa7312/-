@@ -44,7 +44,7 @@ async function fixture(count=1){
     bindingId:cutoff.bindingId,validate:()=>true,...extra});
   return {...app,factory,local,files,snapshot,begin,source,payload,restore,restart:()=>application(factory,local)};
 }
-async function installerFixture(f,recoverMissingFiles){
+async function installerFixture(f,recoverMissingFiles,{currentScope=()=>scope}={}){
   const server=f.snapshot,rows=[],metadata=[];
   for(const drawing of server.drawings)for(const record of drawing.state.shapes){
     const row={ordinal:rows.length+1,drawingId:drawing.meta.id,recordId:record.id,recordJson:json(record),sha256:await hash(json(record))};
@@ -68,7 +68,7 @@ async function installerFixture(f,recoverMissingFiles){
     source:args=>Source.createSource({...args,indexedDB:f.factory,localStorage:f.localStorage,crypto:webcrypto}),
     migrationStore:s=>Migration.createStore({...s,indexedDB:f.factory})}});
   return {store,get baselineReads(){return baselineReads;},run:()=>install({scope,localProjectId,actor,transport,store,
-    mode:{enabled:receipt.deltaEnabled,baseline:receipt.deltaEnabled?copy(receipt):null,snapshotRevision:9},revision:9,currentScope:()=>scope})};
+    mode:{enabled:receipt.deltaEnabled,baseline:receipt.deltaEnabled?copy(receipt):null,snapshotRevision:9},revision:9,currentScope})};
 }
 let passed=0;async function test(name,run){await run();passed++;console.log('PASS',name);}
 (async()=>{
@@ -158,9 +158,10 @@ let passed=0;async function test(name,run){await run();passed++;console.log('PAS
       seen.push(args.missing.map(item=>item.key));await args.restore(f.payload(args.missing[0].key));
     });
     try{
-      await assert.rejects(()=>inst.run(),error=>error.code==='DELTA_MIGRATION_REVIEW'&&error.message==='写真または図面ファイルを確認できません（2件）'&&error.issues.length===2);
+      await assert.rejects(()=>inst.run(),error=>error.code==='DELTA_MIGRATION_RECOVERING'&&error.recovered===1&&error.remaining===2&&
+        error.localProjectId===localProjectId&&error.bindingId===initial.bindingId&&json(error.scope)===json(scope));
       assert.equal(inst.baselineReads,0,'incomplete source must not trigger whole baseline copy or publication');assert.equal(await inst.store.read(),null);
-      await assert.rejects(()=>inst.run(),error=>error.code==='DELTA_MIGRATION_REVIEW'&&error.issues.length===1);
+      await assert.rejects(()=>inst.run(),error=>error.code==='DELTA_MIGRATION_RECOVERING'&&error.recovered===1&&error.remaining===1);
       assert.equal((await inst.run()).installed,true);assert.equal(seen.length,3);assert.deepEqual(seen.map(keys=>keys.length),[3,2,1]);
       assert.equal(new Set(seen.map(keys=>keys[0])).size,3,'already recovered bytes are not requested again');
       assert.equal((await f.records.deltaJournal.readBindingState(localProjectId)).phase,'active');assert(await inst.store.readProvenance());
@@ -173,6 +174,35 @@ let passed=0;async function test(name,run){await run();passed++;console.log('PAS
         assert.deepEqual((await inst.store.read()).outbox,before.outbox,'recovered bytes must not invent new photo records or edits');
       }finally{controller.close();bridge.close();replica.close();}
     }finally{inst.store.close();}
+  });
+  await test('a claimed helper count or a live-only receipt cannot shorten an unverified cutoff retry',async()=>{
+    for(const liveOnly of [false,true]){
+      const f=await fixture(2),inst=await installerFixture(f,async args=>{
+        if(liveOnly){const file=f.payload(args.missing[0].key);await f.records.writeFile(file.key,file.blob);}
+        return {restored:2,remaining:0};
+      });
+      try{
+        await assert.rejects(()=>inst.run(),error=>error.code==='DELTA_MIGRATION_REVIEW'&&
+          error.message==='写真または図面ファイルを確認できません（2件）'&&error.issues.length===2);
+        assert.equal(inst.baselineReads,0);assert.equal((await f.records.deltaJournal.readBindingState(localProjectId)).phase,'staging');
+        assert.equal((await f.records.deltaJournal.missingCutoffFiles({scope,localProjectId})).length,2);
+      }finally{inst.store.close();}
+    }
+  });
+  await test('a network, auth, quota or scope error after a receipt remains an error instead of a fast retry',async()=>{
+    for(const kind of ['network','auth','quota','scope']){
+      const f=await fixture(2);let current=scope;
+      const expected=Object.assign(Error('synthetic '+kind),kind==='auth'?{status:401}:kind==='quota'?{name:'QuotaExceededError'}:{code:'RECOVERY_NETWORK'});
+      const inst=await installerFixture(f,async args=>{
+        await args.restore(f.payload(args.missing[0].key));
+        if(kind==='scope'){current={...scope,ownerId:'other-owner'};return;}
+        throw expected;
+      },{currentScope:()=>current});
+      try{
+        await assert.rejects(()=>inst.run(),error=>kind==='scope'?error.code==='DELTA_MIGRATION_SCOPE':error===expected);
+        assert.equal(inst.baselineReads,0);assert.equal((await f.records.deltaJournal.missingCutoffFiles({scope,localProjectId})).length,1);
+      }finally{inst.store.close();}
+    }
   });
   await test('authenticated recovery helper passes exact photo and legacy PDF proofs into the real installer and journal',async()=>{
     const f=await fixture(),blob=new Blob(['legacy-drawing-pdf'],{type:'application/pdf'}),digest=await sha(blob);

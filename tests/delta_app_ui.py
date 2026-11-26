@@ -10,10 +10,12 @@ import copy
 import functools
 import hashlib
 import json
+import struct
 import subprocess
 import tempfile
 import threading
 import time
+import zlib
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -33,10 +35,21 @@ CP = dict(id=PID, client_key=base.PROJECT, name='実動作の同期検証', stat
 # wrappers retain the original return values and promises; they never substitute
 # IndexedDB, transport responses, receipt state or the application's scheduler.
 PHOTO_TRACE = r"""(() => {
-  const events=[],probes=[],idbErrors=[];
-  window.__deltaPhotoDiagnostics={events,probes,idbErrors};
-  const add=(list,value)=>{list.push({at:Date.now(),...value});if(list.length>160)list.shift();};
-  const err=e=>({name:e?.name,code:e?.code,message:String(e?.message||e),status:e?.status});
+  const events=[],probes=[],idbErrors=[],recovery=[],syncUi=[];
+  window.__deltaPhotoDiagnostics={events,probes,idbErrors,recovery,syncUi};
+  const add=(list,value)=>{
+    const entry={at:Date.now(),...value};list.push(entry);if(list.length>160)list.shift();
+    if(list===events&&value.stage==='application.sync'){
+      if(value.event==='error'&&value.code==='DELTA_MIGRATION_RECOVERING')recovery.push(entry);
+      else if(value.event==='start'&&recovery.length&&!recovery.at(-1).nextStart)recovery.at(-1).nextStart=entry.at;
+    }
+  };
+  const err=e=>({name:e?.name,code:e?.code,message:String(e?.message||e),status:e?.status,recovered:e?.recovered,remaining:e?.remaining});
+  new MutationObserver(()=>{
+    const result=document.querySelector('#sentlogCloudDetails [role="status"]'),message=result?.textContent||'';
+    if(result?.offsetParent&&message.includes('不足している写真・図面を受信しています（残り')&&syncUi.at(-1)?.message!==message)
+      add(syncUi,{message,level:result.getAttribute('data-level')});
+  }).observe(document,{subtree:true,childList:true,characterData:true,attributes:true,attributeFilter:['data-level']});
   const blobPaths=(value,path='$',out=[],seen=new WeakSet())=>{
     if(out.length>=32||!value||typeof value!=='object'||seen.has(value))return out;
     seen.add(value);
@@ -114,7 +127,7 @@ PHOTO_STATE = r"""async()=>{
       };
     });
   }catch(e){assets={error:String(e)};}
-  return {events:diagnostics?.events,idbErrors:diagnostics?.idbErrors,assets,
+  return {events:diagnostics?.events,idbErrors:diagnostics?.idbErrors,recovery:diagnostics?.recovery,syncUi:diagnostics?.syncUi,assets,
     scopes:diagnostics?.probes.map(probe=>{try{return probe();}catch(e){return {error:String(e)};}}),
     storageBodies:window.__sentlogWebKitStorageBodies,
     ui:[...document.querySelectorAll('[id*="Sync"],[id*="sync"],[id*="Cloud"]')]
@@ -220,7 +233,8 @@ class Cloud(collaboration.Cloud):
 
 def make_page(engine, profile, cloud, device):
     context = engine.launch_persistent_context(profile, headless=True, viewport={'width': 820 if device == A else 390, 'height': 1000},
-                                               is_mobile=True, has_touch=True, service_workers='block')
+                                               is_mobile=True, has_touch=True, service_workers='block',
+                                               executable_path=getattr(cloud, 'executable_path', None))
     session = dict(access_token='synthetic-access-token', expires_at=time.time()+3600, user=dict(id=OWNER, email='fixture@example.invalid'))
     socket = collaboration.SOCKET.replace('revision:v.revision}', 'revision:v.revision,seq:v.seq}')
     context.add_init_script(socket + "window.sentlogImporting=true;Object.defineProperty(navigator,'onLine',{get:()=>!window.__fixtureOffline});"
@@ -273,9 +287,25 @@ def run(engine, cloud, root):
         cb, b, eb = make_page(engine, pb, cloud, B)
         try:
             pack = base.payload(base.PROJECT, base.DRAWING)
+            # Keep survey-a's camera assertions unchanged. The second existing
+            # record supplies 16 distinct PNGs, exceeding the default batch of 16.
+            photo_bytes = {'retained-photo': base.photo_png()}
+            extra_photos = []
+            for index in range(16):
+                photo_id = f'recovery-photo-{index:02d}'
+                text = b'SentlogFixture\0' + photo_id.encode('ascii')
+                chunk = struct.pack('!I', len(text)) + b'tEXt' + text + struct.pack('!I', zlib.crc32(b'tEXt' + text) & 0xffffffff)
+                data = base.photo_png()[:-12] + chunk + base.photo_png()[-12:]
+                photo_bytes[photo_id] = data
+                extra_photos.append(dict(id=photo_id, name=photo_id+'.png', type='image/png', size=len(data),
+                                         sha256=hashlib.sha256(data).hexdigest(), createdAt=1))
+            next(record for record in pack['drawings'][0]['state']['shapes'] if record['id']=='survey-b')['photos'] = extra_photos
+            pack['project']['drawings'][0]['photoCount'] = pack['drawings'][0]['meta']['photoCount'] = len(photo_bytes)
             setup = dict(packs=[pack], encoded=base64.b64encode(base.photo_png()).decode('ascii'))
             a.evaluate(base.SETUP, setup)
-            baseline = a.evaluate("""async()=>{
+            baseline = a.evaluate("""async files=>{
+              for(const file of files)editFixture.files.set(file.key,
+                new Blob([Uint8Array.from(atob(file.encoded),c=>c.charCodeAt(0))],{type:'image/png'}));
               for(const [key,value]of editFixture.files)await SentlogRecords.writeFile(key,value);
               const ws=JSON.parse(SentlogRecords.getItem(WORKSPACE_KEY));
               for(const p of ws.projects){p.collaborationVersion=1;for(const d of p.drawings){
@@ -284,10 +314,11 @@ def run(engine, cloud, root):
                 SentlogRecords.setItem(drawingStorageKey(d.id),JSON.stringify(state));}}
               SentlogRecords.setItem(WORKSPACE_KEY,JSON.stringify(ws));await SentlogRecords.settled();
               return editFixture.snapshots();
-            }""")
+            }""", [dict(key='photo:edit-plan:'+photo_id, encoded=base64.b64encode(data).decode('ascii'))
+                    for photo_id,data in photo_bytes.items() if photo_id!='retained-photo'])
             b.evaluate(base.SETUP, {**setup, 'packs': baseline})
             # Reproduce the reported deadlock: the other device has received
-            # the photo reference but has not received its bytes when a durable
+            # all 17 photo references but no photo bytes when a durable
             # migration cutoff is made. Its later restart must keep that cutoff.
             b.evaluate('async()=>{for(const [key,value]of editFixture.files)if(!key.startsWith("photo:"))await SentlogRecords.writeFile(key,value);await SentlogRecords.settled();}')
             b.evaluate("""async ({owner,project,device})=>{
@@ -297,10 +328,14 @@ def run(engine, cloud, root):
             # Existing users migrate database-backed Files after reopening the
             # app, not just the fresh in-memory objects from a file picker.
             # Keep the real native File/Blob path when creating the cutoff.
-            legacy_keys = ['background:edit-plan', 'photo:edit-plan:retained-photo']
+            photo_keys = ['photo:edit-plan:'+photo_id for photo_id in photo_bytes]
+            legacy_keys = ['background:edit-plan', *photo_keys]
             for page in (a, b):
                 before_files = page.evaluate(READ_NATIVE_FILES, legacy_keys)
-                assert all(not item.get('missing') for item in before_files if page==a or item.get('key')!='photo:edit-plan:retained-photo'), before_files
+                if page==a:
+                    assert all(not item.get('missing') for item in before_files), before_files
+                else:
+                    assert not before_files[0].get('missing') and all(item.get('missing') for item in before_files[1:]), before_files
                 assert_native_writes(page)
                 page.reload(wait_until='domcontentloaded')
                 page.wait_for_function('window.sentlogDeltaRuntime&&SentlogRecords.ready', timeout=45000)
@@ -314,19 +349,22 @@ def run(engine, cloud, root):
             print('PASS existing native File/Blob bytes survive restart before protected application migration', flush=True)
             # Existing restored shared bytes must work with both the recovery
             # reader and the normal delta asset transport after activation.
-            seed_bytes=base.photo_png()
-            seed_hash=hashlib.sha256(seed_bytes).hexdigest()
-            seed_id='77777777-7777-4777-8777-777777777778'
-            seed_path=f'{OWNER}/{PID}/active-restore/{seed_id}/{seed_hash}/'+('c'*64)+'/77777777-7777-4777-8777-777777777779.png'
-            seed_asset=dict(id=seed_id,owner_id=OWNER,project_id=PID,client_key='photo:edit-plan:retained-photo',
-                kind='photo',file_name='synthetic.png',mime_type='image/png',byte_size=len(seed_bytes),sha256=seed_hash,
-                status='uploaded',source_device_id=A,storage_path=seed_path,
-                metadata=dict(local_project_key=base.PROJECT,drawing_id=base.DRAWING,photo_id='retained-photo'))
-            cloud.assets[seed_id]=seed_asset
-            cloud.blobs[seed_path]=seed_bytes
+            seed_assets=[]
+            for index,(photo_id,seed_bytes) in enumerate(photo_bytes.items()):
+                seed_hash=hashlib.sha256(seed_bytes).hexdigest()
+                seed_id=f'77777777-7777-4777-8777-{777777777778+index}'
+                seed_path=f'{OWNER}/{PID}/active-restore/{seed_id}/{seed_hash}/'+('c'*64)+f'/77777777-7777-4777-8777-{777777777900+index}.png'
+                seed_asset=dict(id=seed_id,owner_id=OWNER,project_id=PID,client_key='photo:edit-plan:'+photo_id,
+                    kind='photo',file_name='synthetic.png' if photo_id=='retained-photo' else photo_id+'.png',mime_type='image/png',
+                    byte_size=len(seed_bytes),sha256=seed_hash,status='uploaded',source_device_id=A,storage_path=seed_path,
+                    metadata=dict(local_project_key=base.PROJECT,drawing_id=base.DRAWING,photo_id=photo_id))
+                seed_assets.append(seed_asset)
+                cloud.assets[seed_id]=seed_asset
+                cloud.blobs[seed_path]=seed_bytes
             cloud.backend.admin(op='seed', ownerId=OWNER,
                 devices=[dict(id=A,name='検証iPad'),dict(id=B,name='検証iPhone'),dict(id=PC,name='検証PC',type='pc')],
-                projects=[dict(id=PID,client_key=base.PROJECT,payload=baseline[0])],assets=[seed_asset],rollout=True)
+                projects=[dict(id=PID,client_key=base.PROJECT,payload=baseline[0])],assets=seed_assets,rollout=True)
+            b.locator('#sentlogCloudStatus').click()
             for page in (a,b):
                 page.evaluate("async()=>{showProjects();sentlogImporting=false;await sentlogArchiveSync({force:true});}")
             wait(cloud,a,lambda:all(p.evaluate("SentlogRecords.deltaJournal.bindingFor('edit-project')?.phase==='active'") for p in (a,b)),
@@ -337,12 +375,21 @@ def run(engine, cloud, root):
             state=cloud.backend.admin(op='state',ownerId=OWNER,projectId=PID)
             assert state['heads'][0]['enabled'],state['counts']
             print('PASS actual HTML activates both protected writers using the real SQL baseline and metadata seed',flush=True)
-            recovered=b.evaluate(READ_NATIVE_FILES,['photo:edit-plan:retained-photo'])
-            original=a.evaluate(READ_NATIVE_FILES,['photo:edit-plan:retained-photo'])
-            assert recovered==original,('missing frozen photo was not recovered exactly',recovered,original)
+            recovered=b.evaluate(READ_NATIVE_FILES,photo_keys)
+            original=a.evaluate(READ_NATIVE_FILES,photo_keys)
+            assert len(recovered)==17 and recovered==original,('missing frozen photos were not recovered exactly',recovered,original)
+            assert {item['key']:item['sha256'] for item in recovered}=={
+                'photo:edit-plan:'+photo_id:hashlib.sha256(data).hexdigest() for photo_id,data in photo_bytes.items()}
             assert b.evaluate("SentlogRecords.deltaJournal.bindingStateFor('edit-project')?.phase")=='active'
-            assert any(r['path'].endswith('/'+seed_path) and r['method']=='GET' and r['device']==B for r in cloud.photo_requests)
-            print('PASS real restarted missing-photo cutoff recovers from authenticated restored storage and reaches active synchronization',flush=True)
+            assert all(any(r['path'].endswith('/'+asset['storage_path']) and r['method']=='GET' and r['device']==B
+                           for r in cloud.photo_requests) for asset in seed_assets)
+            recovery=b.evaluate('()=>({rounds:__deltaPhotoDiagnostics.recovery,ui:__deltaPhotoDiagnostics.syncUi})')
+            progress=next((row for row in recovery['rounds'] if row.get('recovered')==16 and row.get('remaining')==1),None)
+            assert progress and 700<=progress.get('nextStart',0)-progress['at']<25000, recovery
+            assert any(row['level']=='pending' and '残り1件' in row['message'] for row in recovery['ui']), recovery
+            b.locator('#sentlogCloudModal').get_by_role('button',name='閉じる',exact=True).click()
+            print('PASS real 17-photo cutoff receives 16, shows pending recovery, resumes automatically after '
+                  +str(progress['nextStart']-progress['at'])+' ms, and verifies every byte before activation',flush=True)
 
             for page,scale,rotation in [(a,125,None),(b,None,90)]:
                 page.evaluate("""async ({scale,rotation})=>{
@@ -436,6 +483,7 @@ def main():
     parser=argparse.ArgumentParser()
     parser.add_argument('--engine',choices=('chromium','webkit'),required=True)
     parser.add_argument('--built-root',type=Path,default=ROOT)
+    parser.add_argument('--executable-path',type=Path)
     args=parser.parse_args();root=args.built_root.resolve()
     class Handler(SimpleHTTPRequestHandler):
         def log_message(self,*args):pass
@@ -443,6 +491,7 @@ def main():
     threading.Thread(target=server.serve_forever,daemon=True).start()
     backend=Backend(root)
     cloud=Cloud(f'http://127.0.0.1:{server.server_port}',root,args.engine,backend)
+    cloud.executable_path=str(args.executable_path.resolve()) if args.executable_path else None
     try:
         with sync_playwright() as playwright:
             run(getattr(playwright,args.engine),cloud,root)

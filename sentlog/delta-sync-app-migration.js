@@ -59,6 +59,18 @@
                   bindingId:staged.bindingId,validate});validate();return restored;
               }});validate();
             const remaining=await records.deltaJournal.missingCutoffFiles({scope,localProjectId,bindingId:staged.bindingId});validate();
+            if(remaining.length){
+              // Only durable receipts in this exact protected binding count as
+              // progress. A helper's reported totals cannot shorten a retry.
+              const pending=new Set(remaining.map(item=>item.key));
+              const recovered=missing.filter(item=>!pending.has(item.key)).length;
+              if(recovered>0){
+                onProgress({status:'recovering-missing-files',localProjectId,total:missing.length,recovered,remaining:remaining.length});
+                throw Object.assign(fail('DELTA_MIGRATION_RECOVERING',
+                  '不足している写真・図面を受信しています（残り'+remaining.length+'件）。'),
+                  {localProjectId,scope:{...scope},bindingId:staged.bindingId,recovered,remaining:remaining.length});
+              }
+            }
             if(remaining.length)throw reviewFailure({plan:{reviewItems:remaining.map(item=>({
               code:'LEGACY_SOURCE_FILE_MISSING',blocking:true,message:'写真または図面ファイルを確認できません',
               sourceIssue:{code:'LEGACY_SOURCE_FILE_MISSING',blocking:true,key:item.key,kind:item.kind,
