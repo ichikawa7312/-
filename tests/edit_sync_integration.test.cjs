@@ -175,6 +175,16 @@ const watchdog=setTimeout(()=>{console.error('FAIL integration promise did not s
     assert(f.assets().some(e=>e[0]==='uploadPhoto'&&e[2]==='new-photo'));
     assert.equal(f.api.getSyncMeta('a').revision,2);
   });
+  if(cloud.includes('sentlog-sync-wait-v202'))await test('progress display failures cannot stop the real metadata worker or its snapshot save',async()=>{
+    for(const beginWork of [()=>{throw Error('display unavailable');},()=>({update(){throw Error('display update');},finish(){throw Error('display close');}})]){
+      const f=fixture();f.context.syncStatus.beginWork=beginWork;
+      f.edit('a',d=>d.shapes[0].memo='表示機能が失敗しても保存する記録');
+      await f.api.syncNow({eventDriven:true,projectIds:['a']});
+      assert.deepEqual(f.outgoing(),[['snapshot','cloud-a']]);
+      assert.equal(f.remote.get('cloud-a').payload.drawings[0].state.shapes[0].memo,'表示機能が失敗しても保存する記録');
+      assert.equal(f.api.metadata.running,false);f.stop();
+    }
+  });
   await test('an asset failure after baseline advancement retries files and preserves the error deadline',async()=>{
     const f=fixture();f.edit('a',d=>d.shapes[0].photos.push({id:'new-photo',size:200}));f.failures.photo='new-photo';
     await f.api.syncNow({eventDriven:true,projectIds:['a']});const failed={started:true,retryAt:f.api.files.retryAt};

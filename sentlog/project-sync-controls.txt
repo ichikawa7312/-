@@ -1,6 +1,31 @@
 /* project-sync-controls-v1: select local projects, including unsent projects. */
 let projectSyncControlBusy=false;
+const PROJECT_SYNC_UI_WAIT_MS=30000;
+const projectSyncRequests=new Map();
+let projectSyncControlSerial=0;
+let projectSyncControlOwner='';
+// This map owns only the caller's observation. The worker and its atomic saves
+// keep their original lifetime, even when the modal stops waiting for them.
+function requestProjectSync(id){
+  const owner=session?.user?.id,key=JSON.stringify([owner,id]);
+  if(projectSyncRequests.has(key))return projectSyncRequests.get(key);
+  const task=Promise.resolve().then(()=>{
+    if(!owner||session?.user?.id!==owner)throw Error('ログインが変更されました。現在のログインで同期を確認してください。');
+    return syncNow({force:true,projectIds:[id]});
+  });
+  projectSyncRequests.set(key,task);
+  const release=()=>{if(projectSyncRequests.get(key)===task)projectSyncRequests.delete(key);};
+  task.then(release,release);return task;
+}
+async function observeProjectSync(task){
+  let timer;
+  try{return await Promise.race([task.then(result=>({finished:true,result})),
+    new Promise(resolve=>{timer=setTimeout(()=>resolve({finished:false}),PROJECT_SYNC_UI_WAIT_MS);})]);}
+  finally{clearTimeout(timer);}
+}
 function renderProjectSyncControls(){
+  const currentOwner=session?.user?.id||'';
+  if(projectSyncControlOwner!==currentOwner){projectSyncControlOwner=currentOwner;projectSyncControlBusy=false;projectSyncControlSerial++;projectSyncRequests.clear();}
   const select=document.getElementById('sentlogSyncProjectSelect'),button=document.getElementById('sentlogSyncProjectNow');
   if(!select||!button)return;
   const selected=select.value;
@@ -27,16 +52,30 @@ async function syncSelectedProject(){
   if(!navigator.onLine){msg('オンラインになると同期を再開できます。');return;}
   const project=(workspace().projects||[]).find(p=>p.id===id);
   if(!project){msg('同期する案件を選んでください。');renderProjectSyncControls();return;}
-  projectSyncControlBusy=true;renderProjectSyncControls();
+  projectSyncControlBusy=true;projectSyncControlOwner=owner;renderProjectSyncControls();
+  const serial=++projectSyncControlSerial;
+  const current=()=>owner===session?.user?.id&&serial===projectSyncControlSerial&&
+    document.getElementById('sentlogSyncProjectSelect')?.value===id;
   msg('「'+(project.name||'案件')+'」の記録・図面・写真を確認しています。',true);
   try{
-    const result=await syncNow({force:true,projectIds:[id]});
-    if(owner!==session?.user?.id)return;
+    const task=requestProjectSync(id),observed=await observeProjectSync(task);
+    if(!current())return;
+    if(!observed.finished){
+      msg('「'+(project.name||'案件')+'」の確認に時間がかかっています。同期完了はまだ確認できていません。処理状況をご確認ください。');
+      // A later result may clear this observation, but cannot clear a message
+      // from a newer click, another selected project, or a different account.
+      task.then(result=>{if(current()){
+        msg(result?.started?'':'同期を開始できませんでした。入力中の内容を保存し、通信とログインを確認してください。');
+        syncStatus.refresh();
+      }},error=>{if(current())msg(error?.message||String(error));});
+      syncStatus.refresh();return;
+    }
+    const result=observed.result;
     if(!result?.started)msg('同期を開始できませんでした。入力中の内容を保存し、通信とログインを確認してください。');
     else msg('');
     // The sync engine owns partial-failure and completion messages. Starting a
     // request alone must never be presented here as a successful transfer.
     syncStatus.refresh();
-  }catch(error){if(owner===session?.user?.id)msg(error?.message||String(error));}
-  finally{projectSyncControlBusy=false;renderProjectSyncControls();}
+  }catch(error){if(current())msg(error?.message||String(error));}
+  finally{if(serial===projectSyncControlSerial){projectSyncControlBusy=false;renderProjectSyncControls();}}
 }
