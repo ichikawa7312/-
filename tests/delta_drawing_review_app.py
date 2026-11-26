@@ -54,9 +54,12 @@ class Cloud(app.Cloud):
             'pdf.worker.min.js': (root / 'sentlog/vendor/export-pdf.worker.min.js').read_bytes(),
         }
         self.pdf_requests = []
+        self.pdf_ack_requests = []
 
     def route(self, route, device):
         url = urlparse(route.request.url)
+        if url.path.endswith('/rpc/sentlog_ack_pdf'):
+            self.pdf_ack_requests.append(dict(device=device, method=route.request.method, path=url.path))
         if route.request.url.startswith(self.origin + '/sentlog/vendor/export-pdf'):
             name = url.path.rsplit('/', 1)[-1].removeprefix('export-')
             if name in self.pdf:
@@ -113,6 +116,55 @@ CUTOFF = r"""async ({scope,localProjectId})=>{
       size:file.blob instanceof Blob?file.blob.size:null}))};
 }"""
 
+OBSERVE_RECOVERY = r"""()=>{
+  // Observe original calls and native transactions; never delay, substitute or
+  // retry the real prepare/confirm operations. Keep failure diagnostics bounded.
+  const events=[];window.__drawingReviewDiagnostics={events};
+  const add=entry=>{events.push({at:Date.now(),...entry});if(events.length>100)events.shift();};
+  const records=SentlogRecords,key='background:edit-plan';
+  const state=()=>({pending:records.pending,failed:records.failed,writer:records.writerState(key)});
+  const error=e=>({name:e?.name,code:e?.code,message:String(e?.message||e),recoveryState:e?.recoveryState});
+  function observe(object,method,label,detail=()=>({})){
+    const native=object[method];object[method]=function(...args){
+      const info=detail(args);add({stage:label,event:'start',...info,...state()});
+      let result;try{result=native.apply(this,args);}catch(e){add({stage:label,event:'error',...info,...error(e),...state()});throw e;}
+      if(result?.then)result.then(()=>add({stage:label,event:'done',...info,...state()}),
+        e=>add({stage:label,event:'error',...info,...error(e),...state()}));
+      return result;
+    };
+  }
+  for(const method of ['prepareMissingDrawingRecovery','confirmMissingDrawingRecovery','cancelMissingDrawingRecovery'])
+    observe(records.deltaJournal,method,'journal.'+method);
+  for(const method of ['setItem','removeItem','batch','writeFile','removeFiles'])observe(records,method,'records.'+method,
+    args=>({keys:method==='batch'?(Array.isArray(args[0])?args[0].map(row=>row[0]):['iterable']):
+      method==='removeFiles'?(Array.isArray(args[0])?args[0]:['iterable']):[args[0]],stack:new Error().stack?.slice(0,900)}));
+  for(const method of ['put','add','delete','clear']){
+    const native=IDBObjectStore.prototype[method];IDBObjectStore.prototype[method]=function(...args){
+      if(this.transaction.db.name!=='surveyFieldNoteDB')return native.apply(this,args);
+      const value=args[0],info={stage:'idb.'+method,store:this.name,key:method==='put'||method==='add'?args[1]:args[0],
+        value:value instanceof Blob?{blob:true,size:value.size,type:value.type}:value&&typeof value==='object'?
+          {kind:value.kind,revision:value.revision,phase:value.phase}:typeof value,
+        stack:new Error().stack?.slice(0,900)};
+      const result=native.apply(this,args);add({...info,event:'queued'});
+      this.transaction.addEventListener('complete',()=>add({...info,event:'committed'}),{once:true});
+      this.transaction.addEventListener('abort',()=>add({...info,event:'aborted'}),{once:true});
+      return result;
+    };
+  }
+}"""
+
+
+def durable_diff(before, after):
+    if before is None or after is None:
+        return None
+    changed = {}
+    for store in before.keys() | after.keys():
+        left, right = dict(before.get(store, [])), dict(after.get(store, []))
+        keys = [key for key in left.keys() | right.keys() if left.get(key) != right.get(key)]
+        if keys:
+            changed[store] = sorted(keys)
+    return changed
+
 
 def seed_server(cloud, pack, pdf):
     sha = hashlib.sha256(pdf).hexdigest()
@@ -148,6 +200,7 @@ def seed_server(cloud, pack, pdf):
 def run(engine, cloud):
     with tempfile.TemporaryDirectory(prefix='delta-drawing-review-app-') as profile:
         context, page, errors = app.make_page(engine, profile, cloud, DEVICE)
+        before = None
         try:
             pack = app.base.payload(LOCAL, DRAWING)
             pack['project']['name'] = '合成PDF復旧検証'
@@ -166,6 +219,7 @@ def run(engine, cloud):
             page.reload(wait_until='domcontentloaded')
             page.wait_for_function('window.sentlogDeltaRuntime&&window.sentlogDrawingRecoveryReview', timeout=45000)
             page.evaluate('async()=>await sentlogAppReady')
+            page.evaluate(OBSERVE_RECOVERY)
             assert page.evaluate("SentlogRecords.deltaJournal.bindingStateFor('edit-project').phase") == 'staging'
             assert page.evaluate(CUTOFF, dict(scope=SCOPE, localProjectId=LOCAL)) == before_cutoff
             assert page.evaluate('pdfjsLib.version') == '3.11.174'
@@ -198,8 +252,13 @@ def run(engine, cloud):
                 return checked
 
             preview()
+            # A user needs time to inspect the PDF. Cross the legacy receiver's
+            # real 2.5-second startup timer while this review ticket is open;
+            # it must not write the missing background behind the review UI.
+            page.wait_for_timeout(4000)
             page.screenshot(path=f'/tmp/sentlog-delta-app-drawing-review-{cloud.engine}.png', full_page=True)
             assert page.evaluate(DURABLE) == before, 'Preview changed native application data'
+            assert not cloud.pdf_ack_requests, 'The legacy receiver ACKed a PDF during explicit review'
             page.locator('#sentlogDrawingRecoveryCancel').click()
             page.locator('#sentlogDrawingRecoveryDialog').wait_for(state='hidden')
             assert page.evaluate(DURABLE) == before, 'Cancel changed native application data'
@@ -240,9 +299,16 @@ def run(engine, cloud):
             assert not errors, errors
             print('PASS adopted bytes, honest receipt, pending photo reference and active binding survive a real browser reload', flush=True)
         except Exception:
+            try:
+                changes = durable_diff(before, page.evaluate(DURABLE))
+            except Exception as error:
+                changes = {'readError': str(error)}
             print(json.dumps(dict(ui=page.locator('body').inner_text()[-3500:],
                                   errors=errors, unexpected=cloud.unexpected,
-                                  sql_errors=cloud.sql_errors[-5:], diagnostics=page.evaluate(app.PHOTO_STATE)),
+                                  sql_errors=cloud.sql_errors[-5:], diagnostics=page.evaluate(app.PHOTO_STATE),
+                                  recovery=page.evaluate('window.__drawingReviewDiagnostics'),
+                                  changedDurableKeys=changes, remoteRequests=cloud.photo_requests[-30:],
+                                  pdfAckRequests=cloud.pdf_ack_requests[-10:]),
                              ensure_ascii=False, default=str), flush=True)
             raise
         finally:

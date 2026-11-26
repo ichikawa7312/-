@@ -286,6 +286,12 @@
     if(affectedProjects(changes,before,after).projectIds.some(id=>bindings.has(id)))
       throw journalError('JOURNAL_REMOTE_WRITER','この案件は差分共有に移行済みです。旧方式の受信による上書きを止めました');
   }
+  function assertLegacyPdfHandover(bound,projectIds,cloudProjectIds,fileKeys){
+    if(!fileKeys.some(key=>typeof key==='string'&&key.startsWith('background:')))return;
+    if(bound.some(binding=>binding.phase==='staging'&&
+      (projectIds.includes(binding.localProjectId)||cloudProjectIds.includes(binding.scope?.projectId))))
+      throw journalError('JOURNAL_PDF_HANDOVER','この図面は同期の確認・復旧処理で保護しています。同期画面で図面を確認してください。');
+  }
   // Read preimages, append the immutable intent, and mutate the legacy view in
   // ONE transaction. A completed canvas save therefore always has a replayable
   // intent, even if the process dies before the independent replica is written.
@@ -313,6 +319,11 @@
         });
         const workspaceChange=changes.find(x=>x.key===WS),workspaceAfter=workspaceChange?workspaceChange.after:workspaceBefore;
         const affected=affectedProjects(changes,workspaceBefore,workspaceAfter,fileChanges),bound=allBindings.filter(x=>x?.kind==='binding');
+        const legacyPdf=contexts.filter(context=>context.operation==='legacy-pdf-receive');
+        // The cached lifecycle can be stale when a different tab starts the
+        // handover. Check its durable authority in this SAME file/WAL tx.
+        if(legacyPdf.length)assertLegacyPdfHandover(bound,affected.projectIds,
+          legacyPdf.map(context=>context.context?.projectId),fileKeys);
         if(archiveContext){
           const projectId=archiveContext.context.localProjectId||archiveContext.context.projectId,binding=bound.find(b=>b.localProjectId===projectId);
           if(binding){
@@ -761,8 +772,24 @@
       data.fileSequence!==plan.fileSequence||(fileGenerations.get(plan.file.key)||0)!==plan.generation||
       archiveReleaseText(data.binding)!==plan.bindingText||
       (data.live===undefined)!==plan.liveMissing||
-      (!plan.liveMissing&&(!(data.live instanceof Blob)||data.live.size!==plan.file.size||data.live.type!==plan.liveType)))
-      throw journalError('JOURNAL_RECOVERY_REVIEW_CHANGED','図面の確認中に記録またはファイルが変わりました。もう一度候補を確認してください');
+      (!plan.liveMissing&&(!(data.live instanceof Blob)||data.live.size!==plan.file.size||data.live.type!==plan.liveType))){
+      // Preserve a small, non-content diagnostic for a refused confirmation.
+      // The conditions and the user-facing error remain exactly as guarded.
+      const recoveryState=[
+        ['ticket-status',!['prepared','confirming'].includes(plan.status)],
+        ['writer-error',failure||failures.size],['pending-records',pending.size||inFlight],
+        ['record-operation',operation||exclusive],['file-writer',fileWriters.get(plan.file.key)?.size],
+        ['memory-record-revision',revision!==plan.recordRevision],
+        ['stored-record-revision',Number(data.meta?.revision)!==plan.recordRevision],
+        ['file-sequence',data.fileSequence!==plan.fileSequence],
+        ['file-generation',(fileGenerations.get(plan.file.key)||0)!==plan.generation],
+        ['binding',archiveReleaseText(data.binding)!==plan.bindingText],
+        ['live-existence',(data.live===undefined)!==plan.liveMissing],
+        ['live-bytes',!plan.liveMissing&&(!(data.live instanceof Blob)||data.live.size!==plan.file.size||data.live.type!==plan.liveType)]
+      ].filter(([,changed])=>changed).map(([name])=>name);
+      throw Object.assign(journalError('JOURNAL_RECOVERY_REVIEW_CHANGED',
+        '図面の確認中に記録またはファイルが変わりました。もう一度候補を確認してください'),{recoveryState});
+    }
     const ref=reviewedDrawingCandidate(data.binding,plan.file,plan.scope,plan.localProjectId,plan.bindingId);
     const projects=workspaceOf(data.workspace).projects,project=projects.filter(item=>item.id===plan.localProjectId);
     const drawing=project.length===1?(project[0].drawings||[]).filter(item=>item.id===ref.drawingId):[];
@@ -781,6 +808,21 @@
     listBindingsSync:()=>[...bindings.values()].map(binding=>hydrateBinding(binding)),
     bindingStateFor:localProjectId=>bindingState(bindings.get(localProjectId)),
     listBindingStatesSync:()=>[...bindings.values()].map(bindingState),
+    async assertLegacyPdfReceive({projectId,key}={}){
+      assertReady();
+      if(typeof projectId!=='string'||!projectId||typeof key!=='string'||!/^background:[^:]+$/.test(key))
+        throw journalError('JOURNAL_PDF_HANDOVER_SCOPE','受信する図面と案件を確認できません。');
+      await connect();const tx=transaction('readonly'),done=complete(tx);
+      let raw=null,rows=[],waiting=2;
+      function check(){if(--waiting)return;try{
+        const affected=affectedProjects([],raw,raw,[{key}]);
+        assertLegacyPdfHandover(rows.filter(row=>row?.kind==='binding'),affected.projectIds,[projectId],[key]);
+      }catch(error){tx.sentlogJournalError=error;tx.abort();}}
+      tx.objectStore(STORE).get(PREFIX+WS).onsuccess=e=>{raw=e.target.result??null;check();};
+      journalControls(tx.objectStore(CONTROL)).onsuccess=e=>{rows=e.target.result;check();};
+      // This read never hydrates protected files or updates their references.
+      await done;return true;
+    },
     async readBindingState(localProjectId){
       assertReady();if(typeof localProjectId!=='string'||!localProjectId)
         throw journalError('JOURNAL_PROJECT','端末内の案件を確認できません');

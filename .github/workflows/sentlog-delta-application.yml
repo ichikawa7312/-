@@ -15,6 +15,7 @@ on:
       - 'tests/delta_drawing_*'
       - 'tests/helpers/delta_recovery_fixture.cjs'
       - 'tests/pdf_recovery_budget.test.cjs'
+      - 'tests/pdf_handover_guard.test.cjs'
       - 'tests/delta_capacity_app_flow.py'
       - 'tests/collaboration_ui.py'
       - 'tests/edit_sync_ui.py'
@@ -66,7 +67,9 @@ jobs:
           python -m pip install playwright==1.57.0 pillow==11.3.0
           npm install --prefix "$RUNNER_TEMP/sentlog-app-test-deps" --ignore-scripts --no-audit --no-fund --save-exact @electric-sql/pglite@0.5.17 fake-indexeddb@6.2.8
       - name: Verify bounded PDF recovery against the production build
-        run: NODE_PATH="$RUNNER_TEMP/sentlog-app-test-deps/node_modules" node tests/pdf_recovery_budget.test.cjs
+        run: |
+          NODE_PATH="$RUNNER_TEMP/sentlog-app-test-deps/node_modules" node tests/pdf_recovery_budget.test.cjs
+          NODE_PATH="$RUNNER_TEMP/sentlog-app-test-deps/node_modules" node tests/pdf_handover_guard.test.cjs
       - name: Verify explicit drawing recovery preserves pending photo references
         run: |
           NODE_PATH="$RUNNER_TEMP/sentlog-app-test-deps/node_modules" node tests/delta_drawing_review_integration.test.cjs
