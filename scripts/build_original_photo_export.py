@@ -92,3 +92,6 @@ subprocess.run([sys.executable, 'scripts/build_sync_recovery.py'], cwd=ROOT, che
 
 # Keep modal controls responsive while the original single-flight saves finish.
 subprocess.run([sys.executable, 'scripts/build_sync_wait.py'], cwd=ROOT, check=True)
+
+# Diagnose retained copies without deleting or decoding user photographs.
+subprocess.run([sys.executable, 'scripts/build_storage_diagnostics.py'], cwd=ROOT, check=True)

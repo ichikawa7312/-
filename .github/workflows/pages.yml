@@ -271,7 +271,8 @@ jobs:
                  'pdf-quality.js','image-quality.js','field-records.js','page-management.js','drawing-export-view.html']
           names+=['part01.txt','part02.txt','part03.txt','part04.txt','part05.txt',
                   'part06.txt','part07.txt','part08.txt','part09.txt']
-          names+=['record-store.js','blob-sha256.js','pdf-recovery.js','archive.js','archive-core.js','archive-capacity.js',
+          names+=['record-store.js','blob-sha256.js','storage-ui.js','storage-diagnostics.js','storage-diagnostics-ui.js',
+                  'pdf-recovery.js','archive.js','archive-core.js','archive-capacity.js',
                   'delta-sync-core.js','delta-sync-indexeddb.js','delta-sync-legacy-preflight.js',
                   'delta-sync-legacy-source.js','delta-sync-migration.js','delta-sync-metadata.js',
                   'delta-sync-reconcile.js','delta-sync-bootstrap.js','delta-sync-transport.js',

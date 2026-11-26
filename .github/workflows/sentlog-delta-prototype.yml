@@ -8,6 +8,11 @@ on:
       - 'sentlog/record-collaboration.js'
       - 'scripts/build_delta_sync.py'
       - 'scripts/build_sync_recovery.py'
+      - 'scripts/build_storage_diagnostics.py'
+      - 'scripts/build_original_photo_export.py'
+      - 'sentlog/storage-diagnostics*.js'
+      - 'tests/storage_diagnostics*'
+      - 'tests/record_file_dedup.test.cjs'
       - 'scripts/assemble_delta_sync.py'
       - 'scripts/build_capacity.py'
       - 'scripts/build_management.py'
@@ -105,6 +110,7 @@ jobs:
           node tests/delta_legacy_source.test.cjs
           node tests/delta_migration.test.cjs
           node tests/delta_migration_retry.test.cjs
+          node tests/storage_diagnostics.test.cjs
           node tests/delta_assets.test.cjs
           node tests/delta_seed.test.cjs
           node tests/delta_reconcile.test.cjs
@@ -147,6 +153,7 @@ jobs:
           node tests/delta_archive_pglite.cjs
           node tests/delta_asset_runtime.test.cjs
           node tests/record_file_guard.test.cjs
+          node tests/record_file_dedup.test.cjs
           node tests/file_database_compat.test.cjs
           node tests/session_guard.test.cjs
           node tests/collaboration_channel.test.cjs
@@ -184,6 +191,9 @@ jobs:
       - name: Verify photo bytes, atomic receipts and incomplete delivery
         timeout-minutes: 4
         run: python tests/delta_assets_browser.py --browser ${{ matrix.browser }} --output release-diagnostics/delta-assets-${{ matrix.browser }}.json
+      - name: Verify read-only storage diagnosis and unchanged file retention
+        timeout-minutes: 3
+        run: python tests/storage_diagnostics_ui.py --browser ${{ matrix.browser }} --output release-diagnostics/storage-diagnostics-${{ matrix.browser }}.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
