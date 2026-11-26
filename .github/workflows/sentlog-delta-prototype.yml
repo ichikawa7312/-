@@ -117,6 +117,8 @@ jobs:
           node tests/delta_app_journal.test.cjs
           node tests/delta_cutoff_recovery.test.cjs
           node tests/delta_migration_recovery.test.cjs
+          node tests/delta_drawing_review_integration.test.cjs
+          node tests/delta_drawing_upload_guard.test.cjs
           BINDING_BENCHMARK=1 node tests/delta_cutoff_files.test.cjs
           node tests/delta_app_mode.test.cjs
           node tests/delta_photo_lease.test.cjs

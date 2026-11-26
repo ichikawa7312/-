@@ -108,6 +108,8 @@ function fixture(){
     // This fixture exercises the legacy branch against a server without delta
     // rollout. The delta browser suite uses the actual runtime and SQL RPCs.
     SentlogDeltaMigrationRecovery:require('../sentlog/delta-sync-migration-recovery.js'),
+    SentlogDeltaDrawingReview:{create:options=>require('../sentlog/delta-sync-drawing-review.js')
+      .create({...options,document:{getElementById:()=>null}})},
     SentlogDeltaAppMigration:{createInstaller:()=>async()=>{throw Error('Legacy fixture must not migrate');}},
     SentlogDeltaAppRuntime:{createRuntime:()=>({inspect:async()=>({enabled:false,canActivate:false}),isActive:()=>false,
       reset(){},wake(){},sync:async()=>{throw Error('Legacy fixture must not use a delta writer');}})},

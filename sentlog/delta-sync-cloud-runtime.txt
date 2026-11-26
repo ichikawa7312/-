@@ -28,9 +28,58 @@ const sentlogDeltaRecoverMissing=window.SentlogDeltaMigrationRecovery.createReco
     return rows?.length===1?rows[0]:null;
   }
 });
+const sentlogDrawingReviewJobs=new WeakMap();
+const sentlogDrawingReview=window.SentlogDeltaDrawingReview.create({
+  async prepare(entry){
+    const scope={...entry.scope},generation=sessionGuard.generation(),job={cancelled:false,remote:null,local:null};
+    const validate=()=>{
+      const binding=window.SentlogRecords.deltaJournal.bindingStateFor(entry.localProjectId);
+      if(job.cancelled||generation!==sessionGuard.generation()||session?.user?.id!==scope.ownerId||
+        localStorage.getItem(DEVICE_KEY)!==scope.deviceId||binding?.id!==entry.bindingId||binding.phase!=='staging'||
+        binding.scope.projectId!==scope.projectId||!navigator.onLine)
+        throw Object.assign(Error('確認中に通信・利用者・案件の状態が変わりました。元の記録を保持しています。もう一度図面を確認してください。'),{code:'DELTA_DRAWING_REVIEW_CONTEXT'});
+      window.SentlogRecords.assertSafe();return true;
+    };
+    try{
+      validate();const missing=await window.SentlogRecords.deltaJournal.missingCutoffFiles({scope,
+        localProjectId:entry.localProjectId,bindingId:entry.bindingId});validate();
+      const selected=await sentlogDeltaRecoverMissing.prepareReview({scope,localProjectId:entry.localProjectId,
+        serverRevision:entry.serverRevision,missing,key:entry.issue.key,validate});job.remote=selected.ticket;validate();
+      job.local=await window.SentlogRecords.deltaJournal.prepareMissingDrawingRecovery({scope,
+        localProjectId:entry.localProjectId,bindingId:entry.bindingId,key:selected.key,blob:selected.blob,
+        size:selected.size,sha256:selected.sha256,proof:selected.proof,validate});validate();
+      const candidate=Object.freeze({blob:selected.blob,fileName:selected.fileName,drawingName:selected.drawingName});
+      job.validate=validate;sentlogDrawingReviewJobs.set(candidate,job);return candidate;
+    }catch(error){
+      job.cancelled=true;if(job.remote)sentlogDeltaRecoverMissing.releaseReview(job.remote);
+      if(job.local)window.SentlogRecords.deltaJournal.cancelMissingDrawingRecovery(job.local);throw error;
+    }
+  },
+  async confirm(candidate){
+    const job=sentlogDrawingReviewJobs.get(candidate);
+    if(!job||job.cancelled)throw Error('図面の確認期限が切れました。もう一度図面を確認してください。');
+    job.validate();await sentlogDeltaRecoverMissing.validateReview(job.remote);job.validate();
+    return window.SentlogRecords.deltaJournal.confirmMissingDrawingRecovery(job.local);
+  },
+  cancel(candidate){
+    const job=sentlogDrawingReviewJobs.get(candidate);if(!job)return;
+    job.cancelled=true;sentlogDeltaRecoverMissing.releaseReview(job.remote);
+    window.SentlogRecords.deltaJournal.cancelMissingDrawingRecovery(job.local);sentlogDrawingReviewJobs.delete(candidate);
+  },
+  async onResumed(entry){
+    const select=document.getElementById('sentlogSyncProjectSelect');if(select)select.value=entry.localProjectId;
+    const result=await syncNow({force:true,projectIds:[entry.localProjectId]});
+    if(!result?.started)throw Error('「この案件だけ同期」から再確認してください。');
+  }
+});
+window.sentlogDrawingRecoveryReview=sentlogDrawingReview;
 const sentlogDeltaInstaller=window.SentlogDeltaAppMigration.createInstaller({records:window.SentlogRecords,
   recoverMissingFiles:sentlogDeltaRecoverMissing,
-  onProgress:detail=>{if(detail.localProjectId)sentlogDeltaStatuses.set(detail.localProjectId,detail);}});
+  onProgress:detail=>{if(detail.localProjectId){
+    sentlogDeltaStatuses.set(detail.localProjectId,detail);
+    if(detail.status==='missing-files-review')sentlogDrawingReview.update({...detail,
+      projectName:workspace().projects.find(project=>project.id===detail.localProjectId)?.name||'案件'});
+  }}});
 const sentlogDeltaApp=window.SentlogDeltaAppRuntime.createRuntime({
   records:window.SentlogRecords,url:SUPABASE_URL,key:SUPABASE_KEY,session:()=>session,ensureSession,
   authGeneration:()=>sessionGuard.generation(),subscribeAuth:fn=>sessionGuard.subscribe(fn),
@@ -70,6 +119,7 @@ window.sentlogDeltaArchiveProof=(cp,job,options)=>job?.delta_checkpoint?sentlogD
 window.sentlogDeltaSuspendPhotos=cp=>sentlogDeltaApp.suspendPhotos(cp);
 async function collaborationDeltaRound(cp,context){
   context.assertCurrent();const result=await sentlogDeltaApp.sync(cp);context.assertCurrent();
+  sentlogDrawingReview.clear(cp.client_key);
   if(!result.deferred){
     const latest=workspace().projects.find(p=>p.id===cp.client_key);
     if(cp.status!=='archived'&&latest&&cp.name!==(latest.name||'案件')){

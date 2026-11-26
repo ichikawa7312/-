@@ -525,7 +525,9 @@ def run(engine, cloud, root):
             def received_by_both():
                 asset=next((item for item in cloud.assets.values() if item['client_key']=='photo:edit-plan:'+reference['id']),None)
                 return asset and all((asset['id'],device) in cloud.receipts for device in (A,B))
-            wait(cloud,a,received_by_both,'Automatic photo delivery did not produce both exact-byte receipts')
+            # The reference can arrive before its uploader publishes the bytes;
+            # existing 30-second project backoffs can exceed 45 seconds on slow WebKit.
+            wait(cloud,a,received_by_both,'Automatic photo delivery did not produce both exact-byte receipts',timeout=90)
             hashes=[]
             for page in (a,b):
                 hashes.append(page.evaluate("""async id=>{const blob=await getDBFile('photo:edit-plan:'+id);

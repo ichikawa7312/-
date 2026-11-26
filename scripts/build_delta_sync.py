@@ -75,8 +75,35 @@ change(cloud, "        if(cp.status==='archived'){collaborationFileFailures.dele
           }
           collaborationFileFailures.delete(id);continue;
         }""")
-change(cloud, 'function collaborationSessionChanged(){', 'function collaborationSessionChanged(){\n  sentlogDeltaApp.reset();sentlogDeltaStatuses.clear();sentlogDeltaCheckpointTimes.clear();')
+change(cloud, 'function collaborationSessionChanged(){', 'function collaborationSessionChanged(){\n  sentlogDrawingReview.clear();sentlogDeltaApp.reset();sentlogDeltaStatuses.clear();sentlogDeltaCheckpointTimes.clear();')
 change(cloud, 'function collaborationWake(){', 'function collaborationWake(){sentlogDeltaApp.wake();')
+change(cloud, '  renderProjectSyncControls();', '  renderProjectSyncControls();\n  window.sentlogDrawingRecoveryReview?.refresh();')
+change(cloud, 'style="width:min(420px,100%);max-height:90dvh;overflow-y:auto;background:#fff;',
+       'style="width:min(420px,100%);max-height:calc(100dvh - 36px);overflow-y:auto;box-sizing:border-box;background:#fff;')
+change(cloud, '>案件を選んで同期</label>', '>個別に同期する案件</label>')
+change(cloud, '新しく作った案件も個別に同期できます。',
+       '選択した案件は「この案件だけ同期」で確認できます。下の同期状況には、ほかの案件も表示されます。')
+# A reviewed download is not a new PDF edit. Never upload it over a file that
+# another device changed while the review was open or after the local restart.
+change(cloud, "  if(!(blob instanceof Blob))return {status:'missing'};\n  const revision=expectedDrawingRevision(item.drawingId);",
+       """  if(!(blob instanceof Blob))return {status:'missing'};
+  const accepted=window.SentlogRecords?.deltaJournal?.confirmedDrawingSource?.(cloudProject.client_key,item.drawingId);
+  if(accepted&&blob.size===accepted.size&&(await sha256Hex(blob)).toLowerCase()===accepted.sha256){
+    const clientKey='drawing:'+item.drawingId;
+    const matches=await rest('/rest/v1/sentlog_assets?project_id=eq.'+enc(cloudProject.id)+
+      '&client_key=eq.'+enc(clientKey)+'&select='+enc(sentlogDeltaRecoveryFields));
+    const remote=matches?.length===1?matches[0]:null,parts=String(remote?.storage_path||'').split('/');
+    if(remote&&remote.id===accepted.assetId&&remote.owner_id===session.user.id&&remote.project_id===cloudProject.id&&
+      remote.client_key===clientKey&&remote.kind==='drawing'&&remote.status!=='storage_deleted'&&
+      parts.length>=4&&parts[0]===session.user.id&&parts[1]===cloudProject.id&&
+      parts.every(part=>part&&part!=='.'&&part!=='..'&&!/[\\\\\\u0000-\\u001f]/.test(part))&&
+      remote.metadata?.drawing_id===item.drawingId&&
+      (!remote.metadata.local_project_key||remote.metadata.local_project_key===cloudProject.client_key)&&
+      String(remote.sha256).toLowerCase()===accepted.sha256&&Number(remote.byte_size)===accepted.size)
+      return {status:'exists',asset:remote};
+    drawingUploadBlocks.add(item.drawingId);return {status:'blocked-stale'};
+  }
+  const revision=expectedDrawingRevision(item.drawingId);""")
 
 # The existing renderer continues to preserve inspector/IME drafts. Its storage
 # commit now uses the journal CAS authority, never an ordinary remote batch.
@@ -208,7 +235,7 @@ change(capacity, "'件／合計'+bytes(counter2.bytes)+'。'+",
 change(capacity, '        finally{view.locked(false);}',
        '        finally{resumePhotos?.();view.locked(false);}')
 
-modules = ['delta-sync-core', 'delta-sync-indexeddb', 'delta-sync-legacy-preflight', 'delta-sync-legacy-source', 'delta-sync-migration-recovery',
+modules = ['delta-sync-core', 'delta-sync-indexeddb', 'delta-sync-legacy-preflight', 'delta-sync-legacy-source', 'delta-sync-migration-recovery', 'delta-sync-drawing-review',
            'delta-sync-migration', 'delta-sync-metadata', 'delta-sync-reconcile', 'delta-sync-bootstrap',
            'delta-sync-transport', 'delta-sync-app-bridge', 'delta-sync-assets', 'delta-sync-asset-transport',
            'delta-sync-asset-runtime', 'delta-sync-app-journal', 'delta-sync-app-migration',
