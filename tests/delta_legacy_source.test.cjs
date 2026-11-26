@@ -313,5 +313,44 @@ async function readonly(fn){
   await f.changeOriginal([['meta',f.originalMeta.key,{...f.originalMeta,exportedAt:123}]]);
   assert.equal((await source.recheck(s)).unchanged,false);
  });
+ async function pendingFixture({present=false,value,mutate=()=>{}}={}){
+  const f=await fixture({noOriginalDb:true}),state=structuredClone(f.state);mutate(state);
+  const key=`photo:${drawing}:${photoId}`,cutoff={version:1,kind:'sentlog-journal-cutoff',bindingId:'pending-binding',
+   localProjectId:project,scope:{ownerId:'owner',projectId:'cloud-project',deviceId:'device'},cutoffSeq:0,sourceRevision:7,
+   sourceMeta:{schema:1,revision:7},rawEntries:[[WS,json(f.workspace)],[DRAW+drawing,json(state)]],files:present?[{key,value}]:[]};
+  const journal={version:1,assertFence:()=>true,bindingFor:()=>({cutoff}),readCutoff:async()=>structuredClone(cutoff)};
+  const source=f.source({journal,allowPendingSharedPhotos:true});return {f,source,cutoff,key};
+ }
+ await test('an absent protected shared photo retains exact reference metadata as pending without certifying bytes',async()=>{
+  const {f,source,cutoff,key}=await pendingFixture(),s=await source.capture(project,{recordCutoff:cutoff});
+  assert.equal(s.readyForStaging,true);assert.equal(s.readyForActivation,false);assert.equal(s.files.length,0);
+  const entry=s.manifest.find(item=>item.key===key);assert.equal(entry.status,'shared-photo-pending');
+  assert.equal(entry.deliveryVerified,false);assert.deepEqual(entry.references,[{recordId:'record-1',photo:f.photo}]);
+  assert(s.issues.some(item=>item.code==='LEGACY_SOURCE_SHARED_PHOTO_PENDING'&&item.blocking===false));
+  assert.equal(s.rawEntries.find(item=>item.key===DRAW+drawing).value,cutoff.rawEntries[1][1]);
+  assert.equal((await source.recheck(s)).unchanged,true);assert.equal(cutoff.files.length,0);source.close();
+ });
+ await test('stored empty null undefined corrupt and mismatched photo bytes remain blocking even when pending references are enabled',async()=>{
+  for(const value of [new Blob([]),null,undefined,'unreadable',new Blob(['wrong bytes'])]){
+   const {source,cutoff,key}=await pendingFixture({present:true,value}),s=await source.capture(project,{recordCutoff:cutoff});
+   assert.equal(s.readyForStaging,false);assert(!s.manifest.some(item=>item.key===key&&item.status==='shared-photo-pending'));
+   assert(s.issues.some(item=>['LEGACY_SOURCE_FILE_MISSING','LEGACY_SOURCE_FILE_MISMATCH'].includes(item.code)));source.close();
+  }
+ });
+ await test('missing incomplete conflicting photo identities and background PDFs never become pending shared photos',async()=>{
+  for(const mutate of [s=>delete s.shapes[0].photos[0].sha256,s=>s.shapes[0].photos[0].size=0,s=>s.shapes[0].photos[0].variant='original',
+   ...[null,false,'',0].map(variant=>s=>s.shapes[0].photos[0].variant=variant),
+   s=>s.shapes[0].photos[0].size='12',s=>s.shapes.push({id:'record-2',photos:[{...s.shapes[0].photos[0],sha256:'f'.repeat(64)}]}),
+   s=>{s.sourceType='pdf';s.fileName='drawing.pdf';}]){
+   const {source,cutoff}=await pendingFixture({mutate}),s=await source.capture(project,{recordCutoff:cutoff});
+   assert.equal(s.readyForStaging,false);assert(s.issues.some(item=>item.blocking));source.close();
+  }
+ });
+ await test('pending eligibility is opt-in and cannot be used outside the canonical journal cutoff',async()=>{
+  const {f,source,cutoff,key}=await pendingFixture();await f.change([[key,undefined]]);
+  assert.equal((await source.capture(project)).readyForStaging,false);
+  const strict=f.source({journal:{version:1,assertFence:()=>true,bindingFor:()=>({cutoff}),readCutoff:async()=>structuredClone(cutoff)}});
+  assert.equal((await strict.capture(project,{recordCutoff:cutoff})).readyForStaging,false);source.close();strict.close();
+ });
  console.log('PASS legacy durable source:',count,'cases (synthetic IndexedDB only, no source writes)');
 })().catch(e=>{console.error(e.stack||e);process.exitCode=1;});

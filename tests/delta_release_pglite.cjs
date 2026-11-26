@@ -60,7 +60,7 @@ const payload=index=>({project:{id:'release-local-'+index,name:'Release project 
   try{
     const sql=assemble(),manifest=JSON.parse(assemble('--manifest'));
     check('release SQL and manifest are deterministic',sql===assemble()&&JSON.stringify(manifest)===JSON.stringify(JSON.parse(assemble('--manifest'))));
-    check('manifest binds all 14 reviewed sources to the exact SQL',manifest.components.length===14&&manifest.transactional===true&&manifest.activatesProjects===false&&manifest.enablesRollout===false&&manifest.sha256===createHash('sha256').update(sql).digest('hex'));
+    check('manifest binds all 15 reviewed sources to the exact SQL',manifest.components.length===15&&manifest.transactional===true&&manifest.activatesProjects===false&&manifest.enablesRollout===false&&manifest.sha256===createHash('sha256').update(sql).digest('hex'));
     const replacements=manifest.components.filter(x=>x.selection!=='transaction body');
     check('legacy upgrades select only the three required private functions',C.equal(replacements.map(x=>x.selection),[
       'sentlog_archive_private.gateway','sentlog_collaboration_private.guard_snapshot','sentlog_archive_private.capacity_gateway']));

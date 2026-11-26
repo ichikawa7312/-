@@ -7,9 +7,12 @@ on:
       - 'scripts/build_*.py'
       - 'sentlog/delta-sync-*'
       - 'sentlog/record-store.js'
+      - 'sentlog/blob-sha256.js'
+      - 'tools/blob-hash-runtime/**'
       - 'sentlog/record-collaboration.js'
       - 'sentlog/session-guard.js'
       - 'tests/delta_app_*'
+      - 'tests/pdf_recovery_budget.test.cjs'
       - 'tests/delta_capacity_app_flow.py'
       - 'tests/collaboration_ui.py'
       - 'tests/edit_sync_ui.py'
@@ -59,7 +62,9 @@ jobs:
       - name: Install pinned browser and SQL adapters
         run: |
           python -m pip install playwright==1.57.0 pillow==11.3.0
-          npm install --prefix "$RUNNER_TEMP/sentlog-app-test-deps" --ignore-scripts --no-audit --no-fund --save-exact @electric-sql/pglite@0.5.17
+          npm install --prefix "$RUNNER_TEMP/sentlog-app-test-deps" --ignore-scripts --no-audit --no-fund --save-exact @electric-sql/pglite@0.5.17 fake-indexeddb@6.2.8
+      - name: Verify bounded PDF recovery against the production build
+        run: NODE_PATH="$RUNNER_TEMP/sentlog-app-test-deps/node_modules" node tests/pdf_recovery_budget.test.cjs
       - name: Verify two actual applications with native storage and real SQL
         run: NODE_PATH="$RUNNER_TEMP/sentlog-app-test-deps/node_modules" python tests/delta_app_ui.py --engine ${{ matrix.engine }} --built-root .
       - uses: actions/upload-artifact@v4

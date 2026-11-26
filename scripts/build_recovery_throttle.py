@@ -19,7 +19,7 @@ def change(path,old,new,count=1):
     pending[path]=text.replace(old,new)
 
 p='sentlog/pdf-recovery.js'
-change(p,'let busy=false;',guard+'\nconst deliveryGuard=createSentlogDeliveryGuard();\nlet busy=false;')
+change(p,'let busy=false;',guard+'\nconst deliveryGuard=createSentlogDeliveryGuard();\nconst receiveGuard=createSentlogDeliveryGuard({maxPerCycle:8,cooldownMs:0});\nlet busy=false;')
 change(p,'  busy=true;\n  try{','  if(!deliveryGuard.begin(JSON.stringify([s.user?.id,id])))return;\n  busy=true;let cycleFailed=false;\n  try{')
 # Only another device needs the local sender. Own requests still proceed
 # through the existing durable hash verification and acknowledgement below.
@@ -34,6 +34,26 @@ change(p,"}catch(e){errors++;console.warn('PDF receive',a.id,e.message)}",
          "}catch(e){if(deliveryGuard.isTransient(e))throw e;errors++;console.warn('PDF receive',a.id,e.message)}")
 change(p,"}catch(e){status('PDF同期の確認が必要です：'+e.message)}finally{busy=false}",
          "}catch(e){cycleFailed=true;deliveryGuard.fail(e);status('PDF同期の確認が必要です：'+e.message)}finally{if(!cycleFailed)deliveryGuard.complete();busy=false}")
+# Reading an existing PDF still hashes its actual local bytes. Bound this
+# independent background receiver too: the sender's guard does not cover it.
+# A rotating cursor prevents small early files from starving later drawings;
+# one file larger than the byte budget gets its own turn. Explicit per-drawing
+# recovery remains outside this background batch and keeps its byte checks.
+change(p,"    const ids=drawingIds();let available=0,missing=0,total=0,errors=0;",
+         """    const ids=drawingIds();let available=0,missing=0,total=0,errors=0,checkedBytes=0;
+    const receiveAssets=(assets||[]).filter(a=>allowed(a.project_id)&&a.metadata?.drawing_id&&ids.has(a.metadata.drawing_id));
+    receiveGuard.begin(JSON.stringify([s.user?.id,id]));""")
+change(p,"""    for(const a of assets||[]){
+      if(!allowed(a.project_id)||!a.metadata?.drawing_id || !ids.has(a.metadata.drawing_id))continue;
+      total++;""",
+         """    for(const a of receiveGuard.order(receiveAssets)){
+      const expectedBytes=Number.isSafeInteger(Number(a.byte_size))&&Number(a.byte_size)>0?Number(a.byte_size):0;
+      if(receiveGuard.full()||(total>0&&checkedBytes+expectedBytes>32*1024*1024))break;
+      if(!receiveGuard.take(a))continue;
+      total++;checkedBytes+=expectedBytes;""")
+change(p,"    else { status(total?'PDF：この端末に '+available+' / '+total+' 件保存済み（内容照合済み）。':'使用中のPDFに再取得待ちはありません。'); }",
+         """    else if(receiveAssets.length>total)status('PDF：今回 '+available+' 件の内容を照合しました。ほかの図面は順番に確認します。');
+    else { status(total?'PDF：この端末に '+available+' / '+total+' 件保存済み（内容照合済み）。':'使用中のPDFに再取得待ちはありません。'); }""")
 # Do not rewrite an already outstanding request on every background poll.
 # The original explicit recovery authorization and ACK path remain intact.
 change(p,"          await rpc('sentlog_request_pdf',{p_asset_id:a.id,p_device_id:id});\n          missing++;",

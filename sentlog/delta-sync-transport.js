@@ -134,14 +134,15 @@
   }
 
   function createTransport({provider,client,scope:inputScope,currentScope,online:network=()=>root.navigator?.onLine!==false,
-    onStatus=()=>{},requestTimeoutMs=15000,retryMs=1000,timers={setTimeout:(f,n)=>setTimeout(f,n),clearTimeout:t=>clearTimeout(t)}}={}){
+    onStatus=()=>{},requestTimeoutMs=15000,activationTimeoutMs=45000,retryMs=1000,timers={setTimeout:(f,n)=>setTimeout(f,n),clearTimeout:t=>clearTimeout(t)}}={}){
     const scope=Object.freeze(Object.fromEntries(SCOPE.map(k=>[k,inputScope?.[k]])));
     provider=provider||(client?createSupabaseProvider(client):null);
     insist(CORE&&SCOPE.every(k=>uuid(scope[k]))&&typeof currentScope==='function'&&typeof network==='function'&&provider&&
       ['getSession','getUser','rpc'].every(k=>typeof provider[k]==='function')&&
       (typeof provider.peekSession==='function'||typeof provider.subscribeAuth==='function'),
       'DELTA_TRANSPORT_CONFIG','利用者・案件・登録端末と認証方法が必要です');
-    insist(Number.isSafeInteger(requestTimeoutMs)&&requestTimeoutMs>0&&Number.isSafeInteger(retryMs)&&retryMs>0,
+    insist(Number.isSafeInteger(requestTimeoutMs)&&requestTimeoutMs>0&&
+      Number.isSafeInteger(activationTimeoutMs)&&activationTimeoutMs>0&&Number.isSafeInteger(retryMs)&&retryMs>0,
       'DELTA_TRANSPORT_CONFIG','通信の待機時間が不正です');
     let closed=false,generation=0,observed=null,verified=null,serverCapabilities=null,live=null,liveToken=null,realtimeConnected=false,
       wakeTimer=null,connecting=false,failures=0;
@@ -184,14 +185,14 @@
       insist(user?.id===scope.ownerId,'DELTA_SCOPE','認証された利用者と案件の所有者が一致しません');
       verified=auth;failures=0;return auth;
     }
-    function request(action,{signal}={}){
+    function request(action,{signal}={},timeoutMs=requestTimeoutMs){
       let controller,timer,abortExternal,ticket;
       try{active();if(signal?.aborted)throw problem('DELTA_ABORTED','通信を中止しました');requireNetwork();controller=new AbortController();}
       catch(error){return Promise.reject(error);}
       const cancelled=new Promise((resolve,reject)=>{
         ticket={phase:'session',cancel(error){controller.abort();reject(error);}};pending.add(ticket);
         abortExternal=()=>ticket.cancel(problem('DELTA_ABORTED','通信を中止しました'));signal?.addEventListener('abort',abortExternal,{once:true});
-        timer=timers.setTimeout(()=>ticket.cancel(problem('DELTA_TIMEOUT','通信が時間内に完了しませんでした。内容は保持しています',408,true)),requestTimeoutMs);
+        timer=timers.setTimeout(()=>ticket.cancel(problem('DELTA_TIMEOUT','通信が時間内に完了しませんでした。内容は保持しています',408,true)),timeoutMs);
       });
       const work=Promise.resolve().then(()=>action(controller.signal,ticket));
       return Promise.race([work,cancelled]).catch(error=>{throw normalize(error);}).finally(()=>{
@@ -209,7 +210,10 @@
         if(r?.error)throw normalize(r.error,r.status);
         insist(object(r)&&Object.prototype.hasOwnProperty.call(r,'data'),'DELTA_SERVER','同期先の応答を確認できません');
         const result=copy(r.data);validate(result);return result;
-      },options);
+      // Initial activation atomically certifies the complete legacy project.
+      // Its server budget is 30 s; leave time for auth and response delivery.
+      // Ordinary edits, reads and checkpoints keep their existing deadline.
+      },options,name==='sentlog_delta_activate_baseline_v1'?activationTimeoutMs:requestTimeoutMs);
     }
     function connect(){
       if(closed||connecting||!listeners.size||!scopeOkay()||!network())return;

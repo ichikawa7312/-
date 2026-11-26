@@ -172,6 +172,29 @@ test('external abort, timeout and close release callers without a late RPC',asyn
   const h=harness(),controller=new AbortController();controller.abort();
   await rejects(()=>h.transport.push(event(),{signal:controller.signal}),'DELTA_ABORTED');assert.equal(h.stats().sessionReads,0);
 });
+test('activation alone has time for the atomic server cutover while ordinary requests retain their deadline',async()=>{
+  const h=harness(),waiting=deferred(),active={...receipt(),state:'active',deltaEnabled:true};
+  const proof={migrationId:'stable-copy',sourceFingerprint:'a'.repeat(64),planSha256:'b'.repeat(64),writerVersion:2};
+  h.setRpc(name=>name==='sentlog_delta_activate_baseline_v1'?waiting.promise:new Promise(()=>{}));
+  const activation=h.transport.activateBaseline(BASELINE,proof);await settle();
+  assert([...h.timers.pending.values()].some(t=>t.ms===45000));
+  const ordinary=h.transport.inspect();await settle();h.timers.run(1000);
+  await rejects(()=>ordinary,'DELTA_TIMEOUT');
+  assert.equal(h.calls[0].options.signal.aborted,false,'ordinary timeout cannot abort activation');
+  waiting.resolve({data:active});assert.deepEqual(await activation,active);assert.equal(h.timers.pending.size,0);
+});
+test('the longer activation still cancels on logout, caller abort, close and its own deadline',async()=>{
+  const proof={migrationId:'stable-copy',sourceFingerprint:'a'.repeat(64),planSha256:'b'.repeat(64),writerVersion:2};
+  for(const kind of ['logout','abort','close','timeout']){
+    const h=harness({transport:{activationTimeoutMs:4500}}),waiting=deferred(),controller=new AbortController();
+    h.setRpc(()=>waiting.promise);const pending=h.transport.activateBaseline(BASELINE,proof,{signal:controller.signal});await settle();
+    if(kind==='logout')h.setSession(null);else if(kind==='abort')controller.abort();else if(kind==='close')h.transport.close();else h.timers.run(4500);
+    await rejects(()=>pending,{logout:'DELTA_AUTH_CHANGED',abort:'DELTA_ABORTED',close:'DELTA_CLOSED',timeout:'DELTA_TIMEOUT'}[kind]);
+    assert.equal(h.calls[0].options.signal.aborted,true);waiting.resolve({data:{...receipt(),state:'active',deltaEnabled:true}});
+    await settle();assert.equal(h.timers.pending.size,0);
+  }
+  assert.throws(()=>harness({transport:{activationTimeoutMs:0}}),e=>e.code==='DELTA_TRANSPORT_CONFIG');
+});
 test('offline transport and disconnect during session or Auth verification never launch a delta RPC',async()=>{
   let online=false;
   const h=harness({transport:{online:()=>online}});

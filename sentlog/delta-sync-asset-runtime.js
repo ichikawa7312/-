@@ -112,18 +112,18 @@
     check(ref);const value=await localFiles.read(fileKey(ref));check(ref);
     if(value===undefined&&allowMissing)return undefined;
     insist(value instanceof root.Blob,'ASSET_LOCAL_COLLISION','写真の端末保存先に別の内容があります。上書きを止めました');
-    await A.verifyBlob(value,ref);check(ref);return value;
+    await A.verifyBlob(value,ref,{validate:()=>check(ref),signal:ctx.controller.signal});check(ref);return value;
    }
    async function mirror(ref,blob){
     const validate=()=>check(ref);
-    await A.verifyBlob(blob,ref);validate();
+    await A.verifyBlob(blob,ref,{validate,signal:ctx.controller.signal});validate();
     await localFiles.withLock(fileKey(ref),async()=>{
      validate();let value=await local(ref);
      if(value===undefined){
       const saved=await localFiles.write(fileKey(ref),blob,{validate,onlyIfMissing:true,signal:ctx.controller.signal});validate();
       insist(object(saved)&&typeof saved.written==='boolean'&&saved.value instanceof root.Blob,
        'ASSET_LOCAL_COLLISION','端末へ保存された写真を確認できません');
-      await A.verifyBlob(saved.value,ref);validate();
+      await A.verifyBlob(saved.value,ref,{validate,signal:ctx.controller.signal});validate();
      }
      await local(ref,false);validate();
     });validate();
@@ -170,7 +170,7 @@
        insist(target(ref)===target(item),'ASSET_BINDING','送信した写真と登録された対象が一致しません');
        for(const field of ['sha256','size','mimeType'])insist(!own(item,field)||item[field]===ref[field],
         'ASSET_COLLISION','送信した写真と登録された内容が異なります');
-       await A.verifyBlob(blob,ref);check();
+       await A.verifyBlob(blob,ref,{validate:()=>check(),signal:ctx.controller.signal});check();
       }
       refs.push(ref);
      }catch(e){check();if(globalFailure(e))throw e;issue(item,e);}

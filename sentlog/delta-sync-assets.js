@@ -72,13 +72,19 @@
     if(!object(release)||release.version!==1||!sameScope(release.scope,scope)||!object(release.file))return false;
     try{const plan=archivePlan({...release,files:[release.file]},scope);return matchesArchiveFile(plan.files[0],ref);}catch{return false;}
   }
-  async function verifyBlob(blob,ref){
+  async function verifyBlob(blob,ref,options={}){
     insist(typeof root.Blob==='function'&&blob instanceof root.Blob&&blob.size===ref.size,
       'ASSET_CONTENT_MISMATCH','写真のサイズが登録内容と一致しません。元のファイルは保持しています');
     insist(root.crypto?.subtle?.digest,'ASSET_HASH_UNAVAILABLE','写真の内容を照合できません');
     // File/Blob bytes are immutable, unlike a caller-owned Uint8Array.
-    const digest=await root.crypto.subtle.digest('SHA-256',await blob.arrayBuffer());
-    const hash=[...new Uint8Array(digest)].map(x=>x.toString(16).padStart(2,'0')).join('');
+    const helper=root.SentlogBlobSha256||(typeof module==='object'&&module.exports?require('./blob-sha256.js'):null);
+    let hash;
+    if(helper?.digest)hash=await helper.digest(blob,{crypto:root.crypto,...options});
+    else{
+      insist(blob.size<=2*1024*1024,'ASSET_HASH_UNAVAILABLE','大きな写真の内容照合機能を読み込めません。元の写真を保持しています');
+      const digest=await root.crypto.subtle.digest('SHA-256',await blob.arrayBuffer());
+      hash=[...new Uint8Array(digest)].map(x=>x.toString(16).padStart(2,'0')).join('');
+    }
     insist(hash===ref.sha256,'ASSET_CONTENT_MISMATCH','写真の内容が登録内容と一致しません。上書きを止めました');
   }
   function validateRow(row,ref,scope){
@@ -204,7 +210,7 @@
       read(input){const ref=reference(input,scope);alive();return operation(ref,'readonly',row=>row);},
       async received(input,blob,{validate=()=>{},restoreArchived=false}={}){
         insist(typeof restoreArchived==='boolean','ASSET_ARCHIVE_CONTEXT','写真復元の指定を確認できません');
-        const ref=reference(input,scope);alive();await verifyBlob(blob,ref);alive();
+        const ref=reference(input,scope);alive();await verifyBlob(blob,ref,{validate:()=>{alive();return validate();}});alive();
         return operation(ref,'readwrite',row=>{
           insist(row,'ASSET_NOT_QUEUED','写真の受信予定を確認できません');
           // A repeated response cannot roll back an already acknowledged item.
@@ -230,7 +236,7 @@
           if(file.kind!=='photo')continue;
           const row=await operation(file.assetId,'readonly',row=>row,check);check();
           if(!row||row.phase==='waiting'||row.phase==='archived'||!matchesArchiveFile(file,row.reference))continue;
-          await verifyBlob(row.blob,row.reference);check();candidates.push({file,row});
+          await verifyBlob(row.blob,row.reference,{validate:check});check();candidates.push({file,row});
         }
         let releasedCopies=0,releasedBytes=0;
         for(const {file,row:before}of candidates){
@@ -295,7 +301,7 @@
         alive(epoch);const row=await store.read(ref);alive(epoch);
         if(!row)result.untracked++;
         else{
-          if(!['waiting','archived'].includes(row.phase)){await verifyBlob(row.blob,ref);alive(epoch);}
+          if(!['waiting','archived'].includes(row.phase)){await verifyBlob(row.blob,ref,{validate:()=>alive(epoch)});alive(epoch);}
           result[row.phase]++;
         }
       }
@@ -318,14 +324,14 @@
           const blob=await request(signal=>transport.download(copy(ref),{scope:copy(scope),signal}),epoch);
           // Check again after hashing and before any local mutation. A late
           // response from an old login or old reference set cannot be applied.
-          await verifyBlob(blob,ref);alive(epoch);
+          await verifyBlob(blob,ref,{validate:()=>alive(epoch)});alive(epoch);
           await store.received(ref,blob,{validate:()=>alive(epoch),restoreArchived:allowArchivedRestore});alive(epoch);
           row=await store.read(ref);alive(epoch);
         }
         insist(row&&row.phase!=='waiting','ASSET_NOT_DURABLE','写真の保存完了を確認できません');
         // A persisted receipt is not enough to send an acknowledgement after a
         // restart: read the committed Blob and verify its actual bytes again.
-        await verifyBlob(row.blob,ref);alive(epoch);
+        await verifyBlob(row.blob,ref,{validate:()=>alive(epoch)});alive(epoch);
         if(row.phase==='acknowledged')continue;
         if(!transport.online())break;
         const proof=await request(signal=>transport.acknowledge(copy(ref),{

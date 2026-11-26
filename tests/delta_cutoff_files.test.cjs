@@ -8,6 +8,7 @@ if(!globalThis.crypto?.subtle)Object.defineProperty(globalThis,'crypto',{value:w
 const C=require('../sentlog/record-collaboration.js'),D=require('../sentlog/delta-sync-core.js');
 const B=require('../sentlog/delta-sync-app-bridge.js'),J=require('../sentlog/delta-sync-app-journal.js');
 const M=require('../sentlog/delta-sync-metadata.js'),Source=require('../sentlog/delta-sync-legacy-source.js');
+const BlobHash=require('../sentlog/blob-sha256.js');
 const WS='surveyFieldNoteWorkspaceV1',DRAW='surveyFieldNoteDrawingV1:',PREFIX='__sentlog_record__:';
 const CONTROL='sentlog_delta_control_v1',LOG='sentlog_delta_journal_v1',META='__sentlog_records_meta_v130__',LOCAL='sentlogArchiveLocalV1';
 const copy=structuredClone,json=JSON.stringify;
@@ -27,6 +28,7 @@ function application(factory,memory){
   setItem:(key,value)=>memory.set(key,String(value)),removeItem:key=>memory.delete(key)};
  const context={window:null,indexedDB:factory,IDBKeyRange,localStorage,navigator:{},console,Blob,queueMicrotask,structuredClone,
   crypto:webcrypto,SentlogDeltaSyncCore:D};context.window=context;vm.createContext(context);vm.runInContext(builtWriter(),context);
+ context.SentlogBlobSha256=BlobHash;
  return {records:context.SentlogRecords,localStorage,factory,memory,context};
 }
 function snapshot(id,recordCount=1){const drawingId='drawing-'+id,meta={id:drawingId,name:'Drawing '+id,sourceType:'pdf',fileName:id+'.pdf'};
@@ -43,12 +45,12 @@ async function disk(factory,store=CONTROL){const db=await open(factory);try{retu
 async function write(factory,store,key,value){const db=await open(factory);try{await new Promise((resolve,reject)=>{
  const tx=db.transaction(store,'readwrite');tx.objectStore(store).put(value,key);tx.oncomplete=resolve;tx.onabort=()=>reject(tx.error);tx.onerror=()=>{};
  });}finally{db.close();}}
-async function fixture({two=false,history=false,projectCount=two?2:1,recordCount=1}={}){
+async function fixture({two=false,history=false,projectCount=two?2:1,recordCount=1,backgroundBytes=0}={}){
  const snapshots=Array.from({length:projectCount},(_,index)=>snapshot(index===0?'a':index===1?'b':'p-'+index,recordCount)),factory=new IDBFactory(),memory=new Map([[WS,json({projects:snapshots.map(s=>s.project)})],
   ...snapshots.flatMap(s=>s.drawings.map(d=>[DRAW+d.meta.id,json(d.state)]))]);
  const first=application(factory,memory);await first.records.init();const files=new Map();
  for(const s of snapshots){const id=s.localProjectId,drawingId=s.drawings[0].meta.id;
-  files.set('background:'+drawingId,new Blob(['pdf-'+id],{type:'application/pdf'}));
+  files.set('background:'+drawingId,new Blob([backgroundBytes?new Uint8Array(backgroundBytes).fill(17):'pdf-'+id],{type:'application/pdf'}));
   files.set('photo:'+drawingId+':photo',new Blob(['new-photo'],{type:'image/png'}));}
  files.set('original:camera-only',new Blob(['camera original outside GC'],{type:'image/jpeg'}));
  for(const [key,value]of files)await first.records.writeFile(key,value);
@@ -152,9 +154,12 @@ let passed=0;async function test(name,fn){await fn();passed++;console.log('PASS'
   const f=await fixture({two:true,history:true}),observer=f.observer;assert.equal(observer.records.deltaJournal.bindingFor('a'),null);
   const writer=f.restart();await writer.records.init();const journal=observer.records.deltaJournal,first=observeBindingReads(observer);
   try{const state=await journal.readBindingState('a');assert.equal(state.phase,'active');
-   assert.equal(first.counts.gets,1);assert.equal(first.counts.getAll,1);assert.equal(first.counts.cutoffRows,4);
+   assert.equal(first.counts.gets,4);assert.equal(first.counts.getAll,0);assert.equal(first.counts.cutoffRows,2);
+   assert(first.counts.keys.every(key=>key==='binding:a'||key.includes('binding:legacy-a')),
+    'discovering project a must not load project b\'s protected files');
   }finally{first.close();}
   await hydratedSame(journal.bindingFor('a'),f.oldBindings.get('a'));
+  assert.equal(journal.bindingFor('b'),null);await journal.readBindingState('b');
   await hydratedSame(journal.bindingFor('b'),f.oldBindings.get('b'));
   const steady=observeBindingReads(observer,{forbidHydration:true});try{
    for(let index=0;index<3;index++)assert.equal((await journal.readBindingState('a')).phase,'active');
@@ -227,6 +232,34 @@ let passed=0;async function test(name,fn){await fn();passed++;console.log('PASS'
    assert.equal(retryGuard.calls.filter(call=>call.kind==='cutoff-file').length,1,'only the unfinished file needs a new immutable row');
    await hydratedSame(resumed.records.deltaJournal.bindingFor('a'),f.oldBindings.get('a'));
   }finally{retryGuard.close();}
+ });
+ await test('large legacy cutoff materialization never reads a whole-file ArrayBuffer and resumes without changing original bytes',async()=>{
+  const f=await fixture({backgroundBytes:9*1024*1024+123}),before=await disk(f.factory),original=f.files.get('background:drawing-a');
+  const expected=await BlobHash.digest(original),arrayBuffer=Blob.prototype.arrayBuffer;let largest=0,reads=0,stages=0;
+  Blob.prototype.arrayBuffer=function(){largest=Math.max(largest,this.size);reads++;
+   assert(this.size<=2*1024*1024,'startup must never allocate an ArrayBuffer for the entire large PDF');return arrayBuffer.call(this);};
+  const interrupted=noEmbeddedPuts(({method,value})=>{if(method==='add'&&value?.kind==='cutoff-file'&&++stages===2)throw Error('stop after large PDF');});
+  try{
+   await assert.rejects(()=>f.restart().records.init(),/stop after large PDF/);interrupted.close();
+   const partial=await disk(f.factory);assert.equal(cutoffRows(partial).length,1);assert(containsBlob(partial.get('binding:a')));
+   assert.equal(await BlobHash.digest(partial.get('binding:a').cutoff.files.find(file=>file.key==='background:drawing-a').value),expected);
+   assert.deepEqual(partial.get('binding:a').cutoff.rawEntries,before.get('binding:a').cutoff.rawEntries);
+   const guard=noEmbeddedPuts();try{
+    const resumed=f.restart();await resumed.records.init();const after=await disk(f.factory);
+    assert.equal(cutoffRows(after).length,2);assert.equal(containsBlob(after.get('binding:a')),false);
+    const value=resumed.records.deltaJournal.bindingFor('a').cutoff.files.find(file=>file.key==='background:drawing-a').value;
+    assert.equal(value.type,original.type);assert.equal(value.size,original.size);assert.equal(await BlobHash.digest(value),expected);
+    assert.equal(guard.calls.filter(call=>call.kind==='cutoff-file').length,1,'only the unfinished photo is added on resume');
+    assert.equal(await BlobHash.digest((await disk(f.factory,'files')).get('background:drawing-a')),expected);
+    assert(reads>2);assert.equal(largest,2*1024*1024);
+   }finally{guard.close();}
+  }finally{interrupted.close();Blob.prototype.arrayBuffer=arrayBuffer;}
+ });
+ await test('missing streaming hash support stops a large legacy conversion without replacing the embedded source',async()=>{
+  const f=await fixture({backgroundBytes:2*1024*1024+1}),app=f.restart(),before=await disk(f.factory);delete app.context.SentlogBlobSha256;
+  await assert.rejects(()=>app.records.init(),error=>error.code==='JOURNAL_HASH_UNAVAILABLE');
+  const after=await disk(f.factory);assert.equal(cutoffRows(after).length,0);
+  await hydratedSame(after.get('binding:a'),before.get('binding:a'));
  });
  await test('two legacy bindings migrate independently and cannot share a cutoff file identity',async()=>{
   const f=await fixture({two:true}),guard=noEmbeddedPuts();try{const app=f.restart();await app.records.init();const raw=await disk(f.factory),rows=cutoffRows(raw);

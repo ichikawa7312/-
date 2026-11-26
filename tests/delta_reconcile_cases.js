@@ -56,6 +56,16 @@
       }
       f.receipt.metadataManifestSha256=await hash('['+f.metadata.map(r=>r.manifestEntryJson).join(', ')+']');
     }
+    function pendingPhoto(f,{drawingId='d1',recordId='record-a',photoId='pending-photo'}={}){
+      const raw=f.snapshot.rawEntries.find(item=>item.key==='surveyFieldNoteDrawingV1:'+drawingId);
+      const photo=JSON.parse(raw.value).shapes.find(row=>row.id===recordId).photos.find(value=>value.id===photoId),key='photo:'+drawingId+':'+photoId;
+      f.snapshot.source.databaseName='surveyFieldNoteDB';
+      f.snapshot.source.journalCutoff={version:1,kind:'sentlog-journal-cutoff',bindingId:'binding-one',scope:clone(scope),localProjectId:localId};
+      f.snapshot.manifest.push({key,kind:'photo',sourceDatabase:'surveyFieldNoteDB',sourceKey:key,drawingId,photoId,
+        status:'shared-photo-pending',required:true,deliveryVerified:false,references:[{recordId,photo:clone(photo)}]});
+      f.snapshot.issues.push({code:'LEGACY_SOURCE_SHARED_PHOTO_PENDING',message:'shared bytes pending',blocking:false,key,kind:'photo',drawingId,photoId});
+      return {key,photo};
+    }
 
     await test('both page streams verify exact server JSON and complete manifest hashes',async()=>{
       const f=await fixture(),baseline=await API.readBaseline({...f.args,pageLimit:1});
@@ -321,6 +331,66 @@
     await test('source informational notices do not pretend to prove photo delivery',async()=>{
       const f=await fixture();f.snapshot.issues.push({code:'ORIGINAL_NOT_REQUIRED',message:'shared-only legacy',blocking:false});const p=await f.plan();
       assert(p.readyForInstall);assert(!p.readyForCloudSync&&!p.readyForActivation);
+    });
+    await test('exact server photo references permit metadata handover while their bytes remain explicitly pending',async()=>{
+      const row=C.addPhoto(record(),{id:'pending-photo',name:'pending.jpg',size:17,sha256:'1'.repeat(64)},{revisionId:'photo-pending',at:1});
+      const f=await fixture({server:[drawing('d1',[row])]}),reference=pendingPhoto(f),p=await f.plan();
+      assert(p.readyForInstall,JSON.stringify(p.reviewItems));equal(p.state.outbox,[]);equal(p.state.records[D.keyOf('d1','record-a')].photos,[reference.photo]);
+      equal(p.preservedLocal.files,[]);equal(p.preservedLocal.manifest,f.snapshot.manifest);
+      equal(p.preservedLocal.manifest[0].deliveryVerified,false);equal(p.baselineReceipt.assetDeliveryVerified,false);
+      assert(!p.readyForActivation&&!p.readyForCloudSync);assert(await API.verifyPlan(p,{scope}));
+    });
+    await test('photos accepted after the immutable baseline are matched before local changes can authorize themselves',async()=>{
+      const base=record(),row=C.addPhoto(base,{id:'pending-photo',size:17,sha256:'1'.repeat(64)},{revisionId:'accepted-photo',at:1});
+      const f=await fixture({server:[drawing('d1',[base])],local:[drawing('d1',[row])]});pendingPhoto(f);
+      f.receipt.state='active';f.receipt.deltaEnabled=true;
+      const event=D.diffRecord(base,row,{eventId:'accepted-photo-event',projectId:scope.projectId,drawingId:'d1',deviceId:'peer'});
+      const groupTransport={inspect:async()=>({...scope,enabled:true,baseline:clone(f.receipt),headSeq:1}),list:async()=>[{seq:1,event}]};
+      const p=await f.plan({groupTransport});assert(p.readyForInstall,JSON.stringify(p.reviewItems));equal(p.state.cursor,1);equal(p.state.outbox,[]);
+      equal(p.accepted.headSeq,1);equal(p.preservedLocal.manifest[0].deliveryVerified,false);assert(await API.verifyPlan(p,{scope}));
+      const without=await f.plan();review(without,'RECONCILE_PENDING_PHOTO_UNSHARED');
+      equal(without.preservedLocal.rawEntries,f.snapshot.rawEntries);assert(without.state.outbox.length>0,'unshared local metadata is retained, never discarded');
+    });
+    await test('pending photos cannot use another record drawing hash or size as evidence of shared content',async()=>{
+      const photo={id:'pending-photo',size:17,sha256:'1'.repeat(64)},local=C.addPhoto(record(),photo,{revisionId:'local-photo',at:1});
+      for(const remote of [record(),C.addPhoto(record(),{...photo,size:18},{revisionId:'remote-photo',at:1}),
+        C.addPhoto(record(),{...photo,sha256:'2'.repeat(64)},{revisionId:'remote-photo',at:1})]){
+        const f=await fixture({server:[drawing('d1',[remote])],local:[drawing('d1',[local])]});pendingPhoto(f);
+        const p=await f.plan();review(p,'RECONCILE_PENDING_PHOTO_UNSHARED');equal(p.preservedLocal.rawEntries,f.snapshot.rawEntries);
+      }
+      for(const server of [[drawing('d1',[C.addPhoto(record('different-record'),photo,{revisionId:'other-record-photo',at:1})])],
+        [drawing('d1'),drawing('d2',[C.addPhoto(record(),photo,{revisionId:'other-drawing-photo',at:1})])]]){
+        const f=await fixture({server,local:[drawing('d1',[local])]});pendingPhoto(f);review(await f.plan(),'RECONCILE_PENDING_PHOTO_UNSHARED');
+      }
+    });
+    await test('deleted and conflicting server photos do not certify a pending local photo reference',async()=>{
+      const live=C.addPhoto(record(),{id:'pending-photo',size:17,sha256:'1'.repeat(64)},{revisionId:'live-photo',at:1});
+      const deletedPhoto=C.removePhoto(live,'pending-photo',{revisionId:'deleted-photo',expectedHeads:C.view(live).photos[0].headIds,at:2});
+      const deletedRecord=C.markDeleted(live,{revisionId:'deleted-record',expectedToken:C.revisionToken(live),at:2});
+      const conflicting=C.addPhoto(live,{id:'pending-photo',size:17,sha256:'2'.repeat(64)},{revisionId:'conflicting-photo',at:2});
+      for(const server of [drawing('d1',[deletedPhoto]),drawing('d1',[],[deletedRecord]),drawing('d1',[conflicting])]){
+        const f=await fixture({server:[server],local:[drawing('d1',[live])]});pendingPhoto(f);review(await f.plan(),'RECONCILE_PENDING_PHOTO_UNSHARED');
+      }
+    });
+    await test('original or malformed server variants cannot authorize a pending shared photo',async()=>{
+      const photo={id:'pending-photo',size:17,sha256:'1'.repeat(64)};
+      const local=C.addPhoto(record(),photo,{revisionId:'local-shared',at:1});
+      for(const variant of ['original',null,false,'',0]){
+        const remote=C.addPhoto(record(),{...photo,variant},{revisionId:'remote-variant',at:1});
+        const f=await fixture({server:[drawing('d1',[remote])],local:[drawing('d1',[local])]});pendingPhoto(f);
+        const p=await f.plan();review(p,'RECONCILE_PENDING_PHOTO_UNSHARED');
+        equal(p.preservedLocal.rawEntries,f.snapshot.rawEntries);equal(p.preservedLocal.manifest[0].deliveryVerified,false);
+      }
+    });
+    await test('pending manifests must belong to the protected scope and match the exact retained references',async()=>{
+      const row=C.addPhoto(record(),{id:'pending-photo',size:17,sha256:'1'.repeat(64)},{revisionId:'pending',at:1});
+      for(const mutate of [f=>f.snapshot.source.journalCutoff.scope.ownerId='foreign',f=>delete f.snapshot.source.journalCutoff,
+        f=>f.snapshot.manifest[0].kind='original-photo',f=>f.snapshot.manifest[0].deliveryVerified=true,
+        f=>f.snapshot.manifest[0].references[0].photo.sha256='f'.repeat(64),f=>f.snapshot.manifest.push(clone(f.snapshot.manifest[0])),
+        f=>f.snapshot.issues=[],f=>f.snapshot.manifest=[],f=>f.snapshot.files.push({key:f.snapshot.manifest[0].key,kind:'photo'})]){
+        const f=await fixture({server:[drawing('d1',[row])]});pendingPhoto(f);mutate(f);
+        review(await f.plan(),'RECONCILE_PENDING_PHOTO_UNVERIFIED');
+      }
     });
     await test('local project ID mapping cannot be supplied by a different staged copy',async()=>{
       const f=await fixture();f.snapshot.projectId='another-local-project';await rejects(()=>f.plan(),'RECONCILE_SCOPE');
