@@ -16,6 +16,8 @@ on:
       - 'tests/continuous_camera_ui.py'
       - 'tests/photo_capture_order_ui.py'
       - 'tests/camera_return_ui.py'
+      - 'tests/polygon_pointer_ui.py'
+      - 'tests/polygon_pointer.test.cjs'
       - 'tests/drawing_responsiveness_ui.py'
       - 'tests/field_record_memo_ui.py'
       - 'tests/photo_save_performance_ui.py'
@@ -138,6 +140,9 @@ jobs:
         run: |
           python tests/photo_capture_order_ui.py --engine ${{ matrix.engine }} --built-root . --report /tmp/sentlog-heavy-camera-${{ matrix.engine }}-order.json
           python tests/camera_return_ui.py --engine ${{ matrix.engine }} --built-root . --report /tmp/sentlog-heavy-camera-${{ matrix.engine }}-return.json
+      - name: Verify polygon preview and released edge agree
+        if: matrix.suite == 'camera'
+        run: python tests/polygon_pointer_ui.py --engine ${{ matrix.engine }} --built-root . --report /tmp/sentlog-heavy-camera-${{ matrix.engine }}-polygon.json
       - name: Verify heavy ${{ matrix.suite }} use in ${{ matrix.engine }}
         if: matrix.suite != 'originals'
         run: NODE_PATH="$RUNNER_TEMP/sentlog-heavy-deps/node_modules" python tests/heavy_${{ matrix.suite }}_ui.py --engine ${{ matrix.engine }} --built-root . --report /tmp/sentlog-heavy-${{ matrix.suite }}-${{ matrix.engine }}.json

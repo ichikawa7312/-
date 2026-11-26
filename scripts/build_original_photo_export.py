@@ -83,3 +83,6 @@ subprocess.run([sys.executable, 'scripts/build_projection_navigation_guard.py'],
 
 # Preserve capture order in the UI and resume the camera's record after reload.
 subprocess.run([sys.executable, 'scripts/build_camera_reliability.py'], cwd=ROOT, check=True)
+
+# Keep a polygon's displayed candidate through a small finger/Pencil release.
+subprocess.run([sys.executable, 'scripts/build_polygon_pointer_stability.py'], cwd=ROOT, check=True)
