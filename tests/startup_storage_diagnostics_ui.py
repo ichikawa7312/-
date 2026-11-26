@@ -11,6 +11,7 @@ Usage: python tests/startup_storage_diagnostics_ui.py --engine chromium --report
 
 import argparse
 import json
+import re
 import sys
 import tempfile
 import threading
@@ -254,6 +255,26 @@ def check(condition, message):
         raise AssertionError(message)
 
 
+def safe_failure(error, operation):
+    """Keep a useful first line without a Playwright DOM/call-log dump."""
+    try:
+        first = next((line.strip() for line in str(error).splitlines() if line.strip()), "No error message")
+    except Exception:
+        first = "Error message unavailable"
+    first = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", first)
+    first = first.split("Call log:", 1)[0].split("Browser logs:", 1)[0]
+    first = re.sub(r"\b(?:https?|wss?|blob|data|file):[^\s<>\"']+", "[URL]", first, flags=re.IGNORECASE)
+    first = re.sub(r"PRIVATE_STARTUP_[^\s<>]*", "[synthetic value]", first, flags=re.IGNORECASE)
+    first = re.sub(r"<[^>]*(?:>|$)", "[DOM]", first)
+    for name in DATABASE_NAMES:
+        first = first.replace(name, "[database]")
+    first = re.sub(r"[\x00-\x1f\x7f]", " ", first).strip()
+    name = type(error).__name__
+    if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", name) or "PRIVATE" in name:
+        name = "Error"
+    return {"operation": operation, "failureType": name, "reason": first[:280] or "No error message"}
+
+
 def two_frames(page):
     page.evaluate("() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))")
 
@@ -270,19 +291,26 @@ def check_layout(page):
           "A diagnostic control is clipped or too small")
 
 
-def download_report(page, folder):
+def download_report(page, folder, trace):
+    trace["operation"] = "download.wait-for-controls"
     page.wait_for_function("""() => !document.getElementById('storageCheckStart').disabled &&
       !document.getElementById('storageCheckSave').disabled""")
     check(page.locator("#storageCheckStop").is_hidden(), "Cancel control remained visible after completion")
     check(page.locator("#storageCheckResult").get_attribute("aria-busy") is None, "Diagnostic still claims it is busy")
+    trace["operation"] = "download.expect"
     with page.expect_download() as observed:
+        trace["operation"] = "download.click-save"
         page.get_by_role("button", name="診断JSONを保存", exact=True).click()
+        trace["operation"] = "download.wait-for-event"
     download = observed.value
     check(download.suggested_filename.startswith("sentlog-storage-check-"), "Unexpected diagnostic download name")
     target = folder / "diagnostic.json"
+    trace["operation"] = "download.save-file"
     download.save_as(str(target))
+    trace["operation"] = "download.parse-json"
     text = target.read_text(encoding="utf-8")
     report = json.loads(text)
+    trace["operation"] = "download.read-rendered-result"
     rendered = page.locator("body").inner_text()
     check(PRIVATE not in text and PRIVATE not in rendered, "Diagnostic disclosed a synthetic private value or name")
     check(all(name not in text and name not in rendered for name in DATABASE_NAMES), "Diagnostic disclosed a database name")
@@ -292,11 +320,14 @@ def download_report(page, folder):
     return report
 
 
-def run_case(browser, temporary, base, name, *, populated=False, cancel=False, screenshot_path=None):
+def run_case(browser, temporary, base, name, trace, *, populated=False, cancel=False, screenshot_path=None):
+    trace["operation"] = "profile.create-directory"
     folder = temporary / name
     folder.mkdir()
+    trace["operation"] = "browser.launch-persistent-context"
     context = browser.launch_persistent_context(str(folder / "profile"), headless=True,
         viewport={"width": 375, "height": 812}, accept_downloads=True)
+    primary_error = None
     page_errors, console_errors, unexpected_requests = [], [], []
     expected_csp = {"active": False}
     allowed = {PAGE, CORE, FIXTURE, "/favicon.ico"}
@@ -318,44 +349,62 @@ def run_case(browser, temporary, base, name, *, populated=False, cancel=False, s
         console_errors.append("unexpected-console-error")
 
     try:
+        trace["operation"] = "page.configure"
         context.route("**/*", route_request)
         page = context.pages[0] if context.pages else context.new_page()
         page.set_default_timeout(15000)
         page.on("pageerror", lambda _error: page_errors.append("pageerror"))
         page.on("console", console)
+        trace["operation"] = "page.goto-fixture"
         page.goto(base + FIXTURE)
+        trace["operation"] = "fixture.install-helpers"
         page.evaluate(FIXTURE_HELPERS)
         if populated:
+            trace["operation"] = "fixture.seed-native-storage"
             page.evaluate("() => __startupFixture.seed()")
+        trace["operation"] = "snapshot.before-diagnosis"
         before = page.evaluate("() => __startupFixture.snapshot()")
         if not populated:
             check(before["databases"] == [] and before["local"] == [] and before["cacheValues"] == [],
                   "An empty-case profile was not fresh")
+        trace["operation"] = "fixture.install-read-only-guard"
         context.add_init_script(FIXTURE_HELPERS + "\nif(location.pathname===" + json.dumps(PAGE) +
             "){window.__startupGuard=__startupFixture.guard(" + json.dumps({"blockEnumeration": cancel}) + ");}")
+        trace["operation"] = "page.goto-diagnostic"
         page.goto(base + PAGE)
+        trace["operation"] = "page.wait-for-start-control"
         page.get_by_role("button", name="保存領域を確認する", exact=True).wait_for(state="visible")
+        trace["operation"] = "page.wait-for-initial-frames"
         two_frames(page)
+        trace["operation"] = "guard.read-before-start"
         initial = page.evaluate("__startupGuard.probe")
         check(initial["enumerations"] == 0 and initial["opens"] == [] and initial["markerReads"] == 0 and initial["cacheLists"] == 0,
               "Loading the standalone page accessed storage before the user started diagnosis")
+        trace["operation"] = "page.check-initial-controls-and-csp"
         check(page.locator("#storageCheckSave").is_disabled(), "Download was available before a scan")
         check(page.evaluate("() => [...document.scripts].every(s=>s.src.includes('/startup-storage-diagnostics.js'))"),
               "Standalone page loaded an application dependency")
         csp = page.locator('meta[http-equiv="Content-Security-Policy"]').get_attribute("content") or ""
         check("connect-src 'none'" in csp and "worker-src 'none'" in csp, "Diagnostic CSP permits connections or workers")
+        trace["operation"] = "layout.before-scan"
         check_layout(page)
+        trace["operation"] = "scan.click-start"
         page.get_by_role("button", name="保存領域を確認する", exact=True).click()
         if cancel:
+            trace["operation"] = "cancel.wait-for-enumeration"
             page.wait_for_function("__startupGuard.probe.enumerationCompleted === 1")
+            trace["operation"] = "cancel.click-stop"
             page.get_by_role("button", name="確認を中止", exact=True).click()
-        report = download_report(page, folder)
+        report = download_report(page, folder, trace)
+        trace["operation"] = "report.verify-result"
         if cancel:
             check(report["status"] == "cancelled" and report["indexedDB"]["status"] == "cancelled",
                   "Cancelled enumeration was reported as a completed scan")
             check(all(row["status"] == "cancelled" for row in report["indexedDB"]["databases"]),
                   "Cancelled database results were presented as confirmed")
+            trace["operation"] = "cancel.release-late-enumeration"
             page.evaluate("() => __startupGuard.releaseEnumeration()")
+            trace["operation"] = "cancel.wait-for-late-frames"
             two_frames(page)
         else:
             check(report["indexedDB"]["status"] == "complete", "Native database inventory was incomplete")
@@ -381,8 +430,11 @@ def run_case(browser, temporary, base, name, *, populated=False, cancel=False, s
                       "Missing databases were reported as existing empty databases")
                 check(report["marker"] == {"status": "complete", "present": False}, "An absent marker was not reported")
                 check(report["indexedDB"]["listedSentlogDatabaseCount"] == 0, "Empty profile gained a known database")
+        trace["operation"] = "layout.after-scan"
         check_layout(page)
+        trace["operation"] = "guard.wait-for-final-frames"
         two_frames(page)
+        trace["operation"] = "guard.read-after-scan"
         probe = page.evaluate("__startupGuard.probe")
         check(probe["forbidden"] == [], "Diagnostic attempted a value read, mutation, or unapproved API")
         check(probe["enumerations"] == 1 and probe["markerReads"] == 1 and probe["cacheLists"] == 1,
@@ -394,12 +446,15 @@ def run_case(browser, temporary, base, name, *, populated=False, cancel=False, s
             check(len(probe["counts"]) == 15, "Diagnostic did not use only store counts and the three fixed-key counts")
         else:
             check(probe["opens"] == [] and probe["transactions"] == [], "Empty or cancelled inventory opened a database")
+        trace["operation"] = "guard.restore-native-apis"
         page.evaluate("() => __startupGuard.restore()")
+        trace["operation"] = "snapshot.after-diagnosis"
         check(page.evaluate("() => __startupFixture.snapshot()") == before,
               "Diagnostic changed native records, Blob hashes, schema, localStorage, or cache contents")
         # Exercise the actual CSP after the diagnosis. The fixture route also
         # blocks this URL, so an ineffective CSP cannot reach any service.
         expected_csp["active"] = True
+        trace["operation"] = "csp.attempt-blocked-connection"
         blocked = page.evaluate("""async path => {
           const violations=[];const observed=e=>violations.push(e.effectiveDirective);
           document.addEventListener('securitypolicyviolation',observed);
@@ -411,15 +466,29 @@ def run_case(browser, temporary, base, name, *, populated=False, cancel=False, s
         check(blocked["rejected"] and "connect-src" in blocked["violations"], "Actual CSP did not reject a connection")
         expected_csp["active"] = False
         if screenshot_path:
+            trace["operation"] = "screenshot.save"
             screenshot_path.parent.mkdir(parents=True, exist_ok=True)
             page.screenshot(path=str(screenshot_path), full_page=True)
+        trace["operation"] = "page.verify-final-errors"
         check(not unexpected_requests and not page_errors and not console_errors,
               "Standalone diagnostic produced an unexpected request or browser error")
         return {"case": name, "status": "passed", "nativeDataUnchanged": True,
                 "databaseOpens": len(probe["opens"]), "countRequests": len(probe["counts"]),
                 "jsonDownloaded": True, "viewportWidth": 375, "cspConnectionBlocked": True}
+    except Exception as error:
+        primary_error = error
+        trace["primaryFailure"] = safe_failure(error, trace["operation"])
+        raise
     finally:
-        context.close()
+        trace["operation"] = "browser.close-context"
+        try:
+            context.close()
+        except Exception as error:
+            trace["cleanupFailure"] = safe_failure(error, trace["operation"])
+            # Preserve the failing test operation if cleanup also fails.
+            # A cleanup failure after an otherwise successful case still fails.
+            if primary_error is None:
+                raise
 
 
 def main():
@@ -430,35 +499,40 @@ def main():
     report = {"suite": "startup-storage-diagnostics-ui", "engine": args.engine,
               "status": "running", "isolatedSyntheticProfiles": True, "physicalDeviceTest": False, "cases": []}
     stage = "dependencies"
+    trace = {"operation": "runtime.import-playwright"}
     server = None
     try:
         from playwright.sync_api import sync_playwright
         stage = "server"
+        trace["operation"] = "server.start-loopback"
         server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         base = "http://127.0.0.1:" + str(server.server_port)
+        trace["operation"] = "runtime.start-playwright"
         with tempfile.TemporaryDirectory(prefix="sentlog-startup-native-") as temporary, sync_playwright() as playwright:
             browser = getattr(playwright, args.engine)
             for name, populated, cancel in [("missing-meta-with-retained-data", True, False),
                                              ("empty-profile-no-database-created", False, False),
                                              ("cancelled-enumeration-cleanup", True, True)]:
                 stage = name
+                trace = {"operation": "case.start"}
                 screenshot = (args.report.parent / ("startup-storage-" + args.engine + ".png")
                     if args.report and populated and not cancel else None)
-                report["cases"].append(run_case(browser, Path(temporary), base, name,
+                report["cases"].append(run_case(browser, Path(temporary), base, name, trace,
                     populated=populated, cancel=cancel, screenshot_path=screenshot))
+            trace["operation"] = "runtime.close-playwright"
         report["status"] = "passed"
         result = 0
     except Exception as error:
-        # Keep failure artifacts free of browser dumps, fixture values and IDs.
+        # Keep only the operation and a sanitized first line. Never copy a
+        # Playwright call log, complete DOM, private fixture value or URL query.
         missing_runtime = stage == "dependencies" or (not report["cases"] and not isinstance(error, AssertionError)
             and any(token in str(error).lower() for token in ("executable doesn't exist", "host system is missing", "browser was not found")))
-        report.update(status="blocked" if missing_runtime else "failed", stage=stage, failureType=type(error).__name__)
-        if isinstance(error, AssertionError):
-            report["reason"] = str(error)
-        else:
-            report["reason"] = "Native runtime unavailable" if missing_runtime else "Native browser execution failed"
+        failure = trace.get("primaryFailure") or safe_failure(error, trace["operation"])
+        report.update(status="blocked" if missing_runtime else "failed", stage=stage, **failure)
+        if trace.get("cleanupFailure"):
+            report["cleanupFailure"] = trace["cleanupFailure"]
         result = 2 if missing_runtime else 1
     finally:
         if server is not None:
