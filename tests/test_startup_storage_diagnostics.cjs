@@ -21,6 +21,9 @@ const SPECS=[
   ['sentlog-pc-sync','pc',['kv']]
 ];
 const SECRET='PRIVATE_SYNTHETIC_CASE_居場所_01234567';
+// These fixture generations are independent of release builders, which replace
+// literal production cache names across test sources when a release advances.
+const syntheticCache=generation=>'sentlog-pwa-v'+generation;
 const PRIVATE_DB='private-unrelated-app-'+SECRET,PRIVATE_STORE='private-store-'+SECRET;
 const RAW_OPEN=IDBFactory.prototype.open,RAW_DELETE=IDBFactory.prototype.deleteDatabase;
 const RAW_COUNT=IDBObjectStore.prototype.count;
@@ -120,7 +123,7 @@ async function guarded(factory,options={},hooks={}){
     getDirectory(){return forbidden('OPFS access');}
   };
   const caches={
-    async keys(){return ['sentlog-pwa-v246','private-cache-'+SECRET,'sentlog-pwa-v7','sentlog-pwa-v246-'+SECRET];},
+    async keys(){return [syntheticCache(246),'private-cache-'+SECRET,syntheticCache(7),syntheticCache(246)+'-'+SECRET];},
     open(){return forbidden('cache open');},match(){return forbidden('cache match');},delete(){return forbidden('cache delete');}
   };
   const oldTransaction=IDBDatabase.prototype.transaction;

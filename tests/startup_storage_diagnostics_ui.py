@@ -127,7 +127,9 @@ FIXTURE_HELPERS = r"""(() => {
     });
     localStorage.setItem(marker,'PRIVATE_STARTUP_marker-value');
     localStorage.setItem('PRIVATE_STARTUP_auth-key','PRIVATE_STARTUP_auth-value');
-    for(const name of ['sentlog-pwa-v701','sentlog-pwa-v702','PRIVATE_STARTUP_cache']){
+    // Keep synthetic generations independent of builders replacing literal
+    // production cache names in test sources.
+    for(const name of [...[701,702].map(n=>'sentlog-pwa-v'+n),'PRIVATE_STARTUP_cache']){
       const cache=await caches.open(name);
       await cache.put(location.origin+'/PRIVATE_STARTUP_cached-resource',new Response('PRIVATE_STARTUP_cached-body',
         {headers:{'Content-Type':'text/plain','X-Synthetic':'PRIVATE_STARTUP_header'}}));
