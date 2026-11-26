@@ -45,6 +45,8 @@ function fixture(){
     assert(cloud.includes("document.getElementById('sentlogSyncProjectNow').onclick=syncSelectedProject"));
     assert(cloud.includes('id="sentlogSyncProjectSelect"'));assert(cloud.includes('function updateCloudUI(){\n  renderProjectSyncControls();'));
     assert.equal((index.match(/cloud-sync\.js\?v=20261119-project-sync-1/g)||[]).length,2);
-    assert(index.includes(cloud.includes('sentlog-delta-app-v1')?"'sentlog-delta-app-v1'":"'project-sync-controls-v1'"));console.log('PASS production modal and both bootstrap references use the new controls');
+    const dependencyMarker=cloud.includes('sentlog-camera-order-return-v1')?'sentlog-camera-order-return-v1':
+      cloud.includes('sentlog-delta-app-v1')?'sentlog-delta-app-v1':'project-sync-controls-v1';
+    assert(index.includes("'"+dependencyMarker+"'"));console.log('PASS production modal and both bootstrap references use the new controls');
   }
 })().catch(error=>{console.error(error);process.exitCode=1;});

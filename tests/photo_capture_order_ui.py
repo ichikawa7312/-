@@ -1,0 +1,265 @@
+"""Built-app photo order: real conversion, canonical records, sync, ledger and reload.
+
+Only synthetic data is used and all external requests are blocked. Chromium
+keeps native original/shared Blob storage. Linux WebKit uses the established
+Blob-transport fixture; its records/journal still use real IndexedDB. This does
+not claim an iOS hardware or native WebKit Blob-storage test.
+"""
+import argparse
+import base64
+import functools
+import hashlib
+import io
+import json
+import os
+import threading
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+
+from PIL import Image
+from playwright.sync_api import sync_playwright
+
+from collaboration_photos_ui import WEBKIT_TRANSPORT, wait_photos
+from field_record_memo_ui import SETUP, photo_png
+
+ROOT = Path(__file__).resolve().parents[1]
+IDS = ['ffffffff-0000-4000-8000-000000000001',
+       '00000000-0000-4000-8000-000000000002',
+       '77777777-0000-4000-8000-000000000003']
+NAMES = ['first.jpg', 'second.jpg', 'third.jpg']
+
+
+def pictures():
+    result = []
+    for index, color in enumerate([(220, 40, 40), (40, 190, 80), (40, 80, 220)]):
+        output = io.BytesIO()
+        Image.new('RGB', (320, 240), color).save(output, format='PNG')
+        data = output.getvalue()
+        result.append({'name': NAMES[index].replace('.jpg', '.png'),
+                       'encoded': base64.b64encode(data).decode('ascii'),
+                       'sha256': hashlib.sha256(data).hexdigest()})
+    return result
+
+
+def grid_order(page):
+    return page.evaluate("""async()=>{
+      const record=state.shapes.find(s=>s.id==='survey-a'),before=JSON.stringify(record);
+      await renderSelectedPhotos();
+      if(before!==JSON.stringify(record))throw Error('Photo rendering mutated the source record');
+      return [...document.querySelectorAll('#photoGrid .photo-thumb')].map(el=>el.title);
+    }""")
+
+
+def ledger_order(page):
+    return page.locator('.ledger-item').evaluate_all("rows=>rows.map(el=>el.dataset.ledgerKey.split(':').pop())")
+
+
+def open_ledger(page):
+    page.evaluate("""async()=>{
+      const project=workspace.projects.find(p=>p.id==='memo-project');
+      const group=SentlogDrawingGroups.groupsForProject(project).find(g=>g.sheets.some(s=>s.id==='memo-plan-a'));
+      if(!group)throw Error('Synthetic ledger group missing');
+      await SentlogPhotoLedger.open(project.id,group.id);
+    }""")
+    page.locator('.ledger-item').first.wait_for()
+
+
+PHOTO_PROOF = r"""async()=>{
+  const digest=async blob=>[...new Uint8Array(await crypto.subtle.digest('SHA-256',await blob.arrayBuffer()))].map(x=>x.toString(16).padStart(2,'0')).join('');
+  const record=state.shapes.find(s=>s.id==='survey-a'),result=[];
+  for(const metadata of record.photos){
+    const shared=await getPhotoBlob(metadata.id,'memo-plan-a');
+    const original=await SentlogOriginalPhotos.getOriginal('memo-plan-a',metadata.id);
+    if(!shared?.size||!original?.size)throw Error('Captured synthetic image bytes missing');
+    const sharedHash=await digest(shared);
+    if(sharedHash!==metadata.sha256)throw Error('Shared photo hash no longer matches metadata');
+    result.push({id:metadata.id,name:metadata.name,originalHash:await digest(original),sharedHash,
+      captureDisplayOrder:metadata.captureDisplayOrder});
+  }
+  return {photos:result.sort((a,b)=>a.name.localeCompare(b.name)),
+    projectionValid:SentlogRecordCollaboration.matchesProjection(record),
+    canonicalIds:record.photos.map(p=>p.id)};
+}"""
+
+
+def run(page, engine):
+    if engine == 'webkit':
+        page.evaluate(WEBKIT_TRANSPORT)
+    page.evaluate(SETUP, base64.b64encode(photo_png()).decode('ascii'))
+    # SETUP normally supplies backgrounds through a Map. Materialize them before
+    # page reload so opening the durable drawing does not lose its fixture.
+    page.evaluate("""async()=>{
+      for(const [key,file] of memoFixture.files)await putDBFile(key,file);
+      await SentlogRecords.settled();
+    }""")
+    sources = pictures()
+    reserved = page.evaluate(r"""async({sources,ids})=>{
+      if(!SentlogCollaborationPhotos.captureTarget())throw Error('Synthetic capture target missing');
+      const nativeUUID=crypto.randomUUID,nativeNow=Date.now,convert=SentlogOriginalPhotos.makeSharedPhoto;
+      const queue=['10000000-0000-4000-8000-000000000000',...ids];let calls=0;
+      Object.defineProperty(crypto,'randomUUID',{configurable:true,value:()=>queue.shift()||nativeUUID.call(crypto)});
+      Date.now=()=>1795700000000;
+      SentlogOriginalPhotos.makeSharedPhoto=async file=>{
+        if(calls++===0)throw Error('Synthetic first-photo conversion interruption');
+        return convert(file);
+      };
+      try{
+        const intent=SentlogCollaborationPhotos.prepareInput('photoInput');
+        const files=sources.map(item=>new File([Uint8Array.from(atob(item.encoded),c=>c.charCodeAt(0))],item.name,{type:'image/png'}));
+        const result=await SentlogCollaborationPhotos.register(files,intent);
+        return {result,pending:await SentlogCollaborationPhotos.listPending()};
+      }finally{
+        Object.defineProperty(crypto,'randomUUID',{configurable:true,value:nativeUUID});
+        Date.now=nativeNow;SentlogOriginalPhotos.makeSharedPhoto=convert;
+      }
+    }""", {'sources': sources, 'ids': IDS})
+    assert [row['status'] for row in reserved['result']] == ['pending', 'attached', 'attached'], reserved
+    assert [row['photoId'] for row in reserved['result']] == IDS, reserved
+    assert len(reserved['pending']) == 1 and reserved['pending'][0]['originalSaved'], reserved
+    assert grid_order(page) == NAMES[1:]
+    retry = page.evaluate("SentlogCollaborationPhotos.retryPending()")
+    assert len(retry) == 1 and retry[0]['status'] == 'attached', retry
+    wait_photos(page, 'memo-plan-a', 3)
+    assert grid_order(page) == NAMES
+    proof = page.evaluate(PHOTO_PROOF)
+    assert proof['projectionValid'] and proof['canonicalIds'] == [IDS[1], IDS[2], IDS[0]], proof
+    assert sorted(p['originalHash'] for p in proof['photos']) == sorted(p['sha256'] for p in sources), proof
+    assert len({p['captureDisplayOrder']['at'] for p in proof['photos']}) == 1, proof
+    assert sorted(p['captureDisplayOrder']['index'] for p in proof['photos']) == [0, 1, 2], proof
+
+    before = page.evaluate("JSON.stringify(state.shapes.find(s=>s.id==='survey-a'))")
+    open_ledger(page)
+    assert ledger_order(page) == IDS
+    for format_name in ['damage', 'tensile', 'visual3', 'standard']:
+        page.locator('[data-ledger=format]').select_option(format_name)
+        assert ledger_order(page) == IDS, format_name
+        if format_name == 'tensile':
+            labels = page.locator('.ledger-tensile-photo-order').all_text_contents()
+            assert len(labels) == 3 and all(name in labels[i] for i, name in enumerate(NAMES)), labels
+    # Deliberate manual order must override the new chronological default.
+    page.locator('.ledger-item').nth(2).locator('.ledger-order button').first.click()
+    page.locator('.ledger-item').nth(1).locator('.ledger-order button').first.click()
+    manual = [IDS[2], IDS[0], IDS[1]]
+    assert ledger_order(page) == manual
+    page.locator('.ledger-save').click()
+    page.locator('.ledger-close').click()
+    open_ledger(page)
+    assert ledger_order(page) == manual
+    page.locator('[data-ledger=format]').select_option('tensile')
+    assert ledger_order(page) == manual
+    page.locator('.ledger-close').click()
+    assert before == page.evaluate("JSON.stringify(state.shapes.find(s=>s.id==='survey-a'))")
+
+    received = page.evaluate("""async()=>{
+      document.activeElement?.blur();await SentlogRecords.settled();
+      const incoming=structuredClone(memoFixture.snapshot()),drawing=incoming.drawings.find(d=>d.meta.id==='memo-plan-a');
+      incoming.project.collaborationVersion=1;
+      const index=drawing.state.shapes.findIndex(s=>s.id==='survey-a');
+      drawing.state.shapes[index]=SentlogRecordCollaboration.appendComment(drawing.state.shapes[index],'写真順確認の受信コメント',
+        {commentId:'order-peer-comment',revisionId:'order-peer-revision',actor:{deviceId:'peer',deviceName:'Peer'},at:1795700001000});
+      return memoFixture.commit(incoming);
+    }""")
+    assert received['applied'], received
+    assert grid_order(page) == NAMES
+    assert page.evaluate(PHOTO_PROOF) == proof
+
+    # WebKit's fixture Blob maps are process-local. Snapshot only those I/O
+    # fixtures and restore after reload; never reconstruct or replace records.
+    transport = None
+    if engine == 'webkit':
+        transport = page.evaluate(r"""async()=>{
+          const encode=async blob=>btoa(String.fromCharCode(...new Uint8Array(await blob.arrayBuffer())));
+          const rows=[];
+          for(const meta of await SentlogOriginalPhotos.listMeta()){
+            const original=await SentlogOriginalPhotos.getOriginal(meta.drawingId,meta.photoId),shared=await getPhotoBlob(meta.photoId,meta.drawingId);
+            rows.push({meta,original:await encode(original),shared:await encode(shared),sharedType:shared.type});
+          }
+          return rows;
+        }""")
+    page.evaluate("SentlogRecords.settled()")
+    page.reload(wait_until='domcontentloaded')
+    page.wait_for_function('window.sentlogAppReady&&window.SentlogCollaborationPhotos&&window.SentlogPhotoDisplayOrder&&window.SentlogPhotoLedger', timeout=45000)
+    page.evaluate('async()=>{await window.sentlogAppReady;await window.SentlogCameraReturn?.ready;}')
+    if engine == 'webkit':
+        page.evaluate(WEBKIT_TRANSPORT)
+        page.evaluate(r"""async rows=>{
+          for(const row of rows){const meta=row.meta,bytes=value=>Uint8Array.from(atob(value),c=>c.charCodeAt(0));
+            await SentlogOriginalPhotos.stageOriginal(meta.drawingId,meta.photoId,new File([bytes(row.original)],meta.originalName,{type:meta.type}),meta);
+            await savePhotoBlob(meta.photoId,new Blob([bytes(row.shared)],{type:row.sharedType}),meta.drawingId);
+          }
+        }""", transport)
+    page.evaluate("""async()=>{
+      await openDrawing('memo-project','memo-plan-a');SentlogFieldRecords.selectRecord('survey-a');$('inspector').classList.add('open');
+    }""")
+    assert grid_order(page) == NAMES
+    assert page.evaluate(PHOTO_PROOF) == proof
+    open_ledger(page)
+    assert ledger_order(page) == manual
+    page.locator('.ledger-close').click()
+    return {'engine': engine, 'photos': proof, 'defaultOrder': IDS, 'manualLedgerOrder': manual,
+            'reload': True, 'incomingProjection': True, 'delayedRetry': True,
+            'blobTransport': 'native IndexedDB' if engine == 'chromium' else 'WebKit fixture (records use real IndexedDB)'}
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--engine', choices=('chromium', 'webkit'), default='chromium')
+    parser.add_argument('--built-root', type=Path, default=ROOT)
+    parser.add_argument('--report', type=Path)
+    args = parser.parse_args()
+
+    class Handler(SimpleHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(('127.0.0.1', 0), functools.partial(Handler, directory=str(args.built_root.resolve())))
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    origin = f'http://127.0.0.1:{server.server_port}'
+    errors, report = [], {'engine': args.engine, 'passed': False}
+    try:
+        with sync_playwright() as playwright:
+            browser_type = getattr(playwright, args.engine)
+            options = {'headless': True}
+            if args.engine == 'chromium' and not os.path.exists(browser_type.executable_path) and os.path.exists('/usr/bin/chromium'):
+                options.update(executable_path='/usr/bin/chromium', args=['--no-sandbox'])
+            browser = browser_type.launch(**options)
+            context = browser.new_context(viewport={'width': 820, 'height': 1000}, has_touch=True,
+                                          is_mobile=True, service_workers='block')
+
+            def route(request):
+                if request.request.url.startswith((origin+'/', 'blob:', 'data:')):
+                    request.continue_()
+                elif request.request.url.startswith('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/'):
+                    request.fulfill(content_type='text/javascript', body='window.pdfjsLib={GlobalWorkerOptions:{}};')
+                else:
+                    request.abort()
+
+            context.route('**/*', route)
+            page = context.new_page()
+            page.on('pageerror', lambda error: errors.append(str(error)))
+            try:
+                page.goto(origin+'/sentlog/', wait_until='domcontentloaded')
+                page.wait_for_function('window.sentlogAppReady&&window.SentlogCollaborationPhotos&&window.SentlogPhotoDisplayOrder&&window.SentlogPhotoLedger', timeout=45000)
+                page.evaluate('async()=>{await window.sentlogAppReady;await window.SentlogCameraReturn?.ready;}')
+                report.update(run(page, args.engine))
+                assert not errors, errors
+                report['passed'] = True
+                print('PASS photo capture order '+args.engine+': inverse UUIDs, tied batch, durable retry, grid, four ledger defaults, manual draft, incoming projection, reload, exact photo hashes', flush=True)
+            except Exception as error:
+                report['error'] = str(error)
+                if args.report:
+                    args.report.parent.mkdir(parents=True, exist_ok=True)
+                    page.screenshot(path=str(args.report.with_suffix('.png')), full_page=True)
+                raise
+            finally:
+                report['pageErrors'] = errors
+                browser.close()
+    finally:
+        server.shutdown()
+        if args.report:
+            args.report.parent.mkdir(parents=True, exist_ok=True)
+            args.report.write_text(json.dumps(report, ensure_ascii=False, indent=2))
+
+
+if __name__ == '__main__':
+    main()

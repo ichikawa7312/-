@@ -80,3 +80,6 @@ subprocess.run([sys.executable, 'scripts/build_high_quality_ledger.py'], cwd=ROO
 
 # Fence delayed delta projection against a drawing switch.
 subprocess.run([sys.executable, 'scripts/build_projection_navigation_guard.py'], cwd=ROOT, check=True)
+
+# Preserve capture order in the UI and resume the camera's record after reload.
+subprocess.run([sys.executable, 'scripts/build_camera_reliability.py'], cwd=ROOT, check=True)
