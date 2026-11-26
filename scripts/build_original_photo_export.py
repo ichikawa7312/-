@@ -77,3 +77,6 @@ subprocess.run([sys.executable, 'scripts/build_recovery_throttle.py'], cwd=ROOT,
 
 # Ledger export only; do not change shared media or synchronization.
 subprocess.run([sys.executable, 'scripts/build_high_quality_ledger.py'], cwd=ROOT, check=True)
+
+# Fence delayed delta projection against a drawing switch.
+subprocess.run([sys.executable, 'scripts/build_projection_navigation_guard.py'], cwd=ROOT, check=True)
