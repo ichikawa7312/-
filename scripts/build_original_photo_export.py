@@ -113,3 +113,6 @@ subprocess.run([sys.executable, 'scripts/build_file_journal_wake.py'], cwd=ROOT,
 
 # Restore a verified backup only into an empty, previously used record store.
 subprocess.run([sys.executable, 'scripts/build_startup_backup_recovery.py'], cwd=ROOT, check=True)
+
+# Preserve durable bytes when collaborative normalization only reorders keys.
+subprocess.run([sys.executable, 'scripts/build_normalization_noop.py'], cwd=ROOT, check=True)
