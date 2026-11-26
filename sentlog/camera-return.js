@@ -44,10 +44,10 @@
   // No drawing/photo writes belong here. Adapters only open an existing view.
   function createController(options){
     const now=options.now||Date.now;
-    let epoch=0,restoring=false,flight=null,observedOwner=options.owner();
+    let epoch=0,restoring=false,remembered=false,flight=null,observedOwner=options.owner();
     const claims=new WeakSet();
     function remove(){try{options.storage.removeItem(KEY);}catch(_){}}
-    function cancel(){epoch++;restoring=false;remove();}
+    function cancel(){epoch++;restoring=false;remembered=false;remove();}
     function read(){
       try{
         const raw=options.storage.getItem(KEY);if(raw===null)return null;
@@ -55,12 +55,12 @@
       }catch(_){return null;}
     }
     function remember(value){
-      const owner=options.owner();epoch++;restoring=false;
+      const owner=options.owner();epoch++;restoring=false;remembered=false;
       if(!owner.known){remove();return false;}
       observedOwner=owner;
       const saved=checkpoint({...value,version:VERSION,ownerId:owner.id,savedAt:now()},now());
       if(!saved){remove();return false;}
-      try{options.storage.setItem(KEY,JSON.stringify(saved));return true;}
+      try{options.storage.setItem(KEY,JSON.stringify(saved));remembered=true;return true;}
       catch(_){remove();return false;}
     }
     function accountChanged(next){
@@ -74,7 +74,13 @@
         const saved=read();if(!saved)return {restored:false,reason:'no-checkpoint'};
         const owner=options.owner();if(!owner.known)return {restored:false,reason:'owner-unavailable'};
         observedOwner=owner;
-        if(owner.id!==saved.ownerId||!options.canBegin()||!options.target(saved)){
+        if(owner.id!==saved.ownerId||!options.target(saved)){
+          cancel();return {restored:false,reason:'unavailable'};
+        }
+        if(!options.canBegin()){
+          // A user may already capture while later parser resources are still
+          // loading. Startup must not erase that newly saved return point.
+          if(remembered)return {restored:false,reason:'already-working'};
           cancel();return {restored:false,reason:'unavailable'};
         }
         const start=epoch;

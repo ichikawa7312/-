@@ -1,9 +1,9 @@
 """Built-app photo order: real conversion, canonical records, sync, ledger and reload.
 
-Only synthetic data is used and all external requests are blocked. Chromium
-keeps native original/shared Blob storage. Linux WebKit uses the established
-Blob-transport fixture; its records/journal still use real IndexedDB. This does
-not claim an iOS hardware or native WebKit Blob-storage test.
+Only synthetic data is used and all external requests are blocked. Both engines
+use a temporary persistent browser profile and native original/shared/background
+Blob stores, matching heavy_camera_ui. No iPhone/iPad hardware is simulated by
+these storage tests.
 """
 import argparse
 import base64
@@ -12,6 +12,7 @@ import hashlib
 import io
 import json
 import os
+import tempfile
 import threading
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -19,7 +20,7 @@ from pathlib import Path
 from PIL import Image
 from playwright.sync_api import sync_playwright
 
-from collaboration_photos_ui import WEBKIT_TRANSPORT, wait_photos
+from collaboration_photos_ui import wait_photos
 from field_record_memo_ui import SETUP, photo_png
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -27,7 +28,6 @@ IDS = ['ffffffff-0000-4000-8000-000000000001',
        '00000000-0000-4000-8000-000000000002',
        '77777777-0000-4000-8000-000000000003']
 NAMES = ['first.jpg', 'second.jpg', 'third.jpg']
-
 
 def evaluate(page, source, arg=None):
     label = ' '.join(source.split())[:110]
@@ -116,11 +116,10 @@ PHOTO_PROOF = r"""async()=>{
 
 
 def run(page, engine):
-    if engine == 'webkit':
-        evaluate(page, WEBKIT_TRANSPORT)
     evaluate(page, SETUP, base64.b64encode(photo_png()).decode('ascii'))
-    # SETUP normally supplies backgrounds through a Map. Materialize them before
-    # page reload so opening the durable drawing does not lose its fixture.
+    # SETUP normally supplies backgrounds through a Map. Persist those actual
+    # Files before reload; the persistent profile uses native IndexedDB in both
+    # engines, matching the existing heavy-camera storage regression.
     evaluate(page, """async()=>{
       for(const [key,file] of memoFixture.files)await putDBFile(key,file);
       await SentlogRecords.settled();
@@ -196,31 +195,10 @@ def run(page, engine):
     assert grid_order(page) == NAMES
     assert evaluate(page, PHOTO_PROOF) == proof
 
-    # WebKit's fixture Blob maps are process-local. Snapshot only those I/O
-    # fixtures and restore after reload; never reconstruct or replace records.
-    transport = None
-    if engine == 'webkit':
-        transport = evaluate(page, r"""async()=>{
-          const encode=async blob=>btoa(String.fromCharCode(...new Uint8Array(await blob.arrayBuffer())));
-          const rows=[];
-          for(const meta of await SentlogOriginalPhotos.listMeta()){
-            const original=await SentlogOriginalPhotos.getOriginal(meta.drawingId,meta.photoId),shared=await getPhotoBlob(meta.photoId,meta.drawingId);
-            rows.push({meta,original:await encode(original),shared:await encode(shared),sharedType:shared.type});
-          }
-          return rows;
-        }""")
     evaluate(page, "SentlogRecords.settled()")
     page.reload(wait_until='domcontentloaded')
     page.wait_for_function('window.sentlogAppReady&&window.SentlogCollaborationPhotos&&window.SentlogPhotoDisplayOrder&&window.SentlogPhotoLedger', timeout=45000)
     await_ready(page)
-    if engine == 'webkit':
-        evaluate(page, WEBKIT_TRANSPORT)
-        evaluate(page, r"""async rows=>{
-          for(const row of rows){const meta=row.meta,bytes=value=>Uint8Array.from(atob(value),c=>c.charCodeAt(0));
-            await SentlogOriginalPhotos.stageOriginal(meta.drawingId,meta.photoId,new File([bytes(row.original)],meta.originalName,{type:meta.type}),meta);
-            await savePhotoBlob(meta.photoId,new Blob([bytes(row.shared)],{type:row.sharedType}),meta.drawingId);
-          }
-        }""", transport)
     evaluate(page, """async()=>{
       await openDrawing('memo-project','memo-plan-a');SentlogFieldRecords.selectRecord('survey-a');$('inspector').classList.add('open');
     }""")
@@ -231,7 +209,7 @@ def run(page, engine):
     page.locator('.ledger-close').click()
     return {'engine': engine, 'photos': proof, 'defaultOrder': IDS, 'manualLedgerOrder': manual,
             'reload': True, 'incomingProjection': True, 'delayedRetry': True,
-            'blobTransport': 'native IndexedDB' if engine == 'chromium' else 'WebKit fixture (records use real IndexedDB)'}
+            'blobTransport': 'native IndexedDB with persistent browser profile'}
 
 
 def main():
@@ -250,14 +228,13 @@ def main():
     origin = f'http://127.0.0.1:{server.server_port}'
     errors, report = [], {'engine': args.engine, 'passed': False}
     try:
-        with sync_playwright() as playwright:
+        with sync_playwright() as playwright, tempfile.TemporaryDirectory(prefix='sentlog-photo-order-') as profile:
             browser_type = getattr(playwright, args.engine)
             options = {'headless': True}
             if args.engine == 'chromium' and not os.path.exists(browser_type.executable_path) and os.path.exists('/usr/bin/chromium'):
                 options.update(executable_path='/usr/bin/chromium', args=['--no-sandbox'])
-            browser = browser_type.launch(**options)
-            context = browser.new_context(viewport={'width': 820, 'height': 1000}, has_touch=True,
-                                          is_mobile=True, service_workers='block')
+            context = browser_type.launch_persistent_context(profile, **options,
+                viewport={'width': 820, 'height': 1000}, has_touch=True, is_mobile=True, service_workers='block')
 
             def route(request):
                 if request.request.url.startswith((origin+'/', 'blob:', 'data:')):
@@ -286,7 +263,7 @@ def main():
                 raise
             finally:
                 report['pageErrors'] = errors
-                browser.close()
+                context.close()
     finally:
         server.shutdown()
         if args.report:

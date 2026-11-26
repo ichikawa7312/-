@@ -115,6 +115,20 @@ function runtime({gate=null,checkpointValue=saved}={}){
     const a=fixture(),b=fixture();a.remember();assert.equal((await b.c.restore()).reason,'no-checkpoint','session storage isolates tabs');
   }
   {
+    const f=runtime({checkpointValue:null});await f.root.sentlogAppReady;
+    await f.root.openDrawing('p','d');f.root.state.currentPage=2;f.root.selectShape('r');
+    assert.equal(f.root.SentlogCameraReturn.remember(saved),true);
+    const before=f.sessionStorage.getItem(KEY);
+    assert.equal((await f.boot()).reason,'already-working');
+    assert.equal(f.sessionStorage.getItem(KEY),before,'startup must retain a camera checkpoint created before DOMContentLoaded');
+    assert.equal(f.root.currentView,'editor');assert.equal(f.root.selected,'r');
+    f.root.showDrawings('p');assert.equal(f.sessionStorage.getItem(KEY),null,'later deliberate navigation still clears fresh checkpoint');
+  }
+  for(const invalidate of [f=>f.setOwner({known:true,id:'other'}),f=>f.removeTarget()]){
+    const f=fixture();f.remember();f.setView('editor');invalidate(f);
+    assert.equal((await f.c.restore()).reason,'unavailable');assert.equal(f.storage.getItem(KEY),null,'fresh invalid checkpoints must still be rejected');
+  }
+  {
     const f=runtime();assert.equal((await f.boot()).restored,true);assert.equal(f.root.selected,'r');assert.equal(f.root.state.currentPage,2);
     assert(f.sessionStorage.getItem(KEY),'startup showProjects must preserve checkpoint');
     f.root.selectShape('r');await f.root.renderPdfPage(2);assert(f.sessionStorage.getItem(KEY),'same-record repaint must preserve checkpoint');

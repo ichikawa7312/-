@@ -10,6 +10,7 @@ import functools
 import hashlib
 import json
 import os
+import tempfile
 import threading
 import time
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -114,11 +115,19 @@ def run(page, report):
     png = photo_png()
     page.evaluate(SETUP, base64.b64encode(png).decode())
     page.evaluate("""async()=>{
-      for(const [key,file] of memoFixture.files)await SentlogRecords.writeFile(key,file);
-      memoFixture.files.clear();
-      state.shapes.push({id:'damage-a',page:1,kind:'rect',type:'腐食',x:200,y:200,w:100,h:60,
-        typeNo:1,strokeWidth:1.2,member:'synthetic',memo:'existing damage',photos:[]});
-      persist();await SentlogRecords.settled();
+      let timer;
+      const save=(async()=>{
+        for(const [key,file] of memoFixture.files)await SentlogRecords.writeFile(key,file);
+        memoFixture.files.clear();
+        state.shapes.push({id:'damage-a',page:1,kind:'rect',type:'腐食',x:200,y:200,w:100,h:60,
+          typeNo:1,strokeWidth:1.2,member:'synthetic',memo:'existing damage',photos:[]});
+        persist();await SentlogRecords.settled();
+      })();
+      try{await Promise.race([save,new Promise((_,reject)=>{
+        timer=setTimeout(()=>reject(Error('Native camera-return fixture save timed out: '+JSON.stringify({
+          readyState:document.readyState,view:currentView,storageReady:SentlogRecords.ready,pending:SentlogRecords.pending
+        }))),20000);
+      })]);}finally{clearTimeout(timer);}
     }""")
     page.evaluate(CAMERA_MOCK, base64.b64encode(png).decode())
     page.evaluate('cameraMock.imageReady')
@@ -239,14 +248,15 @@ def main():
     threading.Thread(target=server.serve_forever, daemon=True).start()
     origin = f'http://127.0.0.1:{server.server_port}'
     try:
-        with sync_playwright() as playwright:
+        with sync_playwright() as playwright, tempfile.TemporaryDirectory(prefix='sentlog-camera-return-') as profile:
             engine = getattr(playwright, args.engine)
             launch = dict(headless=True)
             if args.engine == 'chromium' and not os.path.exists(engine.executable_path) and os.path.exists('/usr/bin/chromium'):
                 launch.update(executable_path='/usr/bin/chromium', args=['--no-sandbox'])
-            browser = engine.launch(**launch)
-            context = browser.new_context(viewport={'width': 390, 'height': 844}, is_mobile=True,
-                                          has_touch=True, service_workers='block')
+            # Match the persistent native-storage profile in heavy_camera_ui;
+            # retain real File/Blob I/O while diagnosing the ephemeral timeout.
+            context = engine.launch_persistent_context(profile, **launch,
+                viewport={'width': 390, 'height': 844}, is_mobile=True, has_touch=True, service_workers='block')
 
             def route(request):
                 url = request.request.url
@@ -259,7 +269,7 @@ def main():
                     request.abort()
 
             context.route('**/*', route)
-            page = context.new_page()
+            page = context.pages[0] if context.pages else context.new_page()
             page.set_default_timeout(30000)
             errors = []
             page.on('pageerror', lambda error: errors.append(str(error)))
@@ -279,7 +289,7 @@ def main():
                     pass
                 raise
             finally:
-                browser.close()
+                context.close()
     finally:
         server.shutdown()
         report['elapsedSeconds'] = round(time.monotonic()-started, 2)
