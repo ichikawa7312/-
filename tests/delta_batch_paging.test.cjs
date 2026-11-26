@@ -131,7 +131,7 @@ await test('a gap after a short page stops at the last durable sequence and a la
     if(broken)return page(copy(remote.slice(2)),false);
     return page(copy(remote.slice(cursor)),false);})});
   await assert.rejects(()=>f.client.sync(),e=>e.code==='DELTA_SEQUENCE_GAP');assert.equal(f.current().cursor,1);assert.equal(f.writes,1);
-  broken=false;assert.equal((await f.client.sync()).cursor,3);assert.equal(f.writes,3);f.close();
+  broken=false;assert.equal((await f.client.sync()).cursor,3);assert.equal(f.writes,2);f.close();
 });
 await test('a disk failure during paged receive resumes from its durable cursor without skipping a row',async()=>{
   const remote=rows(3),calls=[],f=fixture({state:initial([]),transport:online(async(pid,cursor)=>{

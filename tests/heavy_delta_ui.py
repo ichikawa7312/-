@@ -30,6 +30,7 @@ import collaboration_ui as collaboration
 import delta_app_ui as delta
 import edit_sync_ui as base
 import heavy_sync_ui as heavy
+from heavy_protocol_diagnostics import install_protocol_diagnostics
 
 ROOT = Path(__file__).resolve().parents[1]
 OWNER, PID, CP, PC = delta.OWNER, delta.PID, delta.CP, delta.PC
@@ -51,6 +52,57 @@ class Cloud(delta.Cloud):
         self.stale_notifications = []
         self.convergence_expected, self.convergence_started_at = None, None
         self.failure_mirror_pages = set()
+        self.browser_events, self.browser_pages = [], {}
+        self.browser_event_dropped, self.browser_observer_errors = 0, 0
+        self.browser_event_started = time.monotonic()
+
+    def browser_event(self, event, *, page=None, device=None, **details):
+        # Passive, bounded evidence only. Never evaluate the page, record record
+        # text/URLs, change readiness, or replace the original test exception.
+        try:
+            identity = self.browser_pages.get(page, {})
+            device = identity.get('device', device)
+            self.browser_events.append(dict(seconds=round(time.monotonic()-self.browser_event_started, 4),
+                event=event, page=identity.get('sequence'),
+                deviceIndex=DEVICES.index(device) if device in DEVICES else None, **details))
+            if len(self.browser_events) > 120:
+                del self.browser_events[0]
+                self.browser_event_dropped += 1
+        except Exception:
+            self.browser_observer_errors += 1
+
+    def observe_page(self, page, device):
+        try:
+            self.browser_pages[page] = dict(sequence=len(self.browser_pages)+1, device=device)
+            self.browser_event('page-created', page=page)
+            def navigation(frame):
+                try:
+                    url = frame.url
+                    kind = ('app-document' if url.split('?', 1)[0].split('#', 1)[0] == self.origin+'/sentlog/' else
+                            'loopback-resource' if url.startswith(self.origin+'/') else
+                            'about-blank' if url == 'about:blank' else
+                            'blob' if url.startswith('blob:') else 'external-or-other')
+                    self.browser_event('frame-navigated', page=page, mainFrame=frame == page.main_frame, urlKind=kind)
+                except Exception:
+                    self.browser_observer_errors += 1
+            def console(message):
+                try:
+                    if message.type != 'error':
+                        return
+                    value = message.text
+                    # A fingerprint permits repetition checks without printing
+                    # filenames, tokens, URLs, synthetic records or arguments.
+                    digest = hashlib.sha256(value[:8192].encode('utf-8', errors='replace')).hexdigest()
+                    self.browser_event('console-error', page=page, messageSha256=digest,
+                        messageCharacters=len(value), fingerprintTruncated=len(value) > 8192)
+                except Exception:
+                    self.browser_observer_errors += 1
+            page.on('framenavigated', navigation)
+            page.on('close', lambda *_: self.browser_event('page-closed', page=page))
+            page.on('crash', lambda *_: self.browser_event('page-crashed', page=page))
+            page.on('console', console)
+        except Exception:
+            self.browser_observer_errors += 1
 
     def route(self, route, device):
         request, parsed = route.request, urlparse(route.request.url)
@@ -116,7 +168,10 @@ def make_page(engine, profile, cloud, device):
     # Use the existing persistent/native fixture. The additional init script is
     # installed before our explicit reopen; the initial navigation is protected
     # by sentlogImporting=true and the independent Python transport gate.
-    context, page, errors = delta.make_page(engine, profile, cloud, device)
+    cloud.browser_event('make-page-start', device=device)
+    context, page, errors = delta.make_page(engine, profile, cloud, device,
+                                           observe_page=lambda page: cloud.observe_page(page, device))
+    cloud.browser_event('make-page-ready', page=page)
     context.add_init_script("window.__fixtureOffline=localStorage.getItem('heavyOffline')==='1';")
     page.evaluate("()=>{window.__fixtureOffline=localStorage.getItem('heavyOffline')==='1';}")
     cloud.page_devices[page] = device
@@ -129,6 +184,7 @@ def restart(engine, profile, cloud, client, device, error_history):
     cloud.pages.remove(page)
     cloud.page_errors.remove(errors)
     cloud.page_devices.pop(page, None)
+    cloud.browser_event('restart-close-start', page=page)
     context.close()
     result = make_page(engine, profile, cloud, device)
     assert not result[1].evaluate('!!window.editFixture||!!window.__sentlogWebKitBlobTransport'), 'Native restart retained a fixture memory file map'
@@ -393,6 +449,7 @@ def verify_photo_receipts(cloud, photos):
 def capture_failure(cloud, report, report_path):
     if report.get('status') == 'passed':
         return
+    cloud.browser_event('failure-capture-start')
     for page in cloud.pages:
         if page.is_closed():
             continue
@@ -441,6 +498,7 @@ def run(engine, cloud, report, report_path):
         clients, error_history = [], []
         def close_clients():
             for client in clients:
+                cloud.browser_event('scenario-cleanup-close', page=client[1])
                 client[0].close()
         stack.callback(close_clients)
         for profile, device in zip(profiles, DEVICES):
@@ -480,6 +538,7 @@ def run(engine, cloud, report, report_path):
             devices=[dict(id=DEVICES[0], name='負荷検証iPad'), dict(id=DEVICES[1], name='負荷検証iPhone'), dict(id=PC, name='負荷検証PC', type='pc')],
             projects=[dict(id=PID, client_key=base.PROJECT, payload=baseline[0])], rollout=True)
         for page in pages:
+            cloud.browser_event('migration-start', page=page)
             page.evaluate("""()=>{showProjects();sentlogImporting=false;window.__heavyDeltaBootstrap={done:false};
               sentlogArchiveSync({force:true}).then(()=>window.__heavyDeltaBootstrap={done:true},
                 error=>window.__heavyDeltaBootstrap={done:true,error:String(error)});}""")
@@ -489,7 +548,10 @@ def run(engine, cloud, report, report_path):
             return all(value['binding'] and value['binding']['phase'] == 'active' and value['bootstrap']['done'] for value in values)
         heavy.wait(cloud, pages[0], activated, 'Protected SQL migration did not activate both 1,000-record profiles', timeout=300)
         for page in pages:
+            cloud.browser_event('migration-ready', page=page)
+            cloud.browser_event('initial-sync-start', page=page)
             result = delta.sync(page)
+            cloud.browser_event('initial-sync-complete', page=page)
             assert result['enabled'] and not result['pending'] and not result['deferred'], result
             page.evaluate(heavy.OPEN, base.DRAWING)
         initial = pages[0].evaluate(SUMMARY)
@@ -701,6 +763,7 @@ def main():
     threading.Thread(target=server.serve_forever, daemon=True).start()
     backend, cloud = None, None
     try:
+        report['protocolDiagnostics'] = install_protocol_diagnostics()
         backend = delta.Backend(args.built_root.resolve())
         cloud = Cloud(f'http://127.0.0.1:{server.server_port}', args.built_root.resolve(), args.engine, backend)
         with sync_playwright() as playwright:
@@ -715,6 +778,9 @@ def main():
         if backend:
             backend.close()
         server.shutdown()
+        if cloud:
+            report['browserLifecycle'] = dict(events=cloud.browser_events,
+                dropped=cloud.browser_event_dropped, observerErrors=cloud.browser_observer_errors)
         report['elapsedSeconds'] = time.time()-report['startedAt']
         args.report.parent.mkdir(parents=True, exist_ok=True)
         args.report.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')

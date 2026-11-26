@@ -286,7 +286,7 @@ class Cloud(collaboration.Cloud):
         return result
 
 
-def make_page(engine, profile, cloud, device):
+def make_page(engine, profile, cloud, device, *, observe_page=None):
     context = engine.launch_persistent_context(profile, headless=True, viewport={'width': 820 if device == A else 390, 'height': 1000},
                                                is_mobile=True, has_touch=True, service_workers='block',
                                                executable_path=getattr(cloud, 'executable_path', None))
@@ -302,6 +302,8 @@ def make_page(engine, profile, cloud, device):
     page = context.new_page()
     errors = []
     page.on('pageerror', lambda error: errors.append(str(error)))
+    if observe_page is not None:
+        observe_page(page)
     page.goto(cloud.origin+'/sentlog/', wait_until='domcontentloaded')
     page.wait_for_function('window.sentlogDeltaRuntime&&window.sentlogAppReady&&window.SentlogDeltaMetadataUI', timeout=45000)
     page.evaluate('async()=>await sentlogAppReady')

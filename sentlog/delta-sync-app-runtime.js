@@ -18,11 +18,11 @@
   const fail=(code,message)=>Object.assign(Error(message),{code});
   function insist(ok,code,message){if(!ok)throw fail(code,message);}
   function createRuntime({records,url,key,session,ensureSession,authGeneration,subscribeAuth,deviceId,
-    install,applyProjection,readFile,withFileLock,actor,onStatus=()=>{},onPhotoReceived=()=>{},canProject=()=>true,
+    install,applyProjection,readFile,withFileLock,actor,onStatus=()=>{},onPhotoReceived=()=>{},onFileJournaled=()=>{},canProject=()=>true,
     network=()=>root.navigator?.onLine!==false,visible=()=>!root.document?.hidden,
     factories={},fetch:fetcher=root.fetch}={}){
     insist(records?.deltaJournal&&[session,ensureSession,authGeneration,subscribeAuth,deviceId,install,
-      applyProjection,readFile,withFileLock,actor,canProject].every(x=>typeof x==='function'),
+      applyProjection,readFile,withFileLock,actor,canProject,onFileJournaled].every(x=>typeof x==='function'),
       'DELTA_APP_CONFIG','編集・保存・同期の接続方法を確認できません');
     const contexts=new Map();let closed=false;
     const J=()=>root.SentlogDeltaAppJournal||req('delta-sync-app-journal');
@@ -36,6 +36,16 @@
     }
     function check(c){insist(current(c),'DELTA_APP_SCOPE','ログインまたは端末が変わりました。変更は元の案件に保持しています');}
     function report(c,status){if(current(c))try{onStatus({...status,localProjectId:c.localProjectId,scope:copy(c.scope)});}catch{}}
+    function notifyFileJournal(c){
+      try{
+        if(!c.fileJournalDirty||c.assetsFlight||c.photoPauses||!current(c)||root.SentlogCapacity?.isCleared(c.cp.id))return;
+        // Only completed mirror writes request work. Existing ACKs must not
+        // trigger metadata -> photo audit -> ACK -> metadata feedback loops.
+        c.fileJournalDirty=false;
+        onFileJournaled({localProjectId:c.localProjectId});
+      }
+      catch{c.fileJournalDirty=true;} // An observer cannot undo saved bytes or replace a transfer error.
+    }
     function closeContext(c){
       if(c.closed)return;c.closed=true;clearTimeout(c.projectionTimer);
       for(const name of ['controller','bridge','replica','assets','assetTransport','assetStore','transport','store'])try{c[name]?.close?.();}catch{}
@@ -66,7 +76,7 @@
       if(c&&(!same(c.scope,scope)||!current(c))){closeContext(c);contexts.delete(cp.client_key);c=null;}
       if(c){c.cp=copy(cp);return c;}
       c={scope,localProjectId:cp.client_key,cp:copy(cp),authGeneration:authGeneration(),closed:false,
-        snapshotToken:null,mode:null,flight:null,assetsFlight:null,photoGeneration:0,photoPauses:0,checkpoint:null,lastCheckpointAt:0,projectionTimer:null};
+        snapshotToken:null,mode:null,flight:null,assetsFlight:null,fileJournalDirty:false,photoGeneration:0,photoPauses:0,checkpoint:null,lastCheckpointAt:0,projectionTimer:null};
       const provider=make.provider({url,key,session,refreshSession:ensureSession,subscribeAuth,fetch:fetcher});
       c.transport=make.transport({provider,scope,currentScope:()=>current(c),online:network});
       c.store=make.store(scope);contexts.set(cp.client_key,c);return c;
@@ -178,7 +188,11 @@
             allowArchivedRestore:true,
             currentSnapshotToken:()=>c.assetExpectedRaw?.every(([key,value])=>records.getItem(key)===value)?c.snapshotToken:null,
             authGeneration,subscribeAuth,onPhotoReceived,
-            localFiles:{read:readFile,write:(key,blob,opts)=>records.writeFile(key,blob,{...opts,ownerToken:fileOwners.get(key)}),
+            localFiles:{read:readFile,async write(key,blob,opts){
+                const saved=await records.writeFile(key,blob,{...opts,ownerToken:fileOwners.get(key)});
+                if(saved?.written===true)c.fileJournalDirty=true;
+                return saved;
+              },
               withLock:(key,fn)=>withFileLock(key,async()=>{const token={};fileOwners.set(key,token);
                 try{return await fn();}finally{if(fileOwners.get(key)===token)fileOwners.delete(key);}}),
               getCapabilities:()=>records.getFileWriteCapabilities(),
@@ -193,7 +207,9 @@
           checkPhotos();
         }
        }
-      })();c.assetsFlight=task;try{return await task;}finally{if(c.assetsFlight===task)c.assetsFlight=null;}
+      })();c.assetsFlight=task;try{return await task;}finally{
+        if(c.assetsFlight===task){c.assetsFlight=null;notifyFileJournal(c);}
+      }
     }
     async function suspendPhotos(cp){
       const c=await context(cp);check(c);if(++c.photoPauses===1)c.photoGeneration++;
@@ -203,7 +219,7 @@
       catch(error){c.photoPauses--;throw error;}
       finally{c.assets=null;c.assetTransport=null;c.assetStore=null;}
       let released=false;
-      const resume=()=>{if(released)return;released=true;c.photoPauses=Math.max(0,c.photoPauses-1);};
+      const resume=()=>{if(released)return;released=true;c.photoPauses=Math.max(0,c.photoPauses-1);notifyFileJournal(c);};
       resume.validate=()=>{check(c);insist(!released&&c.photoPauses>0&&c.photoGeneration===epoch,
         'DELTA_PHOTOS_LEASE','容量整理の確認状態が変わりました。記録を保持して中止します');return true;};
       return resume;

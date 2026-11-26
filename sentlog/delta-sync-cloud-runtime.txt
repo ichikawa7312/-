@@ -127,6 +127,7 @@ const sentlogDeltaApp=window.SentlogDeltaAppRuntime.createRuntime({
       syncStatus.updateProjectWork?.('metadata',status.localProjectId,'「'+name+'」：'+label);}
   },
   onPhotoReceived:({reference})=>window.sentlogSyncView?.photoReceived(reference.drawingId),
+  onFileJournaled:({localProjectId})=>editSync.request([localProjectId]),
   canProject:cp=>window.sentlogSyncView?.isBusy?.(cp.client_key)!==true,
   async applyProjection(cp,projection,options){
     const local=workspace().projects.find(p=>p.id===cp.client_key),expectedLocal=JSON.stringify(local||null);

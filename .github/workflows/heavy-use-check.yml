@@ -145,6 +145,8 @@ jobs:
         run: python tests/polygon_pointer_ui.py --engine ${{ matrix.engine }} --built-root . --report /tmp/sentlog-heavy-camera-${{ matrix.engine }}-polygon.json
       - name: Verify heavy ${{ matrix.suite }} use in ${{ matrix.engine }}
         if: matrix.suite != 'originals'
+        env:
+          SENTLOG_HEAVY_PROTOCOL_DIAGNOSTICS: ${{ matrix.suite == 'delta' && matrix.engine == 'chromium' && '1' || '0' }}
         run: NODE_PATH="$RUNNER_TEMP/sentlog-heavy-deps/node_modules" python tests/heavy_${{ matrix.suite }}_ui.py --engine ${{ matrix.engine }} --built-root . --report /tmp/sentlog-heavy-${{ matrix.suite }}-${{ matrix.engine }}.json
       - name: Verify complete original-photo ZIP exports in ${{ matrix.engine }}
         if: matrix.suite == 'originals'

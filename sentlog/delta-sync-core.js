@@ -338,25 +338,38 @@
         assert((rows.hasMore===undefined||typeof rows.hasMore==='boolean')&&(rows.length>0||rows.hasMore!==true),
           'DELTA_SERVER','変更一覧の続きまたは終端を確認できません');
         if(!rows.length)return {applied,cursor};
-        for(const row of rows)await local(async()=>{
-          assert(row&&Number.isSafeInteger(row.seq)&&row.seq===state.cursor+1,
-            'DELTA_SEQUENCE_GAP','未受信の変更があります。同期位置は進めません');
-          const grouped=own(row,'group');let events,end;
-          if(grouped){
-            assert(!own(row,'event'),'DELTA_SERVER','一括操作と単独変更が混在しています');validateGroup(row.group);
-            assert(row.group.projectId===projectId,'DELTA_FOREIGN','別案件の一括操作を受信しました');
-            events=row.group.events;end=row.endSeq;
-            assert(Number.isSafeInteger(end)&&end===row.seq+events.length-1,'DELTA_SEQUENCE_GAP','一括操作の連続した範囲を確認できません');
-          }else{
-            assert(!own(row,'endSeq')&&!own(row,'groupId'),'DELTA_SERVER','一括操作の一部だけを受信しました');
-            assert(row.event?.projectId===projectId,'DELTA_FOREIGN','別案件の変更を受信しました');events=[row.event];end=row.seq;
+        await local(async()=>{
+          // The transport page is already bounded. Persist its ordered valid
+          // prefix once, rather than copying and writing the whole replica for
+          // every row. Local edits stay serialized without owning network waits.
+          const next=clone(state),changed=new Set();let received=0,failed=false,failure;
+          for(const row of rows){
+            try{
+              assert(row&&Number.isSafeInteger(row.seq)&&row.seq===next.cursor+1,
+                'DELTA_SEQUENCE_GAP','未受信の変更があります。同期位置は進めません');
+              const grouped=own(row,'group');let events,end;
+              if(grouped){
+                assert(!own(row,'event'),'DELTA_SERVER','一括操作と単独変更が混在しています');validateGroup(row.group);
+                assert(row.group.projectId===projectId,'DELTA_FOREIGN','別案件の一括操作を受信しました');
+                events=row.group.events;end=row.endSeq;
+                assert(Number.isSafeInteger(end)&&end===row.seq+events.length-1,'DELTA_SEQUENCE_GAP','一括操作の連続した範囲を確認できません');
+              }else{
+                assert(!own(row,'endSeq')&&!own(row,'groupId'),'DELTA_SERVER','一括操作の一部だけを受信しました');
+                assert(row.event?.projectId===projectId,'DELTA_FOREIGN','別案件の変更を受信しました');events=[row.event];end=row.seq;
+              }
+              // Stage a whole atomic group before changing the candidate. If a
+              // later member is invalid, no part of that group is committed.
+              const staged=new Map();
+              for(const event of events){const key=keyOf(event.drawingId,event.recordId);
+                staged.set(key,combine(staged.has(key)?staged.get(key):own(next.records,key)?next.records[key]:null,event));}
+              for(const [key,record]of staged){put(next.records,key,record);changed.add(key);}
+              next.cursor=end;received+=events.length;
+            }catch(error){failed=true;failure=error;break;}
           }
-          const next=clone(state),changed=new Set();
-          for(const event of events){const key=keyOf(event.drawingId,event.recordId);
-            put(next.records,key,combine(own(next.records,key)?next.records[key]:null,event));changed.add(key);}
-          // Validate the whole group before this single durable cursor/state
-          // commit. No intermediate tombstone or destination reaches observers.
-          next.cursor=end;await persist(next);for(const key of changed)visibleConflicts(next.records[key]);applied+=events.length;
+          // An invalid later row retains the same valid prefix as before. A
+          // failed durable write exposes neither a new cursor nor partial data.
+          if(received){await persist(next);for(const key of changed)visibleConflicts(next.records[key]);applied+=received;}
+          if(failed)throw failure;
         });
         if(rows.hasMore===false||(rows.length<pageLimit&&rows.hasMore!==true))return {applied,cursor:await local(()=>state.cursor)};
       }
