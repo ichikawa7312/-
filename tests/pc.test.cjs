@@ -23,13 +23,14 @@ async function fixture({missing=false,permission=true,root:sharedRoot=null,locks
     session:{user:{id:'owner'}},rootHandle:root,SUPABASE_URL:'https://example.invalid',BUCKET:'test',navigator:{onLine:true,locks},
     document:{hidden:false,createElement(tag){const e=element(tag);elements.push(e);return e;},querySelector(){return main;},addEventListener(){}},
     ensureSession:async()=>{},ensureDevice:async()=>'pc-test',authHeaders:()=>({}),
-    rest:async(path,opts)=>{const body=JSON.parse(opts.body);calls.push(body);rpcLockStates.push({action:body.p_action,active:locks?.active});return body.p_action==='pc_jobs'?[job]:{};},
+    rest:async(path,opts,validate=null)=>{validate?.();const body=JSON.parse(opts.body);calls.push(body);rpcLockStates.push({action:body.p_action,active:locks?.active});return body.p_action==='pc_jobs'?[job]:{};},
     indexedDB:{open(){const q={};queueMicrotask(()=>q.onerror());return q;}},
     fetch:async()=>{throw Error('No live network allowed');},setTimeout(){},setInterval(){},clearTimeout(){},addEventListener(){}});
   context.window=context;
-  vm.runInContext(fs.readFileSync(require.resolve('../sentlog/archive-pc.js'),'utf8'),context);
+  context.rest.sentlogArchiveSendGuardVersion=1;
+  vm.runInContext(fs.readFileSync(process.env.SENTLOG_PC_ARCHIVE_SOURCE||require.resolve('../sentlog/archive-pc.js'),'utf8'),context);
   const run=elements.find(e=>e.tag==='button').onclick;
-  return {root,source,job,run,calls,locks,rpcLockStates};
+  return {root,source,job,run,calls,locks,rpcLockStates,context};
 }
 async function destination(f){const recovery=await f.root.getDirectoryHandle('復旧用',{create:true}),project=await recovery.getDirectoryHandle(f.job.project_id,{create:true}),generation=await project.getDirectoryHandle(f.job.id,{create:true}),files=await generation.getDirectoryHandle('files',{create:true});return {generation,files};}
 function rejected(f){assert(f.calls.some(c=>c.p_action==='pc_error'));assert(!f.calls.some(c=>c.p_action==='pc_complete'));}
@@ -121,4 +122,51 @@ console.log('PASS PC sync: retained active drawings stay out of pending queue wi
   openingExactFile.beforeOpen=async()=>{openingExactFile.blob=openingExact.source.files.get('drawing.pdf').blob;};
   await openingExact.run();assert(openingExact.calls.some(c=>c.p_action==='pc_complete'));assert.equal(await C.hash(await openingExactFile.getFile()),openingExact.job.manifest[0].sha256);assert.equal(openingExactFile.writes,0);assert.equal(openingExactFile.aborts,1);
   console.log('PASS PC: an exact copy committed before exclusive acquisition is reused after aborting the unused writer');
+
+  function changedRootError(f,newRoot){
+    rejected(f);assert.equal(newRoot.dirs.size,0);assert.equal(newRoot.files.size,0);
+    assert(f.calls.some(c=>c.p_action==='pc_error'&&/保存先.*変更/.test(c.p_data.reason)));
+    assert.equal(f.source.files.get('drawing.pdf').writes,0);
+  }
+  const rootChanged=await fixture(),newRoot=new Dir('別の保管先');
+  rootChanged.source.files.get('drawing.pdf').beforeRead=async()=>{rootChanged.context.rootHandle=newRoot;};
+  await rootChanged.run();changedRootError(rootChanged,newRoot);
+  const rootChangedDestination=await destination(rootChanged);assert.equal(rootChangedDestination.files.files.size,0);assert.equal(rootChangedDestination.generation.files.size,0);
+  console.log('PASS PC: changing the selected root during source reading stops writes and completion without touching the new root');
+
+  const rootAfterCopy=await fixture(),copyDestination=await destination(rootAfterCopy),copyManifest=new Entry('manifest.sentlog.json'),afterCopyRoot=new Dir('切替後');
+  copyDestination.generation.files.set(copyManifest.name,copyManifest);
+  copyManifest.beforeRead=async()=>{if(copyManifest.blob.size)rootAfterCopy.context.rootHandle=afterCopyRoot;};
+  await rootAfterCopy.run();changedRootError(rootAfterCopy,afterCopyRoot);
+  assert.equal(await C.hash(await copyDestination.files.files.get('asset-test').getFile()),rootAfterCopy.job.manifest[0].sha256);
+  assert.equal(copyDestination.files.files.get('asset-test').writes,1);assert.equal(copyManifest.writes,1);assert(copyManifest.blob.size>0);
+  console.log('PASS PC: a root change after copying preserves completed files and manifest without acknowledging another root');
+
+  const rootAtOpen=await fixture(),openDestination=await destination(rootAtOpen),rootOpeningFile=new Entry('asset-test'),atOpenRoot=new Dir('取得中に切替');
+  openDestination.files.files.set(rootOpeningFile.name,rootOpeningFile);
+  rootOpeningFile.beforeOpen=async()=>{rootAtOpen.context.rootHandle=atOpenRoot;};
+  await rootAtOpen.run();changedRootError(rootAtOpen,atOpenRoot);
+  assert.equal(rootOpeningFile.opens.length,1);assert.equal(rootOpeningFile.aborts,1);assert.equal(rootOpeningFile.writes,0);assert.equal(rootOpeningFile.blob.size,0);
+  console.log('PASS PC: a root change during exclusive stream acquisition aborts the acquired stream before writing');
+
+  const rootBeforeAck=await fixture(),beforeAckRoot=new Dir('通知前に切替');let deviceCalls=0;
+  rootBeforeAck.context.ensureDevice=async()=>{if(++deviceCalls===2)rootBeforeAck.context.rootHandle=beforeAckRoot;return 'pc-test';};
+  await rootBeforeAck.run();changedRootError(rootBeforeAck,beforeAckRoot);assert.equal(deviceCalls,3);
+  const ackDestination=await destination(rootBeforeAck);
+  assert.equal(await C.hash(await ackDestination.files.files.get('asset-test').getFile()),rootBeforeAck.job.manifest[0].sha256);
+  assert(C.validatePack(JSON.parse(await ackDestination.generation.files.get('manifest.sentlog.json').blob.text()),rootBeforeAck.job));
+  console.log('PASS PC: a root change while obtaining the device identity blocks completion RPC and retains the verified original-root backup');
+
+  let enterQueue,releaseQueue;const queued=new Promise(resolve=>{enterQueue=resolve;}),release=new Promise(resolve=>{releaseQueue=resolve;});
+  const waitingLocks={active:0,request:async(_name,_options,fn)=>{enterQueue();await release;return fn();}};
+  const rootWhileQueued=await fixture({locks:waitingLocks}),queuedRoot=new Dir('待機中に切替'),pending=rootWhileQueued.run();
+  await queued;rootWhileQueued.context.rootHandle=queuedRoot;releaseQueue();await pending;changedRootError(rootWhileQueued,queuedRoot);
+  assert.equal(rootWhileQueued.root.dirs.has('復旧用'),false);
+  console.log('PASS PC: a job keeps the root selected before native-lock waiting and refuses a later selection');
+
+  const legacyRest=await fixture();delete legacyRest.context.rest.sentlogArchiveSendGuardVersion;
+  await legacyRest.run();rejected(legacyRest);
+  assert(legacyRest.calls.some(c=>c.p_action==='pc_error'&&/PCの保管処理を更新/.test(c.p_data.reason)));
+  assert.equal(legacyRest.root.dirs.has('復旧用'),false);assert.equal(legacyRest.source.files.get('drawing.pdf').reads,0);
+  console.log('PASS PC: an old shell without the executed send guard cannot write files or claim completion');
 })().catch(e=>{console.error(e);process.exitCode=1;});

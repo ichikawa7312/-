@@ -45,8 +45,8 @@ assert.match(source,/page-replace-backup:/);
 assert.match(source,/既存の記録・写真・コメントは保持されています/);
 assert.ok(!source.includes('state.shapes=[]'),'page replacement must never clear shapes');
 const replace=source.slice(source.indexOf('async function replaceCurrentPage('),source.indexOf('async function undoLast('));
-const backupWrite=replace.indexOf('const backup=await guardedWrite(target,target.backup,source,'),backupCheck=replace.indexOf('await verify(target,backup)'),replacement=replace.indexOf('await applyPdf(target,');
-assert.ok(backupWrite>=0&&backupCheck>backupWrite&&replacement>backupCheck,'the captured drawing backup must be verified before replacing its PDF');
+const independent=replace.indexOf('previous=await independentPdf(target,previous)'),backupWrite=replace.indexOf('const backup=await guardedWrite(target,target.backup,retainedSource,'),backupCheck=replace.indexOf('await verify(target,backup)'),replacement=replace.indexOf('await applyPdf(target,');
+assert.ok(independent>=0&&backupWrite>independent&&backupCheck>backupWrite&&replacement>backupCheck,'the captured drawing must own independent bytes and verify its backup before replacing the PDF');
 assert.match(source,/navigationGuardVersion:1/);
 
 const index=fs.readFileSync('sentlog/index.html','utf8');

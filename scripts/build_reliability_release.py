@@ -35,7 +35,8 @@ for name, patterns in {
                      'recordChanges:changes', 'get recordFailureHistory()'],
     'storage-ui': ['recordFailureHistory'],
     'page-replacement': ['navigationGuardVersion:1'],
-    'archive-pc': ['async function preserveFile(', "mode:'exclusive'", 'PC_ARCHIVE_COLLISION'],
+    'archive-pc': ['async function preserveFile(', "mode:'exclusive'", 'PC_ARCHIVE_COLLISION',
+                   'PC_ARCHIVE_ROOT_CHANGED', 'rest.sentlogArchiveSendGuardVersion!==1'],
     'pc-safe-backup': ['const locked=await handle.getFile();', "mode:'exclusive'", 'PC_BACKUP_COLLISION'],
 }.items():
     value = source('sentlog/' + name + '.js')
@@ -81,6 +82,15 @@ change('sentlog/phone-runtime.js', 'v2.13', 'v2.14', 4)
 change('sentlog/phone-runtime.js', OLD_LABEL.replace('v2.13', 'v2.14'), LABEL)
 change('sentlog-pc/index.html', OLD_LABEL, LABEL)
 change('sentlog/sw.js', OLD_CACHE, CACHE)
+
+# Keep the historical PC shell and earlier builder boundaries intact. The new
+# archive module requires this executed capability before touching a folder.
+# Validate after the shared session wait and synchronously before fetch; the
+# callback is a separate argument and never enters RequestInit or the RPC body.
+change('sentlog-pc/index.html', 'async function rest(path,opt={}){\n  await ensureSession();',
+       'async function rest(path,opt={},validate=null){\n  await ensureSession();validate?.();')
+change('sentlog-pc/index.html', '\nasync function login(){',
+       '\nrest.sentlogArchiveSendGuardVersion=1;\nasync function login(){')
 
 # The account-check page intentionally stays outside the service worker's
 # static cache. Opening it while records are protected must not write caches.

@@ -22,6 +22,7 @@ on:
       - 'tests/page_replacement_context_ui.py'
       - 'tests/record_file_expected_state.test.cjs'
       - 'tests/pc_safe_backup_acquisition.test.cjs'
+      - 'tests/pc_archive_root_context.test.cjs'
   workflow_dispatch:
 permissions:
   contents: read

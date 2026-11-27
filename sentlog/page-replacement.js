@@ -100,6 +100,30 @@
       throw changed('確認したPDFの保存内容が変わりました。上書きせず停止しました。');
     return current;
   }
+  async function independentPdf(target,expected){
+    await verify(target,expected);checkTarget(target);
+    const source=expected.value,parts=[],chunk=2*1024*1024;
+    if(!(source instanceof Blob)||!source.size)throw Error('退避するPDFを読み取れません。元の保存内容は変更していません。');
+    try{
+      // A native database-backed Blob can lose readable backing bytes when its
+      // source row is replaced. Own independent bytes before writing a backup,
+      // applying undo, or retaining a rollback value. Blob([source]) is not a
+      // byte copy. Chunking bounds temporary buffers, not the final PDF size.
+      for(let offset=0;offset<source.size;offset+=chunk){
+        checkTarget(target);
+        const end=Math.min(source.size,offset+chunk),bytes=await source.slice(offset,end).arrayBuffer();checkTarget(target);
+        if(bytes.byteLength!==end-offset)throw Error('退避するPDFの読取りが途中で終了しました。元の保存内容は変更していません。');
+        parts.push(new Blob([bytes]));
+      }
+      const value=typeof File==='function'&&typeof source.name==='string'?
+        new File(parts,source.name,{type:source.type,lastModified:source.lastModified}):new Blob(parts,{type:source.type});
+      parts.length=0;
+      if(value.size!==expected.size||await hash(value)!==expected.sha256)
+        throw Error('退避するPDFの内容を照合できません。元の保存内容は変更していません。');
+      checkTarget(target);await verify(target,expected);checkTarget(target);
+      return {...expected,value};
+    }finally{parts.length=0;}
+  }
   async function guardedWrite(target,key,value,expected,navigation=true){
     checkTarget(target,navigation);
     const sha256=await hash(value);checkTarget(target,navigation);
@@ -185,6 +209,9 @@
     target.writeAttempted=true;
     target.committed=await guardedWrite(target,target.background,next,[previous,backup,metaState]);
     await verify(target,target.committed);checkTarget(target);
+    // Verify the retained original after replacing its old live row, before
+    // rendering or marking the replacement complete. Rollback owns its bytes.
+    await verify(target,backup);checkTarget(target);
     await showOwnedPdf(target,next);checkTarget(target);
     // Rendering may yield to navigation or another writer. Check both the UI
     // identity and the durable file before touching page markers or records.
@@ -239,7 +266,7 @@
     try{
       target=captureTarget();checkTarget(target);updateUndoButton();
       const page=Number(target.state.currentPage)||1,fileName=target.state.fileName;
-      const previous=await snapshot(target,target.background),source=previous.value;
+      let previous=await snapshot(target,target.background);const source=previous.value;
       if(!(source instanceof Blob)||!source.size)throw Error('元PDFがこの端末にありません。同期またはPDF再取得を確認してください。');
       const sourceInfo=await inspectPage(source,page);checkTarget(target);
       const replacementInfo=await inspectPage(file,1);checkTarget(target);
@@ -261,13 +288,13 @@
       ))return;
 
       beginImport(target);await waitForIdle(target);
-      await verify(target,previous);
+      previous=await independentPdf(target,previous);const retainedSource=previous.value;
       const oldBackup=await snapshot(target,target.backup),oldMeta=await snapshot(target,target.meta);
-      const backup=await guardedWrite(target,target.backup,source,[previous,oldBackup,oldMeta]);
+      const backup=await guardedWrite(target,target.backup,retainedSource,[previous,oldBackup,oldMeta]);
       await verify(target,backup);checkTarget(target);
       const meta={version:1,drawingId:target.drawingId,page,savedAt:new Date().toISOString(),sourceHash:previous.sha256,sourceSize:source.size,applied:false};
       const metaState=await guardedWrite(target,target.meta,metaBlob(meta),[previous,backup,oldMeta]);checkTarget(target);
-      const merged=await compose(source,file,page,fileName);checkTarget(target);
+      const merged=await compose(retainedSource,file,page,fileName);checkTarget(target);
       const mergedInfo=await inspectPage(merged,page);checkTarget(target);
       if(mergedInfo.pageCount!==sourceInfo.pageCount)throw Error('差し替え後PDFのページ数が変わっています。');
       const verified=frameCompatible(sourceInfo,{...mergedInfo,pageCount:1});
@@ -290,7 +317,7 @@
       target=captureTarget();checkTarget(target);updateUndoButton();
       const metaState=await snapshot(target,target.meta),meta=await parseMeta(metaState.value);checkTarget(target);
       if(!meta?.applied||meta.drawingId!==target.drawingId)throw Error('この端末に戻せるページ差し替えはありません。');
-      const backup=await snapshot(target,target.backup),previous=await snapshot(target,target.background);
+      let backup=await snapshot(target,target.backup),previous=await snapshot(target,target.background);
       if(!(backup.value instanceof Blob)||!backup.size||backup.size!==Number(meta.sourceSize)||backup.sha256!==meta.sourceHash)
         throw Error('差し替え前PDFの照合に失敗したため、元に戻しません。');
       if(!meta.replacementHash||!meta.replacementSize||previous.sha256!==meta.replacementHash||previous.size!==Number(meta.replacementSize)||
@@ -298,6 +325,7 @@
         throw changed('差し替え後にPDFが変更されています。現在のPDFを上書きせず停止しました。');
       if(!confirm('直前のページ差し替え前のPDF全体へ戻します。\n変状・写真・コメントなどの記録は削除しません。\n\n元に戻しますか？'))return;
       beginImport(target);await waitForIdle(target);
+      backup=await independentPdf(target,backup);previous=await independentPdf(target,previous);
       const page=Math.min(Math.max(1,Number(meta.page)||1),Number(state.pageCount)||1);
       await applyPdf(target,{previous,next:backup.value,backup,metaState,page,name:'差し替え前に復元',restored:true,
         meta:{...meta,applied:false,restoredAt:new Date().toISOString()}});

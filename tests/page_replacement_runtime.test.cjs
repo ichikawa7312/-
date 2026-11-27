@@ -148,6 +148,109 @@ test('the busy guard covers inspection before the confirmation dialog',async()=>
 test('an existing import owner is retained and no page write starts',async()=>{
   const f=await setup();f.c.sentlogImporting=true;await f.api.replaceCurrentPage(f.donor);assert.equal(f.c.sentlogImporting,true);assert.equal(f.calls.writes.length,0);await f.untouchedB();
 });
+
+// This models a native backing lifetime fault; it is not a WebKit emulator.
+// FakeIndexedDB still owns the actual rows and transaction/CAS behavior. A
+// value returned by getDBFile retains its backing identity when re-put, and
+// becomes unreadable if that backing's original row is subsequently replaced.
+function nativeBackingFault(f,{onChunk=null,metadata=null}={}){
+  const aliases=new Map(),references=new WeakMap(),chunkReads=[];
+  const relevant=k=>k===key('a')||k===backup('a'),get=f.c.getDBFile,write=f.records.writeFile;
+  const requireReadable=reference=>{if(!reference.readable)throw Object.assign(Error('Synthetic native backing is unavailable'),{name:'NotFoundError'});};
+  class BackedPart extends Blob{
+    constructor(value,reference){super([value],{type:value.type});references.set(this,reference);}
+    async arrayBuffer(){
+      const reference=references.get(this);requireReadable(reference);
+      const bytes=await super.arrayBuffer();chunkReads.push(bytes.byteLength);
+      return onChunk?await onChunk({bytes,reference,index:chunkReads.length})??bytes:bytes;
+    }
+  }
+  class BackedFile extends File{
+    constructor(value,reference){super([value],reference.metadata.name,{type:value.type,lastModified:reference.metadata.lastModified});references.set(this,reference);}
+    async arrayBuffer(){requireReadable(references.get(this));return super.arrayBuffer();}
+    async text(){return new TextDecoder().decode(await this.arrayBuffer());}
+    slice(...args){return new BackedPart(super.slice(...args),references.get(this));}
+  }
+  function reference(k,value){return {owner:k,readable:true,metadata:{name:value.name||metadata?.name||'native-original.pdf',lastModified:value.lastModified??metadata?.lastModified??321}};}
+  f.c.getDBFile=async k=>{
+    const value=await get(k);if(!relevant(k)||!(value instanceof Blob))return value;
+    if(!aliases.has(k))aliases.set(k,reference(k,value));return new BackedFile(value,aliases.get(k));
+  };
+  f.records.writeFile=async(k,value,options)=>{
+    const result=await write(k,value,options);
+    if(relevant(k)&&result?.written!==false){
+      const before=aliases.get(k),after=references.get(value)||reference(k,value);
+      if(before?.owner===k&&before!==after)before.readable=false;
+      aliases.set(k,after);
+    }
+    return result;
+  };
+  return {chunkReads,isNative:value=>references.has(value),read:k=>f.c.getDBFile(k)};
+}
+test('a multi-chunk independent backup remains readable after replacing its native source and retains File metadata',async()=>{
+  const f=await setup(),descriptor=JSON.parse(await f.original.text());descriptor.padding='x'.repeat(4*1024*1024+19);
+  const large=new File([json(descriptor)],'large-source.pdf',{type:'application/pdf',lastModified:987654});
+  await f.nativeWrite(key('a'),large);const fault=nativeBackingFault(f,{metadata:large});
+  await f.api.replaceCurrentPage(f.donor);await f.settle();
+  assert.equal(await digest(await fault.read(backup('a'))),await digest(large));
+  const saved=f.calls.writes.find(call=>call.key===backup('a')).value;
+  assert(saved instanceof File);assert.equal(saved.name,large.name);assert.equal(saved.type,large.type);assert.equal(saved.lastModified,large.lastModified);
+  assert.equal(fault.isNative(saved),false);assert.equal(fault.chunkReads.length,3);
+  assert.equal(fault.chunkReads.reduce((a,b)=>a+b,0),large.size);assert(fault.chunkReads.every(n=>n<=2*1024*1024));
+  assert.equal(JSON.parse(await(await f.read(meta('a'))).text()).applied,true);await f.intactRecordsA();await f.untouchedB();
+});
+test('undo writes independent backup bytes rather than re-putting its native read handle',async()=>{
+  const f=await setup();await f.api.replaceCurrentPage(f.donor);await f.settle();const fault=nativeBackingFault(f),before=f.calls.writes.length;
+  await f.api.undoLast();await f.settle();const writes=f.calls.writes.slice(before).filter(call=>call.key===key('a'));
+  assert.equal(writes.length,1);assert.equal(fault.isNative(writes[0].value),false);
+  assert.equal(await digest(await fault.read(key('a'))),await digest(f.original));assert.equal(f.c.state.pageReplacements['3'].restored,true);
+  await f.intactRecordsA();await f.untouchedB();
+});
+test('undo rollback owns the replaced current PDF after its original backing is invalidated',async()=>{
+  const f=await setup();await f.api.replaceCurrentPage(f.donor);await f.settle();const before=await digest(await f.read(key('a')));
+  nativeBackingFault(f);f.alerts.length=0;f.once('open:before',()=>{throw Error('Synthetic undo render rejection');});
+  await f.api.undoLast();await f.settle();assert.equal(await digest(await f.read(key('a'))),before);
+  assert(f.alerts.at(-1).includes('操作前のPDFへ戻しました'));await f.intactRecordsA();await f.untouchedB();f.stopped();
+});
+for(const id of ['b','a'])test('a navigation change during a PDF byte-copy chunk stops before any backup write: '+id,async()=>{
+  const f=await setup();nativeBackingFault(f,{onChunk:({bytes,index})=>{if(index===1)f.navigate(id);return bytes;}});
+  await f.api.replaceCurrentPage(f.donor);await f.settle();assert.equal(f.calls.writes.length,0);
+  assert.equal(await digest(await f.read(key('a'))),await digest(f.original));assert.equal(await f.read(backup('a')),undefined);
+  await f.untouchedB();f.stopped();
+});
+test('a source generation changed during byte copying is rechecked before any backup write',async()=>{
+  const f=await setup();nativeBackingFault(f,{onChunk:async({bytes,index})=>{if(index===1)await f.nativeWrite(key('a'),f.foreign);return bytes;}});
+  await f.api.replaceCurrentPage(f.donor);await f.settle();assert.equal(f.calls.writes.length,0);
+  assert.equal(await digest(await f.read(key('a'))),await digest(f.foreign));await f.untouchedB();f.stopped();
+});
+for(const mode of ['rejected','short','different'])test('an incomplete or different independent PDF copy fails before any write: '+mode,async()=>{
+  const f=await setup();nativeBackingFault(f,{onChunk:({bytes})=>{
+    if(mode==='rejected')throw Object.assign(Error('Synthetic source read failure'),{name:'NotFoundError'});
+    if(mode==='short')return bytes.slice(0,-1);
+    const changed=bytes.slice(0);new Uint8Array(changed)[0]^=1;return changed;
+  }});
+  await f.api.replaceCurrentPage(f.donor);await f.settle();assert.equal(f.calls.writes.length,0);
+  assert.equal(await digest(await f.read(key('a'))),await digest(f.original));assert.equal(await f.read(backup('a')),undefined);
+  await f.untouchedB();f.stopped();
+});
+for(const newer of [false,true])test('post-commit backup read failure blocks completion and preserves the correct background generation: '+newer,async()=>{
+  const f=await setup(),get=f.c.getDBFile;let committed=false;
+  f.once('write:background:a',()=>{committed=true;});
+  class Unreadable extends Blob{async arrayBuffer(){throw Object.assign(Error('Synthetic backup read failure'),{name:'NotFoundError'});}}
+  f.c.getDBFile=async k=>{
+    const value=await get(k);
+    if(committed&&k===backup('a')){
+      if(newer)await f.nativeWrite(key('a'),f.foreign);
+      return new Unreadable([value],{type:value.type});
+    }
+    return value;
+  };
+  await f.api.replaceCurrentPage(f.donor);await f.settle();
+  assert.equal(await digest(await f.read(key('a'))),await digest(newer?f.foreign:f.original));
+  assert.deepEqual(f.c.state.pageReplacements,{});assert.equal(JSON.parse(await(await f.read(meta('a'))).text()).applied,false);
+  if(newer)assert.equal(f.alerts.at(-1).includes('操作前のPDFへ戻しました'),false);
+  await f.intactRecordsA();await f.untouchedB();f.stopped();
+});
 (async()=>{let passed=0,failed=0;for(const [name,fn]of cases)try{await fn();passed++;console.log('PASS',name);}catch(error){failed++;console.error('FAIL',name,error.stack);}
   console.log(json({passed,failed,total:cases.length,syntheticPdfAPI:true,actualController:true,actualRecordWriter:true,nativeBrowserExecuted:false}));if(failed)process.exitCode=1;
 })();

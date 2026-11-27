@@ -26,7 +26,7 @@ from urllib.parse import urlparse
 
 ROOT = Path(__file__).resolve().parents[1]
 PC_CASES = ("normal-and-exact-retry", "conflicting-file", "conflicting-manifest",
-            "exclusive-contention", "file-at-acquisition", "manifest-at-acquisition")
+            "exclusive-contention", "file-at-acquisition", "manifest-at-acquisition", "root-switch-during-source")
 REGULAR_PC_CASES = ("normal", "foreign-at-acquisition", "matching-at-acquisition")
 
 REGULAR_PC_CASE = r"""async scenario=>{
@@ -88,22 +88,40 @@ PC_PREPARE = r"""async scenario=>{
   if(scenario==='conflicting-manifest')await put(generation,'manifest.sentlog.json',foreignManifest);
   if(['exclusive-contention','file-at-acquisition'].includes(scenario))await files.getFileHandle('synthetic-asset',{create:true});
   if(scenario==='manifest-at-acquisition')await generation.getFileHandle('manifest.sentlog.json',{create:true});
-  const state=window.__nativePc={scenario,job,root,generation,files,foreign,foreignManifest,calls:[],clicks:{trusted:0,untrusted:0},
-    operations:[],sourceReads:0,lockRequests:[],activeLocks:0,fixtureRaceWrites:0,openErrors:[],suppressedPolls:0};
-  window.rootHandle=new Proxy(root,{get(target,key){if(key==='queryPermission')return async()=> 'granted';const value=Reflect.get(target,key,target);return typeof value==='function'?value.bind(target):value;}});
+  let nextRoot=null;
+  if(scenario==='root-switch-during-source'){
+    nextRoot=await(await navigator.storage.getDirectory()).getDirectoryHandle('synthetic-next-root',{create:true});
+    await put(nextRoot,'keep.bin',foreign);
+  }
+  const state=window.__nativePc={scenario,job,root,original,generation,files,nextRoot,foreign,foreignManifest,calls:[],clicks:{trusted:0,untrusted:0},
+    operations:[],sourceReads:0,rootSwitches:0,lockRequests:[],activeLocks:0,fixtureRaceWrites:0,openErrors:[],suppressedPolls:0};
+  const permitted=root=>new Proxy(root,{get(target,key){if(key==='queryPermission')return async()=> 'granted';const value=Reflect.get(target,key,target);return typeof value==='function'?value.bind(target):value;}});
+  window.rootHandle=permitted(root);
   window.session={user:{id:'synthetic-owner'}};window.ensureSession=async()=>{};window.ensureDevice=async()=> 'synthetic-pc';window.authHeaders=()=>({});
   window.SUPABASE_URL='https://example.invalid';window.BUCKET='synthetic';
-  window.rest=async(path,options)=>{need(path==='/rest/v1/rpc/sentlog_archive_v1','Unexpected RPC path');const body=JSON.parse(options.body);
+  window.rest=async(path,options,validate=null)=>{validate?.();need(path==='/rest/v1/rpc/sentlog_archive_v1','Unexpected RPC path');const body=JSON.parse(options.body);
     need(['pc_jobs','pc_complete','pc_error'].includes(body.p_action),'Unexpected RPC action');
     state.calls.push({action:body.p_action,data:body.p_data,insideFileLock:state.activeLocks>0});return body.p_action==='pc_jobs'?[structuredClone(job)]:{};};
+  window.rest.sentlogArchiveSendGuardVersion=1;
   const nativeGet=FileSystemFileHandle.prototype.getFile,nativeOpen=FileSystemFileHandle.prototype.createWritable;
+  state.readOriginalForProof=async()=>nativeGet.call(await original.getFileHandle('drawing.pdf'));
   const nativeLock=navigator.locks.request.bind(navigator.locks);
   if(scenario==='exclusive-contention'){
     const handle=await files.getFileHandle('synthetic-asset');state.heldWriter=await nativeOpen.call(handle,{mode:'exclusive'});
     let entered;const held=new Promise(resolve=>entered=resolve);
     state.heldLock=nativeLock('sentlog-pc-safe-backup-v2',{mode:'exclusive'},()=>{entered();return new Promise(resolve=>state.releaseLock=resolve);});await held;
   }
-  FileSystemFileHandle.prototype.getFile=function(){if(this.name==='drawing.pdf')state.sourceReads++;return nativeGet.call(this);};
+  FileSystemFileHandle.prototype.getFile=function(){
+    if(this.name==='drawing.pdf'){
+      state.sourceReads++;
+      if(scenario==='root-switch-during-source'&&!state.rootSwitches)return nativeGet.call(this).then(file=>{
+        // The native source read really completed. Change only the selected
+        // directory reference before its unmodified File reaches the product.
+        state.rootSwitches++;window.rootHandle=permitted(nextRoot);return file;
+      });
+    }
+    return nativeGet.call(this);
+  };
   FileSystemFileHandle.prototype.createWritable=async function(options){
     const target=this.name==='synthetic-asset'||this.name==='manifest.sentlog.json';
     if(target)state.operations.push({name:this.name,operation:'open',mode:options?.mode||null});
@@ -145,6 +163,7 @@ PC_PROOF = r"""async retry=>{
     catch(error){if(error.name==='NotFoundError')return null;throw error;}}
   const file=await read(s.files,'synthetic-asset'),manifest=await read(s.generation,'manifest.sentlog.json');
   const completed=s.calls.filter(x=>x.action==='pc_complete'),errors=s.calls.filter(x=>x.action==='pc_error');
+  let rootSwitch=null;
   const successful=s.scenario==='normal-and-exact-retry'||retry;
   need(s.clicks.untrusted===0&&s.clicks.trusted===(retry?2:1),'Actual trusted button clicks are required');
   need(s.suppressedPolls===2,'Unexpected archive poll setup');
@@ -173,6 +192,16 @@ PC_PROOF = r"""async retry=>{
       need(s.operations.filter(x=>x.operation==='write'||x.operation==='close').length===0,'Exclusive collision still wrote bytes');
       need(s.openErrors.length===1&&s.openErrors[0].errorName==='NoModificationAllowedError','Actual native exclusive collision was not observed');
       need(s.webLockProof?.pendingExclusive===true,'Native Web Lock contention was not checked');
+    }else if(s.scenario==='root-switch-during-source'){
+      need(s.rootSwitches===1&&s.sourceReads===1,'The native source-read boundary did not switch the selected root exactly once');
+      need(!file&&!manifest&&s.operations.length===0,'A stale root selection still created or wrote destination files');
+      need(/保存先.*変更/.test(errors[0].data.reason),'The root change was not reported');
+      const original=await s.readOriginalForProof(),originalSHA=await C.hash(original),kept=await read(s.nextRoot,'keep.bin'),entries=[];
+      for await(const [name,handle]of s.nextRoot.entries())entries.push({name,kind:handle.kind});
+      need(originalSHA===s.expectedFileSHA,'The original native PDF was changed');
+      need(kept?.sha256===s.foreignSHA&&JSON.stringify(entries)===JSON.stringify([{name:'keep.bin',kind:'file'}]),'The newly selected root was touched');
+      rootSwitch={count:s.rootSwitches,from:s.root.name,to:window.rootHandle.name,originalSha256:originalSHA,
+        newRootFileSha256:kept.sha256,newRootEntries:entries,completionCalls:completed.length,errorCalls:errors.length};
     }else{
       const target=s.scenario==='file-at-acquisition'?'synthetic-asset':'manifest.sentlog.json';
       need(s.fixtureRaceWrites===1,'The real synthetic competing write did not occur');
@@ -186,7 +215,7 @@ PC_PROOF = r"""async retry=>{
   return {status:'passed',scenario:s.scenario,retry:!!retry,clicks:{...s.clicks},file:file&&{size:file.size,sha256:file.sha256},
     manifest:manifest&&{size:manifest.size,sha256:manifest.sha256},completed:completed.length,errors:errors.length,
     operations:structuredClone(s.operations),sourceReads:s.sourceReads,lockRequests:structuredClone(s.lockRequests),
-    openErrors:structuredClone(s.openErrors),webLockProof:s.webLockProof||null,fixtureRaceWrites:s.fixtureRaceWrites,
+    openErrors:structuredClone(s.openErrors),webLockProof:s.webLockProof||null,fixtureRaceWrites:s.fixtureRaceWrites,rootSwitch,
     nativeFileSystem:true,rootPermissionAnswerShimmed:true,osFolderPickerTested:false,externalOsWriterTested:false};
 }"""
 

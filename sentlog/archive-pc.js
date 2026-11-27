@@ -13,85 +13,109 @@
   const check=document.createElement('button');check.type='button';check.textContent='保管の確認を実行';
   status.append(heading,label,result,check);document.querySelector('main').prepend(status);
   const say=text=>{if(lastNotice!==text){lastNotice=text;result.textContent=text;}};
-  const rpc=async(action,project=null,data={})=>rest('/rest/v1/rpc/sentlog_archive_v1',{method:'POST',body:JSON.stringify({p_action:action,p_project_id:project,p_device_id:await ensureDevice(),p_data:data})});
-  async function readRelative(path){const parts=C.receiptParts(path,rootHandle.name);let dir=rootHandle;for(const p of parts.slice(0,-1))dir=await dir.getDirectoryHandle(p);return (await dir.getFileHandle(parts.at(-1))).getFile();}
-  async function source(f){
-    if(f.pc_path){try{const blob=await readRelative(f.pc_path);if(await C.matches(blob,f))return blob;}catch{}}
+  const rpc=async(action,project=null,data={},validate=null)=>{const device=await ensureDevice();validate?.();return rest('/rest/v1/rpc/sentlog_archive_v1',{method:'POST',body:JSON.stringify({p_action:action,p_project_id:project,p_device_id:device,p_data:data})},validate);};
+  function captureRoot(){
+    const root=rootHandle,name=root?.name;
+    return {root,name,check(){if(rootHandle!==root)throw Object.assign(Error('確認中にPCの保存先が変更されました。作成済みのコピーは元の保存先に残し、保管の完了通知を中止しました。'),{code:'PC_ARCHIVE_ROOT_CHANGED'});}};
+  }
+  async function fromRoot(target,operation){
+    target.check();
+    try{const value=await operation();target.check();return value;}catch(error){target.check();throw error;}
+  }
+  async function readRelative(path,target){
+    target.check();const parts=C.receiptParts(path,target.name);let dir=target.root;
+    for(const p of parts.slice(0,-1))dir=await fromRoot(target,()=>dir.getDirectoryHandle(p));
+    const file=await fromRoot(target,()=>dir.getFileHandle(parts.at(-1)));
+    return fromRoot(target,()=>file.getFile());
+  }
+  async function source(f,target){
+    target.check();
+    if(f.pc_path){try{const blob=await fromRoot(target,()=>readRelative(f.pc_path,target));if(await fromRoot(target,()=>C.matches(blob,f)))return blob;}catch{target.check();}}
     // The main app on this PC may also hold a verified copy in IndexedDB.
-    try{const connection=await new Promise((resolve,reject)=>{const q=indexedDB.open('surveyFieldNoteDB');q.onsuccess=()=>resolve(q.result);q.onerror=()=>reject(q.error);});
-      try{if(connection.objectStoreNames.contains('files')){const blob=await new Promise((resolve,reject)=>{const q=connection.transaction('files').objectStore('files').get(f.key);q.onsuccess=()=>resolve(q.result);q.onerror=()=>reject(q.error);});if(await C.matches(blob,f))return blob;}}finally{connection.close();}
-    }catch{}
+    try{target.check();const connection=await new Promise((resolve,reject)=>{const q=indexedDB.open('surveyFieldNoteDB');q.onsuccess=()=>resolve(q.result);q.onerror=()=>reject(q.error);});
+      // Take ownership before checking: even a stale opened connection closes.
+      try{target.check();if(connection.objectStoreNames.contains('files')){const blob=await fromRoot(target,()=>new Promise((resolve,reject)=>{const q=connection.transaction('files').objectStore('files').get(f.key);q.onsuccess=()=>resolve(q.result);q.onerror=()=>reject(q.error);}));if(await fromRoot(target,()=>C.matches(blob,f)))return blob;}}finally{connection.close();}
+    }catch{target.check();}
     if(f.status!=='storage_deleted'){
       const parts=String(f.storage_path).split('/').map(encodeURIComponent).join('/');
       const c=new AbortController(),timeout=setTimeout(()=>c.abort(),120000);
-      try{const response=await fetch(SUPABASE_URL+'/storage/v1/object/authenticated/'+BUCKET+'/'+parts,{headers:authHeaders(),signal:c.signal,cache:'no-store'});
-        if(response.ok){const blob=await response.blob();if(await C.matches(blob,f))return blob;}
+      try{const response=await fromRoot(target,()=>fetch(SUPABASE_URL+'/storage/v1/object/authenticated/'+BUCKET+'/'+parts,{headers:authHeaders(),signal:c.signal,cache:'no-store'}));
+        if(response.ok){const blob=await fromRoot(target,()=>response.blob());if(await fromRoot(target,()=>C.matches(blob,f)))return blob;}
       }finally{clearTimeout(timeout);}
     }
     throw Error('必要なファイルが見つからないか、内容が異なります：'+f.file_name+'。端末のデータは消していません。');
   }
   const collision=name=>Object.assign(Error('PCの保管先に内容が異なるファイルがあります。既存の内容は変更しません：'+name),{code:'PC_ARCHIVE_COLLISION'});
-  async function existingFile(directory,name){
-    try{const handle=await directory.getFileHandle(name);return {handle,file:await handle.getFile()};}
-    catch(e){if(e?.name==='NotFoundError')return null;throw e;}
+  async function existingFile(directory,name,target){
+    try{const handle=await fromRoot(target,()=>directory.getFileHandle(name));return {handle,file:await fromRoot(target,()=>handle.getFile())};}
+    catch(e){target.check();if(e?.name==='NotFoundError')return null;throw e;}
   }
-  async function preserveFile(directory,name,matches,loadVerified,label){
-    const previous=await existingFile(directory,name);
-    if(previous&&await matches(previous.file))return previous;
+  async function preserveFile(directory,name,matches,loadVerified,label,target){
+    const previous=await fromRoot(target,()=>existingFile(directory,name,target));
+    if(previous&&await fromRoot(target,()=>matches(previous.file)))return previous;
     if(previous?.file.size>0)throw collision(label);
     // source() has already checked the registered hash and size. Do not create
     // a destination until those bytes are available. Empty placeholders can retry.
-    const blob=await loadVerified(),handle=await directory.getFileHandle(name,{create:true});
-    const current=await handle.getFile();
-    if(await matches(current))return {handle,file:current};
+    const blob=await fromRoot(target,loadVerified),handle=await fromRoot(target,()=>directory.getFileHandle(name,{create:true}));
+    const current=await fromRoot(target,()=>handle.getFile());
+    if(await fromRoot(target,()=>matches(current)))return {handle,file:current};
     if(current.size>0)throw collision(label);
     let writer;
     try{
-      writer=await handle.createWritable({keepExistingData:false,mode:'exclusive'});
+      target.check();writer=await handle.createWritable({keepExistingData:false,mode:'exclusive'});target.check();
       // Another writer may have committed after the preflight read but before
       // exclusive acquisition. Opening only creates a temporary stream; abort
       // it without write/close if the current file is now occupied.
-      const locked=await handle.getFile();
-      if(await matches(locked)){await writer.abort();writer=null;return {handle,file:locked};}
+      const locked=await fromRoot(target,()=>handle.getFile());
+      if(await fromRoot(target,()=>matches(locked))){await writer.abort();writer=null;target.check();return {handle,file:locked};}
       if(locked.size>0)throw collision(label);
-      await writer.write(blob);await writer.close();writer=null;
+      target.check();await writer.write(blob);target.check();await writer.close();writer=null;target.check();
     }
-    catch(e){if(writer)try{await writer.abort();}catch{}throw e;}
-    const file=await handle.getFile();
-    if(!await matches(file))throw Error('PCへの書き込み照合に失敗しました：'+label);
+    // Always release an acquired stream, including after the selected root changed.
+    catch(e){if(writer)try{await writer.abort();}catch{}target.check();throw e;}
+    const file=await fromRoot(target,()=>handle.getFile());
+    if(!await fromRoot(target,()=>matches(file)))throw Error('PCへの書き込み照合に失敗しました：'+label);
     return {handle,file};
   }
   async function save(job){
+    if(rest.sentlogArchiveSendGuardVersion!==1)throw Object.assign(Error('PCの保管処理を更新する必要があります。画面を更新してから再確認してください。'),{code:'PC_ARCHIVE_SEND_GUARD_REQUIRED'});
+    const target=captureRoot();
     if(typeof navigator.locks?.request!=='function')throw Error('PC保管の排他制御を利用できません。EdgeまたはChromeで開いてください。');
     // Coordinate with the regular PC backup and other archive tabs. A filename
     // collision still fails closed; the lock is not permission to replace bytes.
-    const completed=await navigator.locks.request('sentlog-pc-safe-backup-v2',{mode:'exclusive'},()=>saveLocked(job));
+    const completed=await navigator.locks.request('sentlog-pc-safe-backup-v2',{mode:'exclusive'},()=>saveLocked(job,target));target.check();
     // Network acknowledgement must not retain the filesystem lock and stall
     // unrelated normal PC saves while the server response is pending.
-    await rpc('pc_complete',job.project_id,completed.receipt);
+    target.check();await rpc('pc_complete',job.project_id,completed.receipt,target.check);
+    // The server has accepted the verified, fixed-root receipt. A later root
+    // selection cannot retract that request or turn its success into pc_error.
     return completed.message;
   }
-  async function saveLocked(job){
-    if(!rootHandle||await rootHandle.queryPermission({mode:'readwrite'})!=='granted')throw Error('以前のセントログ保管フォルダを選び、「保存許可を確認」を押してください。');
-    let dir=await rootHandle.getDirectoryHandle('復旧用',{create:true});
-    dir=await dir.getDirectoryHandle(job.project_id,{create:true});dir=await dir.getDirectoryHandle(job.id,{create:true});
+  async function saveLocked(job,target){
+    target.check();
+    if(!target.root||await fromRoot(target,()=>target.root.queryPermission({mode:'readwrite'}))!=='granted')throw Error('以前のセントログ保管フォルダを選び、「保存許可を確認」を押してください。');
+    let dir=await fromRoot(target,()=>target.root.getDirectoryHandle('復旧用',{create:true}));
+    dir=await fromRoot(target,()=>dir.getDirectoryHandle(job.project_id,{create:true}));dir=await fromRoot(target,()=>dir.getDirectoryHandle(job.id,{create:true}));
     const paths=Object.fromEntries(job.manifest.map(f=>[f.key,'files/'+f.id]));
     const pack=C.backupPack(job,paths);C.validatePack(pack,job);
-    const text=JSON.stringify(pack),previousManifest=await existingFile(dir,'manifest.sentlog.json');
-    if(previousManifest?.file.size>0&&await previousManifest.file.text()!==text)throw collision('manifest.sentlog.json');
-    const folder=await dir.getDirectoryHandle('files',{create:true});
+    const text=JSON.stringify(pack),previousManifest=await fromRoot(target,()=>existingFile(dir,'manifest.sentlog.json',target));
+    if(previousManifest?.file.size>0&&await fromRoot(target,()=>previousManifest.file.text())!==text)throw collision('manifest.sentlog.json');
+    const folder=await fromRoot(target,()=>dir.getDirectoryHandle('files',{create:true}));
     for(const f of job.manifest){
-      await preserveFile(folder,f.id,blob=>C.matches(blob,f),()=>source(f),f.file_name);
+      await fromRoot(target,()=>preserveFile(folder,f.id,blob=>C.matches(blob,f),()=>source(f,target),f.file_name,target));
     }
-    const manifest=await preserveFile(dir,'manifest.sentlog.json',async blob=>await blob.text()===text,async()=>new Blob([text],{type:'application/json'}),'manifest.sentlog.json');
+    const manifest=await fromRoot(target,()=>preserveFile(dir,'manifest.sentlog.json',async blob=>await fromRoot(target,()=>blob.text())===text,async()=>new Blob([text],{type:'application/json'}),'manifest.sentlog.json',target));
     // Recheck actual files, not an earlier database receipt, on every checkpoint.
-    for(const f of job.manifest)if(!await C.matches(await (await folder.getFileHandle(f.id)).getFile(),f))throw Error('確認中にPCのファイルが変更されました：'+f.file_name);
-    const saved=await manifest.handle.getFile();
-    if(await saved.text()!==text)throw Error('確認中にPCのmanifestが変更されました。既存の内容は変更しません。');
-    C.validatePack(JSON.parse(await saved.text()),job);
+    for(const f of job.manifest){
+      const handle=await fromRoot(target,()=>folder.getFileHandle(f.id)),blob=await fromRoot(target,()=>handle.getFile());
+      if(!await fromRoot(target,()=>C.matches(blob,f)))throw Error('確認中にPCのファイルが変更されました：'+f.file_name);
+    }
+    const saved=await fromRoot(target,()=>manifest.handle.getFile());
+    if(await fromRoot(target,()=>saved.text())!==text)throw Error('確認中にPCのmanifestが変更されました。既存の内容は変更しません。');
+    C.validatePack(JSON.parse(await fromRoot(target,()=>saved.text())),job);
     return {receipt:{job_id:job.id,catalog_hash:job.catalog_hash,
-      file_count:job.manifest.length,package_sha256:await C.hash(saved),path:[rootHandle.name,'復旧用',job.project_id,job.id,'manifest.sentlog.json'].join('\\')},
-      message:job.payload.project.name+'：案件一式をPCに保存・内容照合済み（'+job.manifest.length+'ファイル）。アプリで保管を確定してください。'};
+      file_count:job.manifest.length,package_sha256:await fromRoot(target,()=>C.hash(saved)),path:[target.name,'復旧用',job.project_id,job.id,'manifest.sentlog.json'].join('\\')},
+      message:job.payload.project.name+'：案件一式をPCに保存・内容照合済み（'+job.manifest.length+'ファイル、保存先：'+target.name+'）。アプリで保管を確定してください。'};
   }
   async function run(){
     if(running||!navigator.onLine||document.hidden||!session?.user)return;

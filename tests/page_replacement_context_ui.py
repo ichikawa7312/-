@@ -139,13 +139,25 @@ HELPER = r"""inputs=>{
     if(value&&typeof value==='object')return Object.fromEntries(Object.keys(value).sort().map(k=>[k,sort(value[k])]));
     return value;
   }
-  const digest=async value=>Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',
-    value instanceof Blob?await value.arrayBuffer():new TextEncoder().encode(String(value)))),b=>b.toString(16).padStart(2,'0')).join('');
+  const digest=async (value,key=null)=>{
+    try{
+      f.readPhase={phase:value instanceof Blob?'blob.arrayBuffer':'text.encode',key,
+        bytes:value instanceof Blob?value.size:null,completed:false};
+      const bytes=value instanceof Blob?await value.arrayBuffer():new TextEncoder().encode(String(value));
+      f.readPhase={phase:'crypto.sha256',key,bytes:bytes.byteLength,completed:false};
+      const result=await crypto.subtle.digest('SHA-256',bytes);
+      f.readPhase.completed=true;
+      return Array.from(new Uint8Array(result),b=>b.toString(16).padStart(2,'0')).join('');
+    }catch(error){
+      f.readFailure={...f.readPhase,name:error?.name||null,message:String(error?.message||error),stack:String(error?.stack||'')};
+      throw error;
+    }
+  };
   const context=()=>({view:currentView,project:activeProjectId,drawing:activeDrawingId,
     drawingOpenSequence:typeof drawingOpenSequence==='number'?drawingOpenSequence:null,
     fileOpenSequence:typeof drawingFileOpenSequence==='number'?drawingFileOpenSequence:null});
   const f=window.pageReplacementProof={pid,ids,done:true,inOperation:false,gate:null,
-    errors:[],events:[],unexpected:null,externalOwner:{fixture:true}};
+    errors:[],events:[],unexpected:null,externalOwner:{fixture:true},readPhase:null,readFailure:null};
   const originalError=console.error;
   console.error=function(...args){
     if(typeof args[0]==='string'&&args[0].startsWith('page replacement'))
@@ -228,13 +240,16 @@ HELPER = r"""inputs=>{
     }return pages;}finally{await doc.destroy();}
   };
   f.snapshot=async()=>{
+    f.readFailure=null;f.readPhase={phase:'records.settled',key:null,completed:false};
     await SentlogRecords.settled();SentlogRecords.assertSafe();
     const recordKeys=[WORKSPACE_KEY,...ids.map(drawingStorageKey)];
     const fileKeys=[...ids.map(id=>'background:'+id),
       ...ids.map((id,i)=>photoDBKey('proof-photo-'+(i?'b':'a'),id)),
       'page-replace-backup:'+ids[0],'page-replace-backup-meta:'+ids[0]];
     const allKeys=[...recordKeys.map(key=>'__sentlog_record__:'+key),...fileKeys];
+    f.readPhase={phase:'database.open',key:null,completed:false};
     const db=await SentlogRecords.openFilesDatabase();let rows;
+    f.readPhase={phase:'files.readonly',key:null,completed:false};
     try{rows=await new Promise((resolve,reject)=>{
       const tx=db.transaction('files','readonly'),store=tx.objectStore('files'),values={};
       for(const key of allKeys){const request=store.get(key);request.onsuccess=()=>{values[key]=request.result;};}
@@ -246,11 +261,11 @@ HELPER = r"""inputs=>{
       if(typeof text!=='string')throw Error('Durable record missing: '+key);
       if(text!==SentlogRecords.getItem(key))throw Error('Native/memory record mismatch: '+key);
       const parsed=JSON.parse(text);
-      records[key]={bytes:new TextEncoder().encode(text).length,sha256:await digest(text)};
+      records[key]={bytes:new TextEncoder().encode(text).length,sha256:await digest(text,'__sentlog_record__:'+key)};
       if(key!==WORKSPACE_KEY){
         const protectedValue={shapes:parsed.shapes,pageSettings:parsed.pageSettings,
           pageRotations:parsed.pageRotations,nextGlobalNo:parsed.nextGlobalNo,typeCounters:parsed.typeCounters};
-        Object.assign(records[key],{protectedSha256:await digest(canonical(protectedValue)),
+        Object.assign(records[key],{protectedSha256:await digest(canonical(protectedValue),'protected:'+key),
           shapeCount:parsed.shapes.length,photoCount:parsed.shapes.reduce((n,s)=>n+(s.photos||[]).length,0),
           commentCount:parsed.shapes.reduce((n,s)=>n+SentlogRecordCollaboration.view(s).comments.filter(c=>!c.deleted).length,0),
           pageCount:parsed.pageCount,pageReplacements:parsed.pageReplacements||{},
@@ -260,11 +275,16 @@ HELPER = r"""inputs=>{
     for(const key of fileKeys){
       const value=rows[key];files[key]=value==null?null:{bytes:value.size,type:value.type,
         name:value.name||null,isBlob:value instanceof Blob,isFile:value instanceof File,
-        sha256:await digest(value)};
+        sha256:await digest(value,key)};
     }
-    const meta=rows['page-replace-backup-meta:'+ids[0]];
-    return {context:context(),records,files,backupMeta:meta instanceof Blob?JSON.parse(await meta.text()):null,
-      fileStates:await SentlogRecords.readFileStates(fileKeys),pending:SentlogRecords.pending,
+    const metaKey='page-replace-backup-meta:'+ids[0],meta=rows[metaKey],contextAtRead=context();
+    let backupMeta=null;
+    f.readPhase={phase:'blob.text',key:metaKey,bytes:meta?.size??null,completed:false};
+    try{backupMeta=meta instanceof Blob?JSON.parse(await meta.text()):null;f.readPhase.completed=true;}
+    catch(error){f.readFailure={...f.readPhase,name:error?.name||null,message:String(error?.message||error),stack:String(error?.stack||'')};throw error;}
+    f.readPhase={phase:'file-sequences.readonly',key:null,completed:false};
+    const fileStates=await SentlogRecords.readFileStates(fileKeys);f.readPhase.completed=true;
+    return {context:contextAtRead,records,files,backupMeta,fileStates,pending:SentlogRecords.pending,
       failed:SentlogRecords.failed,importing:!!window.sentlogImporting,
       errors:[...f.errors],events:[...f.events],unexpected:f.unexpected};
   };
@@ -533,7 +553,9 @@ def main():
                                   ready:!!window.SentlogRecords?.ready,failed:!!window.SentlogRecords?.failed,
                                   done:window.pageReplacementProof?.done,gate:window.pageReplacementProof?.gate?
                                     {kind:pageReplacementProof.gate.kind,used:pageReplacementProof.gate.used,entered:pageReplacementProof.gate.entered}:null,
-                                  events:window.pageReplacementProof?.events,errors:window.pageReplacementProof?.errors})''')
+                                  events:window.pageReplacementProof?.events,errors:window.pageReplacementProof?.errors,
+                                  nativeReadPhase:window.pageReplacementProof?.readPhase,
+                                  nativeReadFailure:window.pageReplacementProof?.readFailure})''')
                                 page.screenshot(path=str(out/(name+'-failure.png')), full_page=True, timeout=10000)
                             except Exception as diagnostic_error:
                                 row['diagnosticError'] = str(diagnostic_error)
