@@ -117,8 +117,13 @@ PREPARE = r"""async caseName=>{
     const replica=D.createReplica({...scope,store,transport,reconcileIntervalMs:0});
     const bridge=SentlogDeltaAppBridge.createBridge({replica,scope,localProjectId:pid,currentScope:()=>scope});
     const controller=SentlogDeltaAppJournal.createController({records:R,scope,localProjectId:pid,replica,replicaStore:store,bridge,metadata:M,currentScope:()=>scope});
-    stage('prepare/write-exact-retention');await R.writeFile('photo:one:exact',photo);stage('prepare/write-distinct-retention');await R.writeFile('photo:one:different',photo);
-    stage('prepare/drain-real-replay');await controller.drain();stage('prepare/close-replica');controller.close();bridge.close();replica.close();store.close();
+    stage('prepare/write-exact-retention');await R.writeFile('photo:one:exact',photo);
+    if(typeof window.__maintenanceBlobProbe==='function')await window.__maintenanceBlobProbe('before-distinct-write');
+    stage('prepare/write-distinct-retention');await R.writeFile('photo:one:different',photo);
+    if(typeof window.__maintenanceBlobProbe==='function')await window.__maintenanceBlobProbe('after-distinct-write');
+    stage('prepare/drain-real-replay');await controller.drain();
+    if(typeof window.__maintenanceBlobProbe==='function')await window.__maintenanceBlobProbe('after-real-drain');
+    stage('prepare/close-replica');controller.close();bridge.close();replica.close();store.close();
     const rows=await disk(LOG);s.exactSeq=[...rows].find(([,row])=>row.files?.some(file=>file.key==='photo:one:exact'))?.[0];
     s.differentSeq=[...rows].find(([,row])=>row.files?.some(file=>file.key==='photo:one:different'))?.[0];
     need(Number.isSafeInteger(s.exactSeq)&&Number.isSafeInteger(s.differentSeq)&&[...rows.values()].every(row=>row.kind==='sentlog-file-retention'),'Actual replay did not create native retention rows');

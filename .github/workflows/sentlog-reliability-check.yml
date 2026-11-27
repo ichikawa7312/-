@@ -36,6 +36,7 @@ on:
       - 'tests/capacity_maintenance_release.test.cjs'
       - 'tests/storage_maintenance_ui.py'
       - 'tests/storage_operation_scale_ui.py'
+      - 'tests/storage_blob_lifetime_diagnostic.py'
       - 'tests/record_maintenance_init.test.cjs'
       - 'tests/record_journal_read_budget.test.cjs'
       - 'tests/record_journal_claim_scope.test.cjs'
@@ -105,6 +106,10 @@ jobs:
         if: ${{ !cancelled() && matrix.engine == 'webkit' && steps.production_build.outcome == 'success' && steps.browser_adapter.outcome == 'success' }}
         timeout-minutes: 3
         run: python tests/storage_maintenance_ui.py --engine webkit --built-root . --writer-source /tmp/sentlog-operation-v215.js --case native-files-and-backups --out /tmp/sentlog-maintenance-v215-webkit
+      - name: Trace native Blob lifetime before and after real journal compaction
+        if: ${{ !cancelled() && matrix.engine == 'webkit' && steps.production_build.outcome == 'success' && steps.browser_adapter.outcome == 'success' }}
+        timeout-minutes: 5
+        run: python tests/storage_blob_lifetime_diagnostic.py --engine webkit --built-root . --baseline-writer /tmp/sentlog-operation-v215.js --out /tmp/sentlog-blob-lifetime-webkit
       - name: Verify native PC file-handle preservation
         if: ${{ !cancelled() && matrix.engine == 'chromium' && steps.production_build.outcome == 'success' && steps.browser_adapter.outcome == 'success' }}
         run: python tests/storage_preservation_native_ui.py --engine chromium --scenario pc --built-root . --out /tmp/sentlog-native-pc
@@ -129,6 +134,7 @@ jobs:
             /tmp/sentlog-operation-${{ matrix.engine }}/**/*.png
             /tmp/sentlog-maintenance-v215-webkit/**/*.json
             /tmp/sentlog-maintenance-v215-webkit/**/*.png
+            /tmp/sentlog-blob-lifetime-webkit/**/*.json
             /tmp/sentlog-native-pc/**/*.json
             /tmp/sentlog-native-regular-pc/**/*.json
             /tmp/sentlog-page-replacement-context-${{ matrix.engine }}/**/*.json

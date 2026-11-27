@@ -119,6 +119,11 @@ EXPAND = r"""async ({pendingEdits})=>{
   const writes=[[WS,JSON.stringify(ws)],[DRAW+id,JSON.stringify(current)]];
   for(let i=0;i<32;i++){const key='unrelated-'+i;ws.projects[0].drawings.push({id:key,name:'別案件の合成図面 '+i});
     writes.push([DRAW+key,JSON.stringify({shapes:[],collabDeletedRecords:[],syntheticPadding:'R'.repeat(65536)})]);}
+  // Use the current one-sheet group format before binding the baseline. The
+  // real drawing-groups normalizer otherwise adds these four missing fields
+  // at app startup, legitimately creating an unrelated pending workspace edit.
+  for(const p of ws.projects)for(const drawing of p.drawings)Object.assign(drawing,{
+    groupId:drawing.id,groupName:drawing.name,sheetName:drawing.name,sheetOrder:1});
   writes[0][1]=JSON.stringify(ws);R.batch(writes);await R.settled();
   await R.writeFile('background:'+id,new File(['<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="800"><rect width="1200" height="800" fill="white"/></svg>'],'fixture.svg',{type:'image/svg+xml',lastModified:1}));
   const old=JSON.parse(R.getItem(DRAW+'one'));old.shapes[0].memo='Synthetic journal template';R.setItem(DRAW+'one',JSON.stringify(old));await R.settled();
@@ -369,7 +374,7 @@ def main():
                         # which removes document listeners from init_script.
                         page.evaluate("__storageAudit.bindClicks()")
                         assert page.evaluate("SentlogRecords.journalReadBudgetVersion===1&&SentlogRecords.maintenanceInitVersion===1"), "Current bounded reader capabilities missing"
-                        assert page.locator("#projectsView").is_visible()
+                        assert page.locator("#projectsView").is_visible(), "The ordinary app did not open its project list"
                         case["startupReads"] = page.evaluate("__storageAudit.report()")
                         document_id = page.evaluate("__storageAudit.documentId")
                         shot(page, "top")
@@ -377,17 +382,19 @@ def main():
                         page.evaluate("__storageAudit.reset('full-app-navigation')")
                         for cycle in range(3):
                             page.locator("#sentlogSettingsBtn").click()
-                            assert page.locator("#sentlogSettingsModal").get_attribute("aria-hidden") == "false"
+                            assert page.locator("#sentlogSettingsModal").get_attribute("aria-hidden") == "false", "The trusted settings action did not open its dialog"
                             if cycle == 0:
                                 shot(page, "settings")
                             page.locator("#sentlogSettingsClose").click()
-                            page.locator("#projectsGrid .manager-card").filter(has_text="通常操作の合成案件").click()
-                            assert page.locator("#drawingsView").is_visible()
-                            assert page.locator("#drawingProjectTitle").inner_text() == "通常操作の合成案件"
+                            # The archive module renders an article container;
+                            # its inner button is the actual project action.
+                            page.locator("#projectsGrid .manager-card").filter(has_text="通常操作の合成案件").locator("button.sl-archive-main").click()
+                            page.locator("#drawingsView").wait_for(state="visible", timeout=30000)
+                            assert page.locator("#drawingProjectTitle").inner_text() == "通常操作の合成案件", "The trusted project action opened a different project"
                             if cycle == 0:
                                 shot(page, "project")
                             page.locator("#navBackBtn").click()
-                            assert page.locator("#projectsView").is_visible()
+                            page.locator("#projectsView").wait_for(state="visible", timeout=30000)
                         case["navigationReads"] = page.evaluate("__storageAudit.report()")
                         assert_bounded(case["navigationReads"])
                         assert case["navigationReads"]["blobValues"] == 0, "Ordinary navigation scanned native file values"
@@ -407,7 +414,7 @@ def main():
                         progress("load-real-standalone-page")
                         page.goto(origin + "/sentlog/storage-maintenance.html", wait_until="load")
                         page.locator("#startupMaintenancePrepare").wait_for(state="visible")
-                        page.wait_for_function("!document.getElementById('startupMaintenancePrepare').disabled")
+                        page.locator("#startupMaintenancePrepare:not([disabled])").wait_for(state="visible", timeout=30000)
                         page.set_viewport_size({"width": 320, "height": 568})
                         bounds = page.locator("#startupMaintenancePrepare").bounding_box()
                         assert bounds and bounds["y"] + bounds["height"] <= 400 and bounds["x"] >= 0 and bounds["x"] + bounds["width"] <= 320, ("Prepare action is outside the initial small screen", bounds)
@@ -430,7 +437,8 @@ def main():
                         progress("real-standalone-preview")
                         page.evaluate("__storageAudit.reset('maintenance-preview')")
                         page.locator("#sentlogStorageMaintenanceReview").click()
-                        page.wait_for_function("!SentlogStorageMaintenanceUI.busy&&!document.getElementById('sentlogStorageMaintenanceReview').disabled")
+                        page.locator('#sentlogStorageMaintenanceSection:not([aria-busy="true"]) #sentlogStorageMaintenanceReview:not([disabled])').wait_for(state="visible", timeout=30000)
+                        assert page.evaluate("() => !SentlogStorageMaintenanceUI.busy"), "Preview controls became ready while maintenance was still busy"
                         assert not page.evaluate("__storageAudit.writes"), "Preview made native write requests"
                         preview = evaluate_async(page, "async()=>__operationHelpers.snapshot()", label="standalone readonly preview proof")
                         assert before == preview, "Opening or previewing maintenance changed an existing native value"
@@ -438,8 +446,9 @@ def main():
                         shot(page, "preview")
                         progress("real-standalone-cleanup")
                         page.locator("#sentlogStorageMaintenanceRun").click()
-                        page.wait_for_function("!SentlogStorageMaintenanceUI.busy&&!document.getElementById('sentlogStorageMaintenanceReview').disabled")
-                        assert page.locator("#sentlogStorageMaintenanceStatus").inner_text() == "重複分の整理が完了しました。"
+                        page.locator('#sentlogStorageMaintenanceSection:not([aria-busy="true"]) #sentlogStorageMaintenanceReview:not([disabled])').wait_for(state="visible", timeout=30000)
+                        assert page.evaluate("() => !SentlogStorageMaintenanceUI.busy"), "Cleanup controls became ready while maintenance was still busy"
+                        assert page.locator("#sentlogStorageMaintenanceStatus").inner_text() == "重複分の整理が完了しました。", "Cleanup did not report a completed result"
                         after = evaluate_async(page, "async()=>__operationHelpers.snapshot()", label="standalone retained bytes proof")
                         assert_preserved(before, after, fixture, maintained=True)
                         case["protectedNativeBytesPreserved"] = True
@@ -450,7 +459,7 @@ def main():
                         progress("ordinary-return-link")
                         assert page.locator("#startupMaintenanceOpenApp").evaluate("e=>e.href===location.origin+'/sentlog/'")
                         page.locator("#startupMaintenanceOpenApp").click()
-                        page.wait_for_function("window.sentlogAppReady&&document.getElementById('sentlogSettingsBtn')", timeout=45000)
+                        page.locator("#sentlogSettingsBtn").wait_for(state="visible", timeout=45000)
                         evaluate_async(page, "async()=>await sentlogAppReady", label="return to ordinary app")
                         assert page.locator("#projectsGrid .manager-card").filter(has_text="通常操作の合成案件").is_visible()
                         retained_pending = evaluate_async(page, "async f=>SentlogRecords.deltaJournal.pending({scope:f.scope,localProjectId:f.pid})", fixture, label="preserved pending edits after return")
