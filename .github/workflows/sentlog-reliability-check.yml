@@ -8,6 +8,8 @@ on:
       - 'sentlog/record-store.js'
       - 'sentlog/storage-ui.js'
       - 'sentlog/storage-maintenance-ui.js'
+      - 'sentlog/storage-maintenance.html'
+      - 'sentlog/startup-storage-maintenance.js'
       - 'sentlog/archive-core.js'
       - 'sentlog/archive-pc.js'
       - 'sentlog/pc-safe-backup.js'
@@ -33,6 +35,12 @@ on:
       - 'tests/storage_maintenance_ui_progress.test.cjs'
       - 'tests/capacity_maintenance_release.test.cjs'
       - 'tests/storage_maintenance_ui.py'
+      - 'tests/storage_operation_scale_ui.py'
+      - 'tests/record_maintenance_init.test.cjs'
+      - 'tests/record_journal_read_budget.test.cjs'
+      - 'tests/record_journal_claim_scope.test.cjs'
+      - 'tests/startup_storage_maintenance.test.cjs'
+      - 'tests/operation_memory_release.test.cjs'
   workflow_dispatch:
 permissions:
   contents: read
@@ -86,6 +94,13 @@ jobs:
       - name: Verify native local maintenance and preserved working data
         if: ${{ !cancelled() && steps.production_build.outcome == 'success' && steps.browser_adapter.outcome == 'success' }}
         run: python tests/storage_maintenance_ui.py --engine ${{ matrix.engine }} --built-root . --out /tmp/sentlog-maintenance-${{ matrix.engine }}
+      - name: Verify full-app operations and standalone cleanup with large native history
+        if: ${{ !cancelled() && steps.production_build.outcome == 'success' && steps.browser_adapter.outcome == 'success' }}
+        timeout-minutes: 7
+        run: |
+          git fetch --no-tags --depth=1 origin b1adff4c19ea8d7745ea401288c203fae08d533a
+          git show b1adff4c19ea8d7745ea401288c203fae08d533a:sentlog/record-store.js > /tmp/sentlog-operation-v215.js
+          python tests/storage_operation_scale_ui.py --engine ${{ matrix.engine }} --built-root . --baseline-writer /tmp/sentlog-operation-v215.js --out /tmp/sentlog-operation-${{ matrix.engine }}
       - name: Verify native PC file-handle preservation
         if: ${{ !cancelled() && matrix.engine == 'chromium' && steps.production_build.outcome == 'success' && steps.browser_adapter.outcome == 'success' }}
         run: python tests/storage_preservation_native_ui.py --engine chromium --scenario pc --built-root . --out /tmp/sentlog-native-pc
@@ -106,6 +121,8 @@ jobs:
             /tmp/sentlog-native-writer-${{ matrix.engine }}/**/*.json
             /tmp/sentlog-maintenance-${{ matrix.engine }}/**/*.json
             /tmp/sentlog-maintenance-${{ matrix.engine }}/**/*.png
+            /tmp/sentlog-operation-${{ matrix.engine }}/**/*.json
+            /tmp/sentlog-operation-${{ matrix.engine }}/**/*.png
             /tmp/sentlog-native-pc/**/*.json
             /tmp/sentlog-native-regular-pc/**/*.json
             /tmp/sentlog-page-replacement-context-${{ matrix.engine }}/**/*.json

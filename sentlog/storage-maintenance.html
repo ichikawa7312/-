@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#17324d">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'none'; img-src 'none'; font-src 'none'; object-src 'none'; frame-src 'none'; worker-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>セントログ 軽い容量整理</title>
+  <style>
+    *{box-sizing:border-box}body{margin:0;color:#172b3a;background:#edf2f6;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:16px;line-height:1.7}
+    main{max-width:680px;margin:0 auto;padding:24px 18px max(36px,env(safe-area-inset-bottom,0px))}h1{font-size:1.65rem;line-height:1.4;margin:6px 0 12px}p{margin:10px 0;overflow-wrap:anywhere}
+    .tag{font-size:.83rem;font-weight:700;color:#38556c}.card{background:#fff;border:1px solid #c3ced8;border-radius:12px;padding:16px;margin:16px 0}.notice{border-left:4px solid #9c661c;background:#fff9e9}.hint{font-size:.9rem;color:#475569}
+    button,.button{display:block;width:100%;min-height:48px;margin:14px 0;padding:12px;border:1px solid #254e73;border-radius:9px;background:#254e73;color:#fff;text-align:center;text-decoration:none;font:inherit;font-weight:600;line-height:1.5;white-space:normal;touch-action:manipulation}
+    button:disabled,[aria-disabled="true"]{opacity:.5;cursor:default}.secondary{background:#fff;color:#254e73}a{color:#244f77;text-underline-offset:3px;overflow-wrap:anywhere}a[aria-disabled="true"]{pointer-events:none}button:focus-visible,a:focus-visible,summary:focus-visible{outline:3px solid #b87818;outline-offset:3px}[hidden]{display:none!important}
+    #startupMaintenanceHost #sentlogStorageMaintenanceSection{margin:0;padding:0 12px}#startupMaintenanceHost #sentlogStorageMaintenanceSection p{font-size:14px}#startupMaintenanceHost #sentlogStorageMaintenanceSection button{font-size:14px;width:100%;min-height:48px}
+    .intro{font-size:.95rem;margin-bottom:12px}.notice{padding:10px 12px;margin:12px 0;font-size:.9rem;line-height:1.6}.notice p{margin:0}.prepare{margin:12px 0}.prepare button{margin:12px 0}.prepare>p{font-size:.9rem}details.card summary{cursor:pointer;font-weight:600}.links{display:grid;gap:10px}.links a{display:block;min-height:44px;padding:8px 0}.links .button{margin:0;padding:12px}
+    @media(max-width:360px){main{padding:18px 12px 32px}.card{padding:13px}h1{font-size:1.45rem}}
+  </style>
+  <script src="./record-store.js?v=20261128-operation-memory-216" defer></script>
+  <script src="./storage-maintenance-ui.js?v=20261128-operation-memory-216" defer></script>
+  <script src="./startup-storage-maintenance.js?v=20261128-operation-memory-216" defer></script>
+</head>
+<body>
+<main>
+  <span class="tag">セントログ v2.16</span>
+  <h1>軽い容量整理</h1>
+  <p class="intro">通常画面を開かず、保存履歴の重複を整理します。ログイン・PC接続は不要です。</p>
+  <div class="notice">
+    <p><strong>別の画面に未保存の記録があるときは、その画面を閉じたり更新したりしないでください。</strong></p>
+  </div>
+  <section class="prepare" aria-label="保存領域を確認して準備">
+    <button id="startupMaintenancePrepare" type="button" disabled>保存領域を開いて整理を準備</button>
+    <p id="startupMaintenanceStatus" role="status" aria-live="polite">まだ保存領域を開いていません。</p>
+    <noscript><p>この機能にはJavaScriptが必要です。保存データは変更していません。</p></noscript>
+  </section>
+  <section id="startupMaintenanceHost" class="card" aria-label="重複データの確認と整理" hidden inert></section>
+  <details class="card">
+    <summary>残るデータと整理の進め方</summary>
+    <p>現在の記録・PDF・写真、未送信の変更、内容が異なる旧版を残します。確認して一致した重複だけが整理対象です。保存領域を丸ごと消す操作はありません。</p>
+    <p>ページを開いただけでは保存領域を読みません。準備ボタンで既存の保存領域を開き、その後「整理できる重複を確認」→「重複分を整理」と進めます。図面表示やクラウド同期は始めません。</p>
+    <p class="hint">端末本体の空き容量が増える量は保証できません。途中で区切られた場合は、この画面の「続きの重複を確認」「整理を続ける」で進められます。</p>
+  </details>
+  <nav class="card links" aria-label="ほかの確認画面">
+    <a id="startupMaintenanceOpenApp" class="button secondary" href="./">セントログを開く</a>
+    <a id="startupMaintenanceDiagnostics" href="./storage-check.html">保存領域を確認する（読取り専用）</a>
+    <a id="startupMaintenanceRescue" href="./rescue.html">記録だけを書き出す画面を開く</a>
+    <p class="hint">記録だけの書き出しにはPDF・写真本体と、別の画面にある未保存の入力は含まれません。準備・確認・整理の処理中は、移動ボタンを停止します。</p>
+  </nav>
+</main>
+</body>
+</html>

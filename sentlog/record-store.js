@@ -11,7 +11,7 @@
   const DRAW='surveyFieldNoteDrawingV1:', SYNC='sentlogCloudProjectSyncV2:';
   const managed=k=>k===WS || k==='surveyFieldNoteV2' || k.startsWith(DRAW) || k.startsWith(SYNC);
   let memory=new Map(), durableMemory=new Map(), pending=new Map(), pendingOptions=[], revision=0, connection=null;
-  let initialized=false, boot=null, flight=null, queued=false, inFlight=0, exclusive=false;
+  let initialized=false, boot=null, flight=null, queued=false, inFlight=0, exclusive=false,maintenanceOnly=false,editorLockHeld=false;
   let migrationInfo=null, operation=false, failure=null;
   let recordFailure=null,connectionFailure=null;
   const recordTransactions=new WeakMap();
@@ -24,7 +24,10 @@
   function notify(){for(const fn of listeners){try{fn()}catch(e){console.warn('Storage status',e)}}}
   function report(key,error){key=String(key);if(key==='records'&&connectionFailure)error=connectionFailure;failures.set(key,error?.message||String(error));notify();}
   function recovered(key){if(String(key)==='records'&&connectionFailure)return;if(failures.delete(String(key)))notify();}
-  function assertReady(){if(!initialized)throw Error('保存先の準備が完了していません');}
+  function assertReady(allowMaintenance=false){
+    if(!initialized)throw Error('保存先の準備が完了していません');
+    if(maintenanceOnly&&!allowMaintenance)throw journalError('RECORD_MAINTENANCE_ONLY','容量整理の画面では記録の編集・共有・復元を実行できません');
+  }
   function transaction(mode){
     if(connectionFailure)throw connectionFailure;
     if(!connection)throw Error('保存先との接続が切れました。画面を閉じず、再保存を試してください。');
@@ -126,12 +129,20 @@
     if(connectionFailure)throw connectionFailure;
     if(connection)return;
     connection=await new Promise((resolve,reject)=>{
-      const q=indexedDB.open(DB,DB_VERSION);
-      q.onupgradeneeded=()=>{for(const name of [STORE,JOURNAL,CONTROL]){
+      const q=indexedDB.open(DB,DB_VERSION);let openError=null;
+      q.onupgradeneeded=()=>{
+        if(maintenanceOnly){openError=journalError('RECORD_MAINTENANCE_DATABASE','既存の保存先を確認できません。新しい保存先を作らず停止しました');q.transaction.abort();return;}
+        for(const name of [STORE,JOURNAL,CONTROL]){
         const store=q.result.objectStoreNames.contains(name)?q.transaction.objectStore(name):q.result.createObjectStore(name);
         if(name!==STORE&&!store.indexNames.contains('kind'))store.createIndex('kind','kind');
       }};
-      q.onsuccess=()=>resolve(q.result);q.onerror=()=>reject(q.error);
+      q.onsuccess=()=>{
+        const db=q.result;
+        if(maintenanceOnly&&(db.version!==DB_VERSION||[STORE,JOURNAL,CONTROL].some(name=>!db.objectStoreNames.contains(name)))){
+          db.close();reject(journalError('RECORD_MAINTENANCE_DATABASE','保存先の構成を確認できません。元データを保持しています'));return;
+        }
+        resolve(db);
+      };q.onerror=()=>reject(openError||q.error);
       q.onblocked=()=>reject(Error('別のセントログ画面が保存先を使用中です。ほかの画面を閉じて再試行してください。'));
     });
     const db=connection;
@@ -146,11 +157,11 @@
     };
   }
   async function editorLock(){
-    if(!navigator.locks?.request)return;
+    if(editorLockHeld||!navigator.locks?.request)return;
     await new Promise((resolve,reject)=>{
       navigator.locks.request('sentlog-record-writer-v130',{mode:'exclusive',ifAvailable:true},async lock=>{
-        if(!lock){reject(Error('同じブラウザでセントログが別に開いています。ほかのセントログ本体を閉じて再読み込みしてください。PC自動同期の画面は閉じなくて大丈夫です。'));return;}
-        resolve();await new Promise(()=>{});
+        if(!lock){reject(Error(maintenanceOnly?'元のセントログが開いています。入力途中の記録がなければ、元の画面を閉じてから、この画面で再試行してください。':'同じブラウザでセントログが別に開いています。ほかのセントログ本体を閉じて再読み込みしてください。PC自動同期の画面は閉じなくて大丈夫です。'));return;}
+        editorLockHeld=true;resolve();await new Promise(()=>{});
       }).catch(reject);
     });
   }
@@ -198,14 +209,33 @@
     if(!disk.metaExists||!disk.meta||typeof disk.meta!=='object'||Array.isArray(disk.meta))
       throw startupUnsafe('端末内の管理情報を確認できません。');
     if(!disk.map.has(WS))throw startupUnsafe('端末内の案件一覧を確認できません。');
-    for(const [key,value] of disk.map){
-      if(!managed(key)||typeof value!=='string')throw startupUnsafe('保存記録の形式を確認できません。');
-      if(key===WS){
-        let workspace;try{workspace=JSON.parse(value);}catch{throw startupUnsafe('案件一覧の形式を確認できません。');}
-        if(!workspace||typeof workspace!=='object'||Array.isArray(workspace)||!Array.isArray(workspace.projects))
-          throw startupUnsafe('案件一覧の形式を確認できません。');
-      }else JSON.parse(value);
-    }
+    for(const [key,value] of disk.map)validateStoredRecord(key,value);
+  }
+  function validateStoredRecord(key,value){
+    if(!managed(key)||typeof value!=='string')throw startupUnsafe('保存記録の形式を確認できません。');
+    if(key===WS){
+      let workspace;try{workspace=JSON.parse(value);}catch{throw startupUnsafe('案件一覧の形式を確認できません。');}
+      if(!workspace||typeof workspace!=='object'||Array.isArray(workspace)||!Array.isArray(workspace.projects))
+        throw startupUnsafe('案件一覧の形式を確認できません。');
+    }else JSON.parse(value);
+  }
+  async function initializeForMaintenance(){
+    await editorLock();await connect();
+    // Inspect existing records one at a time. This screen never loads migration
+    // cutoffs, original files, journal history or the normal editor's mirror.
+    const tx=transaction('readonly'),done=complete(tx),store=tx.objectStore(STORE);let meta,metaExists=false,workspace;
+    store.get(META).onsuccess=e=>meta=e.target.result;
+    store.count(META).onsuccess=e=>metaExists=e.target.result>0;
+    const request=store.openCursor(IDBKeyRange.bound(PREFIX,PREFIX+'\uffff'));
+    request.onsuccess=()=>{try{
+      const item=request.result;if(!item)return;
+      const key=String(item.key).slice(PREFIX.length);validateStoredRecord(key,item.value);
+      if(key===WS)workspace=item.value;item.continue();
+    }catch(error){tx.sentlogJournalError=error;tx.abort();}};
+    await done;
+    const map=new Map(workspace===undefined?[]:[[WS,workspace]]);validateStoredRecords({meta,metaExists,map});
+    memory=map;durableMemory=new Map(map);revision=Number(meta.revision)||0;migrationInfo=meta;
+    initialized=true;notify();return true;
   }
   async function initialize(){
     await editorLock();await connect();
@@ -256,7 +286,16 @@
     try{localStorage.setItem(MARKER,'1');}catch(_){}
     initialized=true;notify();return true;
   }
-  function init(){if(!boot)boot=initialize();return boot;}
+  function init(){
+    if(maintenanceOnly)return Promise.reject(journalError('RECORD_MAINTENANCE_ONLY','この画面は容量整理専用です'));
+    if(!boot)boot=initialize();return boot;
+  }
+  function initForMaintenance(){
+    if(boot&&!maintenanceOnly)return Promise.reject(journalError('RECORD_MAINTENANCE_ONLY','通常画面の保存処理が開始されています'));
+    maintenanceOnly=true;
+    if(!boot)boot=initializeForMaintenance().catch(error=>{boot=null;throw error;});
+    return boot;
+  }
   const copy=value=>structuredClone(value);
   const scopeKeys=['ownerId','projectId','deviceId'];
   const FILE_CHUNK_BYTES=2*1024*1024;
@@ -458,8 +497,33 @@
       ...(options.context&&typeof options.context==='object'?{context:copy(options.context)}:{})};
   }
   function journalRows(store){return store.indexNames.contains('kind')?store.index('kind').getAll('sentlog-app-intent'):store.getAll();}
-  function journalControls(store){return store.indexNames.contains('kind')?
-    store.index('kind').getAll(IDBKeyRange.bound('binding','claim')):store.getAll();}
+  function journalControls(store,mode='full'){
+    if(mode==='full')return store.indexNames.contains('kind')?
+      store.index('kind').getAll(IDBKeyRange.bound('binding','claim')):store.getAll();
+    // The normal editor/maintenance guards need authority, not every project's
+    // protected snapshot, replay documents and original-file Blob handles.
+    // Read one row at a time and retain exactly the fields used by those guards.
+    const result={result:[],onsuccess:null},indexed=store.indexNames.contains('kind');
+    const request=indexed?store.index('kind').openCursor(IDBKeyRange.bound('binding','claim')):store.openCursor();
+    request.onsuccess=()=>{try{
+      const item=request.result;
+      if(!item){result.onsuccess?.({target:result});return;}
+      const row=item.value;
+      if(row?.kind==='claim')result.result.push({version:row.version,kind:row.kind,id:row.id,scope:row.scope,
+        localProjectId:row.localProjectId,rowIds:row.rowIds,fileReferences:row.fileReferences});
+      else if(row?.kind==='binding'&&mode!=='claims'){
+        const summary={version:row.version,kind:row.kind,id:row.id,scope:row.scope,localProjectId:row.localProjectId,
+          phase:row.phase,baselineId:row.baselineId,cutoffSeq:row.cutoffSeq,ackedSeq:row.ackedSeq,lastLocalArchiveSeq:row.lastLocalArchiveSeq};
+        if(mode==='maintenance'||mode==='retention')Object.assign(summary,{lastProof:row.lastProof,baselineProof:row.baselineProof,
+          archive:row.archive?{context:{deltaCheckpoint:row.archive.context?.deltaCheckpoint}}:row.archive});
+        if(mode==='retention'&&row.replayBaseline)summary.replayBaseline={after:{project:{drawings:
+          row.replayBaseline.after?.project?.drawings?.map(drawing=>({id:drawing.id}))}}};
+        result.result.push(summary);
+      }
+      item.continue();
+    }catch(error){store.transaction.sentlogJournalError=error;store.transaction.abort();}};
+    return result;
+  }
   function workspaceOf(raw){const out=raw?JSON.parse(raw):{projects:[]};if(!Array.isArray(out?.projects))throw journalError('JOURNAL_WORKSPACE','案件一覧の形式を確認できません');return out;}
   function affectedProjects(changes,workspaceBefore,workspaceAfter,files=[]){
     const before=workspaceOf(workspaceBefore),after=workspaceOf(workspaceAfter),ids=new Set(),drawingIds=new Set();
@@ -581,7 +645,7 @@
       }catch(error){stop(error);}
     }
     control.get('clock').onsuccess=e=>{clock=Number(e.target.result)||0;ready();};
-    journalControls(control).onsuccess=e=>{allBindings=e.target.result;ready();};
+    journalControls(control,archiveContext||contexts.some(context=>context.operation==='restore')?'full':'lifecycle').onsuccess=e=>{allBindings=e.target.result;ready();};
     s.get(PREFIX+WS).onsuccess=e=>{workspaceBefore=e.target.result??null;ready();};
     for(const key of recordKeys)s.get(PREFIX+key).onsuccess=e=>{before.set(key,e.target.result??null);ready();};
     for(const key of fileKeys)s.get(key).onsuccess=e=>{oldFiles.set(key,e.target.result??null);ready();};
@@ -609,6 +673,73 @@
     s.get(META).onsuccess=e=>{data.meta=e.target.result;done();};
     journalRows(tx.objectStore(JOURNAL)).onsuccess=e=>{data.rows=e.target.result.filter(x=>x.kind==='sentlog-app-intent');done();};
     journalControls(tx.objectStore(CONTROL)).onsuccess=e=>{data.controls=e.target.result;done();};
+  }
+  function collectProjectRecords(tx,localProjectId,recordKeys,callback){
+    const store=tx.objectStore(STORE),control=tx.objectStore(CONTROL),keys=[...new Set(recordKeys||[WS])];
+    const data={raw:new Map(),controls:[],meta:null};let waiting=3+keys.length+(recordKeys===null?1:0);
+    const ready=()=>{if(--waiting)return;try{callback(data);}catch(error){tx.sentlogJournalError=error;tx.abort();}};
+    store.get(META).onsuccess=e=>{data.meta=e.target.result;ready();};
+    for(const kind of ['binding','claim'])control.get(kind+':'+localProjectId).onsuccess=e=>{
+      if(e.target.result!==undefined)data.controls.push(e.target.result);ready();
+    };
+    for(const key of keys)store.get(PREFIX+key).onsuccess=e=>{if(e.target.result!==undefined)data.raw.set(key,e.target.result);ready();};
+    if(recordKeys===null)store.getAllKeys(IDBKeyRange.bound(PREFIX,PREFIX+'\uffff')).onsuccess=e=>{
+      for(const key of e.target.result){const name=String(key).slice(PREFIX.length);if(!data.raw.has(name))data.raw.set(name,undefined);}ready();
+    };
+  }
+  function scanJournal(tx,afterSeq,visit,completeScan,direction='next'){
+    if(!Number.isSafeInteger(afterSeq)||afterSeq<0)throw journalError('JOURNAL_SEQUENCE','共有履歴の保存順序を確認できません');
+    const store=tx.objectStore(JOURNAL),indexed=store.indexNames.contains('kind');
+    const request=indexed?store.index('kind').openCursor('sentlog-app-intent',direction):
+      store.openCursor(IDBKeyRange.lowerBound(afterSeq,true),direction);
+    request.onsuccess=()=>{try{
+      const item=request.result;
+      if(!item){completeScan();return;}
+      // The kind index excludes retained file histories altogether. Skip old
+      // primary keys before touching value, including their large JSON bodies.
+      if(indexed&&item.primaryKey<=afterSeq){
+        if(direction==='prev'){completeScan();return;}
+        if(typeof item.continuePrimaryKey==='function')item.continuePrimaryKey('sentlog-app-intent',afterSeq+1);
+        else item.continue();return;
+      }
+      const row=item.value;
+      if(row?.kind==='sentlog-app-intent'){
+        if(row.seq!==(indexed?item.primaryKey:item.key))throw journalError('JOURNAL_SEQUENCE','共有履歴の保存順序が一致しません');
+        if(visit(row)===false){completeScan();return;}
+      }
+      item.continue();
+    }catch(error){tx.sentlogJournalError=error;tx.abort();}};
+  }
+  function collectClaimJournal(tx,localProjectId,scope,callback){
+    collectProjectRecords(tx,localProjectId,[WS],initial=>{
+      const binding=bindingIn(initial,localProjectId,scope);
+      if(binding.phase!=='active'||initial.controls.some(row=>row?.kind==='claim'&&row.localProjectId===localProjectId)){
+        initial.rows=[];callback(initial);return;
+      }
+      const rows=[];
+      scanJournal(tx,binding.ackedSeq,row=>{
+        // Replay needs unacknowledged text changes and immutable file IDs.
+        // Keep Blob bodies in their original pinned WAL rows, not in memory.
+        rows.push({id:row.id,seq:row.seq,at:row.at,projectIds:row.projectIds,drawingIds:row.drawingIds,
+          changes:row.changes,contexts:row.contexts,files:(row.files||[]).map(file=>({key:file.key})),archiveRestore:row.archiveRestore});
+      },()=>{
+        if(!rows.length){initial.rows=[];callback(initial);return;}
+        const restored=rows.find(row=>row.archiveRestore?.localProjectId===localProjectId);
+        let afterWorkspace=initial.raw.get(WS),beforeWorkspace;
+        if(restored)for(let index=rows.length-1;index>=0;index--)if(rows[index].seq>restored.seq)
+          for(const change of rows[index].changes)if(change.key===WS)afterWorkspace=change.before;
+        beforeWorkspace=afterWorkspace;
+        for(let index=rows.length-1;index>=0;index--)if(!restored||rows[index].seq<=restored.seq)
+          for(const change of rows[index].changes)if(change.key===WS)beforeWorkspace=change.before;
+        // A moved or deleted drawing may belong to this project only BEFORE
+        // replay. Fetch the union of both ownership snapshots, then preserve
+        // the established rollback/restore-boundary algorithm below unchanged.
+        const drawingKeys=new Set();
+        for(const raw of [beforeWorkspace,afterWorkspace])for(const project of workspaceOf(raw).projects)
+          if(project.id===localProjectId)for(const drawing of project.drawings||[])drawingKeys.add(DRAW+drawing.id);
+        collectProjectRecords(tx,localProjectId,[WS,...drawingKeys],data=>{data.rows=rows;callback(data);});
+      });
+    });
   }
   function collectProjectFiles(tx,drawingIds,callback){
     const store=tx.objectStore(STORE),ids=[...drawingIds];
@@ -1037,7 +1168,7 @@
         assertLegacyPdfHandover(rows.filter(row=>row?.kind==='binding'),affected.projectIds,[projectId],[key]);
       }catch(error){tx.sentlogJournalError=error;tx.abort();}}
       tx.objectStore(STORE).get(PREFIX+WS).onsuccess=e=>{raw=e.target.result??null;check();};
-      journalControls(tx.objectStore(CONTROL)).onsuccess=e=>{rows=e.target.result;check();};
+      journalControls(tx.objectStore(CONTROL),'lifecycle').onsuccess=e=>{rows=e.target.result;check();};
       // This read never hydrates protected files or updates their references.
       await done;return true;
     },
@@ -1214,16 +1345,17 @@
     },
     async pending({scope:inputScope,localProjectId}={}){
       assertReady();const scope=checkedScope(inputScope);await connect();const tx=transaction('readonly'),done=complete(tx);let result;
-      collectJournal(tx,data=>{
+      collectProjectRecords(tx,localProjectId,null,data=>{
         const binding=bindingIn(data,localProjectId,scope),workspace=workspaceOf(data.raw.get(WS)),owners=new Map();
         for(const project of workspace.projects)for(const drawing of project.drawings||[]){if(!owners.has(drawing.id))owners.set(drawing.id,new Set());owners.get(drawing.id).add(project.id);}
-        const relevant=data.rows.filter(row=>{
-          const orphan=row.seq>Math.max(binding.cutoffSeq,binding.lastLocalArchiveSeq||0)&&!row.projectIds.length&&row.drawingIds.some(id=>!owners.has(id)&&(data.raw.has(DRAW+id)||row.files.length));
-          return orphan||(row.seq>binding.ackedSeq&&(row.projectIds.includes(localProjectId)||row.drawingIds.some(id=>owners.get(id)?.has(localProjectId))));
-        });
+        const orphanAfter=Math.max(binding.cutoffSeq,binding.lastLocalArchiveSeq||0);let count=0,throughSeq=binding.ackedSeq;
         const claim=data.controls.find(x=>x?.kind==='claim'&&x.localProjectId===localProjectId);
-        result={count:relevant.length,durableCount:relevant.length,queuedCount:0,throughSeq:Math.max(binding.ackedSeq,...relevant.map(x=>x.seq)),
-          claimId:claim?.id||null,detached:binding.phase==='detached'};
+        scanJournal(tx,Math.min(binding.ackedSeq,orphanAfter),row=>{
+          const orphan=row.seq>orphanAfter&&!row.projectIds.length&&row.drawingIds.some(id=>!owners.has(id)&&(data.raw.has(DRAW+id)||row.files.length));
+          if(orphan||(row.seq>binding.ackedSeq&&(row.projectIds.includes(localProjectId)||row.drawingIds.some(id=>owners.get(id)?.has(localProjectId))))){
+            count++;throughSeq=Math.max(throughSeq,row.seq);
+          }
+        },()=>{result={count,durableCount:count,queuedCount:0,throughSeq,claimId:claim?.id||null,detached:binding.phase==='detached'};});
       });await done;
       const changes=[...pending].map(([key,after])=>({key,after}));
       const before=durableMemory.get(WS)||null,after=pending.has(WS)?pending.get(WS):memory.get(WS)||null;
@@ -1276,9 +1408,10 @@
       await done;const cutoff=await this.readCutoff({scope,localProjectId});notify();return cutoff;
     },
     async activate({scope:inputScope,localProjectId,baselineId,metadataRecords={},baselineSnapshot,proof}={}){
+      assertReady();
       const scope=checkedScope(inputScope);if(typeof baselineId!=='string'||!baselineId)throw journalError('JOURNAL_BASELINE','共有の基準を確認できません');
       const tx=transaction('readwrite'),done=complete(tx);let result;
-      collectJournal(tx,data=>{const binding=bindingIn(data,localProjectId,scope);
+      collectProjectRecords(tx,localProjectId,[],data=>{const binding=bindingIn(data,localProjectId,scope);
         if(binding.baselineId&&binding.baselineId!==baselineId)throw journalError('JOURNAL_BASELINE','異なる共有の基準に変更できません');
         result={...binding,phase:binding.phase==='detached'?'detached':'active',baselineId,activatedAt:binding.activatedAt||Date.now(),
           metadataRecords:copy(metadataRecords),baselineProof:proof?copy(proof):null};
@@ -1287,8 +1420,9 @@
       });await done;bindings.set(localProjectId,result);notify();return hydrateBinding(result);
     },
     async claim({scope:inputScope,localProjectId}={}){
+      assertReady();
       const scope=checkedScope(inputScope);await settled();const tx=transaction('readwrite'),done=complete(tx);let result=null;
-      collectJournal(tx,data=>{
+      collectClaimJournal(tx,localProjectId,scope,data=>{
         const binding=bindingIn(data,localProjectId,scope);if(binding.phase!=='active')return;
         const existing=data.controls.find(x=>x?.kind==='claim'&&x.localProjectId===localProjectId);
         if(existing){if(!sameScope(existing.scope,scope))throw journalError('JOURNAL_SCOPE','処理中の共有先が一致しません');result=existing;return;}
@@ -1322,6 +1456,7 @@
       });await done;return copy(result);
     },
     async verifyReplay({scope:inputScope,claimId,replica,replicaStore,requiredRecords={},projection,normalizedAfter,expectedSnapshotToken}={}){
+      assertReady();
       const scope=checkedScope(inputScope),D=window.SentlogDeltaSyncCore;
       if(typeof replicaStore?.readForVerification!=='function'||typeof replica?.snapshotWithStatus!=='function'||!D?.diffRecord)throw journalError('JOURNAL_PROOF','保存済みの差分履歴を照合する方法がありません');
       let state=null;
@@ -1347,10 +1482,11 @@
       replayProofs.set(proof,{scope:copy(scope),claimId,projection:copy(normalizedAfter||projection)});return proof;
     },
     async acknowledge({scope:inputScope,localProjectId,claimId,proof}={}){
+      assertReady();
       const scope=checkedScope(inputScope),verified=replayProofs.get(proof);
       if(!verified||verified.claimId!==claimId||!sameScope(verified.scope,scope))throw journalError('JOURNAL_PROOF','端末内への保存を照合した証明が必要です');
       const tx=transaction('readwrite'),done=complete(tx);let result;
-      collectJournal(tx,data=>{const binding=bindingIn(data,localProjectId,scope),claim=data.controls.find(x=>x?.kind==='claim'&&x.localProjectId===localProjectId);
+      collectProjectRecords(tx,localProjectId,[],data=>{const binding=bindingIn(data,localProjectId,scope),claim=data.controls.find(x=>x?.kind==='claim'&&x.localProjectId===localProjectId);
         if(!claim||claim.id!==claimId||!sameScope(claim.scope,scope))throw journalError('JOURNAL_CLAIM','保存を確認する操作が変わっています');
         result={...binding,ackedSeq:claim.throughSeq,lastProof:copy(proof),replayBaseline:{before:copy(claim.after),after:copy(verified.projection)}};
         tx.objectStore(CONTROL).put(result,'binding:'+localProjectId);tx.objectStore(CONTROL).delete('claim:'+localProjectId);
@@ -1361,7 +1497,7 @@
       return hydrateBinding(result);
     },
     async compactRedundantRecords({cursor=0,scanLimit=256,limit=64,dryRun=true}={}){
-      assertReady();
+      assertReady(true);
       if(!Number.isSafeInteger(cursor)||cursor<0||!Number.isSafeInteger(scanLimit)||scanLimit<1||scanLimit>2048||
         !Number.isSafeInteger(limit)||limit<1||limit>256||limit>scanLimit||typeof dryRun!=='boolean')
         throw journalError('JOURNAL_MAINTENANCE_OPTIONS','履歴整理の確認範囲が不正です');
@@ -1414,14 +1550,14 @@
             item.continue();
           }catch(error){stop(error);}};
         }catch(error){stop(error);}};
-        journalControls(tx.objectStore(CONTROL)).onsuccess=e=>{controls=e.target.result;ready();};
+        journalControls(tx.objectStore(CONTROL),'claims').onsuccess=e=>{controls=e.target.result;ready();};
         tx.objectStore(STORE).get(PREFIX+WS).onsuccess=e=>{workspace=e.target.result??null;ready();};
         tx.objectStore(STORE).get(META).onsuccess=e=>{meta=e.target.result;ready();};
         await done;return result;
       }finally{journalMaintenance=false;}
     },
     async compact({limit=256,scanLimit=1024}={}){
-      assertReady();if(!Number.isSafeInteger(limit)||limit<1||limit>1024||!Number.isSafeInteger(scanLimit)||scanLimit<limit||scanLimit>8192)
+      assertReady(true);if(!Number.isSafeInteger(limit)||limit<1||limit>1024||!Number.isSafeInteger(scanLimit)||scanLimit<limit||scanLimit>8192)
         throw journalError('JOURNAL_COMPACT','履歴整理の件数が不正です');
       await connect();const tx=transaction('readwrite'),done=complete(tx),control=tx.objectStore(CONTROL),log=tx.objectStore(JOURNAL);
       let all=[],workspace=null,start=0,waiting=3;const result={scanned:0,removed:0,retainedFiles:0};
@@ -1461,12 +1597,13 @@
           cursor.continue();
         };
       }catch(error){tx.sentlogJournalError=error;tx.abort();}}
-      journalControls(control).onsuccess=e=>{all=e.target.result;ready();};
+      journalControls(control,'retention').onsuccess=e=>{all=e.target.result;ready();};
       tx.objectStore(STORE).get(PREFIX+WS).onsuccess=e=>{workspace=e.target.result??null;ready();};
       control.get('compactCursor').onsuccess=e=>{start=Number(e.target.result)||0;ready();};
       await done;return result;
     },
     async applyProjection({scope:inputScope,localProjectId,writes,expectedRecords,metadataRecords={},validate}={}){
+      assertReady();
       const scope=checkedScope(inputScope),updates=[...new Map(writes)],expected=[...expectedRecords];
       // Projection can reorder JSON object keys without changing any record.
       // Keep the existing durable text in that case, including legacy order;
@@ -1488,13 +1625,16 @@
       const unchanged=()=>!pending.size&&!inFlight&&!exclusive&&expected.every(([key,value])=>(memory.get(key)??null)===value)&&validate()===true;
       if(!unchanged())return {applied:false,deferred:true};
       const tx=transaction('readwrite'),done=complete(tx);let nextRevision=null,nextBinding=null,deferred=false,noWrite=false,appliedChanges=[],committedRecords=[];
-      collectJournal(tx,data=>{
+      collectProjectRecords(tx,localProjectId,[WS,...updates.map(([key])=>key),...expected.map(([key])=>key)],data=>{
         const binding=bindingIn(data,localProjectId,scope),project=data.raw.get(WS),owned=new Set(workspaceOf(project).projects.find(p=>p.id===localProjectId)?.drawings?.map(d=>d.id)||[]);
         const workspaceWrite=updates.find(x=>x[0]===WS),targetWorkspace=workspaceWrite?workspaceWrite[1]:project;
         const incomingIds=new Set(workspaceOf(targetWorkspace).projects.find(p=>p.id===localProjectId)?.drawings?.map(d=>d.id)||[]);
-        const pendingRows=data.rows.some(x=>
-          (x.seq>binding.ackedSeq&&(x.projectIds.includes(localProjectId)||x.drawingIds.some(id=>owned.has(id)||incomingIds.has(id))))||
-          (x.seq>Math.max(binding.cutoffSeq,binding.lastLocalArchiveSeq||0)&&!x.projectIds.length&&x.drawingIds.some(id=>incomingIds.has(id))));
+        const orphanAfter=Math.max(binding.cutoffSeq,binding.lastLocalArchiveSeq||0);let pendingRows=false;
+        scanJournal(tx,Math.min(binding.ackedSeq,orphanAfter),row=>{
+          pendingRows=(row.seq>binding.ackedSeq&&(row.projectIds.includes(localProjectId)||row.drawingIds.some(id=>owned.has(id)||incomingIds.has(id))))||
+            (row.seq>orphanAfter&&!row.projectIds.length&&row.drawingIds.some(id=>incomingIds.has(id)));
+          return !pendingRows;
+        },()=>{
         if(binding.phase!=='active'||pendingRows||data.controls.some(x=>x?.kind==='claim'&&x.localProjectId===localProjectId)||!unchanged()||
           Number(data.meta?.revision)!==revision||!expected.every(([key,value])=>(data.raw.get(key)??null)===value)){
           deferred=true;return;
@@ -1526,6 +1666,7 @@
         for(const {key,after:value} of changed){if(value===null)tx.objectStore(STORE).delete(PREFIX+key);else tx.objectStore(STORE).put(value,PREFIX+key);}
         nextRevision=revision+1;tx.objectStore(STORE).put({...data.meta,revision:nextRevision,projectedAt:new Date().toISOString()},META);
         if(metadataChanged)tx.objectStore(CONTROL).put(nextBinding,'binding:'+localProjectId);
+        });
       });await done;if(deferred)return {applied:false,deferred:true};
       revision=nextRevision;bindings.set(localProjectId,nextBinding);
       for(const {key,after:value} of appliedChanges){const prior=durableMemory.get(key)??null;if(value===null)durableMemory.delete(key);else durableMemory.set(key,value);
@@ -1848,7 +1989,7 @@
         control.get('file:'+key).onsuccess=e=>{data.states.set(key,e.target.result===undefined?0:e.target.result);finish();};
       }
     }catch(error){stop(error);}};
-    journalControls(control).onsuccess=e=>{data.controls=e.target.result;ready();};
+    journalControls(control,'maintenance').onsuccess=e=>{data.controls=e.target.result;ready();};
     files.get(META).onsuccess=e=>{data.meta=e.target.result;ready();};
     files.get(PREFIX+WS).onsuccess=e=>{data.workspace=e.target.result??null;ready();};
     control.get('clock').onsuccess=e=>{data.clock=e.target.result===undefined?0:e.target.result;ready();};
@@ -1864,7 +2005,11 @@
         if(!item){data.done=true;ready();return;}
         if(kind==='files'&&(!Number.isSafeInteger(item.key)||item.key<1)||kind==='backups'&&typeof item.key!=='string')
           throw journalError('JOURNAL_MAINTENANCE_SCHEMA','ファイル控えの保存順序を確認できません');
-        data.entries.push({key:item.key,value:item.value});
+        const value=item.value;
+        // Ineligible intent bodies can contain years of large text preimages.
+        // Keep their cursor position without retaining their record/Blob data.
+        const retained=kind==='files'&&(value?.kind!=='sentlog-file-retention'||!Array.isArray(value.files)||value.files.length>64)?{kind:value?.kind}:value;
+        data.entries.push({key:item.key,value:retained});
         if(data.entries.length>=options.scanLimit){ready();return;}item.continue();
       }catch(error){stop(error);}};
     }
@@ -1932,7 +2077,7 @@
   async function compactRedundantFiles(options={}){return compactLocalCopies('files',options);}
   async function compactRedundantPageBackups(options={}){return compactLocalCopies('backups',options);}
   async function compactLocalCopies(kind,input){
-    assertReady();const options=maintenanceOptions(kind,input);
+    assertReady(true);const options=maintenanceOptions(kind,input);
     if(journalMaintenance)throw journalError('JOURNAL_MAINTENANCE_BUSY','別の履歴整理が進行しています');
     maintenanceCheck(options);journalMaintenance=true;
     try{
@@ -2026,13 +2171,15 @@
     await done;return totals;
   }
   window.SentlogRecords={init,flush,settled,writeFile,retry,batch,replaceAll,stats,
-    deltaJournal,openFilesDatabase,removeFiles,clearFiles,writerState,readFileStates,
+    deltaJournal,openFilesDatabase,removeFiles,clearFiles,writerState,readFileStates,initForMaintenance,
     startupProtectionVersion:1,
     storageLifecycleVersion:1,
     cutoffResumeVersion:1,
     recordBatchNoopVersion:1,
     recordFailureHistoryVersion:1,
     storageMaintenanceVersion:1,
+    maintenanceInitVersion:1,
+    journalReadBudgetVersion:1,
     projectionNoopVersion:1,
     getFileWriteCapabilities:()=>({guarded:true,onlyIfMissing:true,writerState:true,fileWriteDedupVersion:1,expectedFileStatesVersion:1,journaled:connection?.version===DB_VERSION}),
     uncommittedFiles:()=>[...failedFiles].map(([key,value])=>({key,value})),
@@ -2043,6 +2190,6 @@
     getItem:k=>{assertReady();return memory.get(k)??null;},
     setItem:(k,v,options)=>batch([[k,String(v)]],options),removeItem:(k,options)=>batch([[k,null]],options),keys:()=>[...memory.keys()],
     subscribe(fn){listeners.add(fn);return()=>listeners.delete(fn);},report,recovered,
-    assertSafe(){assertReady();if(failure || failures.size)throw failure||Error('端末内の保存エラーを確認してください');}
+    assertSafe(){assertReady(true);if(failure || failures.size)throw failure||Error('端末内の保存エラーを確認してください');}
   };
 })();
