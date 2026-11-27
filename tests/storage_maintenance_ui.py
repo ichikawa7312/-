@@ -323,6 +323,7 @@ def main():
                "viewport": {"width": 320, "height": 760}, "cases": [], "customerDataUsed": False,
                "productionOriginAccessed": False, "physicalDeviceTested": False, "physicalBytesReclaimedMeasured": False,
                "fullApplicationStarted": False, "settingsHostFixture": True, "externalTrafficBlocked": True,
+               "freshContextPerCase": True, "persistentTemporaryProfilePerCase": args.engine == "webkit",
                "fixtureSHA256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
     server = None
     try:
@@ -330,7 +331,8 @@ def main():
         summary["playwrightVersion"] = package_version("playwright")
         if summary["playwrightVersion"] != "1.62.0":
             raise RuntimeError("Playwright 1.62.0 is required; a different package is not a verified substitute")
-        with tempfile.TemporaryDirectory(prefix="sentlog-native-maintenance-", dir="/tmp") as temporary:
+        with tempfile.TemporaryDirectory(prefix="sentlog-native-maintenance-", dir="/tmp") as temporary, \
+                tempfile.TemporaryDirectory(prefix="sentlog-native-maintenance-profiles-", dir="/tmp") as profiles:
             package = Path(temporary)
             (package / "index.html").write_text(HTML)
             summary["sourceModules"] = []
@@ -359,9 +361,16 @@ def main():
                         case = {"name": name, "status": "running", "blockedRequests": [], "pageErrors": [], "controls": [], "proofs": []}
                         destination = args.out / (name + ".json")
                         record_progress(case, destination, "case-start")
-                        with deadline(30, "fresh native browser context"):
-                            context = browser.new_context(service_workers="block", viewport={"width": 320, "height": 760}, locale="ja-JP")
-                            page = context.new_page()
+                        with deadline(45, "fresh native browser context"):
+                            options = {"service_workers": "block", "viewport": {"width": 320, "height": 760}, "locale": "ja-JP"}
+                            if args.engine == "webkit":
+                                # Linux WebKit private contexts cannot persist these native Blob fixtures
+                                # (microsoft/playwright#42795). Match the regular profile in delta_app_ui.py;
+                                # every case still gets a new, synthetic-only profile outside the served tree.
+                                context = playwright.webkit.launch_persistent_context(str(Path(profiles) / name), headless=True, timeout=30000, **options)
+                            else:
+                                context = browser.new_context(**options)
+                            page = context.pages[0] if context.pages else context.new_page()
                         page.set_default_timeout(30000)
 
                         def browser_progress(detail, current_case=case, current_destination=destination):
