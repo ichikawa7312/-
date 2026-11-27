@@ -283,6 +283,18 @@ jobs:
           node tests/pdf_save_failure_release.test.cjs
           node tests/recovery_retry_release.test.cjs
           node tests/metadata_choice_release.test.cjs
+          python3 scripts/build_capacity_maintenance.py
+          node tests/record_journal_workspace_compaction.test.cjs
+          node tests/record_projection_noop.test.cjs
+          node tests/storage_redundant_files.test.cjs
+          node tests/storage_maintenance_ui_progress.test.cjs
+          node tests/capacity_maintenance_release.test.cjs
+          node tests/reliability_release.test.cjs
+          node tests/storage_recovery_release.test.cjs
+          node tests/startup_protection_release.test.cjs
+          node tests/storage_lifecycle_release.test.cjs
+          node tests/startup_backup_recovery_release.test.cjs
+          node tests/metadata_choice_release.test.cjs
       - name: Setup Pages
         uses: actions/configure-pages@v5
         with:
@@ -337,7 +349,7 @@ jobs:
           names+=['storage-restore.html','backup-format.js','startup-backup-recovery.js',
                   'cloud-check.html','cloud-check.js','cloud-check-auth.js','page-replacement.js','archive-pc.js',
                   'storage-check.html','startup-storage-diagnostics.js',
-                  'record-store.js','record-rescue.js','photo-recovery.js','blob-sha256.js','storage-ui.js','storage-diagnostics.js','storage-diagnostics-ui.js',
+                  'record-store.js','record-rescue.js','photo-recovery.js','blob-sha256.js','storage-ui.js','storage-diagnostics.js','storage-diagnostics-ui.js','storage-maintenance-ui.js',
                   'pdf-recovery.js','archive.js','archive-core.js','archive-capacity.js',
                   'delta-sync-core.js','delta-sync-indexeddb.js','delta-sync-legacy-preflight.js',
                   'delta-sync-legacy-source.js','delta-sync-migration.js','delta-sync-metadata.js',
