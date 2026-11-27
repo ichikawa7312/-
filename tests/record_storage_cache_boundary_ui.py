@@ -91,10 +91,12 @@ AUXILIARY = r"""
   const B=window.__boundaryInternals,MIB=1024*1024;
   const BALLAST='sentlog_synthetic_boundary_ballast',CACHE='sentlog-synthetic-boundary-cache';
   const MARKER='sentlogRecordsReadyV130',SENTINEL='sentlogSyntheticBoundarySentinel';
-  const assert=(yes,message)=>{if(!yes)throw Error(message);};
-  const errorJSON=e=>({name:e?.name||'Error',message:String(e?.message||e),code:e?.code||null});
+  const assert=(yes,message,details)=>{if(!yes){const error=Error(message);if(details)error.details=details;throw error;}};
+  const errorJSON=e=>({name:e?.name||'Error',message:String(e?.message||e),code:e?.code||null,
+    ...(e?.details?{details:e.details}:{})});
   const writerEvents=[],start=performance.now();
-  let ballast=[],watching=false;
+  const cacheSeedPuts=[];
+  let ballast=[],watching=false,cacheHandleRef=null,cacheHandleState='not-seeded',firstCacheReadFailure=null;
   const writer=()=>({ready:SentlogRecords.ready,pending:SentlogRecords.pending,failed:SentlogRecords.failed,
     issues:SentlogRecords.issues,recordFailureDetails:SentlogRecords.recordFailureDetails});
   const sorted=value=>[...value].sort(([a],[b])=>a<b?-1:a>b?1:0);
@@ -135,6 +137,31 @@ AUXILIARY = r"""
       return {rows:manifest.length,bytes:manifest.reduce((n,item)=>n+item.size,0),sha256:await B.hash(manifest),manifest};
     }finally{db.close();}
   }
+  const responseMetadata=response=>response?{present:true,status:response.status,type:response.type,
+    url:response.url,headers:[...response.headers.entries()].sort(([a],[b])=>a.localeCompare(b))}:
+    {present:false,status:null,type:null,url:null,headers:null};
+  async function responseDetails(response){
+    const result={...responseMetadata(response),body:null};
+    if(response)try{
+      const value=await response.clone().arrayBuffer();
+      result.body={bytes:value.byteLength,sha256:await B.digest(value)};
+    }catch(error){result.bodyReadError=errorJSON(error);}
+    return result;
+  }
+  async function cacheReadDetails(url,response){
+    const read=async fn=>{try{return await fn();}catch(error){return {error:errorJSON(error)};}};
+    // Do not keep a strong reference alive between seed and failed readback.
+    const handle=cacheHandleRef?.deref();
+    const details={url,cacheName:CACHE,elapsedMs:Math.round(performance.now()-start),
+      namedMatch:await read(()=>responseDetails(response)),
+      unfilteredMatch:await read(async()=>responseDetails(await caches.match(url))),
+      seededHandle:{status:cacheHandleRef?(handle?'available':'collected'):cacheHandleState}};
+    if(handle){
+      details.seededHandle.keys=await read(async()=>(await handle.keys()).map(request=>({url:request.url,method:request.method})));
+      details.seededHandle.match=await read(async()=>responseDetails(await handle.match(url)));
+    }
+    return details;
+  }
   async function inspectCache(){
     const count=window.__boundaryCase.cacheMiB,names=(await caches.keys()).sort();
     assert(JSON.stringify(names)===JSON.stringify(count?[CACHE]:[]),'CacheStorage names changed');
@@ -142,8 +169,13 @@ AUXILIARY = r"""
     for(let i=0;i<count;i++){
       const path='/synthetic-cache/'+i;
       // match reads a named cache without creating a missing cache.
-      const response=await caches.match(location.origin+path,{cacheName:CACHE});
-      assert(response&&response.status===200,'Synthetic cache response is missing');
+      const url=location.origin+path,response=await caches.match(url,{cacheName:CACHE});
+      let details=null;
+      if(!(response&&response.status===200)){
+        details=await cacheReadDetails(url,response);
+        if(!firstCacheReadFailure)firstCacheReadFailure=details;
+      }
+      assert(response&&response.status===200,'Synthetic cache response is missing',details);
       const value=await response.arrayBuffer(),expected=await B.digest(B.randomBytes(MIB,0x12457812+i));
       const sha256=await B.digest(value);assert(value.byteLength===MIB&&sha256===expected,'Cache payload SHA-256 changed');
       manifest.push({path,size:value.byteLength,sha256});
@@ -152,7 +184,8 @@ AUXILIARY = r"""
   }
   async function origin(deep=false){
     const result={elapsedMs:Math.round(performance.now()-start),writer:writer(),writerEvents:[...writerEvents],
-      marker:localStorage.getItem(MARKER),sentinel:localStorage.getItem(SENTINEL)};
+      marker:localStorage.getItem(MARKER),sentinel:localStorage.getItem(SENTINEL),
+      cacheSeedPuts:[...cacheSeedPuts],...(firstCacheReadFailure?{firstCacheReadFailure}:{})};
     for(const [name,fn]of [['databases',inventory],['cacheNames',()=>caches.keys()],['estimate',B.storageEstimate]]){
       try{result[name]=await fn();}catch(error){result[name]={error:errorJSON(error)};}
     }
@@ -191,10 +224,18 @@ AUXILIARY = r"""
       const count=window.__boundaryCase.cacheMiB;
       if(count){
         const cache=await caches.open(CACHE);
-        for(let i=0;i<count;i++)await cache.put(location.origin+'/synthetic-cache/'+i,
-          new Response(B.randomBytes(MIB,0x12457812+i),{headers:{'Content-Type':'application/octet-stream'}}));
+        cacheHandleState=typeof WeakRef==='function'?'weak-reference':'weakref-unavailable';
+        if(typeof WeakRef==='function')cacheHandleRef=new WeakRef(cache);
+        for(let i=0;i<count;i++){
+          const url=location.origin+'/synthetic-cache/'+i,
+            response=new Response(B.randomBytes(MIB,0x12457812+i),{headers:{'Content-Type':'application/octet-stream'}});
+          const put={url,response:responseMetadata(response),startedAtMs:Math.round(performance.now()-start),completedAtMs:null};
+          cacheSeedPuts.push(put);
+          try{await cache.put(url,response);put.completedAtMs=Math.round(performance.now()-start);}
+          catch(error){put.error=errorJSON(error);throw error;}
+        }
       }
-      return inspectCache();
+      return inspectCache().then(result=>({...result,seedPuts:[...cacheSeedPuts]}));
     },
     async fill(){
       const config=window.__boundaryCase,target=Math.round(config.targetMiB*MIB);
@@ -387,6 +428,23 @@ def main():
             for index, entry in enumerate(report["cases"]):
                 config = dict(entry["config"])
                 phase = "launch"
+                case_started = time.monotonic()
+                diagnostics = {"events": [], "dropped": 0, "maxEvents": 100, "maxMessageChars": 4096}
+                entry["pageDiagnostics"] = diagnostics
+
+                def page_event(kind, message, location=None):
+                    if len(diagnostics["events"]) >= diagnostics["maxEvents"]:
+                        diagnostics["dropped"] += 1
+                        return
+                    text = str(message)
+                    event = {"kind": kind, "phase": phase,
+                             "elapsedMs": round((time.monotonic()-case_started)*1000),
+                             "message": text[:diagnostics["maxMessageChars"]],
+                             "truncated": len(text) > diagnostics["maxMessageChars"]}
+                    if location is not None:
+                        event["location"] = location
+                    diagnostics["events"].append(event)
+
                 try:
                     with tempfile.TemporaryDirectory(prefix="sentlog-cache-boundary-") as profile:
                         def launch():
@@ -404,6 +462,9 @@ def main():
 
                         def open_page():
                             target = context.pages[0] if context.pages else context.new_page()
+                            target.on("console", lambda message: page_event(message.type, message.text, message.location)
+                                      if message.type in ["warning", "error"] else None)
+                            target.on("pageerror", lambda error: page_event("pageerror", error))
                             target.set_default_timeout(30_000)
                             target.goto(base + "/")
                             target.evaluate("config=>nativeBoundaryProbe.configure(config)", config)
@@ -482,6 +543,7 @@ def main():
                                 entry["dataStatus"] = "blocked" if phase == "launch" else "failed"
                             entry["observation"] = {"readOnly": True, "retryPerformed": False,
                                                     "databaseRecreationAllowed": False, "snapshots": []}
+                            save()
                             started = time.monotonic()
                             limit = args.observation_seconds if phase not in ["launch", "boundary-coverage"] else 0
                             offsets = sorted(set([0] + [value for value in [1, 5, 15, 30, 60, 120, 180, max(0, limit-10)]
