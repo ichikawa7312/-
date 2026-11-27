@@ -14,6 +14,7 @@
     report.events=[...events];report.transactions=[...trace];window.__sequenceReport=report;
     $('status').textContent='状態: '+report.status+' / '+(report.phase||phase)+(report.firstFailure?'\n最初の失敗: '+report.firstFailure.phase+' / '+report.firstFailure.error.name+' / '+report.firstFailure.error.message:'');
     $('report').textContent=JSON.stringify(report,null,2);
+    $('report').dataset.status=report.status;$('report').dataset.busy=String(busy);
     $('start').disabled=busy||report.status!=='idle';$('variant').disabled=busy||report.status!=='idle';$('baseline').disabled=busy||report.status!=='idle';
     $('verify').disabled=busy||!report.proof||!!report.firstFailure||report.proof.pageLoadNonce===pageLoadNonce;$('observe').disabled=busy;
     if(persist&&report.status!=='idle')try{localStorage.setItem(REPORT,JSON.stringify(report));}catch(e){report.reportPersistenceError=errorInfo(e);}
@@ -220,6 +221,6 @@
   $('start').addEventListener('click',start);$('observe').addEventListener('click',async()=>{busy=true;try{await observe();}catch(e){event('observation-error',{error:errorInfo(e)});}finally{busy=false;render();}});
   $('reload').addEventListener('click',()=>location.reload());$('verify').addEventListener('click',verify);
   $('download').addEventListener('click',()=>{const url=URL.createObjectURL(new Blob([JSON.stringify(report,null,2)],{type:'application/json'})),a=document.createElement('a');a.href=url;a.download='synthetic-restore-sequence-'+(report.variant||'unstarted')+'.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);});
-  Promise.all([fetch('profile.json',{cache:'no-store'}).then(r=>{assert(r.ok,'Missing synthetic profile');return r.json();}),fetch('source-manifest.json',{cache:'no-store'}).then(r=>{assert(r.ok,'Missing built source manifest');return r.json();})]).then(([p,m])=>{profile=p;manifest=m;report.loadedSourceManifest=m;window.__sequenceReady=true;render(false);}).catch(e=>{report.status='failed';report.firstFailure={phase:'fixture-load',at:new Date().toISOString(),error:errorInfo(e)};render();});
+  Promise.all([fetch('profile.json',{cache:'no-store'}).then(r=>{assert(r.ok,'Missing synthetic profile');return r.json();}),fetch('source-manifest.json',{cache:'no-store'}).then(r=>{assert(r.ok,'Missing built source manifest');return r.json();})]).then(([p,m])=>{profile=p;manifest=m;report.loadedSourceManifest=m;window.__sequenceReady=true;$('report').dataset.ready='true';render(false);}).catch(e=>{report.status='failed';report.firstFailure={phase:'fixture-load',at:new Date().toISOString(),error:errorInfo(e)};render();});
   render(false);
 })();

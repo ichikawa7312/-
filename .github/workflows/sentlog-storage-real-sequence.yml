@@ -60,15 +60,15 @@ jobs:
         id: browser_adapter
         run: python -m pip install --disable-pip-version-check playwright==1.62.0
       - name: Verify restore and receive with Unicode and ASCII in fresh profiles
-        run: python tests/record_storage_real_sequence_ui.py --engine ${{ matrix.engine }} --out "${{ runner.temp }}/sentlog-real-sequence-${{ matrix.engine }}"
+        run: python tests/record_storage_real_sequence_ui.py --engine ${{ matrix.engine }} --out "/tmp/sentlog-real-sequence-${{ matrix.engine }}"
       - name: Preserve synthetic sequence evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: sentlog-real-sequence-${{ matrix.engine }}-${{ github.run_attempt }}
           path: |
-            ${{ runner.temp }}/sentlog-real-sequence-${{ matrix.engine }}/**/*.json
-            ${{ runner.temp }}/sentlog-real-sequence-${{ matrix.engine }}/**/*.log
-            ${{ runner.temp }}/sentlog-real-sequence-${{ matrix.engine }}/**/*.png
-          if-no-files-found: warn
+            /tmp/sentlog-real-sequence-${{ matrix.engine }}/**/*.json
+            /tmp/sentlog-real-sequence-${{ matrix.engine }}/**/*.log
+            /tmp/sentlog-real-sequence-${{ matrix.engine }}/**/*.png
+          if-no-files-found: error
           retention-days: 14

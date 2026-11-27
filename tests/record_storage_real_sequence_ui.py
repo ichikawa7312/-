@@ -33,6 +33,13 @@ def write_json(path, value):
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n")
 
 
+def read_report(page):
+    # Read the same JSON shown to a human. Do not evaluate a JavaScript string
+    # under the fixture's deliberately unchanged script-src 'self' policy.
+    text = page.locator("#report").text_content()
+    return json.loads(text) if text else None
+
+
 def permitted_url(url, origin):
     """Allow only this synthetic origin and same-origin native Blob handles."""
     parsed = urlparse(url)
@@ -101,15 +108,20 @@ def main():
                             route.abort()
 
                     def install_page(ctx, label):
+                        nonlocal page
                         ctx.route("**/*", route_request)
                         opened = ctx.pages[0] if ctx.pages else ctx.new_page()
+                        page = opened
                         opened.on("console", lambda message: case["console"].append({"phase": label, "type": message.type, "text": message.text[:4000]})
                                   if message.type in ("warning", "error") and len(case["console"]) < 100 else None)
                         opened.on("pageerror", lambda error: case["pageErrors"].append({"phase": label, "message": str(error)[:4000]})
                                   if len(case["pageErrors"]) < 100 else None)
                         opened.set_default_timeout(15000)
                         opened.goto(url, wait_until="load", timeout=45000)
-                        opened.wait_for_function("window.__sequenceReady === true", timeout=30000)
+                        opened.locator('#report[data-ready="true"][data-busy="false"], #report[data-status="failed"][data-busy="false"]').wait_for(state="attached", timeout=30000)
+                        loaded = read_report(opened)
+                        if loaded and loaded.get("status") == "failed":
+                            raise AssertionError("Fixture loading failed: " + json.dumps(loaded.get("firstFailure"), ensure_ascii=False))
                         return opened
 
                     try:
@@ -119,8 +131,8 @@ def main():
                         page.locator("#variant").select_option(variant)
                         assert not page.locator("#baseline").is_checked(), "Primary case must omit optional baseline prefill"
                         page.locator("#start").click()
-                        page.wait_for_function("['received','failed'].includes(window.__sequenceReport?.status)", timeout=240000)
-                        case["initial"] = page.evaluate("window.__sequenceReport")
+                        page.locator('#report[data-status="received"][data-busy="false"], #report[data-status="failed"][data-busy="false"]').wait_for(state="attached", timeout=240000)
+                        case["initial"] = read_report(page)
                         write_json(args.out / f"{variant}-initial.json", case["initial"])
                         if case["initial"]["status"] != "received":
                             raise AssertionError("Sequence stopped at " + json.dumps(case["initial"].get("firstFailure"), ensure_ascii=False))
@@ -134,8 +146,8 @@ def main():
                         case["restartedBrowserVersion"] = context.browser.version
                         page = install_page(context, "restarted")
                         page.locator("#verify").click()
-                        page.wait_for_function("['verified','failed'].includes(window.__sequenceReport?.status)", timeout=120000)
-                        case["restarted"] = page.evaluate("window.__sequenceReport")
+                        page.locator('#report[data-status="verified"][data-busy="false"], #report[data-status="failed"][data-busy="false"]').wait_for(state="attached", timeout=120000)
+                        case["restarted"] = read_report(page)
                         if case["restarted"]["status"] != "verified":
                             raise AssertionError("Restart verification stopped at " + json.dumps(case["restarted"].get("firstFailure"), ensure_ascii=False))
                         if case["restarted"].get("loadedSourceManifest") != manifest:
@@ -148,7 +160,7 @@ def main():
                         case["error"] = {"name": type(error).__name__, "message": str(error)}
                         if page is not None:
                             try:
-                                case["lastReport"] = page.evaluate("window.__sequenceReport || null")
+                                case["lastReport"] = read_report(page)
                             except Exception as read_error:
                                 case["reportReadError"] = str(read_error)
                     finally:
