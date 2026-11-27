@@ -33,6 +33,13 @@ for pattern in ['compactRedundantRecords(', 'compactRedundantFiles(', 'compactRe
 if 'SentlogStorageMaintenanceUI' not in source('sentlog/storage-maintenance-ui.js'):
     raise RuntimeError('The device-local maintenance controls are missing')
 
+change('sentlog/sync-view.js',
+       '[...writes].some(([key,value])=>window.SentlogRecords.getItem(key)!==value)',
+       '[...(applied.committedRecords||writes)].some(([key,value])=>window.SentlogRecords.getItem(key)!==value)')
+pending['sentlog/sync-view.js'] = '// ' + MARKER + '\n' + source('sentlog/sync-view.js')
+change('sentlog/index.html', 'sync-view.js?v=20261126-view-fence', 'sync-view.js?v=' + TOKEN, 2)
+change('sentlog/index.html', "['sync-view.js?v=" + TOKEN + "','mergeCommit']",
+       "['sync-view.js?v=" + TOKEN + "','" + MARKER + "']")
 pending['sentlog/record-store.js'] = '// ' + MARKER + '\n' + source('sentlog/record-store.js')
 pending['sentlog/storage-maintenance-ui.js'] = '// ' + MARKER + '\n' + source('sentlog/storage-maintenance-ui.js')
 change('sentlog/index.html', 'record-store.js?v=' + OLD_TOKEN, 'record-store.js?v=' + TOKEN, 2)
@@ -88,6 +95,6 @@ for path in (ROOT / 'tests').iterdir():
 
 for name, value in pending.items():
     (ROOT / name).write_text(value, encoding='utf-8')
-for name in ['record-store', 'storage-maintenance-ui']:
+for name in ['record-store', 'storage-maintenance-ui', 'sync-view']:
     subprocess.run(['node', '--check', 'sentlog/' + name + '.js'], cwd=ROOT, check=True)
 print('Built v2.15: bounded redundant-history maintenance and unchanged-projection suppression; ' + CACHE)

@@ -286,6 +286,7 @@ jobs:
           python3 scripts/build_capacity_maintenance.py
           node tests/record_journal_workspace_compaction.test.cjs
           node tests/record_projection_noop.test.cjs
+          node tests/projection_noop_view.test.cjs
           node tests/storage_redundant_files.test.cjs
           node tests/storage_maintenance_ui_progress.test.cjs
           node tests/capacity_maintenance_release.test.cjs

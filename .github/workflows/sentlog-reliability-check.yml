@@ -28,6 +28,7 @@ on:
       - 'tests/record_journal_workspace_compaction.test.cjs'
       - 'tests/fixtures/record_journal_readers_v214.cjs'
       - 'tests/record_projection_noop.test.cjs'
+      - 'tests/projection_noop_view.test.cjs'
       - 'tests/storage_redundant_files.test.cjs'
       - 'tests/storage_maintenance_ui_progress.test.cjs'
       - 'tests/capacity_maintenance_release.test.cjs'

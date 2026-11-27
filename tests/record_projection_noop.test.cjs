@@ -91,7 +91,19 @@ await test('legacy JSON key order and whitespace remain byte-for-byte unchanged 
   input.metadataRecords=reverseKeys(input.metadataRecords);
   const observed=await observe(()=>f.records.deltaJournal.applyProjection(input));
   assert.equal(observed.result.applied,true);assert.deepEqual(observed.writes,[]);assert.equal(await f.snapshot(),before);
+  assert.deepEqual(copy(observed.result.committedRecords),input.expectedRecords,'UI fence must use the retained durable text');
   for(const [key,text]of input.expectedRecords)assert.equal(f.records.getItem(key),text,'no-op changed the synchronous mirror');
+});
+await test('mixed semantic no-op, changed and deleted records return every committed raw value for the UI fence',async()=>{
+  const f=await fixture(),input=f.input(),prior=copy(input.expectedRecords);
+  input.writes=input.writes.map(([key,text])=>[key,json(reverseKeys(JSON.parse(text)))]);
+  const state=JSON.parse(input.writes[1][1]);state.pageSettings[1].scale=400;input.writes[1][1]=json(state);
+  input.writes[2][1]=null;
+  const observed=await observe(()=>f.records.deltaJournal.applyProjection(input));
+  assert.equal(observed.result.applied,true);
+  assert.deepEqual(copy(observed.result.committedRecords),[prior[0],input.writes[1],input.writes[2]]);
+  for(const [key,text]of observed.result.committedRecords)assert.equal(f.records.getItem(key),text);
+  assert.equal(observed.writes.length,3,'only the changed drawing, deleted drawing and revision may mutate');
 });
 await test('one real drawing change writes that drawing and its revision, retaining all other records and blobs',async()=>{
   const f=await fixture(),before=await f.disk(),control=await f.disk(CONTROL),input=f.input(),state=JSON.parse(input.writes[1][1]);

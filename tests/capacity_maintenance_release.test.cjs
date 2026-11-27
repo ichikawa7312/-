@@ -3,7 +3,7 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('nod
 const read=name=>fs.readFileSync(name,'utf8');
 const index=read('sentlog/index.html'),writer=read('sentlog/record-store.js'),ui=read('sentlog/storage-maintenance-ui.js');
 const token='20261128-storage-maintenance-215',marker='sentlog-storage-maintenance-v215';
-for(const name of ['record-store','storage-maintenance-ui']){
+for(const name of ['record-store','storage-maintenance-ui','sync-view']){
   assert.equal(index.split(name+'.js?v='+token).length-1,2,name+' must be checked and loaded exactly once');
   assert(index.includes("['"+name+'.js?v='+token+"','"+marker+"']"));
   assert(read('sentlog/'+name+'.js').startsWith('// '+marker+'\n'));
@@ -14,6 +14,8 @@ for(const text of [read('sentlog/phone-runtime.js'),read('sentlog-pc/index.html'
 assert.deepEqual(read('sentlog/sw.js').match(/sentlog-pwa-v\d+/g),['sentlog-pwa-v257']);
 assert.equal(read('sentlog/sw.js').split("'storage-maintenance-ui.js'").length-1,1);
 for(const name of ['compactRedundantRecords','compactRedundantFiles','compactRedundantPageBackups'])assert(writer.includes(name+'('));
+assert(read('sentlog/sync-view.js').includes('[...(applied.committedRecords||writes)].some('),
+  'The UI must use the exact retained bytes after a semantic no-op projection');
 assert(!/\bfetch\s*\(|\blocalStorage\b|\.clear\s*\(|deleteDatabase/.test(ui),'Maintenance UI must not contact the network or clear storage');
 const boot=/<script>([\s\S]*?)<\/script>/.exec(index)[1];
 (async()=>{

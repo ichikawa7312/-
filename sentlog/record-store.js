@@ -1487,7 +1487,7 @@
       if(typeof validate!=='function')throw journalError('JOURNAL_GUARD','画面の受信前確認が必要です');
       const unchanged=()=>!pending.size&&!inFlight&&!exclusive&&expected.every(([key,value])=>(memory.get(key)??null)===value)&&validate()===true;
       if(!unchanged())return {applied:false,deferred:true};
-      const tx=transaction('readwrite'),done=complete(tx);let nextRevision=null,nextBinding=null,deferred=false,noWrite=false,appliedChanges=[];
+      const tx=transaction('readwrite'),done=complete(tx);let nextRevision=null,nextBinding=null,deferred=false,noWrite=false,appliedChanges=[],committedRecords=[];
       collectJournal(tx,data=>{
         const binding=bindingIn(data,localProjectId,scope),project=data.raw.get(WS),owned=new Set(workspaceOf(project).projects.find(p=>p.id===localProjectId)?.drawings?.map(d=>d.id)||[]);
         const workspaceWrite=updates.find(x=>x[0]===WS),targetWorkspace=workspaceWrite?workspaceWrite[1]:project;
@@ -1514,6 +1514,11 @@
         for(const [key,value] of updates)if(!managed(key)||(value!==null&&typeof value!=='string'))throw journalError('JOURNAL_PROJECTION','受信内容の保存形式が不正です');
         const metadataChanged=!sameJson(binding.metadataRecords,metadataRecords);
         nextBinding=metadataChanged?{...binding,metadataRecords:copy(metadataRecords)}:binding;
+        // The renderer must fence its later work against the bytes actually
+        // retained by this transaction, not reordered equivalent input JSON.
+        // Include unchanged keys so a subsequent local edit still defers UI.
+        const changedValues=new Map(changed.map(({key,after})=>[key,after]));
+        committedRecords=updates.map(([key])=>[key,changedValues.has(key)?changedValues.get(key):data.raw.get(key)??null]);
         // All scope, claim, pending-input and durable CAS guards above apply
         // even to an unchanged receive. Only proven differences cause writes.
         if(!changed.length&&!metadataChanged){nextRevision=revision;noWrite=true;return;}
@@ -1525,8 +1530,8 @@
       revision=nextRevision;bindings.set(localProjectId,nextBinding);
       for(const {key,after:value} of appliedChanges){const prior=durableMemory.get(key)??null;if(value===null)durableMemory.delete(key);else durableMemory.set(key,value);
         if(!pending.has(key)&&(memory.get(key)??null)===prior){if(value===null)memory.delete(key);else memory.set(key,value);}}
-      if(noWrite)return {applied:true,unchanged:true,deferredUI:pending.size>0};
-      notify();return {applied:true,deferredUI:pending.size>0};
+      if(noWrite)return {applied:true,unchanged:true,committedRecords,deferredUI:pending.size>0};
+      notify();return {applied:true,committedRecords,deferredUI:pending.size>0};
     }
   };
   async function commitBatch(batch,options=[]){
