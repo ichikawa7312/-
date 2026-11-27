@@ -252,6 +252,16 @@ jobs:
           node tests/delta_save_failure_gate.test.cjs
           node tests/cloud_asset_save_failure_gate.test.cjs
           node tests/recovery_retry_release.test.cjs
+          python3 scripts/build_metadata_choice_release.py
+          node tests/storage_recovery_release.test.cjs
+          node tests/startup_protection_release.test.cjs
+          node tests/file_journal_wake_release.test.cjs
+          node tests/startup_backup_recovery_release.test.cjs
+          node tests/cloud_normalization_release.test.cjs
+          node tests/storage_lifecycle_release.test.cjs
+          node tests/pdf_save_failure_release.test.cjs
+          node tests/recovery_retry_release.test.cjs
+          node tests/metadata_choice_release.test.cjs
       - name: Setup Pages
         uses: actions/configure-pages@v5
         with:

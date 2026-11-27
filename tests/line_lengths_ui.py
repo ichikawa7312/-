@@ -2,7 +2,7 @@
 from pathlib import Path
 from http.server import SimpleHTTPRequestHandler,ThreadingHTTPServer
 from playwright.sync_api import sync_playwright,expect
-import functools,threading,os,tempfile,json,math
+import functools,threading,os,tempfile,json,math,hashlib
 ROOT=Path(__file__).resolve().parents[1]
 class Handler(SimpleHTTPRequestHandler):
  def log_message(self,*a):pass
@@ -39,6 +39,78 @@ def hold_label(page,id,delay=600):
  page.evaluate('(id)=>selectShape(id)',id)
  loc=page.locator('[data-line-length-hit="'+id+'"]');box=loc.bounding_box();assert box
  page.mouse.move(box['x']+box['width']/2,box['y']+box['height']/2);page.mouse.down();page.wait_for_timeout(delay);page.mouse.up()
+PERSISTENCE_SNAPSHOT="""async ({stage,finalPersist})=>{
+ const result={stage,startedAt:new Date().toISOString(),errors:[]};
+ const error=(label,e)=>result.errors.push({stage:label,name:e?.name||'Error',message:String(e?.message||e)});
+ const writer=()=>{const r=window.SentlogRecords;return r?{ready:r.ready,pending:r.pending,failed:r.failed,
+   issues:r.issues,recordFailureDetails:r.recordFailureDetails}:null;};
+ const bounded=async(p,label,ms=15000)=>{let timer;try{return await Promise.race([
+   p,new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error(label+' timed out')),ms);})]);}
+   finally{clearTimeout(timer);}};
+ const memory=()=>{try{const value=window.SentlogRecords.getItem(drawingStorageKey('ll-d'));
+   if(typeof value!=='string')throw Error('Editor drawing record is missing or not text');return value;}
+   catch(e){error('memory-read',e);return null;}};
+ try{
+   if(finalPersist){
+     selected=null;render();persist();
+   }else{
+     if(!window.sentlogAppReady||typeof window.sentlogAppReady.then!=='function')throw Error('App readiness promise is unavailable');
+     await bounded(window.sentlogAppReady,'app-ready');
+     if(!window.SentlogRecords?.ready)throw Error('Native records are not ready');
+     result.writerBeforeWait=writer();
+     await bounded(window.SentlogRecords.settled(),'record-settled');
+     window.SentlogRecords.assertSafe();
+     if(window.SentlogRecords.pending)throw Error('Record queue is still pending after settled');
+   }
+ }catch(e){error(finalPersist?'final-persist':'durable-boundary',e);}
+ // Keep the editor expectation even if persist rejects; never derive it from disk.
+ if(finalPersist)try{result.expectedDrawingText=JSON.stringify(state);}catch(e){error('editor-snapshot',e);}
+ result.writer=writer();result.memoryDrawingText=memory();
+ if(!finalPersist){
+   let db;
+   try{
+     if(typeof indexedDB.databases!=='function')throw Error('Read-only database inventory is unavailable');
+     result.databases=(await indexedDB.databases()).map(item=>({name:item.name,version:item.version}));
+     if(!result.databases.some(item=>item.name==='surveyFieldNoteDB'))throw Error('Native database is missing; refusing creation');
+     db=await new Promise((resolve,reject)=>{
+       let done=false;const q=indexedDB.open('surveyFieldNoteDB');
+       const fail=e=>{if(done)return;done=true;clearTimeout(timer);reject(e);};
+       const timer=setTimeout(()=>fail(Error('Read-only native open timed out')),5000);
+       q.onupgradeneeded=()=>{q.transaction.abort();fail(Error('Native database disappeared; upgrade aborted'));};
+       q.onerror=()=>fail(q.error||Error('Native database open failed'));
+       q.onblocked=()=>fail(Error('Read-only native open blocked'));
+       q.onsuccess=()=>{if(done){q.result.close();return;}done=true;clearTimeout(timer);resolve(q.result);};
+     });
+     if(db.version!==2||!db.objectStoreNames.contains('files'))throw Error('Unexpected native record schema');
+     result.nativeDrawingText=await new Promise((resolve,reject)=>{
+       const tx=db.transaction('files','readonly');let value;
+       const timer=setTimeout(()=>{try{tx.abort();}catch{}reject(Error('Read-only native transaction timed out'));},5000);
+       const q=tx.objectStore('files').get('__sentlog_record__:'+drawingStorageKey('ll-d'));
+       q.onsuccess=()=>{value=q.result;};
+       tx.oncomplete=()=>{clearTimeout(timer);resolve(value??null);};
+       tx.onabort=()=>{clearTimeout(timer);reject(tx.error||Error('Read-only native transaction aborted'));};
+       tx.onerror=()=>{};
+     });
+     if(typeof result.nativeDrawingText!=='string')throw Error('Native drawing record is missing or not text');
+   }catch(e){error('native-read',e);}
+   finally{if(db)db.close();}
+   try{window.SentlogRecords.assertSafe();
+     if(window.SentlogRecords.pending)throw Error('Record queue changed while reading native proof');
+   }catch(e){error('after-native-read',e);}
+ }
+ result.writerAfterRead=writer();result.finishedAt=new Date().toISOString();return result;
+}"""
+def persistence_snapshot(page,stage,final_persist=False):
+ result=page.evaluate(PERSISTENCE_SNAPSHOT,{'stage':stage,'finalPersist':final_persist})
+ for prefix in ['expected','memory','native']:
+  text=result.get(prefix+'DrawingText')
+  if isinstance(text,str):
+   result[prefix+'DrawingSHA256']=hashlib.sha256(text.encode()).hexdigest()
+   try:result[prefix+'Drawing']=json.loads(text)
+   except Exception as error:result['errors'].append({'stage':prefix+'-json','message':str(error)})
+   drawing=result.get(prefix+'Drawing')
+   result[prefix+'Shapes']=drawing.get('shapes') if isinstance(drawing,dict) else None
+ return result
 try:
  with tempfile.TemporaryDirectory(prefix='sentlog-length-ui-') as profile,sync_playwright() as pw:
   opts={'headless':True};executable=os.getenv('SENTLOG_CHROMIUM_EXECUTABLE','/usr/bin/chromium')
@@ -146,15 +218,44 @@ try:
     assert 8.4<=metrics['font']<=12,metrics
     assert metrics['gap']>=-1 and metrics['hitGap']>=0 and metrics['containsText'],metrics
    page.evaluate('fit()')
-   page.evaluate("selected=null;render();persist()")
-   (ROOT/'test-results').mkdir(exist_ok=True);page.screenshot(path=str(ROOT/f'test-results/line-lengths-{engine}-{width}.png'),full_page=True)
-   expected=page.evaluate('JSON.stringify(state.shapes)')
-   # Wait for the native record-store queue, then reload its actual stored JSON.
-   page.wait_for_function("JSON.parse(SentlogRecords.getItem(drawingStorageKey('ll-d'))||'{}').shapes?.find(s=>s.id==='curve')?.lineLengthM===.3")
-   page.wait_for_timeout(100)
-   page.reload(wait_until='domcontentloaded');page.wait_for_function("window.SENTLOG_BUILD==='v1.82'&&!!window.SentlogLineLengths")
-   stored=page.evaluate("SentlogRecords.getItem(drawingStorageKey('ll-d'))")
-   assert json.loads(stored)['shapes']==json.loads(expected),'native reload must preserve values, IDs, photos and geometry'
+   (ROOT/'test-results').mkdir(exist_ok=True)
+   proof_path=ROOT/f'test-results/line-lengths-{engine}-{width}-persistence.json'
+   proof={'format':'sentlog-line-length-native-persistence','engine':engine,'width':width,'status':'running',
+          'syntheticOnly':True,'expectedSource':'Editor state after final persist, never the durable result','snapshots':[]}
+   def save_proof():proof_path.write_text(json.dumps(proof,ensure_ascii=False,indent=2)+'\n')
+   try:
+    proof['activeStage']='before-flush'
+    before=persistence_snapshot(page,'before-flush',True);proof['snapshots'].append(before);save_proof()
+    assert not before['errors'],before['errors']
+    expected_drawing=before['expectedDrawing'];expected=json.dumps(expected_drawing['shapes'],ensure_ascii=False)
+    assert before['memoryDrawing']==expected_drawing,'final persist must enqueue the complete current drawing'
+    page.screenshot(path=str(ROOT/f'test-results/line-lengths-{engine}-{width}.png'),full_page=True)
+    # getItem is the synchronous editor mirror. Await transaction completion,
+    # then independently read the full native record before permitting reload.
+    proof['activeStage']='after-commit'
+    committed=persistence_snapshot(page,'after-commit');proof['snapshots'].append(committed);save_proof()
+    assert not committed['errors'],committed['errors']
+    assert committed['memoryDrawing']==expected_drawing,'settled memory must preserve the complete expected drawing'
+    assert committed['nativeDrawing']==expected_drawing,'native commit must preserve the complete expected drawing'
+    assert committed['nativeShapes']==json.loads(expected),'native commit must preserve all expected shapes'
+    proof['activeStage']='after-reload';save_proof()
+    page.reload(wait_until='domcontentloaded');page.wait_for_function("window.SENTLOG_BUILD==='v1.82'&&!!window.SentlogLineLengths")
+    reloaded=persistence_snapshot(page,'after-reload');proof['snapshots'].append(reloaded);save_proof()
+    assert not reloaded['errors'],reloaded['errors']
+    stored=reloaded['memoryDrawingText']
+    assert json.loads(stored)['shapes']==json.loads(expected),'native reload must preserve values, IDs, photos and geometry'
+    assert reloaded['memoryDrawing']==expected_drawing,'reloaded memory must preserve the complete expected drawing'
+    assert reloaded['nativeDrawing']==expected_drawing,'reloaded native storage must preserve the complete expected drawing'
+    assert reloaded['nativeShapes']==json.loads(expected),'reloaded native storage must preserve all expected shapes'
+    proof['status']='passed'
+   except Exception as error:
+    proof['status']='failed';proof['failureStage']=proof['activeStage'];proof['error']={'type':type(error).__name__,'message':str(error)}
+    try:
+     proof['writerAtFailure']=page.evaluate("""()=>{const r=window.SentlogRecords;return r?{
+      ready:r.ready,pending:r.pending,failed:r.failed,issues:r.issues,recordFailureDetails:r.recordFailureDetails}:null;}""")
+    except Exception as snapshot_error:proof['writerSnapshotError']=str(snapshot_error)
+    raise
+   finally:save_proof()
    assert not errors,errors;assert not unexpected,unexpected
    print(f'PASS {engine} {width}px: straight/freehand manual metres, path-preserving scale, long press, W+L, bounds, scale transitions, undo/redo, DXF text and native reload',flush=True)
    ctx.close()
