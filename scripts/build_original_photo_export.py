@@ -119,3 +119,6 @@ subprocess.run([sys.executable, 'scripts/build_normalization_noop.py'], cwd=ROOT
 
 # Preserve in-memory records when the database connection closes abnormally.
 subprocess.run([sys.executable, 'scripts/build_storage_lifecycle.py'], cwd=ROOT, check=True)
+
+# Wait for explicit save recovery before receiving more PDFs after a known failure.
+subprocess.run([sys.executable, 'scripts/build_pdf_save_failure_release.py'], cwd=ROOT, check=True)
