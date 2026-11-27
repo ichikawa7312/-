@@ -20,6 +20,7 @@ on:
       - 'tests/individual_sync_app.py'
       - 'tests/record_storage_scale_ui.py'
       - 'tests/record_storage_pressure_ui.py'
+      - 'tests/record_storage_cache_boundary_ui.py'
       - 'tests/record_rescue_ui.py'
       - 'tests/record_startup_guard_ui.py'
       - 'tests/startup_backup_recovery.test.cjs'
@@ -133,6 +134,9 @@ jobs:
         run: NODE_PATH="$RUNNER_TEMP/sentlog-app-test-deps/node_modules" python tests/individual_sync_app.py --engine ${{ matrix.engine }} --built-root .
       - name: Verify two actual applications with native storage and real SQL
         run: NODE_PATH="$RUNNER_TEMP/sentlog-app-test-deps/node_modules" python tests/delta_app_ui.py --engine ${{ matrix.engine }} --built-root .
+      - name: Compare native record commits with cache storage and reported usage boundaries
+        timeout-minutes: 8
+        run: python tests/record_storage_cache_boundary_ui.py --engine ${{ matrix.engine }} --built-root .
       - uses: actions/upload-artifact@v4
         if: always()
         with:
