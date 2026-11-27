@@ -509,7 +509,7 @@
           fileWrites[0].key===unchangedFile.key&&fileStates.get(unchangedFile.key)===unchangedFile.sequence&&
           fileIdentity(oldFiles.get(unchangedFile.key))===unchangedFile.identity&&
           fileIdentity(fileWrites[0].value)===unchangedFile.identity){
-          mutate({unchanged:true,value:oldFiles.get(unchangedFile.key)});return;
+          mutate({unchanged:true,value:oldFiles.get(unchangedFile.key),sequence:fileStates.get(unchangedFile.key)});return;
         }
         // Pending edits can return to their durable value, including while an
         // earlier save is in flight. Only these same-transaction preimages can
@@ -543,7 +543,7 @@
         }
         tx.sentlogFileKeys=fileKeys;
         for(const key of fileKeys)recordRequest(tx,control,'put',seq,'file:'+key);
-        recordRequest(tx,control,'put',seq,'clock');mutate({recordChanges:changes});
+        recordRequest(tx,control,'put',seq,'clock');mutate({recordChanges:changes,sequence:seq});
       }catch(error){stop(error);}
     }
     control.get('clock').onsuccess=e=>{clock=Number(e.target.result)||0;ready();};
@@ -1466,8 +1466,12 @@
     if(exclusive) return Promise.reject(Error('復元中です'));
     const guarded=Object.keys(options).length>0;
     const validate=options.validate,onlyIfMissing=options.onlyIfMissing===true,signal=options.signal;
+    const hasExpected=options.expectedFileStates!==undefined;
+    const expectedFileStates=Array.isArray(options.expectedFileStates)?options.expectedFileStates.map(x=>x&&({key:x.key,sequence:x.sequence})):options.expectedFileStates;
     function fileError(code,message){return Object.assign(Error(message),{code});}
     function check(){
+      if(hasExpected&&(!Array.isArray(expectedFileStates)||expectedFileStates.some(x=>!x||typeof x.key!=='string'||!Number.isSafeInteger(x.sequence)||x.sequence<0)||onlyIfMissing))
+        throw fileError('FILE_WRITE_GUARD','ファイルを置き換える前の保存世代を確認できません');
       if(signal?.aborted)throw fileError('FILE_WRITE_ABORTED','ファイルの保存を中止しました');
       if(validate!==undefined){
         if(typeof validate!=='function')throw fileError('FILE_WRITE_GUARD','保存する対象を確認できません');
@@ -1560,9 +1564,9 @@
             if(settled)return;
             try{
               check();
-              journalMutation(tx,{fileWrites:[{key,value}],kind:'file-write',contexts:[contextOf(options)],unchangedFile},result=>{
-                if(result?.unchanged){check();saved={written:false,value:result.value,unchanged:true};return;}
-                check();saved={written:true,value};const q=store.put(value,key);
+              journalMutation(tx,{fileWrites:[{key,value}],kind:'file-write',contexts:[contextOf(options)],unchangedFile,expectedFileStates:expectedFileStates||[]},result=>{
+                if(result?.unchanged){check();saved={written:false,value:result.value,unchanged:true,...(hasExpected?{sequence:result.sequence}:{})};return;}
+                check();saved={written:true,value,...(hasExpected?{sequence:result.sequence}:{})};const q=store.put(value,key);
                 q.onerror=()=>{reason=reason||q.error;};
                 q.onsuccess=()=>{if(settled)return;try{check();}catch(error){abort(error);}};
               });
@@ -1681,7 +1685,9 @@
     startupProtectionVersion:1,
     storageLifecycleVersion:1,
     cutoffResumeVersion:1,
-    getFileWriteCapabilities:()=>({guarded:true,onlyIfMissing:true,writerState:true,fileWriteDedupVersion:1,journaled:connection?.version===DB_VERSION}),
+    recordBatchNoopVersion:1,
+    recordFailureHistoryVersion:1,
+    getFileWriteCapabilities:()=>({guarded:true,onlyIfMissing:true,writerState:true,fileWriteDedupVersion:1,expectedFileStatesVersion:1,journaled:connection?.version===DB_VERSION}),
     uncommittedFiles:()=>[...failedFiles].map(([key,value])=>({key,value})),
     get ready(){return initialized;},get pending(){return pending.size+inFlight>0||fileTasks.size>0||operation;},get failed(){return failures.size>0;},
     get issues(){return [...failures];},get migration(){return migrationInfo;},

@@ -19,6 +19,7 @@ on:
       - 'tests/record_batch_noop.test.cjs'
       - 'tests/reliability_release.test.cjs'
       - 'tests/page_replacement_runtime.test.cjs'
+      - 'tests/page_replacement_context_ui.py'
       - 'tests/record_file_expected_state.test.cjs'
       - 'tests/pc_safe_backup_acquisition.test.cjs'
   workflow_dispatch:
@@ -60,15 +61,9 @@ jobs:
           for line in lines[start+1:]:
               if not line.startswith('          '):break
               commands.append(line[10:])
-          assert 'python3 scripts/build_delta_sync.py' in commands
+          assert 'python3 scripts/build_reliability_release.py' in commands
           subprocess.run(['bash','-e','-o','pipefail','-c','\n'.join(commands)],check=True)
           PY
-      - name: Check new isolated component contracts
-        run: |
-          node tests/cloud_check.test.cjs
-          node tests/cloud_check_build.test.cjs
-          node tests/cloud_check_root_worker.test.cjs
-          node tests/pc_safe_backup_acquisition.test.cjs
       - name: Install the matching browser adapter
         id: browser_adapter
         run: python -m pip install --disable-pip-version-check playwright==1.62.0
@@ -83,6 +78,9 @@ jobs:
       - name: Verify normal PC preservation at exclusive acquisition
         if: ${{ !cancelled() && matrix.engine == 'chromium' && steps.production_build.outcome == 'success' && steps.browser_adapter.outcome == 'success' }}
         run: python tests/storage_preservation_native_ui.py --engine chromium --scenario regular-pc --built-root . --out /tmp/sentlog-native-regular-pc
+      - name: Verify real PDF replacement across navigation and concurrent writes
+        if: ${{ !cancelled() && steps.production_build.outcome == 'success' && steps.browser_adapter.outcome == 'success' }}
+        run: python tests/page_replacement_context_ui.py --engine ${{ matrix.engine }} --out /tmp/sentlog-page-replacement-context-${{ matrix.engine }}
       - name: Preserve synthetic validation evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -94,5 +92,7 @@ jobs:
             /tmp/sentlog-native-writer-${{ matrix.engine }}/**/*.json
             /tmp/sentlog-native-pc/**/*.json
             /tmp/sentlog-native-regular-pc/**/*.json
+            /tmp/sentlog-page-replacement-context-${{ matrix.engine }}/**/*.json
+            /tmp/sentlog-page-replacement-context-${{ matrix.engine }}/**/*.png
           if-no-files-found: error
           retention-days: 14

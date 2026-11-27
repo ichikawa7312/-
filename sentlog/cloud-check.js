@@ -300,7 +300,7 @@
       $('cloudCheckStatus').textContent=s.status;$('cloudCheckWarning').hidden=!s.warning;$('cloudCheckWarning').textContent=s.warning;
       $('cloudCheckSignIn').hidden=!!s.user;$('cloudCheckAccount').hidden=!s.user;
       $('cloudCheckUseMain').hidden=!s.canUseMain;$('cloudCheckResume').hidden=!s.canResume;
-      $('cloudCheckSessionHint').textContent=s.sharedExpired?'セントログのログイン情報の期限が切れています。この画面でログインしてください。':'セントログと同じアカウントを利用できます。この画面でのログインは、ほかの画面のログイン状態を変更しません。';
+      $('cloudCheckSessionHint').textContent=s.sharedExpired?'セントログのログイン情報の期限が切れています。この画面でログインしてください。':'セントログと同じアカウントを利用できます。端末に保存するログイン情報は、この確認画面専用です。';
       for(const id of ['cloudCheckUseMain','cloudCheckResume','cloudCheckLogin','cloudCheckRefresh','cloudCheckMore','cloudCheckEmail','cloudCheckPassword','cloudCheckRemember'])$(id).disabled=s.busy;
       $('cloudCheckCancel').hidden=!s.busy;$('cloudCheckEnd').hidden=!(s.busy||s.user||s.canResume||s.source);
       $('cloudCheckMore').hidden=!s.hasMore;$('cloudCheckResults').hidden=!s.checkedAt;

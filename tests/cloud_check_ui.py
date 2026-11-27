@@ -51,7 +51,7 @@ SEED = r"""(async()=>{
   localStorage.setItem('sentlogCloudSessionV1',JSON.stringify(current));
   localStorage.setItem('sentlogCloudDeviceV1','SYNTHETIC_DEVICE');
   localStorage.setItem('synthetic-unrelated-key','SYNTHETIC_KEEP');
-  if(mode==='refresh')localStorage.setItem('sentlogCloudCheckSessionV1',JSON.stringify({
+  if(['refresh','queued-lock-cancel'].includes(mode))localStorage.setItem('sentlogCloudCheckSessionV1',JSON.stringify({
     ...current,access_token:'synthetic-owned-expired',refresh_token:'synthetic-owned-refresh',expires_at:Math.floor(Date.now()/1000)-60}));
   const request=q=>new Promise((resolve,reject)=>{q.onsuccess=()=>resolve(q.result);q.onerror=()=>reject(q.error);});
   const open=indexedDB.open('surveyFieldNoteDB',2);open.onupgradeneeded=()=>{
@@ -80,7 +80,7 @@ OBSERVER = r"""(() => {
   if(!['/sentlog/cloud-check.html','/__cloud_fixture__'].includes(location.pathname))return;
   const watching=location.pathname==='/sentlog/cloud-check.html';
   const own='sentlogCloudCheckSessionV1',shared='sentlogCloudSessionV1';
-  const audit={violations:[],authWrites:[],authReads:[],csp:[]};
+  const audit={violations:[],authWrites:[],authReads:[],csp:[],trustedClicks:[]};
   const native={get:Storage.prototype.getItem,set:Storage.prototype.setItem,remove:Storage.prototype.removeItem,
     open:IDBFactory.prototype.open,databases:IDBFactory.prototype.databases,transaction:IDBDatabase.prototype.transaction,
     cacheKeys:CacheStorage.prototype.keys,cacheOpen:CacheStorage.prototype.open,
@@ -99,6 +99,7 @@ OBSERVER = r"""(() => {
     Storage.prototype.key=function(){return violation('storage.enumerate');};
     if(navigator.serviceWorker){const proto=Object.getPrototypeOf(navigator.serviceWorker);for(const name of ['register','getRegistrations'])if(typeof proto[name]==='function')proto[name]=function(){return violation('serviceWorker.'+name);};}
     document.addEventListener('securitypolicyviolation',e=>audit.csp.push({directive:e.violatedDirective,blocked:e.blockedURI}));
+    document.addEventListener('click',e=>{const id=e.target.closest?.('button')?.id;if(['cloudCheckResume','cloudCheckCancel','cloudCheckLogin'].includes(id))audit.trustedClicks.push({id,trusted:e.isTrusted});},true);
   }
   const request=q=>new Promise((resolve,reject)=>{q.onsuccess=()=>resolve(q.result);q.onerror=()=>reject(q.error);});
   async function norm(value){
@@ -131,7 +132,7 @@ OBSERVER = r"""(() => {
       cacheCount:cacheRows.length,cacheSha256:await hashText(cacheRows),cacheEntries:cacheRows.reduce((n,c)=>n+c.entries.length,0),
       protectedLocalSha256:await hashText(local),marker:native.get.call(localStorage,'sentlogRecordsReadyV130'),
       ownSessionPresent:!!owned,ownSessionSha256:owned?await hashText(owned):null,ownSessionFields:parsed?Object.keys(parsed).sort():[],
-      viewport:{width:innerWidth,documentWidth:document.documentElement.scrollWidth},audit:{violations:[...audit.violations],authWriteCount:audit.authWrites.length,authWrites:[...audit.authWrites],authReadKeys:[...new Set(audit.authReads)].sort(),csp:[...audit.csp]}};
+      viewport:{width:innerWidth,documentWidth:document.documentElement.scrollWidth},audit:{violations:[...audit.violations],authWriteCount:audit.authWrites.length,authWrites:[...audit.authWrites],authReadKeys:[...new Set(audit.authReads)].sort(),csp:[...audit.csp],trustedClicks:[...audit.trustedClicks]}};
   }
   addEventListener('DOMContentLoaded',()=>{
     const controls=document.createElement('details');controls.id='nativeCloudControls';controls.style.cssText='margin:20px;padding:8px;font:12px sans-serif';
@@ -139,6 +140,29 @@ OBSERVER = r"""(() => {
     const pre=document.createElement('pre');pre.id='nativeCloudAudit';pre.hidden=true;let serial=0;
     button.onclick=async()=>{button.disabled=true;try{const value=await inspect();value.serial=++serial;pre.textContent=JSON.stringify(value);}catch(error){pre.textContent=JSON.stringify({status:'error',message:String(error)});}finally{button.disabled=false;}};
     controls.append(title,button,pre);document.body.append(controls);
+    // A real native lock is held by this disposable page. No app lock method,
+    // auth callback, network code or cancellation signal is replaced.
+    if(watching){
+      const name='sentlog-auth:sentlogCloudCheckSessionV1',state={held:false,completed:false,error:null,holdTrusted:null,releaseTrusted:null};
+      let releaseLock,serial=0;const out=document.createElement('pre');out.id='nativeAuthLockAudit';out.hidden=true;
+      const hold=document.createElement('button'),release=document.createElement('button'),probe=document.createElement('button');
+      hold.id='nativeAuthLockHold';hold.textContent='合成の認証ロックを保持';
+      release.id='nativeAuthLockRelease';release.textContent='合成の認証ロックを解放';release.disabled=true;
+      probe.id='nativeAuthLockInspect';probe.textContent='合成の認証ロックを照合';
+      for(const node of [hold,release,probe])node.type='button';
+      hold.onclick=event=>{state.holdTrusted=event.isTrusted;hold.disabled=true;
+        Promise.resolve().then(()=>navigator.locks.request(name,{mode:'exclusive'},async lock=>{
+          if(lock?.name!==name||lock.mode!=='exclusive')throw Error('Unexpected native lock');
+          state.held=true;release.disabled=false;await new Promise(resolve=>{releaseLock=resolve;});state.held=false;
+        })).then(()=>{state.completed=true;},error=>{state.error=String(error?.name||'Error');});
+      };
+      release.onclick=event=>{state.releaseTrusted=event.isTrusted;release.disabled=true;releaseLock?.();};
+      probe.onclick=async()=>{try{
+        const value=await navigator.locks.query(),select=rows=>rows.filter(row=>row.name===name).map(row=>({name:row.name,mode:row.mode}));
+        out.textContent=JSON.stringify({serial:++serial,...state,locks:{held:select(value.held),pending:select(value.pending)}});
+      }catch(error){out.textContent=JSON.stringify({serial:++serial,...state,error:String(error?.name||'Error')});}};
+      controls.append(hold,release,probe,out);
+    }
   });
 })();"""
 
@@ -190,6 +214,29 @@ async def inspect(page):
 
 async def settled(page, status):
     await page.locator(f'body[data-ready="true"][data-busy="false"][data-status="{status}"]').wait_for(timeout=30000)
+
+
+async def native_auth_lock(page, held, pending, completed=False):
+    """Query the real queue through a fixture button; no CSP/eval relaxation."""
+    output = page.locator("#nativeAuthLockAudit")
+    latest = None
+    for _ in range(100):
+        previous = await output.text_content()
+        await page.locator("#nativeAuthLockInspect").click()
+        for _ in range(100):
+            value = await output.text_content()
+            if value and value != previous:
+                break
+            await asyncio.sleep(0.01)
+        assert value and value != previous, "Native lock query did not finish"
+        latest = json.loads(value)
+        assert not latest["error"], latest
+        if (len(latest["locks"]["held"]) == held and len(latest["locks"]["pending"]) == pending
+                and latest["completed"] is completed):
+            assert all(row["mode"] == "exclusive" for group in latest["locks"].values() for row in group), latest
+            return latest
+        await asyncio.sleep(0.025)
+    raise AssertionError(f"Native auth lock queue did not reach held={held}, pending={pending}: {latest}")
 
 
 async def exercise(playwright, engine, origin, mode, output, executable):
@@ -347,6 +394,36 @@ async def exercise(playwright, engine, origin, mode, output, executable):
                 await page.locator("#cloudCheckEnd").click()
                 await settled(page, "idle")
                 await preserved("dedicated-ended", False)
+            elif mode == "queued-lock-cancel":
+                await preserved("before-native-lock", True)
+                await page.locator("#nativeAuthLockHold").click()
+                result["nativeLocks"] = [{"phase": "held", **await native_auth_lock(page, 1, 0)}]
+                await page.locator("#cloudCheckResume").click()
+                await page.locator('body[data-busy="true"]').wait_for(timeout=10000)
+                result["nativeLocks"].append({"phase": "refresh-queued", **await native_auth_lock(page, 1, 1)})
+                value = await preserved("refresh-queued", True)
+                assert len(result["requests"]) == 0 and value["audit"]["authWriteCount"] == 0
+                assert value["ownSessionSha256"] == baseline["ownSessionSha256"]
+                await page.locator("#cloudCheckCancel").click()
+                await settled(page, "error")
+                assert "中止" in await page.locator("#cloudCheckStatus").inner_text()
+                result["nativeLocks"].append({"phase": "cancelled-while-held", **await native_auth_lock(page, 1, 0)})
+                await page.locator("#nativeAuthLockRelease").click()
+                result["nativeLocks"].append({"phase": "released", **await native_auth_lock(page, 0, 0, completed=True)})
+                value = await preserved("cancelled-after-lock-release", True)
+                assert len(result["requests"]) == 0 and value["audit"]["authWriteCount"] == 0
+                assert value["ownSessionSha256"] == baseline["ownSessionSha256"]
+                assert await page.locator("#cloudCheckProjects article").count() == 0
+                assert value["audit"]["trustedClicks"] == [{"id": "cloudCheckResume", "trusted": True}, {"id": "cloudCheckCancel", "trusted": True}]
+                assert result["nativeLocks"][0]["holdTrusted"] is True and result["nativeLocks"][-1]["releaseTrusted"] is True
+                phase = "new-login-after-cancel"
+                await sign_in(True)
+                value = await preserved("new-login-after-cancel", True)
+                assert len(result["requests"]) == 4 and result["requests"][0].get("grantType") == "password"
+                assert not any(row.get("grantType") == "refresh_token" for row in result["requests"])
+                assert value["audit"]["authWrites"] == ["remove-own-auth", "set-own-auth"]
+                assert value["ownSessionSha256"] != baseline["ownSessionSha256"]
+                assert value["audit"]["trustedClicks"][-1] == {"id": "cloudCheckLogin", "trusted": True}
             else:
                 for phase_name in ("denied", "wrong-user", "offline"):
                     phase = phase_name
@@ -393,7 +470,7 @@ async def main(args):
     origin = f"http://127.0.0.1:{server.server_port}"
     try:
         async with async_playwright() as playwright:
-            for mode in ("borrowed", "dedicated", "refresh", "errors"):
+            for mode in ("borrowed", "dedicated", "refresh", "errors", "queued-lock-cancel"):
                 result = await exercise(playwright, args.engine, origin, mode, output, args.browser_executable)
                 report["conditions"].append(result)
                 (output / (mode + ".json")).write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n")
@@ -402,7 +479,7 @@ async def main(args):
         server.shutdown()
         server.server_close()
         report["finishedAtEpoch"] = time.time()
-        report["status"] = "passed" if len(report["conditions"]) == 4 and all(row["status"] == "passed" for row in report["conditions"]) else "failed"
+        report["status"] = "passed" if len(report["conditions"]) == 5 and all(row["status"] == "passed" for row in report["conditions"]) else "failed"
         (output / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n")
     return 0 if report["status"] == "passed" else 1
 

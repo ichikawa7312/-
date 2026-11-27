@@ -32,7 +32,7 @@ assert(existing.includes(config.baseUrl),'Must use the existing normal auth proj
 const publicKey=/const KEY='([^']+)'/.exec(source)[1];assert(existing.includes(publicKey));assert(publicKey.startsWith('sb_publishable_'));
 async function stopped(html){
   const nodes=[],events={init:0,fetch:0,storageWrites:0};
-  const context={window:{SentlogRecords:{cutoffResumeVersion:1,storageLifecycleVersion:1,startupProtectionVersion:1,getFileWriteCapabilities:()=>({fileWriteDedupVersion:1}),init(){events.init++;throw Error('SYNTHETIC_PRESERVED_STARTUP_FAILURE');}}},
+  const context={window:{SentlogRecords:{recordBatchNoopVersion:1,recordFailureHistoryVersion:1,cutoffResumeVersion:1,storageLifecycleVersion:1,startupProtectionVersion:1,getFileWriteCapabilities:()=>({fileWriteDedupVersion:1,expectedFileStatesVersion:1}),init(){events.init++;throw Error('SYNTHETIC_PRESERVED_STARTUP_FAILURE');}}},
     fetch(){events.fetch++;throw Error('No application fetch is allowed after protected startup fails');},
     localStorage:{setItem(){events.storageWrites++;},removeItem(){events.storageWrites++;}},
     document:{body:{replaceChildren(){},append(){}},createElement(tag){const node={tag,style:{},append(){}};nodes.push(node);return node;}}};
