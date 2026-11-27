@@ -1,0 +1,74 @@
+name: Sentlog storage restore and receive sequence
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/pages.yml'
+      - '.github/workflows/sentlog-storage-real-sequence.yml'
+      - 'scripts/build_*.py'
+      - 'scripts/prepare_record_restore_sequence.py'
+      - 'sentlog/record-store.js'
+      - 'sentlog/storage-ui.js'
+      - 'sentlog/blob-sha256.js'
+      - 'sentlog/backup-format.js'
+      - 'sentlog/startup-backup-recovery.js'
+      - 'tests/record_storage_real_sequence_ui.py'
+      - 'tests/record_restore_sequence/**'
+      - 'tests/native_storage_environment_probe/**'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: sentlog-real-storage-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  restore-and-receive:
+    runs-on: ubuntu-24.04
+    container:
+      image: mcr.microsoft.com/playwright/python:v1.62.0-noble@sha256:aa81288e738725378becba5b3e06cb0f3a7f012a610e87e8d767a090ea3f740d
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: [chromium, webkit]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build and check the exact production app
+        id: production_build
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import subprocess
+          lines=Path('.github/workflows/pages.yml').read_text().splitlines()
+          marker='      - name: Build archive, management and capacity integration'
+          assert lines.count(marker)==1
+          start=lines.index(marker)+1
+          assert lines[start].strip()=='run: |'
+          commands=[]
+          for line in lines[start+1:]:
+              if not line.startswith('          '):break
+              commands.append(line[10:])
+          assert 'python3 scripts/build_delta_sync.py' in commands
+          subprocess.run(['bash','-e','-o','pipefail','-c','\n'.join(commands)],check=True)
+          PY
+      - name: Install the matching pinned browser adapter
+        id: browser_adapter
+        run: python -m pip install --disable-pip-version-check playwright==1.62.0
+      - name: Verify restore and receive with Unicode and ASCII in fresh profiles
+        run: python tests/record_storage_real_sequence_ui.py --engine ${{ matrix.engine }} --out "${{ runner.temp }}/sentlog-real-sequence-${{ matrix.engine }}"
+      - name: Preserve synthetic sequence evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sentlog-real-sequence-${{ matrix.engine }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/sentlog-real-sequence-${{ matrix.engine }}/**/*.json
+            ${{ runner.temp }}/sentlog-real-sequence-${{ matrix.engine }}/**/*.log
+            ${{ runner.temp }}/sentlog-real-sequence-${{ matrix.engine }}/**/*.png
+          if-no-files-found: warn
+          retention-days: 14

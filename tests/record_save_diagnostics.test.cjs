@@ -4,7 +4,8 @@
 const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
 const {webcrypto}=require('node:crypto');
 const {IDBFactory,IDBKeyRange,IDBObjectStore}=require('fake-indexeddb');
-const code=fs.readFileSync(path.join(__dirname,'../sentlog/record-store.js'),'utf8');
+const ROOT=path.resolve(process.env.SENTLOG_STORAGE_SOURCE_ROOT||path.join(__dirname,'..'));
+const code=fs.readFileSync(path.join(ROOT,'sentlog/record-store.js'),'utf8');
 const WS='surveyFieldNoteWorkspaceV1',DRAW='surveyFieldNoteDrawingV1:',PREFIX='__sentlog_record__:';
 const META='__sentlog_records_meta_v130__',LOG='sentlog_delta_journal_v1',CONTROL='sentlog_delta_control_v1';
 const drawingId='private-synthetic-drawing',removedId='private-synthetic-removed';
@@ -133,7 +134,7 @@ test('warning UI keeps record-only rescue available after full backup fails and 
   const context={window:null,document:{head,body,createElement:tag=>new Element(tag),querySelector:s=>s==='#sentlogSettingsModal .modal-card'?modal:null,
     getElementById:id=>body.querySelector('#'+id)},SentlogRecords:store,navigator:{},addEventListener(){},
     exportSentlogBackup:async options=>{assert.equal(options.allowPending,true);backups++;throw Error('synthetic database open failure');}};
-  context.window=context;vm.createContext(context);vm.runInContext(fs.readFileSync(path.join(__dirname,'../sentlog/storage-ui.js'),'utf8'),context);
+  context.window=context;vm.createContext(context);vm.runInContext(fs.readFileSync(path.join(ROOT,'sentlog/storage-ui.js'),'utf8'),context);
   const warning=body.querySelector('#sentlogStorageWarning'),details=warning.querySelector('.failure-details');
   assert.equal(warning.hidden,true);assert.equal(details.hidden,true);assert.equal(details.open,false);
   store.failed=true;store.issues=[['records','QuotaExceededError']];store.recordFailureDetails={version:1,errorName:'QuotaExceededError',phase:'request',
@@ -155,6 +156,37 @@ test('warning UI keeps record-only rescue available after full backup fails and 
   assert.match(details.querySelector('.failure-stage').textContent,/個別書込みの完了後/);assert.match(details.querySelector('.failure-size').textContent,/測定できません/);
   details.open=true;store.failed=false;store.issues=[];store.recordFailureDetails=null;subscriber();
   assert.equal(warning.hidden,true);assert.equal(details.hidden,true);assert.equal(details.open,false);assert.equal(result.hidden,true);
+});
+test('after a connection close the rescue UI exports bounded historical diagnostics without opening storage or retrying',async()=>{
+  const head=new Element('head'),body=new Element('body'),modal=new Element('div'),backup=new Element('details');backup.id='sentlogBackupSection';modal.append(backup);body.append(modal);
+  const first={sequence:1,observedAt:'2026-01-01T00:00:00.000Z',kind:'record-save-failed',errorName:'QuotaExceededError',nativeMessageClass:'quota-mentioned',
+    detail:{version:1,errorName:'QuotaExceededError',phase:'commit',store:null,operation:null,requestedRecords:9,recordsToWrite:9,recordsToDelete:0,recordValueBytes:4098583}};
+  const history={version:1,scope:'current-page-memory',capacity:16,droppedEvents:0,firstRecordFailure:first,latestRecordFailure:first,
+    current:{connection:'unexpected-close',recordsFailed:true},events:[first,{sequence:2,observedAt:'2026-01-01T00:02:00.000Z',kind:'database-unexpected-close',reason:'not-reported'}]};
+  let subscriber,retries=0,backups=0,clicks=0,io=0,failDownload=false;const blobs=[],revoked=[];
+  const store={failed:true,pending:true,issues:[['records','Synthetic connection closed']],recordFailureDetails:null,
+    get recordFailureHistory(){return JSON.parse(JSON.stringify(history));},subscribe(fn){subscriber=fn;},retry(){retries++;}};
+  const context={window:null,document:{head,body,createElement:tag=>{const node=new Element(tag);if(tag==='a'){
+    node.click=()=>{if(failDownload)throw Error('/private/path/sensitive-download-error');clicks++;assert.equal(node.download,'sentlog-storage-failure-history.json');};
+    node.remove=()=>{if(node.parent)node.parent.children.splice(node.parent.children.indexOf(node),1);};}return node;},
+    querySelector:s=>s==='#sentlogSettingsModal .modal-card'?modal:null,getElementById:id=>body.querySelector('#'+id)},
+    SentlogRecords:store,navigator:{},Blob,URL:{createObjectURL:blob=>{blobs.push(blob);return 'blob:synthetic';},revokeObjectURL:url=>revoked.push(url)},
+    setTimeout:fn=>{fn();return 1;},addEventListener(){},exportSentlogBackup(){backups++;}};
+  for(const key of ['indexedDB','localStorage'])Object.defineProperty(context,key,{get(){io++;throw Error('History export must not access storage');}});
+  context.window=context;vm.createContext(context);vm.runInContext(fs.readFileSync(path.join(ROOT,'sentlog/storage-ui.js'),'utf8'),context);
+  const warning=body.querySelector('#sentlogStorageWarning'),area=warning.querySelector('.failure-history'),button=warning.querySelector('.failure-history-export');
+  assert(area&&button,'A close warning needs a separate historical export while current quota details are hidden');
+  assert.equal(warning.children.filter(node=>node.matches('.failure-details')).length,1,'The existing native rescue detail selector must stay unique');
+  assert.equal(warning.querySelector('.failure-details').hidden,true);assert.equal(area.hidden,false);
+  assert.match(area.textContent,/この画面/);assert.match(area.textContent,/記録本文/);assert.match(area.textContent,/控えではありません/);
+  await button.onclick();assert.equal(clicks,1);assert.equal(blobs.length,1);assert.equal(revoked.length,1);
+  assert.deepEqual(JSON.parse(await blobs[0].text()),history);assert.equal(button.disabled,false);
+  assert.equal(io,0);assert.equal(retries,0);assert.equal(backups,0);assert.equal(store.failed,true);assert.equal(store.pending,true);
+  assert.match(warning.querySelector('.failure-history-result').textContent,/保存を開始/);
+  failDownload=true;await button.onclick();assert.equal(button.disabled,false);assert.equal(revoked.length,2);
+  assert.match(warning.querySelector('.failure-history-result').textContent,/開始できません/);
+  assert(!warning.textContent.includes('/private/path'));assert.equal(io,0);assert.equal(retries,0);assert.equal(backups,0);
+  subscriber();assert.equal(warning.hidden,false);assert.equal(area.hidden,false);
 });
 (async()=>{for(const [name,run]of cases){await run();console.log('PASS '+name);}console.log(cases.length+' record save diagnostic cases passed');})()
   .catch(error=>{console.error(error);process.exitCode=1;});
