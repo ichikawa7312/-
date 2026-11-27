@@ -41,6 +41,7 @@ on:
       - 'tests/record_journal_read_budget.test.cjs'
       - 'tests/record_journal_claim_scope.test.cjs'
       - 'tests/record_retention_blob_handle.test.cjs'
+      - 'tests/record_retention_orphan_budget.test.cjs'
       - 'tests/startup_storage_maintenance.test.cjs'
       - 'tests/operation_memory_release.test.cjs'
   workflow_dispatch:

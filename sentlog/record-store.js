@@ -305,16 +305,231 @@
     return JSON.stringify([value.size,value.type,typeof value.name==='string'?value.name:null,
       Number.isFinite(value.lastModified)?value.lastModified:null]);
   }
-  function retainedFileImage(value){
+  const RETENTION_COPY_BYTES=8*1024*1024,RETENTION_METADATA_BYTES=8*1024*1024;
+  const retentionReceiptKey=seq=>'retention-receipt:'+seq;
+  // A WAL's file bytes are immutable. Normal edits append a new seq; archive
+  // release changes these image identities/receipts and the writer clock.
+  // Do not retain its large changes/contexts/workspace strings while copying.
+  function retentionPayload(row){return {version:row.version,kind:row.kind,id:row.id,seq:row.seq,at:row.at,
+    mutationKind:row.mutationKind,projectIds:row.projectIds,drawingIds:row.drawingIds,files:row.files};}
+  function retentionDescriptor(row){return archiveReleaseText(retentionPayload(row));}
+  function retentionCovered(binding,row){
+    if(!binding||binding.phase==='staging')return false;
+    if(binding.ackedSeq>=row.seq&&binding.lastProof?.kind==='durable-replay-proof')return true;
+    if(binding.cutoffSeq>=row.seq&&binding.baselineId&&binding.baselineProof)return true;
+    const certificate=binding.archive?.context?.deltaCheckpoint;
+    return binding.lastLocalArchiveSeq>=row.seq&&certificate?.schema===1&&certificate.projectId===binding.scope.projectId&&
+      typeof certificate.payloadSha256==='string'&&/^[0-9a-f]{64}$/.test(certificate.payloadSha256);
+  }
+  function retentionAuthority(controls,workspace){
+    const bound=new Map(controls.filter(x=>x?.kind==='binding').map(x=>[x.localProjectId,x])),
+      claimed=new Set(controls.filter(x=>x?.kind==='claim').flatMap(x=>x.rowIds)),owners=new Map();
+    for(const project of workspaceOf(workspace).projects)for(const drawing of project.drawings||[]){
+      if(!owners.has(drawing.id))owners.set(drawing.id,new Set());owners.get(drawing.id).add(project.id);
+    }
+    return {bound,owners,claimed,projects(row){
+      if(row.kind!=='sentlog-app-intent'||claimed.has(row.id))return null;
+      let projectIds=row.projectIds||[];
+      if(!projectIds.length){
+        if(!row.drawingIds?.length)return null;
+        projectIds=[...new Set(row.drawingIds.flatMap(id=>[...(owners.get(id)||[])]))];
+        if(!projectIds.length||!row.drawingIds.every(id=>[...(owners.get(id)||[])].some(pid=>
+          bound.get(pid)?.replayBaseline?.after?.project?.drawings?.some(d=>d.id===id))))return null;
+      }
+      return projectIds.every(id=>retentionCovered(bound.get(id),row))?projectIds:null;
+    }};
+  }
+  function deferredRetentionCandidate(row){return row?.version===1&&row.kind==='sentlog-app-intent'&&
+    Number.isSafeInteger(row.seq)&&row.seq>0&&typeof row.id==='string'&&Array.isArray(row.projectIds)&&!row.projectIds.length&&
+    Array.isArray(row.files)&&row.files.length>0&&Array.isArray(row.drawingIds)&&row.drawingIds.length>0;}
+  function verifiedRetentionCoverage(proof,row){
+    if(proof.ackedSeq>=row.seq&&maintenanceProof(proof.lastProof,proof.scope))return true;
+    const baseline=proof.baselineProof,hash=value=>typeof value==='string'&&/^[0-9a-f]{64}$/.test(value);
+    if(proof.cutoffSeq>=row.seq&&typeof baseline?.migrationId==='string'&&baseline.migrationId&&
+      (hash(baseline.sourceFingerprint)&&hash(baseline.planSha256)||baseline.localProjectId===proof.localProjectId&&hash(baseline.fingerprint)))return true;
+    const certificate=proof.archive?.context?.deltaCheckpoint;
+    return Number.isSafeInteger(proof.lastLocalArchiveSeq)&&proof.lastLocalArchiveSeq>=row.seq&&certificate?.schema===1&&
+      certificate.projectId===proof.scope.projectId&&Number.isSafeInteger(certificate.headSeq)&&certificate.headSeq>=0&&
+      Number.isSafeInteger(certificate.revision)&&certificate.revision>=1&&hash(certificate.payloadSha256);
+  }
+  function validRetentionReceipt(row,receipt,allowPartial=false){
+    if(!deferredRetentionCandidate(row)||receipt?.version!==1||receipt.kind!=='retention-receipt'||
+      receipt.seq!==row.seq||receipt.rowId!==row.id||typeof receipt.descriptor!=='string'||
+      receipt.descriptor.length*2>RETENTION_METADATA_BYTES||
+      receipt.descriptor!==retentionDescriptor(row)||!Array.isArray(receipt.resolvedProjectIds)||!receipt.resolvedProjectIds.length||
+      new Set(receipt.resolvedProjectIds).size!==receipt.resolvedProjectIds.length||!Array.isArray(receipt.proofs)||
+      receipt.proofs.length!==receipt.resolvedProjectIds.length)return false;
+    const proven=new Set();
+    for(const id of receipt.resolvedProjectIds){
+      const matches=receipt.proofs.filter(proof=>proof?.localProjectId===id),proof=matches[0];
+      if(typeof id!=='string'||!id||matches.length!==1||!proof||!scopeKeys.every(key=>typeof proof.scope?.[key]==='string'&&proof.scope[key].length>0)||
+        !['active','detached'].includes(proof.phase)||typeof proof.baselineId!=='string'||!proof.baselineId||
+        !Number.isSafeInteger(proof.ackedSeq)||!Number.isSafeInteger(proof.cutoffSeq)||proof.cutoffSeq<0||proof.ackedSeq<proof.cutoffSeq||
+        !Array.isArray(proof.drawingIds)||!proof.drawingIds.length||proof.drawingIds.some(drawingId=>!row.drawingIds.includes(drawingId))||
+        !verifiedRetentionCoverage(proof,row))return false;
+      proof.drawingIds.forEach(id=>proven.add(id));
+    }
+    return allowPartial?proven.size>0:row.drawingIds.every(id=>proven.has(id));
+  }
+  function makeRetentionReceipt(row,descriptor,projectIds,authority){
+    const proofs=projectIds.map(localProjectId=>{const binding=authority.bound.get(localProjectId);
+      return {localProjectId,scope:copy(binding.scope),phase:binding.phase,baselineId:binding.baselineId,
+        ackedSeq:binding.ackedSeq,cutoffSeq:binding.cutoffSeq,lastLocalArchiveSeq:binding.lastLocalArchiveSeq,
+        lastProof:copy(binding.lastProof),baselineProof:copy(binding.baselineProof),archive:copy(binding.archive),
+        drawingIds:row.drawingIds.filter(id=>authority.owners.get(id)?.has(localProjectId)&&
+          binding.replayBaseline?.after?.project?.drawings?.some(drawing=>drawing.id===id))};});
+    const receipt={version:1,kind:'retention-receipt',rowId:row.id,seq:row.seq,descriptor,resolvedProjectIds:[...projectIds],proofs};
+    if(!validRetentionReceipt(row,receipt))throw journalError('JOURNAL_RETENTION_PROOF','大きな保存控えの共有証明を確認できません。元の履歴を保持しています');
+    return receipt;
+  }
+  function readRetentionReceipt(tx,row,callback){
+    if(!deferredRetentionCandidate(row)){callback(false);return;}
+    tx.objectStore(CONTROL).get(retentionReceiptKey(row.seq)).onsuccess=e=>{try{callback(validRetentionReceipt(row,e.target.result));}
+      catch(error){tx.sentlogJournalError=error;tx.abort();}};
+  }
+  function persistClaimRetentionReceipts(tx,claim,binding,callback){
+    const control=tx.objectStore(CONTROL),log=tx.objectStore(JOURNAL),rows=new Map(),claimed=new Set(claim.rowIds),
+      owned=new Set([...(claim.before?.project?.drawings||[]),...(claim.after?.project?.drawings||[])].map(drawing=>drawing.id));
+    let metadataBytes=0;
+    for(const ref of claim.fileReferences||[]){
+      if(!ref||!Number.isSafeInteger(ref.seq)||ref.seq<1||ref.seq>claim.throughSeq||!claimed.has(ref.rowId)||
+        !Number.isSafeInteger(ref.index)||ref.index<0||typeof ref.key!=='string')throw journalError('JOURNAL_CLAIM','写真・PDFの共有対象を確認できません');
+      if(!rows.has(ref.seq))rows.set(ref.seq,[]);rows.get(ref.seq).push(ref);
+    }
+    const iterator=rows.entries();
+    const next=()=>{const item=iterator.next();if(item.done){callback();return;}
+      const [seq,refs]=item.value;
+      log.get(seq).onsuccess=e=>{try{
+        const row=e.target.result;
+        if(!row||row.kind!=='sentlog-app-intent'||row.seq!==seq||!claimed.has(row.id)||
+          refs.some(ref=>ref.rowId!==row.id||row.files?.[ref.index]?.key!==ref.key)||
+          new Set(refs.map(ref=>ref.index)).size!==refs.length||refs.length!==row.files?.length)
+          throw journalError('JOURNAL_CLAIM','共有するファイル控えが変更されました。元の履歴を保持しています');
+        if(!deferredRetentionCandidate(row)){next();return;}
+        const drawingIds=row.drawingIds.filter(id=>owned.has(id));
+        if(!drawingIds.length)throw journalError('JOURNAL_CLAIM','共有した図面とファイル控えの所属が一致しません');
+        const descriptor=retentionDescriptor(row);
+        if(descriptor.length*2>RETENTION_METADATA_BYTES)throw journalError('JOURNAL_RETENTION_LIMIT','共有証明の作業量を超えました。元の履歴と共有待ちを保持しています');
+        control.get(retentionReceiptKey(seq)).onsuccess=event=>{try{
+          const previous=event.target.result,proofs=validRetentionReceipt(row,previous,true)?
+            previous.proofs.filter(proof=>proof.localProjectId!==binding.localProjectId):[];
+          proofs.push({localProjectId:binding.localProjectId,scope:copy(binding.scope),phase:binding.phase,
+            baselineId:binding.baselineId,ackedSeq:binding.ackedSeq,cutoffSeq:binding.cutoffSeq,lastProof:copy(binding.lastProof),drawingIds});
+          const receipt={version:1,kind:'retention-receipt',rowId:row.id,seq,descriptor,
+            resolvedProjectIds:proofs.map(proof=>proof.localProjectId),proofs};
+          if(!validRetentionReceipt(row,receipt,true))throw journalError('JOURNAL_RETENTION_PROOF','共有済みのファイル控えの証明を確認できません');
+          metadataBytes+=archiveReleaseText(receipt).length*2;
+          if(metadataBytes>RETENTION_METADATA_BYTES)throw journalError('JOURNAL_RETENTION_LIMIT','共有証明の作業量を超えました。元の履歴と共有待ちを保持しています');
+          control.put(receipt,retentionReceiptKey(seq));next();
+        }catch(error){tx.sentlogJournalError=error;tx.abort();}};
+      }catch(error){tx.sentlogJournalError=error;tx.abort();}};
+    };
+    next();
+  }
+  function readRetentionState(tx,callback){
+    const control=tx.objectStore(CONTROL),files=tx.objectStore(STORE),state={controls:[],workspace:null,meta:null,clock:0,start:0};let waiting=5;
+    const ready=()=>{if(--waiting)return;try{callback(state);}catch(error){tx.sentlogJournalError=error;tx.abort();}};
+    journalControls(control,'retention').onsuccess=e=>{state.controls=e.target.result;ready();};
+    files.get(PREFIX+WS).onsuccess=e=>{state.workspace=e.target.result??null;ready();};
+    files.get(META).onsuccess=e=>{state.meta=e.target.result;ready();};
+    control.get('clock').onsuccess=e=>{state.clock=e.target.result===undefined?0:e.target.result;ready();};
+    control.get('compactCursor').onsuccess=e=>{state.start=Number(e.target.result)||0;ready();};
+  }
+  async function copyRetainedImage(value,context){
     if(!(value instanceof Blob))return value;
-    // Do not re-put the database-backed Blob handle when trimming a WAL row.
-    // Keep this synchronous: the original row and its replacement must commit
-    // together, with identical bytes and all File identity fields preserved.
+    const parts=[];
+    for(let offset=0;offset<value.size;offset+=FILE_CHUNK_BYTES){
+      const end=Math.min(value.size,offset+FILE_CHUNK_BYTES);let bytes,timer;
+      if(Date.now()>context.deadline)throw journalError('JOURNAL_RETENTION_LIMIT','控えの読取りに時間がかかっています。元の履歴を保持しています');
+      try{
+        const reading=value.slice(offset,end).arrayBuffer();
+        bytes=typeof setTimeout==='function'&&typeof clearTimeout==='function'?await Promise.race([reading,new Promise((_,reject)=>{
+          timer=setTimeout(()=>reject(journalError('JOURNAL_RETENTION_LIMIT','控えの読取りを完了できません。元の履歴を保持しています')),Math.max(1,context.deadline-Date.now()));
+        })]):await reading;
+      }finally{if(timer!==undefined)clearTimeout(timer);}
+      if(Object.prototype.toString.call(bytes)!=='[object ArrayBuffer]'||bytes.byteLength!==end-offset)
+        throw journalError('JOURNAL_RETENTION_BYTES','写真・PDFの控えを最後まで読み取れません。元の履歴を保持しています');
+      context.copiedBytes+=bytes.byteLength;
+      if(context.copiedBytes>RETENTION_COPY_BYTES)throw journalError('JOURNAL_RETENTION_LIMIT','今回の控えの作業量を超えました。元の履歴を保持しています');
+      parts.push(new Blob([bytes]));
+    }
     const next=typeof File==='function'&&typeof value.name==='string'?
-      new File([value],value.name,{type:value.type,lastModified:value.lastModified}):new Blob([value],{type:value.type});
+      new File(parts,value.name,{type:value.type,lastModified:value.lastModified}):new Blob(parts,{type:value.type});
+    parts.length=0;
     if(fileIdentity(next)!==fileIdentity(value))
       throw journalError('JOURNAL_RETENTION_BLOB','写真・PDFの控えの情報を保持できません。元の履歴を残して整理を停止しました');
     return next;
+  }
+  async function prepareRetention(limit,scanLimit){
+    const tx=transaction('readonly'),done=complete(tx);let plan;
+    readRetentionState(tx,state=>{
+      if(!Number.isSafeInteger(state.clock)||state.clock<0||!Number.isSafeInteger(state.start)||state.start<0||
+        !Number.isSafeInteger(Number(state.meta?.revision)))throw journalError('JOURNAL_RETENTION_CHANGED','保存控えの世代を確認できません');
+      plan={...state,entries:new Map(),scanned:0,end:state.start,atEnd:false,selected:0,plannedBytes:0,metadataBytes:0,skippedLarge:0};
+      const authority=retentionAuthority(state.controls,state.workspace),log=tx.objectStore(JOURNAL),control=tx.objectStore(CONTROL);
+      const request=log.openCursor(state.start?IDBKeyRange.lowerBound(state.start,true):undefined);
+      request.onsuccess=()=>{try{
+        const item=request.result;if(!item){plan.atEnd=true;return;}
+        const row=item.value;
+        if(!Number.isSafeInteger(item.key)||item.key<1||row.seq!==item.key)throw journalError('JOURNAL_SEQUENCE','保存控えの順序を確認できません');
+        const advance=()=>{plan.scanned++;plan.end=item.key;if(plan.scanned<scanLimit&&plan.selected<limit)item.continue();};
+        if(row.kind!=='sentlog-app-intent'){advance();return;}
+        if(!row.files.length){if(authority.projects(row))plan.selected++;advance();return;}
+        control.get(retentionReceiptKey(row.seq)).onsuccess=e=>{try{
+          const previous=e.target.result,valid=validRetentionReceipt(row,previous),
+            projects=authority.projects(row)||valid&&!authority.claimed.has(row.id)&&previous.resolvedProjectIds;
+          if(!projects){advance();return;}
+          const descriptor=retentionDescriptor(row),receiptText=archiveReleaseText(previous),
+            descriptorBytes=(descriptor.length+(receiptText?.length||0))*2;
+          if(descriptorBytes>RETENTION_METADATA_BYTES){
+            if(deferredRetentionCandidate(row)&&!valid)throw journalError('JOURNAL_RETENTION_LIMIT','大きな控えの情報を一度に処理できません。元の履歴を保持しています');
+            plan.skippedLarge++;advance();return;
+          }
+          if(descriptorBytes>RETENTION_METADATA_BYTES-plan.metadataBytes)return;
+          let cost=0;
+          for(const file of row.files)for(const side of ['before','after']){
+            const image=file[side];if(image===null)continue;
+            if(!(image instanceof Blob)||!Number.isSafeInteger(image.size)||image.size<0)
+              throw journalError('JOURNAL_RETENTION_BLOB','写真・PDFの控えの保存形式を確認できません');
+            cost+=image.size;
+          }
+          if(!Number.isSafeInteger(cost))throw journalError('JOURNAL_RETENTION_LIMIT','控えの大きさを確認できません');
+          const entry={seq:row.seq,descriptor,receiptText,projects:[...projects],priorCovered:valid};
+          if(cost>RETENTION_COPY_BYTES-plan.plannedBytes){
+            plan.skippedLarge++;
+            if(deferredRetentionCandidate(row)&&!valid){
+              entry.receipt=makeRetentionReceipt(row,descriptor,projects,authority);
+              const size=archiveReleaseText(entry.receipt).length*2;
+              if(descriptorBytes+size>RETENTION_METADATA_BYTES)throw journalError('JOURNAL_RETENTION_LIMIT','控えの共有証明が大きいため、元の履歴を保持しています');
+              if(descriptorBytes+size>RETENTION_METADATA_BYTES-plan.metadataBytes)return;
+              plan.metadataBytes+=descriptorBytes+size;plan.entries.set(row.seq,entry);plan.selected++;
+            }
+          }else{
+            const evidence=valid?previous.proofs:projects.map(id=>authority.bound.get(id));
+            entry.proofs=evidence.map(binding=>({localProjectId:binding.localProjectId,scope:copy(binding.scope),
+              proof:copy(binding.lastProof||binding.baselineProof||binding.archive.context.deltaCheckpoint)}));
+            const size=descriptorBytes+archiveReleaseText(entry.proofs).length*2;
+            if(size>RETENTION_METADATA_BYTES){
+              if(deferredRetentionCandidate(row)&&!valid)throw journalError('JOURNAL_RETENTION_LIMIT','控えの情報が大きいため、元の履歴を保持しています');
+              plan.skippedLarge++;advance();return;
+            }
+            if(size>RETENTION_METADATA_BYTES-plan.metadataBytes)return;
+            entry.source=retentionPayload(row);plan.entries.set(row.seq,entry);plan.selected++;
+            plan.metadataBytes+=size;plan.plannedBytes+=cost;
+          }
+          advance();
+        }catch(error){tx.sentlogJournalError=error;tx.abort();}};
+      }catch(error){tx.sentlogJournalError=error;tx.abort();}};
+    });
+    await done;
+    const context={copiedBytes:0,deadline:Date.now()+FILE_COMPARE_MS};
+    for(const entry of plan.entries.values())if(entry.source){
+      const files=[];
+      for(const file of entry.source.files)files.push({...file,before:await copyRetainedImage(file.before,context),after:await copyRetainedImage(file.after,context)});
+      entry.retained={...entry.source,kind:'sentlog-file-retention',resolvedProjectIds:entry.projects,files,proofs:entry.proofs};
+      delete entry.source;
+    }
+    plan.copiedBytes=context.copiedBytes;return plan;
   }
   async function recordBlobHash(blob){
     if(window.SentlogBlobSha256?.digest)return window.SentlogBlobSha256.digest(blob,{crypto});
@@ -507,7 +722,18 @@
       operation:typeof options.operation==='string'?options.operation:'edit',
       ...(options.context&&typeof options.context==='object'?{context:copy(options.context)}:{})};
   }
-  function journalRows(store){return store.indexNames.contains('kind')?store.index('kind').getAll('sentlog-app-intent'):store.getAll();}
+  function journalRows(store){
+    const result={result:[],onsuccess:null},request=store.indexNames.contains('kind')?store.index('kind').getAll('sentlog-app-intent'):store.getAll();
+    request.onsuccess=()=>{try{
+      const rows=request.result,kept=new Array(rows.length);let waiting=rows.length;
+      if(!waiting){result.onsuccess?.({target:result});return;}
+      rows.forEach((row,index)=>readRetentionReceipt(store.transaction,row,covered=>{
+        if(!covered)kept[index]=row;
+        if(!--waiting){result.result=kept.filter(row=>row!==undefined);result.onsuccess?.({target:result});}
+      }));
+    }catch(error){store.transaction.sentlogJournalError=error;store.transaction.abort();}};
+    return result;
+  }
   function journalControls(store,mode='full'){
     if(mode==='full')return store.indexNames.contains('kind')?
       store.index('kind').getAll(IDBKeyRange.bound('binding','claim')):store.getAll();
@@ -716,9 +942,11 @@
       const row=item.value;
       if(row?.kind==='sentlog-app-intent'){
         if(row.seq!==(indexed?item.primaryKey:item.key))throw journalError('JOURNAL_SEQUENCE','共有履歴の保存順序が一致しません');
-        if(visit(row)===false){completeScan();return;}
-      }
-      item.continue();
+        readRetentionReceipt(tx,row,covered=>{
+          if(!covered&&visit(row)===false){completeScan();return;}
+          item.continue();
+        });
+      }else item.continue();
     }catch(error){tx.sentlogJournalError=error;tx.abort();}};
   }
   function collectClaimJournal(tx,localProjectId,scope,callback){
@@ -812,7 +1040,7 @@
     return await recordBlobHash(blob)===file.sha256;
   }
   function archiveReleaseSnapshot(tx,keys,callback,recordKeys=[]){
-    const data={rows:[],binding:null,cutoffRows:new Map(),claim:null,clock:0,meta:null,workspace:null,files:new Map(),raw:new Map(),recordKeys:new Set()},s=tx.objectStore(STORE),c=tx.objectStore(CONTROL);
+    const data={rows:[],coveredRetentions:new Set(),binding:null,cutoffRows:new Map(),claim:null,clock:0,meta:null,workspace:null,files:new Map(),raw:new Map(),recordKeys:new Set()},s=tx.objectStore(STORE),c=tx.objectStore(CONTROL);
     let waiting=7+keys.length+recordKeys.length;
     const next=()=>{if(--waiting)return;try{callback(data);}catch(error){tx.sentlogJournalError=error;tx.abort();}};
     s.get(META).onsuccess=e=>{data.meta=e.target.result;next();};
@@ -823,7 +1051,10 @@
       for(const file of refs)c.get(file.valueRef).onsuccess=event=>{data.cutoffRows.set(file.valueRef,event.target.result);next();};next();
     };
     c.get('claim:'+tx.sentlogArchiveProject).onsuccess=e=>{data.claim=e.target.result;next();};
-    tx.objectStore(JOURNAL).getAll().onsuccess=e=>{data.rows=e.target.result;next();};
+    tx.objectStore(JOURNAL).getAll().onsuccess=e=>{
+      data.rows=e.target.result;waiting+=data.rows.length;
+      for(const row of data.rows)readRetentionReceipt(tx,row,covered=>{if(covered)data.coveredRetentions.add(row.seq);next();});next();
+    };
     s.getAllKeys(IDBKeyRange.bound(PREFIX,PREFIX+'\uffff')).onsuccess=e=>{data.recordKeys=new Set(e.target.result.map(key=>key.slice(PREFIX.length)));next();};
     for(const key of keys)s.get(key).onsuccess=e=>{data.files.set(key,e.target.result);next();};
     for(const key of recordKeys)s.get(PREFIX+key).onsuccess=e=>{data.raw.set(key,e.target.result??null);next();};
@@ -911,7 +1142,7 @@
         throw journalError('JOURNAL_ARCHIVE_CHANGED','確認中に保存控えが更新されました');
       if(plan.cutoffRows.some(row=>archiveReleaseText(data.cutoffRows.get(row.id))!==row.text))
         throw journalError('JOURNAL_ARCHIVE_CHANGED','確認中に移行前の保護ファイルが更新されました');
-      for(const row of plan.rows)tx.objectStore(JOURNAL).put(row.next,row.seq);
+      for(const row of plan.rows){tx.objectStore(JOURNAL).put(row.next,row.seq);tx.objectStore(CONTROL).delete(retentionReceiptKey(row.seq));}
       for(const row of plan.cutoffRows)tx.objectStore(CONTROL).put(row.next,row.id);
       tx.objectStore(CONTROL).put(plan.nextBinding,'binding:'+plan.localProjectId);
       tx.sentlogArchiveRelease=plan;callback();
@@ -930,7 +1161,7 @@
   }
   function restorationPending(data,binding){
     const owners=new Set(workspaceOf(data.workspace).projects.flatMap(p=>(p.drawings||[]).map(d=>d.id)));
-    return data.rows.filter(row=>row.kind==='sentlog-app-intent'&&(
+    return data.rows.filter(row=>row.kind==='sentlog-app-intent'&&!data.coveredRetentions.has(row.seq)&&(
       row.seq>Math.max(binding.cutoffSeq,binding.lastLocalArchiveSeq||0)&&!(row.projectIds||[]).length&&
         (row.drawingIds||[]).some(id=>!owners.has(id)&&(data.recordKeys.has(DRAW+id)||row.files?.length))||
       row.seq>binding.ackedSeq&&(row.projectIds||[]).includes(binding.localProjectId)));
@@ -1500,7 +1731,12 @@
       collectProjectRecords(tx,localProjectId,[],data=>{const binding=bindingIn(data,localProjectId,scope),claim=data.controls.find(x=>x?.kind==='claim'&&x.localProjectId===localProjectId);
         if(!claim||claim.id!==claimId||!sameScope(claim.scope,scope))throw journalError('JOURNAL_CLAIM','保存を確認する操作が変わっています');
         result={...binding,ackedSeq:claim.throughSeq,lastProof:copy(proof),replayBaseline:{before:copy(claim.after),after:copy(verified.projection)}};
-        tx.objectStore(CONTROL).put(result,'binding:'+localProjectId);tx.objectStore(CONTROL).delete('claim:'+localProjectId);
+        // Ownership evidence must commit with ACK, even if optional cleanup is
+        // busy or fails. Later drawing deletion cannot turn this same covered
+        // orphan file back into a permanently unclaimable pending operation.
+        persistClaimRetentionReceipts(tx,claim,result,()=>{
+          tx.objectStore(CONTROL).put(result,'binding:'+localProjectId);tx.objectStore(CONTROL).delete('claim:'+localProjectId);
+        });
       });await done;bindings.set(localProjectId,result);replayProofs.delete(proof);notify();
       // Cleanup is another bounded transaction. A failed cleanup cannot undo a
       // verified ACK; its immutable rows remain available for the next pass.
@@ -1570,49 +1806,55 @@
     async compact({limit=256,scanLimit=1024}={}){
       assertReady(true);if(!Number.isSafeInteger(limit)||limit<1||limit>1024||!Number.isSafeInteger(scanLimit)||scanLimit<limit||scanLimit>8192)
         throw journalError('JOURNAL_COMPACT','履歴整理の件数が不正です');
-      await connect();const tx=transaction('readwrite'),done=complete(tx),control=tx.objectStore(CONTROL),log=tx.objectStore(JOURNAL);
-      let all=[],workspace=null,start=0,waiting=3;const result={scanned:0,removed:0,retainedFiles:0};
-      function ready(){if(--waiting)return;try{
-        const bound=new Map(all.filter(x=>x?.kind==='binding').map(x=>[x.localProjectId,x])),claimed=new Set(all.filter(x=>x?.kind==='claim').flatMap(x=>x.rowIds));
-        const owners=new Map();for(const project of workspaceOf(workspace).projects)for(const drawing of project.drawings||[]){
-          if(!owners.has(drawing.id))owners.set(drawing.id,new Set());owners.get(drawing.id).add(project.id);}
-        function covered(binding,row){
-          if(!binding||binding.phase==='staging')return false;
-          if(binding.ackedSeq>=row.seq&&binding.lastProof?.kind==='durable-replay-proof')return true;
-          if(binding.cutoffSeq>=row.seq&&binding.baselineId&&binding.baselineProof)return true;
-          const certificate=binding.archive?.context?.deltaCheckpoint;
-          return binding.lastLocalArchiveSeq>=row.seq&&certificate?.schema===1&&certificate.projectId===binding.scope.projectId&&
-            typeof certificate.payloadSha256==='string'&&/^[0-9a-f]{64}$/.test(certificate.payloadSha256);
-        }
-        const q=log.openCursor(start?IDBKeyRange.lowerBound(start,true):undefined);q.onsuccess=()=>{try{
-          const cursor=q.result;if(!cursor){control.put(0,'compactCursor');return;}
-          const row=cursor.value;result.scanned++;let projectIds=row.projectIds||[],eligible=row.kind==='sentlog-app-intent'&&!claimed.has(row.id);
-          if(eligible&&!projectIds.length){
-            if(!row.drawingIds?.length)eligible=false;
-            else{
-              projectIds=[...new Set(row.drawingIds.flatMap(id=>[...(owners.get(id)||[])]))];
-              eligible=projectIds.length>0&&row.drawingIds.every(id=>[...(owners.get(id)||[])].some(pid=>
-                bound.get(pid)?.replayBaseline?.after?.project?.drawings?.some(d=>d.id===id)));
-            }
+      if(journalMaintenance)throw journalError('JOURNAL_MAINTENANCE_BUSY','別の履歴整理が進行しています');
+      journalMaintenance=true;
+      try{
+        maintenanceCheck({});await connect();const plan=await prepareRetention(limit,scanLimit);
+        maintenanceCheck({});
+        const tx=transaction('readwrite'),done=complete(tx),control=tx.objectStore(CONTROL),log=tx.objectStore(JOURNAL),
+          result={scanned:0,removed:0,retainedFiles:0,copiedBytes:plan.copiedBytes,metadataBytes:plan.metadataBytes,skippedLarge:plan.skippedLarge,deferredReceipts:0};
+        readRetentionState(tx,current=>{
+          maintenanceCheck({});
+          if(current.clock!==plan.clock||current.start!==plan.start||current.workspace!==plan.workspace||
+            archiveReleaseText(current.meta)!==archiveReleaseText(plan.meta)||archiveReleaseText(current.controls)!==archiveReleaseText(plan.controls))
+            throw journalError('JOURNAL_RETENTION_CHANGED','控えの読取り中に保存・共有状態が変わりました。元の履歴を保持しています');
+          const authority=retentionAuthority(current.controls,current.workspace);let waiting=plan.entries.size*2;
+          const scan=()=>{
+            if(!plan.scanned){if(plan.atEnd)control.put(0,'compactCursor');return;}
+            const request=log.openCursor(IDBKeyRange.bound(plan.start,plan.end,true,false));
+            request.onsuccess=()=>{try{
+              const item=request.result;
+              if(!item){control.put(plan.atEnd?0:plan.end,'compactCursor');return;}
+              const row=item.value,entry=plan.entries.get(item.key);result.scanned++;
+              if(entry){
+                const projects=authority.projects(row)||entry.priorCovered&&!authority.claimed.has(row.id)&&entry.projects;
+                if(!projects||archiveReleaseText(projects)!==archiveReleaseText(entry.projects)||retentionDescriptor(row)!==entry.descriptor)
+                  throw journalError('JOURNAL_RETENTION_CHANGED','整理する控えと共有証明が変わりました。元の履歴を保持しています');
+                if(entry.retained){item.update(entry.retained);control.delete(retentionReceiptKey(row.seq));result.retainedFiles++;}
+                else if(entry.receipt){control.put(entry.receipt,retentionReceiptKey(row.seq));result.deferredReceipts++;}
+              }else if(row.kind==='sentlog-app-intent'&&!row.files.length&&authority.projects(row)){
+                item.delete();control.delete(retentionReceiptKey(row.seq));result.removed++;
+              }
+              item.continue();
+            }catch(error){tx.sentlogJournalError=error;tx.abort();}};
+          };
+          const checked=()=>{if(!--waiting)scan();};
+          if(!waiting){scan();return;}
+          for(const entry of plan.entries.values()){
+            log.get(entry.seq).onsuccess=e=>{try{
+              if(!e.target.result||retentionDescriptor(e.target.result)!==entry.descriptor)
+                throw journalError('JOURNAL_RETENTION_CHANGED','整理する元の控えが変更されました。元の履歴を保持しています');
+              checked();
+            }catch(error){tx.sentlogJournalError=error;tx.abort();}};
+            control.get(retentionReceiptKey(entry.seq)).onsuccess=e=>{try{
+              if(archiveReleaseText(e.target.result)!==entry.receiptText)
+                throw journalError('JOURNAL_RETENTION_CHANGED','控えの共有証明が変更されました。元の履歴を保持しています');
+              checked();
+            }catch(error){tx.sentlogJournalError=error;tx.abort();}};
           }
-          if(eligible)eligible=projectIds.every(id=>covered(bound.get(id),row));
-          if(eligible){
-            if(row.files.length){
-              const retained={version:row.version,kind:'sentlog-file-retention',id:row.id,seq:row.seq,at:row.at,mutationKind:row.mutationKind,
-                projectIds:row.projectIds,drawingIds:row.drawingIds,resolvedProjectIds:projectIds,
-                files:row.files.map(file=>({...file,before:retainedFileImage(file.before),after:retainedFileImage(file.after)})),
-                proofs:projectIds.map(id=>({localProjectId:id,scope:bound.get(id).scope,proof:bound.get(id).lastProof||bound.get(id).baselineProof||bound.get(id).archive.context.deltaCheckpoint}))};
-              cursor.update(retained);result.retainedFiles++;
-            }else{cursor.delete();result.removed++;}
-          }
-          if(result.removed+result.retainedFiles>=limit||result.scanned>=scanLimit){control.put(row.seq,'compactCursor');return;}
-          cursor.continue();
-        }catch(error){tx.sentlogJournalError=error;tx.abort();}};
-      }catch(error){tx.sentlogJournalError=error;tx.abort();}}
-      journalControls(control,'retention').onsuccess=e=>{all=e.target.result;ready();};
-      tx.objectStore(STORE).get(PREFIX+WS).onsuccess=e=>{workspace=e.target.result??null;ready();};
-      control.get('compactCursor').onsuccess=e=>{start=Number(e.target.result)||0;ready();};
-      await done;return result;
+        });
+        await done;return result;
+      }finally{journalMaintenance=false;}
     },
     async applyProjection({scope:inputScope,localProjectId,writes,expectedRecords,metadataRecords={},validate}={}){
       assertReady();
@@ -2154,7 +2396,7 @@
           [...plan.fileKeys].some(key=>current.states.get(key)!==data.states.get(key)||fileIdentity(current.files.get(key))!==fileIdentity(data.files.get(key))))
           throw journalError('JOURNAL_MAINTENANCE_CHANGED','照合中に保存内容・共有待ち・PDFの世代が変わりました。控えを保持して停止しました');
         if(options.dryRun)return;
-        if(kind==='files')for(const entry of plan.entries)commit.objectStore(JOURNAL).delete(entry.key);
+        if(kind==='files')for(const entry of plan.entries){commit.objectStore(JOURNAL).delete(entry.key);commit.objectStore(CONTROL).delete(retentionReceiptKey(entry.key));}
         else{
           const sequence=data.clock+1;if(!Number.isSafeInteger(sequence))throw journalError('JOURNAL_MAINTENANCE_SCHEMA','ファイルの保存世代を確認できません');
           for(const key of plan.deletes){commit.objectStore(STORE).delete(key);commit.objectStore(CONTROL).put(sequence,'file:'+key);}

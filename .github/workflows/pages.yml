@@ -300,6 +300,7 @@ jobs:
           node tests/record_maintenance_init.test.cjs
           node tests/record_journal_read_budget.test.cjs
           node tests/record_journal_claim_scope.test.cjs
+          node tests/record_retention_orphan_budget.test.cjs
           node tests/startup_storage_maintenance.test.cjs
           node tests/operation_memory_release.test.cjs
           node tests/capacity_maintenance_release.test.cjs

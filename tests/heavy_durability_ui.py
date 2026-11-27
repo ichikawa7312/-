@@ -239,33 +239,50 @@ def lifecycle(page, report, cycles, save_report):
     page.evaluate(PDF_TRACE)
     page.evaluate(RESOURCE_TRACE)
     measurements = []
+    report['drawingCycles'] = measurements
+
+    def phase(name, cycle, pdf_page):
+        detail = {'cycle': cycle, 'pdfPage': pdf_page, 'phase': name, 'atUnix': round(time.time(), 3)}
+        report['activeDrawingPhase'] = detail
+        report.setdefault('drawingPhaseEvents', []).append(detail)
+        save_report()
+        print('HEAVY_DURABILITY phase '+json.dumps(detail), flush=True)
+
     for index in range(cycles):
         page_number = (index * 7) % 24 + 1
         started = time.perf_counter()
+        phase('pdf-open', index+1, page_number)
         select_record(page, PDF_ID, page_number)
         page.wait_for_function('drawingTrace.activeRenders===0')
         actual = page.evaluate("""()=>({page:state.currentPage,
           pixel:[...ctx.getImageData(Math.floor(canvas.width*.98),Math.floor(canvas.height*.98),1,1).data]})""")
         assert actual['page'] == page_number
         assert all(abs(a-b) <= 1 for a, b in zip(actual['pixel'], [*COLORS[(page_number-1) % len(COLORS)], 255])), actual
+        phase('pdf-zoom', index+1, page_number)
         page.evaluate('scale=2;tx=-120;ty=-90;applyTransform()')
         page.wait_for_function("document.querySelector('.sentlog-pdf-detail')&&drawingTrace.activeRenders===0")
+        phase('pdf-camera-open-rotate-close', index+1, page_number)
         camera_rotations(page, background=index % 5 == 0)
         expected_record = 'survey-a' if page_number == 1 else f'survey-page-{page_number}'
         assert page.evaluate('({id:activeDrawingId,page:state.currentPage,selected,view:currentView})') == {
             'id': PDF_ID, 'page': page_number, 'selected': expected_record, 'view': 'editor'}
+        phase('pdf-release', index+1, page_number)
         page.evaluate("showDrawings('memo-project')")
         page.wait_for_function('drawingTrace.documents.every(d=>d.released&&d.destroyCalls===1)')
 
+        phase('image-open', index+1, page_number)
         select_record(page, IMAGE_ID)
         page.wait_for_function("document.getElementById('stageWrap').dataset.imageViewport==='true'&&document.querySelector('.sentlog-image-detail')")
         source = page.evaluate("({width:state.width,height:state.height,pixels:Number(document.getElementById('stageWrap').dataset.imageSourcePixels)})")
         assert source['width'] == 4096 and source['height'] == 3072 and 0 < source['pixels'] <= 4000000, source
+        phase('image-zoom', index+1, page_number)
         page.evaluate('scale=2.4;tx=-200;ty=-120;applyTransform()')
         settle(page)
+        phase('image-camera-open-rotate-close', index+1, page_number)
         camera_rotations(page)
         assert page.evaluate('({id:activeDrawingId,selected,view:currentView})') == {
             'id': IMAGE_ID, 'selected': 'survey-a', 'view': 'editor'}
+        phase('image-release', index+1, page_number)
         page.evaluate('showProjects()')
         settle(page, 60)
         resources = page.evaluate('heavyResources.snapshot()')
@@ -274,6 +291,7 @@ def lifecycle(page, report, cycles, save_report):
         assert resources['urls'] <= 1 and resources['attachedCanvasPixels'] <= 100000, resources
         measurements.append({'cycle': index+1, 'pdfPage': page_number,
                              'elapsedMs': round((time.perf_counter()-started)*1000, 2), 'released': resources})
+        phase('cycle-complete', index+1, page_number)
         if (index+1) % 5 == 0 or index+1 == cycles:
             report['drawingCycles'] = measurements
             save_report()
@@ -438,6 +456,16 @@ def main():
     page = None
     errors = []
     save_report()
+
+    def browser_event(kind):
+        detail = {'event': kind, 'atUnix': round(time.time(), 3), 'stage': report.get('stage'),
+                  'drawingPhase': report.get('activeDrawingPhase'),
+                  'faultBoundary': report.get('activeFaultBoundary'),
+                  'closeRequested': report.get('contextCloseRequested')}
+        report.setdefault('browserEvents', []).append(detail)
+        save_report()
+        print('HEAVY_DURABILITY browser '+json.dumps(detail), flush=True)
+
     try:
         with tempfile.TemporaryDirectory(prefix='sentlog-heavy-durability-') as profile, sync_playwright() as playwright:
             def route(request):
@@ -451,10 +479,14 @@ def main():
                     request.abort()
 
             def launch():
+                report['contextCloseRequested'] = None
                 browser_context = getattr(playwright, args.engine).launch_persistent_context(
                     profile, headless=True, viewport={'width': 390, 'height': 844}, has_touch=True,
                     is_mobile=True, device_scale_factor=2, service_workers='block')
                 browser_context.route('**/*', route)
+                browser_context.on('close', lambda *_args: browser_event('context-close'))
+                if browser_context.browser:
+                    browser_context.browser.on('disconnected', lambda *_args: browser_event('browser-disconnected'))
                 return browser_context
 
             context = launch()
@@ -462,6 +494,8 @@ def main():
             def new_page(browser_context):
                 current = browser_context.pages[0] if browser_context.pages else browser_context.new_page()
                 current.on('pageerror', lambda error: errors.append(str(error)))
+                current.on('crash', lambda *_args: browser_event('page-crash'))
+                current.on('close', lambda *_args: browser_event('page-close'))
                 current.goto(origin+'/sentlog/', wait_until='domcontentloaded')
                 current.wait_for_function('window.sentlogAppReady&&window.SentlogContinuousCamera&&window.SentlogCollaborationPhotos', timeout=45000)
                 current.evaluate("pdfjsLib.GlobalWorkerOptions.workerSrc='./vendor/export-pdf.worker.min.js'")
@@ -476,6 +510,7 @@ def main():
                 report.setdefault('restartEvidence', []).append({
                     'boundary': report.get('activeFaultBoundary'), 'openPageUrls': [p.url for p in live]})
                 assert live == [previous], 'Only the intended application page may own this profile'
+                report['contextCloseRequested'] = 'transaction-recovery-restart'
                 context.close()
                 assert previous.is_closed(), 'The previous application must be gone before recovery'
                 context = launch()
@@ -490,6 +525,14 @@ def main():
                 report['fixtures'] = {'pdfPages': 24, 'vectorSegmentsPerPage': 2000, 'pdfBytes': len(pdf),
                                       'imageWidth': 4096, 'imageHeight': 3072, 'imageBytes': len(large_image),
                                       'backgroundHashes': hashes}
+                # Preserve the exact synthetic input: the noise raster varies
+                # between runs, so a hash alone cannot reproduce a decode crash.
+                fixture_pdf = Path(f'/tmp/sentlog-heavy-durability-{args.engine}-fixture.pdf')
+                fixture_image = Path(f'/tmp/sentlog-heavy-durability-{args.engine}-fixture.jpg')
+                fixture_pdf.write_bytes(pdf)
+                fixture_image.write_bytes(large_image)
+                report['fixtures']['artifactFiles'] = {'pdf': fixture_pdf.name, 'image': fixture_image.name}
+                save_report()
                 page.evaluate(SEED, {'pdf': base64.b64encode(pdf).decode('ascii'),
                                      'image': base64.b64encode(large_image).decode('ascii'), 'pages': 24})
                 page.evaluate(CAMERA_MOCK, base64.b64encode(photo_png()).decode('ascii'))
@@ -524,6 +567,7 @@ def main():
                 save_report()
                 raise
             finally:
+                report['contextCloseRequested'] = 'final-cleanup'
                 context.close()
     finally:
         server.shutdown()
