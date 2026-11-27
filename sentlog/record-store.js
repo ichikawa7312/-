@@ -511,6 +511,14 @@
           fileIdentity(fileWrites[0].value)===unchangedFile.identity){
           mutate({unchanged:true,value:oldFiles.get(unchangedFile.key)});return;
         }
+        // Pending edits can return to their durable value, including while an
+        // earlier save is in flight. Only these same-transaction preimages can
+        // prove that no write is needed. Keep lifecycle contexts and all of the
+        // revision/ownership checks above even when the record values match.
+        if(kind==='batch'&&!fileWrites.length&&!fileDeletes.length&&!changes.length&&
+          !archiveContext&&!contexts.some(x=>x.operation==='restore')){
+          mutate({unchanged:true,recordChanges:changes});return;
+        }
         const seq=clock+1;
         const ownedIds=new Set(workspaceOf(workspaceAfter).projects.flatMap(project=>(project.drawings||[]).map(d=>d.id)));
         const hasOrphan=affected.drawingIds.some(id=>!ownedIds.has(id));
@@ -535,7 +543,7 @@
         }
         tx.sentlogFileKeys=fileKeys;
         for(const key of fileKeys)recordRequest(tx,control,'put',seq,'file:'+key);
-        recordRequest(tx,control,'put',seq,'clock');mutate();
+        recordRequest(tx,control,'put',seq,'clock');mutate({recordChanges:changes});
       }catch(error){stop(error);}
     }
     control.get('clock').onsuccess=e=>{clock=Number(e.target.result)||0;ready();};
@@ -1405,11 +1413,12 @@
   };
   async function commitBatch(batch,options=[]){
     let tx;try{tx=transaction('readwrite');}catch(error){rememberRecordFailure(error,batch,null);throw error;}
-    const done=complete(tx),s=tx.objectStore(STORE),probe=observeRecordTransaction(tx);let conflict=false;
+    const done=complete(tx),s=tx.objectStore(STORE),probe=observeRecordTransaction(tx);let conflict=false,unchanged=false;
     s.get(META).onsuccess=e=>{
       if(!e.target.result || Number(e.target.result.revision)!==revision){conflict=true;tx.abort();return;}
-      journalMutation(tx,{writes:[...batch],kind:'batch',contexts:options},()=>{
-        for(const [key,value] of batch){if(value===null)recordRequest(tx,s,'delete',PREFIX+key);else recordRequest(tx,s,'put',value,PREFIX+key);}
+      journalMutation(tx,{writes:[...batch],kind:'batch',contexts:options},result=>{
+        if(result.unchanged){unchanged=true;return;}
+        for(const {key,after:value} of result.recordChanges){if(value===null)recordRequest(tx,s,'delete',PREFIX+key);else recordRequest(tx,s,'put',value,PREFIX+key);}
         recordRequest(tx,s,'put',{...e.target.result,revision:revision+1,updatedAt:new Date().toISOString()},META);probe.queued=true;
       });
     };
@@ -1417,7 +1426,7 @@
       rememberRecordFailure(error,batch,tx);throw error;}
     if(recordFailure)rememberFailureEvent('record-save-completed',{afterFailureSequence:latestRecordFailureEvent?.sequence??null});
     recordFailure=null;
-    committedBindings(tx);revision++;for(const [key,value] of batch)if(value===null)durableMemory.delete(key);else durableMemory.set(key,value);
+    committedBindings(tx);if(!unchanged)revision++;for(const [key,value] of batch)if(value===null)durableMemory.delete(key);else durableMemory.set(key,value);
   }
   function kick(){if(queued || failure)return;queued=true;queueMicrotask(()=>{queued=false;flush().catch(()=>{});});}
   function batch(writes,options={}){

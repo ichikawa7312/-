@@ -224,6 +224,7 @@ jobs:
           node tests/single_number_ui.test.cjs
           node tests/optional_symbol_ui.test.cjs
           node tests/record_save_diagnostics.test.cjs
+          node tests/record_batch_noop.test.cjs
           node tests/record_rescue_failure.test.cjs
           node tests/legacy_receive_scope.test.cjs
           node tests/storage_recovery_release.test.cjs

@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="referrer" content="no-referrer">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src https://wiulvaqixphuobdielyy.supabase.co; img-src 'none'; font-src 'none'; object-src 'none'; frame-src 'none'; worker-src 'none'; base-uri 'none'; form-action 'none'">
+  <meta name="color-scheme" content="light">
+  <title>セントログ クラウドの保存状況</title>
+  <style>
+    *{box-sizing:border-box}body{margin:0;background:#f1f5f9;color:#172534;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;line-height:1.75;overflow-wrap:anywhere}main{width:min(100%,800px);margin:auto;padding:28px 18px 64px}h1{font-size:1.6rem;line-height:1.45;margin:0 0 14px}h2{font-size:1.15rem;margin:0 0 12px}h3{font-size:1.05rem;margin:0 0 12px}p{margin:10px 0}.tag{display:inline-block;background:#e1efe8;color:#175b3e;border-radius:6px;padding:3px 9px;font-size:.85rem;font-weight:700;margin-bottom:12px}.card{background:white;border:1px solid #cbd5e1;border-radius:12px;padding:18px;margin:18px 0}.notice{border-left:4px solid #256a50}.hint{color:#475569;font-size:.9rem}.actions{display:flex;flex-wrap:wrap;gap:10px;margin:16px 0}button{min-height:48px;padding:10px 16px;border:1px solid #234e77;border-radius:9px;background:#234e77;color:white;font:inherit;font-weight:600;cursor:pointer;touch-action:manipulation}button.secondary{background:white;color:#234e77}button:disabled{opacity:.5;cursor:default}button:focus-visible,input:focus-visible{outline:3px solid #e89c28;outline-offset:3px}label.field{display:block;margin:14px 0}input[type=email],input[type=password]{display:block;width:100%;min-height:48px;margin-top:5px;padding:10px;border:1px solid #94a3b8;border-radius:8px;font:inherit;background:white;color:inherit}.remember{display:flex;gap:10px;align-items:flex-start;margin:15px 0}.remember input{width:20px;height:20px;flex:none;margin-top:5px}.project{border-top:1px solid #d8e0e8;padding:18px 0}.project:first-child{border-top:0}.project p{margin:5px 0}.project .mode{display:inline-block;border-radius:5px;background:#e8eef6;color:#234e77;padding:2px 8px;font-size:.85rem}#cloudCheckStatus{min-height:3em;font-weight:600;white-space:pre-line}#cloudCheckWarning{color:#8a4318;white-space:pre-line}[hidden]{display:none!important}@media(max-width:420px){main{padding:22px 14px 48px}h1{font-size:1.4rem}.card{padding:14px}.actions{flex-direction:column}.actions button{width:100%}}
+  </style>
+  <script src="./cloud-check-auth.js?v=20261127-cloud-check-1" defer></script>
+  <script src="./cloud-check.js?v=20261127-cloud-check-1" defer></script>
+</head>
+<body>
+<main>
+  <span class="tag">クラウドの確認</span>
+  <h1>セントログ<br>アカウントとクラウドの保存状況</h1>
+  <div class="card notice">
+    <p>セントログを起動できないときも、ログインしてクラウド上の案件と記録の控えを確認できます。</p>
+    <p>この画面で行うのは認証と一覧の読取りだけです。端末内の記録・写真・PDFの保存保護は続きます。</p>
+  </div>
+  <section id="cloudCheckSignIn" class="card" aria-labelledby="cloudCheckSignInTitle">
+    <h2 id="cloudCheckSignInTitle">アカウントを確認</h2>
+    <div class="actions">
+      <button type="button" id="cloudCheckUseMain" hidden>セントログのログイン状態で確認</button>
+      <button type="button" id="cloudCheckResume" class="secondary" hidden>この画面のログイン状態で確認</button>
+    </div>
+    <p id="cloudCheckSessionHint" class="hint"></p>
+    <form id="cloudCheckLoginForm" method="post">
+      <label class="field">メールアドレス<input id="cloudCheckEmail" name="email" type="email" autocomplete="username" required></label>
+      <label class="field">パスワード<input id="cloudCheckPassword" name="password" type="password" autocomplete="current-password" required></label>
+      <label class="remember"><input id="cloudCheckRemember" type="checkbox"><span>この確認画面のログイン状態を端末に保存する<br><span class="hint">共有する端末では選ばないでください。パスワードは保存しません。</span></span></label>
+      <button type="submit" id="cloudCheckLogin" disabled>ログインして確認</button>
+    </form>
+  </section>
+  <section id="cloudCheckAccount" class="card" hidden>
+    <h2>確認中のアカウント</h2>
+    <p id="cloudCheckWho"></p>
+    <p id="cloudCheckSource" class="hint"></p>
+    <div class="actions"><button type="button" id="cloudCheckRefresh">一覧を再確認</button></div>
+  </section>
+  <p id="cloudCheckStatus" role="status" aria-live="polite">確認するアカウントを選ぶか、ログインしてください。</p>
+  <p id="cloudCheckWarning" role="status" hidden></p>
+  <div class="actions">
+    <button type="button" id="cloudCheckCancel" class="secondary" hidden>確認を中止</button>
+    <button type="button" id="cloudCheckEnd" class="secondary" hidden>この画面の確認を終了</button>
+  </div>
+  <section id="cloudCheckResults" class="card" hidden aria-labelledby="cloudCheckResultsTitle">
+    <h2 id="cloudCheckResultsTitle">クラウドの案件</h2>
+    <p id="cloudCheckCheckedAt" class="hint"></p>
+    <div id="cloudCheckProjects"></div>
+    <div class="actions"><button type="button" id="cloudCheckMore" class="secondary" hidden>次の案件を確認</button></div>
+    <p class="hint">「案件情報の更新日時」は案件名などの更新、「記録の控えの更新日時」はクラウド上の記録控えの更新を表します。写真・PDFの内容や差分同期の完了は、この一覧では確認していません。</p>
+  </section>
+  <noscript><p>確認にはJavaScriptが必要です。端末内の記録は変更していません。</p></noscript>
+</main>
+</body>
+</html>

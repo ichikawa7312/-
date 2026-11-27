@@ -1,4 +1,5 @@
-/* v1.33: one versioned, reread-and-verified project backup per archive request. */
+/* One versioned, reread-and-verified project backup per archive request.
+ * Existing nonempty files are immutable, including interrupted partial files. */
 (function(){
   'use strict';
   const C=window.SentlogArchiveCore;
@@ -29,27 +30,68 @@
     }
     throw Error('必要なファイルが見つからないか、内容が異なります：'+f.file_name+'。端末のデータは消していません。');
   }
+  const collision=name=>Object.assign(Error('PCの保管先に内容が異なるファイルがあります。既存の内容は変更しません：'+name),{code:'PC_ARCHIVE_COLLISION'});
+  async function existingFile(directory,name){
+    try{const handle=await directory.getFileHandle(name);return {handle,file:await handle.getFile()};}
+    catch(e){if(e?.name==='NotFoundError')return null;throw e;}
+  }
+  async function preserveFile(directory,name,matches,loadVerified,label){
+    const previous=await existingFile(directory,name);
+    if(previous&&await matches(previous.file))return previous;
+    if(previous?.file.size>0)throw collision(label);
+    // source() has already checked the registered hash and size. Do not create
+    // a destination until those bytes are available. Empty placeholders can retry.
+    const blob=await loadVerified(),handle=await directory.getFileHandle(name,{create:true});
+    const current=await handle.getFile();
+    if(await matches(current))return {handle,file:current};
+    if(current.size>0)throw collision(label);
+    let writer;
+    try{
+      writer=await handle.createWritable({keepExistingData:false,mode:'exclusive'});
+      // Another writer may have committed after the preflight read but before
+      // exclusive acquisition. Opening only creates a temporary stream; abort
+      // it without write/close if the current file is now occupied.
+      const locked=await handle.getFile();
+      if(await matches(locked)){await writer.abort();writer=null;return {handle,file:locked};}
+      if(locked.size>0)throw collision(label);
+      await writer.write(blob);await writer.close();writer=null;
+    }
+    catch(e){if(writer)try{await writer.abort();}catch{}throw e;}
+    const file=await handle.getFile();
+    if(!await matches(file))throw Error('PCへの書き込み照合に失敗しました：'+label);
+    return {handle,file};
+  }
   async function save(job){
+    if(typeof navigator.locks?.request!=='function')throw Error('PC保管の排他制御を利用できません。EdgeまたはChromeで開いてください。');
+    // Coordinate with the regular PC backup and other archive tabs. A filename
+    // collision still fails closed; the lock is not permission to replace bytes.
+    const completed=await navigator.locks.request('sentlog-pc-safe-backup-v2',{mode:'exclusive'},()=>saveLocked(job));
+    // Network acknowledgement must not retain the filesystem lock and stall
+    // unrelated normal PC saves while the server response is pending.
+    await rpc('pc_complete',job.project_id,completed.receipt);
+    return completed.message;
+  }
+  async function saveLocked(job){
     if(!rootHandle||await rootHandle.queryPermission({mode:'readwrite'})!=='granted')throw Error('以前のセントログ保管フォルダを選び、「保存許可を確認」を押してください。');
     let dir=await rootHandle.getDirectoryHandle('復旧用',{create:true});
     dir=await dir.getDirectoryHandle(job.project_id,{create:true});dir=await dir.getDirectoryHandle(job.id,{create:true});
-    const folder=await dir.getDirectoryHandle('files',{create:true}),paths={};
-    for(const f of job.manifest){
-      const handle=await folder.getFileHandle(f.id,{create:true});let present=await handle.getFile();
-      if(!await C.matches(present,f)){const blob=await source(f);const writer=await handle.createWritable();try{await writer.write(blob);await writer.close();}catch(e){await writer.abort().catch(()=>{});throw e;}present=await handle.getFile();}
-      if(!await C.matches(present,f))throw Error('PCへの書き込み照合に失敗しました：'+f.file_name);
-      paths[f.key]='files/'+f.id;
-    }
+    const paths=Object.fromEntries(job.manifest.map(f=>[f.key,'files/'+f.id]));
     const pack=C.backupPack(job,paths);C.validatePack(pack,job);
-    const text=JSON.stringify(pack),handle=await dir.getFileHandle('manifest.sentlog.json',{create:true});
-    let saved=await handle.getFile();
-    if(await saved.text()!==text){const writer=await handle.createWritable();try{await writer.write(text);await writer.close();}catch(e){await writer.abort().catch(()=>{});throw e;}saved=await handle.getFile();}
-    C.validatePack(JSON.parse(await saved.text()),job);
+    const text=JSON.stringify(pack),previousManifest=await existingFile(dir,'manifest.sentlog.json');
+    if(previousManifest?.file.size>0&&await previousManifest.file.text()!==text)throw collision('manifest.sentlog.json');
+    const folder=await dir.getDirectoryHandle('files',{create:true});
+    for(const f of job.manifest){
+      await preserveFile(folder,f.id,blob=>C.matches(blob,f),()=>source(f),f.file_name);
+    }
+    const manifest=await preserveFile(dir,'manifest.sentlog.json',async blob=>await blob.text()===text,async()=>new Blob([text],{type:'application/json'}),'manifest.sentlog.json');
     // Recheck actual files, not an earlier database receipt, on every checkpoint.
     for(const f of job.manifest)if(!await C.matches(await (await folder.getFileHandle(f.id)).getFile(),f))throw Error('確認中にPCのファイルが変更されました：'+f.file_name);
-    await rpc('pc_complete',job.project_id,{job_id:job.id,catalog_hash:job.catalog_hash,
-      file_count:job.manifest.length,package_sha256:await C.hash(saved),path:[rootHandle.name,'復旧用',job.project_id,job.id,'manifest.sentlog.json'].join('\\')});
-    return job.payload.project.name+'：案件一式をPCに保存・内容照合済み（'+job.manifest.length+'ファイル）。アプリで保管を確定してください。';
+    const saved=await manifest.handle.getFile();
+    if(await saved.text()!==text)throw Error('確認中にPCのmanifestが変更されました。既存の内容は変更しません。');
+    C.validatePack(JSON.parse(await saved.text()),job);
+    return {receipt:{job_id:job.id,catalog_hash:job.catalog_hash,
+      file_count:job.manifest.length,package_sha256:await C.hash(saved),path:[rootHandle.name,'復旧用',job.project_id,job.id,'manifest.sentlog.json'].join('\\')},
+      message:job.payload.project.name+'：案件一式をPCに保存・内容照合済み（'+job.manifest.length+'ファイル）。アプリで保管を確定してください。'};
   }
   async function run(){
     if(running||!navigator.onLine||document.hidden||!session?.user)return;

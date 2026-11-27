@@ -48,6 +48,13 @@
    assertCurrent();
    let writer;
    try{writer=await handle.createWritable({keepExistingData:false,mode:'exclusive'});assertCurrent();
+    // The path can change after the preflight read and before exclusive
+    // acquisition. Opening stages a stream; abort it before write/close when
+    // another writer has filled the path. Never replace different bytes.
+    const locked=await handle.getFile();assertCurrent();
+    if(await matches(locked)){assertCurrent();await writer.abort();writer=null;assertCurrent();return result(name,locked);}
+    if(locked.size!==0)throw error('保存先が変更されました。既存ファイルは保持します。','PC_BACKUP_COLLISION');
+    assertCurrent();
     await writer.write(blob);assertCurrent();await writer.close();writer=null;
    }catch(e){if(writer)try{await writer.abort();}catch{}throw e;}
    assertCurrent();

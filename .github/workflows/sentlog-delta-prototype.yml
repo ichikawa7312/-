@@ -13,6 +13,7 @@ on:
       - 'sentlog/storage-diagnostics*.js'
       - 'tests/storage_diagnostics*'
       - 'tests/record_file_dedup.test.cjs'
+      - 'tests/record_batch_noop.test.cjs'
       - 'scripts/assemble_delta_sync.py'
       - 'scripts/build_capacity.py'
       - 'scripts/build_management.py'
@@ -123,6 +124,7 @@ jobs:
           node tests/delta_metadata_bridge.test.cjs
           node tests/delta_large_operations.test.cjs
           node tests/delta_app_journal.test.cjs
+          node tests/record_batch_noop.test.cjs
           node tests/delta_cutoff_recovery.test.cjs
           node tests/delta_migration_recovery.test.cjs
           node tests/delta_drawing_review_integration.test.cjs
