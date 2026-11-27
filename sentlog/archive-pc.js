@@ -28,11 +28,32 @@
     const file=await fromRoot(target,()=>dir.getFileHandle(parts.at(-1)));
     return fromRoot(target,()=>file.getFile());
   }
+  function openExistingRecords(target){
+    target.check();
+    return new Promise((resolve,reject)=>{
+      let settled=false,upgrade=false;
+      const fail=error=>{if(!settled){settled=true;reject(error);}};
+      const q=indexedDB.open('surveyFieldNoteDB');
+      // This is only a source lookup. An absent database must stay absent,
+      // including when it disappears immediately before this open request.
+      q.onupgradeneeded=()=>{upgrade=true;try{q.transaction.abort();}catch(error){fail(error);}};
+      q.onerror=()=>fail(q.error||Error('端末内の保存先を読み取れません。'));
+      q.onblocked=()=>fail(Error('端末内の保存先を別の画面が変更中です。'));
+      q.onsuccess=()=>{
+        const db=q.result;
+        // A blocked request can still succeed after the lookup has fallen
+        // back to Storage. Never leak that late connection or use its rows.
+        if(settled||upgrade){db.close();if(!settled)fail(Error('端末内の保存先は作成しません。'));return;}
+        try{target.check();}catch(error){db.close();fail(error);return;}
+        db.onversionchange=()=>db.close();settled=true;resolve(db);
+      };
+    });
+  }
   async function source(f,target){
     target.check();
     if(f.pc_path){try{const blob=await fromRoot(target,()=>readRelative(f.pc_path,target));if(await fromRoot(target,()=>C.matches(blob,f)))return blob;}catch{target.check();}}
     // The main app on this PC may also hold a verified copy in IndexedDB.
-    try{target.check();const connection=await new Promise((resolve,reject)=>{const q=indexedDB.open('surveyFieldNoteDB');q.onsuccess=()=>resolve(q.result);q.onerror=()=>reject(q.error);});
+    try{const connection=await openExistingRecords(target);
       // Take ownership before checking: even a stale opened connection closes.
       try{target.check();if(connection.objectStoreNames.contains('files')){const blob=await fromRoot(target,()=>new Promise((resolve,reject)=>{const q=connection.transaction('files').objectStore('files').get(f.key);q.onsuccess=()=>resolve(q.result);q.onerror=()=>reject(q.error);}));if(await fromRoot(target,()=>C.matches(blob,f)))return blob;}}finally{connection.close();}
     }catch{target.check();}

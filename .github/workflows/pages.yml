@@ -201,6 +201,7 @@ jobs:
           node tests/manual_dimension_priority.test.cjs
           node tests/core.test.cjs
           node tests/pc.test.cjs
+          node tests/pc_archive_source_readonly.test.cjs
           node tests/integration.test.cjs
           node tests/management.test.cjs
           node tests/capacity.test.cjs

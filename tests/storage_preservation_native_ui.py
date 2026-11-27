@@ -26,7 +26,8 @@ from urllib.parse import urlparse
 
 ROOT = Path(__file__).resolve().parents[1]
 PC_CASES = ("normal-and-exact-retry", "conflicting-file", "conflicting-manifest",
-            "exclusive-contention", "file-at-acquisition", "manifest-at-acquisition", "root-switch-during-source")
+            "exclusive-contention", "file-at-acquisition", "manifest-at-acquisition", "root-switch-during-source",
+            "local-db-missing", "local-db-existing")
 REGULAR_PC_CASES = ("normal", "foreign-at-acquisition", "matching-at-acquisition")
 
 REGULAR_PC_CASE = r"""async scenario=>{
@@ -81,6 +82,18 @@ PC_PREPARE = r"""async scenario=>{
   const job={id:'synthetic-job',project_id:'synthetic-project',revision:1,catalog_hash:'a'.repeat(64),
     payload:{project:{id:'local-project',name:'Synthetic project',drawings:[{id:'drawing'}]},drawings:[{meta:{id:'drawing'},state:{shapes:[],collabDeletedRecords:[]}}]},
     manifest:[{id:'synthetic-asset',key:'background:drawing',kind:'drawing',file_name:'drawing.pdf',byte_size:blob.size,sha256:await C.hash(blob),status:'storage_deleted',pc_path:'synthetic-root\\original\\drawing.pdf'}]};
+  if(scenario.startsWith('local-db-')){
+    delete job.manifest[0].pc_path;
+    need(!(await indexedDB.databases()).some(row=>row.name==='surveyFieldNoteDB'),'The fallback profile must start without the records database');
+    if(scenario==='local-db-existing'){
+      const db=await new Promise((resolve,reject)=>{const q=indexedDB.open('surveyFieldNoteDB',2);
+        q.onupgradeneeded=()=>{for(const name of ['files','sentlog_delta_journal_v1','sentlog_delta_control_v1'])q.result.createObjectStore(name);};
+        q.onerror=()=>reject(q.error);q.onsuccess=()=>resolve(q.result);});
+      await new Promise((resolve,reject)=>{const tx=db.transaction('files','readwrite');
+        tx.objectStore('files').put(blob,job.manifest[0].key);tx.objectStore('files').put('synthetic-sentinel-do-not-change','sentinel');
+        tx.oncomplete=resolve;tx.onabort=()=>reject(tx.error);});db.close();
+    }
+  }
   const recovery=await root.getDirectoryHandle('復旧用',{create:true}),project=await recovery.getDirectoryHandle(job.project_id,{create:true});
   const generation=await project.getDirectoryHandle(job.id,{create:true}),files=await generation.getDirectoryHandle('files',{create:true});
   const foreign=new Blob(['Synthetic different file that must survive']),foreignManifest=new Blob(['{"synthetic":"different manifest that must survive"}']);
@@ -164,7 +177,7 @@ PC_PROOF = r"""async retry=>{
   const file=await read(s.files,'synthetic-asset'),manifest=await read(s.generation,'manifest.sentlog.json');
   const completed=s.calls.filter(x=>x.action==='pc_complete'),errors=s.calls.filter(x=>x.action==='pc_error');
   let rootSwitch=null;
-  const successful=s.scenario==='normal-and-exact-retry'||retry;
+  const successful=s.scenario==='normal-and-exact-retry'||s.scenario==='local-db-existing'||retry;
   need(s.clicks.untrusted===0&&s.clicks.trusted===(retry?2:1),'Actual trusted button clicks are required');
   need(s.suppressedPolls===2,'Unexpected archive poll setup');
   need(s.lockRequests.length===(retry?2:1)&&s.lockRequests.every(x=>x.name==='sentlog-pc-safe-backup-v2'&&x.mode==='exclusive'),'Actual shared exclusive Web Lock not requested');
@@ -180,10 +193,15 @@ PC_PROOF = r"""async retry=>{
       need(errors.length===0,'Normal archive reported an error');
       need(s.operations.filter(x=>x.operation==='write').length===2&&s.operations.filter(x=>x.operation==='close').length===2,'Exact retry rewrote an existing file');
       if(retry)need(s.sourceReads===s.firstSourceReads,'Exact retry loaded the source again');
+    }else if(s.scenario==='local-db-existing'){
+      need(errors.length===0&&s.sourceReads===0,'Native IndexedDB fallback must complete without reading a PC original');
+      need(s.operations.filter(x=>x.operation==='write').length===2,'Native IndexedDB source did not create exactly one file and manifest');
     }else need(errors.length===1,'The earlier exclusive collision must remain recorded');
   }else{
     need(completed.length===0&&errors.length===1,'Failure must not acknowledge completion');
-    if(s.scenario==='conflicting-file'){
+    if(s.scenario==='local-db-missing'){
+      need(!file&&!manifest&&s.operations.length===0&&s.sourceReads===0,'Missing native source must not create a destination file or report completion');
+    }else if(s.scenario==='conflicting-file'){
       need(file?.sha256===s.foreignSHA&&!manifest,'Conflicting native file was changed');need(s.operations.length===0&&s.sourceReads===0,'Conflicting file opened a writer or read its source');
     }else if(s.scenario==='conflicting-manifest'){
       need(manifest?.sha256===s.foreignManifestSHA&&!file,'Conflicting native manifest was changed');need(s.operations.length===0&&s.sourceReads===0,'Conflicting manifest opened a writer or read its source');
@@ -211,11 +229,33 @@ PC_PROOF = r"""async retry=>{
       if(target==='manifest.sentlog.json')need(file?.sha256===s.expectedFileSHA,'Verified file copy was changed during manifest conflict');
     }
   }
+  let localDatabase=null;
+  if(s.scenario.startsWith('local-db-')){
+    const listed=(await indexedDB.databases()).filter(row=>row.name==='surveyFieldNoteDB');
+    if(s.scenario==='local-db-missing'){
+      need(listed.length===0,'Reading a missing source created a native records database');
+      localDatabase={status:'absent',databaseCreated:false};
+    }else{
+      need(listed.length===1&&listed[0].version===2,'The existing native records database changed version');
+      const db=await new Promise((resolve,reject)=>{const q=indexedDB.open('surveyFieldNoteDB');
+        q.onupgradeneeded=()=>q.transaction.abort();q.onerror=()=>reject(q.error);q.onsuccess=()=>resolve(q.result);});
+      try{
+        const stores=Array.from(db.objectStoreNames).sort();
+        need(JSON.stringify(stores)===JSON.stringify(['files','sentlog_delta_control_v1','sentlog_delta_journal_v1']),'Native source stores were altered');
+        const rows=await new Promise((resolve,reject)=>{const tx=db.transaction('files','readonly'),out={};
+          for(const [label,key]of [['blob',s.job.manifest[0].key],['sentinel','sentinel']]){const q=tx.objectStore('files').get(key);q.onsuccess=()=>out[label]=q.result;}
+          const count=tx.objectStore('files').count();count.onsuccess=()=>out.count=count.result;
+          tx.oncomplete=()=>resolve(out);tx.onabort=()=>reject(tx.error);});
+        need(rows.count===2&&rows.sentinel==='synthetic-sentinel-do-not-change'&&await C.hash(rows.blob)===s.expectedFileSHA,'Reading the native fallback changed its source records');
+        localDatabase={status:'retained',version:db.version,stores,count:rows.count,sourceSHA256:await C.hash(rows.blob),sentinelRetained:true};
+      }finally{db.close();}
+    }
+  }
   s.firstSourceReads=s.sourceReads;
   return {status:'passed',scenario:s.scenario,retry:!!retry,clicks:{...s.clicks},file:file&&{size:file.size,sha256:file.sha256},
     manifest:manifest&&{size:manifest.size,sha256:manifest.sha256},completed:completed.length,errors:errors.length,
     operations:structuredClone(s.operations),sourceReads:s.sourceReads,lockRequests:structuredClone(s.lockRequests),
-    openErrors:structuredClone(s.openErrors),webLockProof:s.webLockProof||null,fixtureRaceWrites:s.fixtureRaceWrites,rootSwitch,
+    openErrors:structuredClone(s.openErrors),webLockProof:s.webLockProof||null,fixtureRaceWrites:s.fixtureRaceWrites,rootSwitch,localDatabase,
     nativeFileSystem:true,rootPermissionAnswerShimmed:true,osFolderPickerTested:false,externalOsWriterTested:false};
 }"""
 
