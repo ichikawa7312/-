@@ -244,6 +244,8 @@ jobs:
           node tests/cloud_normalization_release.test.cjs
           node tests/record_connection_lifecycle.test.cjs
           node tests/storage_lifecycle_release.test.cjs
+          node tests/pdf_recovery_failure_gate.test.cjs
+          node tests/pdf_save_failure_release.test.cjs
       - name: Setup Pages
         uses: actions/configure-pages@v5
         with:

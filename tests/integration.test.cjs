@@ -57,9 +57,10 @@ async function pdfRound({pc=false,checking=false,archiveReady=true,registered=tr
   vm.runInContext(fs.readFileSync('sentlog/recovery-throttle.js','utf8'),ctx);
   vm.runInContext(fs.readFileSync('sentlog/recovery-queue.js','utf8'),ctx);
   // This lifecycle fixture evaluates the real run() in isolation. Include its
-  // actual handover helpers when present; durable staging races are exercised
-  // with the real Records implementation in pdf_handover_guard.test.cjs.
-  const helperStart=pdf.indexOf('const PDF_HANDOVER_STATUS=');
+  // actual storage-failure and handover helpers when present. Their transaction
+  // races are exercised with real Records in the dedicated PDF guard fixtures.
+  const storageHelperStart=pdf.indexOf('const PDF_STORAGE_FAILED_STATUS=');
+  const helperStart=storageHelperStart>=0?storageHelperStart:pdf.indexOf('const PDF_HANDOVER_STATUS=');
   if(helperStart>=0){
     const helperEnd=pdf.indexOf('\nfunction session()',helperStart),fileKey=pdf.match(/^const fileKey=.*;$/m);
     assert(helperEnd>helperStart&&fileKey,'production PDF handover dependencies must be present');
