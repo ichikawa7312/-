@@ -21,6 +21,7 @@ on:
       - 'tests/record_storage_scale_ui.py'
       - 'tests/record_storage_pressure_ui.py'
       - 'tests/record_storage_cache_boundary_ui.py'
+      - 'tests/cache_response_probe_ui.py'
       - 'tests/record_rescue_ui.py'
       - 'tests/record_startup_guard_ui.py'
       - 'tests/startup_backup_recovery.test.cjs'
@@ -140,6 +141,10 @@ jobs:
         if: ${{ !cancelled() && steps.production_build.outcome == 'success' && steps.browser_adapters.outcome == 'success' }}
         timeout-minutes: 8
         run: python tests/record_storage_cache_boundary_ui.py --engine ${{ matrix.engine }} --built-root .
+      - name: Diagnose synthetic Cache API response inputs
+        if: ${{ !cancelled() && steps.production_build.outcome == 'success' && steps.browser_adapters.outcome == 'success' }}
+        timeout-minutes: 8
+        run: python tests/cache_response_probe_ui.py --engine ${{ matrix.engine }}
       - uses: actions/upload-artifact@v4
         if: always()
         with:
