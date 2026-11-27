@@ -246,6 +246,11 @@ jobs:
           node tests/storage_lifecycle_release.test.cjs
           node tests/pdf_recovery_failure_gate.test.cjs
           node tests/pdf_save_failure_release.test.cjs
+          node tests/delta_cutoff_files.test.cjs
+          node tests/photo_recovery_failure_gate.test.cjs
+          node tests/delta_save_failure_gate.test.cjs
+          node tests/cloud_asset_save_failure_gate.test.cjs
+          node tests/recovery_retry_release.test.cjs
       - name: Setup Pages
         uses: actions/configure-pages@v5
         with:

@@ -81,6 +81,12 @@ function noEmbeddedPuts(extra){
  };
  return {calls,close(){for(const method of ['put','add'])IDBObjectStore.prototype[method]=originals[method];}};
 }
+function observeMaterialization(app){
+ const original=app.context.Blob,calls=[];
+ app.context.Blob=new Proxy(original,{construct(target,args){const value=Reflect.construct(target,args);
+  calls.push({size:value.size,type:value.type});return value;}});
+ return {calls,close(){app.context.Blob=original;}};
+}
 function observeBindingReads(app,{forbidHydration=false}={}){
  const originalClone=app.context.structuredClone,originals={get:IDBObjectStore.prototype.get,getAll:IDBObjectStore.prototype.getAll};
  const counts={gets:0,getAll:0,rows:0,cutoffRows:0,bindingClones:0,blobClones:0,keys:[]};
@@ -233,33 +239,55 @@ let passed=0;async function test(name,fn){await fn();passed++;console.log('PASS'
    await hydratedSame(resumed.records.deltaJournal.bindingFor('a'),f.oldBindings.get('a'));
   }finally{retryGuard.close();}
  });
- await test('large legacy cutoff materialization never reads a whole-file ArrayBuffer and resumes without changing original bytes',async()=>{
+ await test('repeated partial startup reuses the verified large cutoff without materializing another PDF and completes the binding',async()=>{
   const f=await fixture({backgroundBytes:9*1024*1024+123}),before=await disk(f.factory),original=f.files.get('background:drawing-a');
-  const expected=await BlobHash.digest(original),arrayBuffer=Blob.prototype.arrayBuffer;let largest=0,reads=0,stages=0;
+  const expected=await BlobHash.digest(original),arrayBuffer=Blob.prototype.arrayBuffer;let largest=0,reads=0;
   Blob.prototype.arrayBuffer=function(){largest=Math.max(largest,this.size);reads++;
    assert(this.size<=2*1024*1024,'startup must never allocate an ArrayBuffer for the entire large PDF');return arrayBuffer.call(this);};
-  const interrupted=noEmbeddedPuts(({method,value})=>{if(method==='add'&&value?.kind==='cutoff-file'&&++stages===2)throw Error('stop after large PDF');});
   try{
-   await assert.rejects(()=>f.restart().records.init(),/stop after large PDF/);interrupted.close();
-   const partial=await disk(f.factory);assert.equal(cutoffRows(partial).length,1);assert(containsBlob(partial.get('binding:a')));
-   assert.equal(await BlobHash.digest(partial.get('binding:a').cutoff.files.find(file=>file.key==='background:drawing-a').value),expected);
-   assert.deepEqual(partial.get('binding:a').cutoff.rawEntries,before.get('binding:a').cutoff.rawEntries);
-   const guard=noEmbeddedPuts();try{
-    const resumed=f.restart();await resumed.records.init();const after=await disk(f.factory);
-    assert.equal(cutoffRows(after).length,2);assert.equal(containsBlob(after.get('binding:a')),false);
-    const value=resumed.records.deltaJournal.bindingFor('a').cutoff.files.find(file=>file.key==='background:drawing-a').value;
-    assert.equal(value.type,original.type);assert.equal(value.size,original.size);assert.equal(await BlobHash.digest(value),expected);
-    assert.equal(guard.calls.filter(call=>call.kind==='cutoff-file').length,1,'only the unfinished photo is added on resume');
-    assert.equal(await BlobHash.digest((await disk(f.factory,'files')).get('background:drawing-a')),expected);
-    assert(reads>2);assert.equal(largest,2*1024*1024);
-   }finally{guard.close();}
-  }finally{interrupted.close();Blob.prototype.arrayBuffer=arrayBuffer;}
+   for(let attempt=1;attempt<=4;attempt++){
+    const app=f.restart(),materialized=observeMaterialization(app),interrupted=attempt<4;
+    const guard=noEmbeddedPuts(({method,value})=>{if(interrupted&&method==='add'&&value?.kind==='cutoff-file'&&value.key==='photo:drawing-a:photo')
+     throw Object.assign(Error('stop after large PDF'),{name:'QuotaExceededError'});});
+    try{
+     if(interrupted)await assert.rejects(()=>app.records.init(),error=>error.name==='QuotaExceededError');else await app.records.init();
+     assert.equal(materialized.calls.filter(call=>call.type==='application/pdf').reduce((sum,call)=>sum+call.size,0),attempt===1?original.size:0,
+      'a durable PDF must not be reconstructed on any retry');
+     if(attempt>1)assert.equal(materialized.calls.reduce((sum,call)=>sum+call.size,0),2*f.files.get('photo:drawing-a:photo').size,
+      'only the unfinished photo has byte-backed parts and a final Blob');
+     const after=await disk(f.factory),binding=after.get('binding:a'),stored=cutoffRows(after).find(row=>row.key==='background:drawing-a');
+     assert.equal(cutoffRows(after).length,interrupted?1:2);assert.equal(containsBlob(binding),interrupted);
+     assert.equal(stored.revision,1);assert.equal(stored.sha256,expected);assert.equal(await BlobHash.digest(stored.value),expected);
+     assert.deepEqual(binding.cutoff.rawEntries,before.get('binding:a').cutoff.rawEntries);
+     assert.deepEqual(binding.cutoff.snapshot,before.get('binding:a').cutoff.snapshot);
+     assert.equal(await BlobHash.digest((await disk(f.factory,'files')).get('background:drawing-a')),expected);
+     if(interrupted)assert.equal(await BlobHash.digest(binding.cutoff.files.find(file=>file.key==='background:drawing-a').value),expected);
+     else{
+      const value=app.records.deltaJournal.bindingFor('a').cutoff.files.find(file=>file.key==='background:drawing-a').value;
+      assert.equal(value.type,original.type);assert.equal(value.size,original.size);assert.equal(await BlobHash.digest(value),expected);
+      assert(binding.cutoff.files.every(file=>typeof file.valueRef==='string'&&!Object.hasOwn(file,'value')));
+      assert.equal(guard.calls.filter(call=>call.kind==='cutoff-file').length,1,'the unfinished photo is added before final binding completion');
+     }
+    }finally{guard.close();materialized.close();}
+   }
+   const reopened=f.restart(),materialized=observeMaterialization(reopened),guard=noEmbeddedPuts();
+   try{await reopened.records.init();assert.equal(materialized.calls.length,0);assert.equal(guard.calls.length,0);}
+   finally{guard.close();materialized.close();}
+   assert(reads>2);assert.equal(largest,2*1024*1024);
+  }finally{Blob.prototype.arrayBuffer=arrayBuffer;}
  });
  await test('missing streaming hash support stops a large legacy conversion without replacing the embedded source',async()=>{
   const f=await fixture({backgroundBytes:2*1024*1024+1}),app=f.restart(),before=await disk(f.factory);delete app.context.SentlogBlobSha256;
   await assert.rejects(()=>app.records.init(),error=>error.code==='JOURNAL_HASH_UNAVAILABLE');
   const after=await disk(f.factory);assert.equal(cutoffRows(after).length,0);
   await hydratedSame(after.get('binding:a'),before.get('binding:a'));
+  const stop=noEmbeddedPuts(({method,value})=>{
+   if(method==='add'&&value?.kind==='cutoff-file'&&value.key==='photo:drawing-a:photo')throw Error('stop after large PDF');
+  });try{await assert.rejects(()=>f.restart().records.init(),/stop after large PDF/);}finally{stop.close();}
+  const partial=await disk(f.factory),resumed=f.restart(),materialized=observeMaterialization(resumed);delete resumed.context.SentlogBlobSha256;
+  try{await assert.rejects(()=>resumed.records.init(),error=>error.code==='JOURNAL_HASH_UNAVAILABLE');assert.equal(materialized.calls.length,0);}
+  finally{materialized.close();}
+  const unchanged=await disk(f.factory);assert.deepEqual(unchanged,partial);await hydratedSame(unchanged.get('binding:a'),before.get('binding:a'));
  });
  await test('two legacy bindings migrate independently and cannot share a cutoff file identity',async()=>{
   const f=await fixture({two:true}),guard=noEmbeddedPuts();try{const app=f.restart();await app.records.init();const raw=await disk(f.factory),rows=cutoffRows(raw);
@@ -276,15 +304,56 @@ let passed=0;async function test(name,fn){await fn();passed++;console.log('PASS'
   });try{await assert.rejects(()=>f.restart().records.init(),/stop after first staging row/);}finally{stop.close();}
   const raw=await disk(f.factory),staged=cutoffRows(raw)[0];assert(staged);
   const altered={...staged,value:new Blob(['x'.repeat(staged.value.size)],{type:staged.value.type})};
-  await write(f.factory,CONTROL,staged.id,altered);await assert.rejects(()=>f.restart().records.init(),error=>error.code==='JOURNAL_CUTOFF_COLLISION');
-  await hydratedSame((await disk(f.factory)).get('binding:a'),f.oldBindings.get('a'));
-  const foreign={...staged,scope:{...staged.scope,ownerId:'another-owner'}};
-  await write(f.factory,CONTROL,staged.id,foreign);await assert.rejects(()=>f.restart().records.init());
-  assert(containsBlob((await disk(f.factory)).get('binding:a')));assert(containsBlob((await disk(f.factory)).get('binding:b')));
+  for(const [name,value]of [
+   ['same-size different bytes',altered],['different ID',{...staged,id:'cutoff-file:another'}],
+   ['different binding',{...staged,bindingId:'binding:another'}],['different local project',{...staged,localProjectId:'b'}],
+   ['different owner',{...staged,scope:{...staged.scope,ownerId:'another-owner'}}],
+   ['different cloud project',{...staged,scope:{...staged.scope,projectId:'another-cloud'}}],
+   ['different device',{...staged,scope:{...staged.scope,deviceId:'another-device'}}],
+   ['different file key',{...staged,key:'background:drawing-b'}],['different revision',{...staged,revision:2}],
+   ['different media type',{...staged,value:new Blob([staged.value],{type:'image/png'})}],
+   ['different SHA',{...staged,sha256:'f'.repeat(64)}],['invalid value',{...staged,value:null}],
+  ]){
+   await write(f.factory,CONTROL,staged.id,value);const app=f.restart(),materialized=observeMaterialization(app),guard=noEmbeddedPuts();
+   try{await assert.rejects(()=>app.records.init(),error=>error.code==='JOURNAL_CUTOFF_COLLISION',name);
+    assert.equal(materialized.calls.length,0,name+' must not construct a replacement Blob');assert.equal(guard.calls.length,0);
+   }finally{guard.close();materialized.close();}
+   const after=await disk(f.factory);assert.deepEqual(after.get(staged.id),value,name+' must preserve the conflicting row');
+   await hydratedSame(after.get('binding:a'),f.oldBindings.get('a'));await hydratedSame(after.get('binding:b'),f.oldBindings.get('b'));
+  }
   await write(f.factory,CONTROL,staged.id,staged);const app=f.restart();await app.records.init();const complete=await disk(f.factory);
   const a=copy(complete.get('binding:a')),b=complete.get('binding:b');a.cutoff.files[0].valueRef=b.cutoff.files[0].valueRef;
   await write(f.factory,CONTROL,'binding:a',a);await assert.rejects(()=>f.restart().records.init());
   for(const row of cutoffRows(complete))assert.equal(await hash((await disk(f.factory)).get(row.id).value),await hash(row.value));
+ });
+ await test('a staged file changed or removed during verification fails closed and final binding checks every completed file',async()=>{
+  for(const scenario of ['replace-during-reuse','remove-during-reuse','replace-before-final-binding']){
+   const f=await fixture(),stop=noEmbeddedPuts(({method,value})=>{
+    if(method==='add'&&value?.kind==='cutoff-file'&&value.key==='photo:drawing-a:photo')throw Error('stop after first staging row');
+   });try{await assert.rejects(()=>f.restart().records.init(),/stop after first staging row/);}finally{stop.close();}
+   const before=await disk(f.factory),staged=cutoffRows(before)[0],app=f.restart(),materialized=observeMaterialization(app),guard=noEmbeddedPuts();
+   const replacement={...staged,revision:staged.revision+1,value:new Blob(['other'],{type:staged.value.type})};replacement.sha256=await hash(replacement.value);
+   let hashes=0,changed=false;
+   app.context.SentlogBlobSha256={digest:async(blob,options)=>{
+    const digest=await BlobHash.digest(blob,options);
+    if(++hashes===(scenario==='replace-before-final-binding'?3:2)){
+     if(scenario==='remove-during-reuse'){
+      const db=await open(f.factory);try{await new Promise((resolve,reject)=>{const tx=db.transaction(CONTROL,'readwrite');
+       tx.objectStore(CONTROL).delete(staged.id);tx.oncomplete=resolve;tx.onabort=()=>reject(tx.error);});}finally{db.close();}
+     }else await write(f.factory,CONTROL,staged.id,replacement);
+     changed=true;
+    }return digest;
+   }};
+   try{await assert.rejects(()=>app.records.init(),error=>error.code==='JOURNAL_CUTOFF_COLLISION',scenario);assert(changed);
+    assert.equal(materialized.calls.filter(call=>call.type==='application/pdf').length,0);
+    assert.equal(guard.calls.filter(call=>call.method==='add'&&call.kind==='cutoff-file').length,scenario==='replace-before-final-binding'?1:0);
+    const after=await disk(f.factory);await hydratedSame(after.get('binding:a'),f.oldBindings.get('a'));
+    if(scenario==='remove-during-reuse')assert.equal(after.has(staged.id),false,'a vanished verified row must not be silently re-added');
+    else assert.deepEqual(after.get(staged.id),replacement,'the other writer must not be overwritten');
+    assert.equal(cutoffRows(after).length,scenario==='remove-during-reuse'?0:scenario==='replace-before-final-binding'?2:1);
+    assert.equal(await hash((await disk(f.factory,'files')).get('background:drawing-a')),await hash(f.files.get('background:drawing-a')));
+   }finally{guard.close();materialized.close();}
+  }
  });
  await test('certified GC releases only matching referenced cutoff bytes in the same transaction as visible cleanup',async()=>{
   const f=await fixture({two:true,history:true}),app=f.restart();await app.records.init();const before=await disk(f.factory),release=await prepareRelease(app,f);

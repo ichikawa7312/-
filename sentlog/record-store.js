@@ -311,28 +311,42 @@
     // leaves the original binding intact and add-only staged rows reusable.
     for(const [index,file]of files.entries()){
       if(file.valueRef||!(file.value instanceof Blob))continue;
-      // Safari cannot reliably re-put some native database-backed Blobs. Keep
-      // creating independent byte-backed parts, without one giant JS buffer.
-      // This bounds temporary ArrayBuffers, not the final Blob's total bytes.
-      const parts=[];
-      for(let offset=0;offset<file.value.size;offset+=FILE_CHUNK_BYTES){
-        const end=Math.min(offset+FILE_CHUNK_BYTES,file.value.size),bytes=await file.value.slice(offset,end).arrayBuffer();
-        if(bytes.byteLength!==end-offset)throw journalError('JOURNAL_CUTOFF_BYTES','移行前の控えを読み取れません');
-        parts.push(new Blob([bytes]));
+      const id=cutoffFileKey(binding.id,index),prior=await readControl(id),hasPrior=prior!==undefined;
+      let value,sha256;
+      if(hasPrior){
+        // A partially completed startup already owns an immutable copy. Verify
+        // both byte sources before reusing it; do not materialize another large
+        // Blob just to discover that the same durable row is already present.
+        sha256=await recordBlobHash(file.value);value=file.value;
+      }else{
+        // Safari cannot reliably re-put some native database-backed Blobs. Keep
+        // creating independent byte-backed parts, without one giant JS buffer.
+        // This bounds temporary ArrayBuffers, not the final Blob's total bytes.
+        const parts=[];
+        for(let offset=0;offset<file.value.size;offset+=FILE_CHUNK_BYTES){
+          const end=Math.min(offset+FILE_CHUNK_BYTES,file.value.size),bytes=await file.value.slice(offset,end).arrayBuffer();
+          if(bytes.byteLength!==end-offset)throw journalError('JOURNAL_CUTOFF_BYTES','移行前の控えを読み取れません');
+          parts.push(new Blob([bytes]));
+        }
+        value=typeof File==='function'&&typeof file.value.name==='string'?
+          new File(parts,file.value.name,{type:file.value.type,lastModified:file.value.lastModified}):new Blob(parts,{type:file.value.type});
+        parts.length=0;sha256=await recordBlobHash(value);
       }
-      const value=typeof File==='function'&&typeof file.value.name==='string'?
-        new File(parts,file.value.name,{type:file.value.type,lastModified:file.value.lastModified}):new Blob(parts,{type:file.value.type});
-      parts.length=0;const sha256=await recordBlobHash(value);
-      const id=cutoffFileKey(binding.id,index),row={version:1,kind:'cutoff-file',id,bindingId:binding.id,
+      const row={version:1,kind:'cutoff-file',id,bindingId:binding.id,
         localProjectId:binding.localProjectId,scope:copy(binding.scope),key:file.key,revision:1,value,sha256};
-      const expected=archiveReleaseText(row),prior=await readControl(id);
-      if(prior&&(archiveReleaseText(prior)!==expected||!await archiveReleaseMatches(prior.value,{size:value.size,sha256})))
+      const expected=archiveReleaseText(row);
+      if(hasPrior&&(archiveReleaseText(prior)!==expected||!await archiveReleaseMatches(prior.value,{size:value.size,sha256})))
         throw journalError('JOURNAL_CUTOFF_COLLISION','移行前のファイル控えに異なる内容があります。両方を保持しています');
       const tx=transaction('readwrite'),done=complete(tx),control=tx.objectStore(CONTROL);let current,existing,waiting=2;
       const ready=()=>{if(--waiting)return;try{
         if(archiveReleaseText(current)!==beforeText)throw journalError('JOURNAL_CUTOFF_STALE','移行前の控えが更新されました。保存済みの内容を再確認します');
-        if(existing){if(archiveReleaseText(existing)!==expected)throw journalError('JOURNAL_CUTOFF_COLLISION','保護ファイルの保存先が変更されました');}
-        else control.add(row,id);
+        if(existing!==undefined){if(archiveReleaseText(existing)!==expected)throw journalError('JOURNAL_CUTOFF_COLLISION','保護ファイルの保存先が変更されました');}
+        else{
+          // A verified row disappearing during the read is a changed storage
+          // state, not permission to write its native Blob back under that ID.
+          if(hasPrior)throw journalError('JOURNAL_CUTOFF_COLLISION','確認した保護ファイルの保存先が変更されました');
+          control.add(row,id);
+        }
       }catch(error){tx.sentlogJournalError=error;tx.abort();}};
       control.get('binding:'+binding.localProjectId).onsuccess=e=>{current=e.target.result;ready();};
       control.get(id).onsuccess=e=>{existing=e.target.result;ready();};await done;
@@ -1612,6 +1626,7 @@
     deltaJournal,openFilesDatabase,removeFiles,clearFiles,writerState,readFileStates,
     startupProtectionVersion:1,
     storageLifecycleVersion:1,
+    cutoffResumeVersion:1,
     getFileWriteCapabilities:()=>({guarded:true,onlyIfMissing:true,writerState:true,fileWriteDedupVersion:1,journaled:connection?.version===DB_VERSION}),
     uncommittedFiles:()=>[...failedFiles].map(([key,value])=>({key,value})),
     get ready(){return initialized;},get pending(){return pending.size+inFlight>0||fileTasks.size>0||operation;},get failed(){return failures.size>0;},
