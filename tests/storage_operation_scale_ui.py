@@ -27,7 +27,7 @@ CASES = ("v215-read-amplification", "full-app-large-journal", "standalone-large-
 AUDIT = r"""(() => {
   const a=window.__storageAudit={phase:'startup',suspended:false,events:[],writes:[],opens:0,transactions:0,
     bulkJournal:0,bulkRecords:0,bulkControls:0,journalValues:0,oldJournalValues:0,blobValues:0,
-    floor:0,documentId:crypto.randomUUID(),clicks:[]};
+    floor:0,documentId:crypto.randomUUID(),clicks:[],inputs:[]};
   const add=(list,value)=>{if(list.length<160)list.push({phase:a.phase,...value});};
   a.reset=(phase,floor=0)=>{Object.assign(a,{phase,floor,events:[],writes:[],opens:0,transactions:0,
     bulkJournal:0,bulkRecords:0,bulkControls:0,journalValues:0,oldJournalValues:0,blobValues:0});};
@@ -70,7 +70,17 @@ AUDIT = r"""(() => {
     const store=this.source.objectStore||this.source;if(!a.suspended)add(a.writes,{method:'cursor.'+method,database:store.transaction.db.name,store:store.name,key:this.primaryKey});
     return native.apply(this,args);
   };}
-  a.bindClicks=()=>document.addEventListener('click',event=>{const target=event.target.closest?.('button,a,.manager-card');if(target)add(a.clicks,{id:target.id||target.className,trusted:event.isTrusted});},true);
+  a.bindClicks=()=>{
+    const observe=event=>{
+      const target=event.target?.closest?.('button,a,.manager-card'),point=event.changedTouches?.[0]||event;
+      add(a.inputs,{type:event.type,target:event.target?.id||event.target?.localName||null,
+        action:target?.id||(typeof target?.className==='string'?target.className:null),trusted:event.isTrusted,
+        pointerType:event.pointerType||null,x:Number.isFinite(point.clientX)?point.clientX:null,y:Number.isFinite(point.clientY)?point.clientY:null});
+      if(event.type==='click'&&target)add(a.clicks,{id:target.id||target.className,trusted:event.isTrusted});
+    };
+    for(const type of ['pointerdown','pointerup','pointercancel','touchstart','touchend','touchcancel','mousedown','mouseup','click'])
+      document.addEventListener(type,observe,{capture:true,passive:true});
+  };
   a.bindClicks();
 })();"""
 
@@ -382,7 +392,9 @@ def main():
                         page.evaluate("__storageAudit.reset('full-app-navigation')")
                         for cycle in range(3):
                             page.locator("#sentlogSettingsBtn").click()
-                            assert page.locator("#sentlogSettingsModal").get_attribute("aria-hidden") == "false", "The trusted settings action did not open its dialog"
+                            # Observe completion of this one trusted action;
+                            # never retry it or dispatch a synthetic click.
+                            page.locator('#sentlogSettingsModal[aria-hidden="false"]').wait_for(state="visible", timeout=5000)
                             if cycle == 0:
                                 shot(page, "settings")
                             page.locator("#sentlogSettingsClose").click()
