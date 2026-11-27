@@ -122,3 +122,6 @@ subprocess.run([sys.executable, 'scripts/build_storage_lifecycle.py'], cwd=ROOT,
 
 # Wait for explicit save recovery before receiving more PDFs after a known failure.
 subprocess.run([sys.executable, 'scripts/build_pdf_save_failure_release.py'], cwd=ROOT, check=True)
+
+# Reuse verified partial cutoffs and wait for record recovery before more photos.
+subprocess.run([sys.executable, 'scripts/build_recovery_retry_release.py'], cwd=ROOT, check=True)

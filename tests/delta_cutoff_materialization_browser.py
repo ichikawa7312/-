@@ -50,8 +50,15 @@ SEED = r"""async()=>{
 }"""
 
 VERIFY = r"""async ({expected,interrupt=false})=>{
-  const R=SentlogRecords,H=SentlogBlobSha256,chunk=2*1024*1024,originalArrayBuffer=Blob.prototype.arrayBuffer,originalAdd=IDBObjectStore.prototype.add;
-  let largestBuffer=0,readCount=0,added=0,error=null;
+  const R=SentlogRecords,H=SentlogBlobSha256,chunk=2*1024*1024,NativeBlob=Blob,NativeFile=File,
+    originalArrayBuffer=Blob.prototype.arrayBuffer,originalAdd=IDBObjectStore.prototype.add;
+  let largestBuffer=0,readCount=0,added=0,error=null,constructedBytes=0,materializedPdfBytes=0;
+  const observeConstructor=Native=>new Proxy(Native,{construct(target,args){
+    const value=Reflect.construct(target,args);constructedBytes+=value.size;
+    if(value.type==='application/pdf')materializedPdfBytes+=value.size;
+    return value;
+  }});
+  window.Blob=observeConstructor(NativeBlob);window.File=observeConstructor(NativeFile);
   Blob.prototype.arrayBuffer=function(){
     largestBuffer=Math.max(largestBuffer,this.size);readCount++;
     if(this.size>chunk)throw Error('whole-file ArrayBuffer forbidden: '+this.size);
@@ -90,9 +97,9 @@ VERIFY = r"""async ({expected,interrupt=false})=>{
     const stored=rows.find(row=>row.key==='background:native-drawing');
     if(stored.sha256!==expected.sha256||stored.revision!==1||await H.digest(stored.value)!==expected.sha256)
       throw Error('Saved large PDF control row was replaced or damaged');
-    return {interrupted:interrupt,largestBuffer,readCount,added,cutoffRows:rows.length,bytes:file.size,
+    return {interrupted:interrupt,largestBuffer,readCount,added,constructedBytes,materializedPdfBytes,cutoffRows:rows.length,bytes:file.size,
       originalBytesPreserved:true,fileMetadataPreserved:true,protectedNotePreserved:true};
-  }finally{Blob.prototype.arrayBuffer=originalArrayBuffer;IDBObjectStore.prototype.add=originalAdd;}
+  }finally{NativeBlob.prototype.arrayBuffer=originalArrayBuffer;IDBObjectStore.prototype.add=originalAdd;window.Blob=NativeBlob;window.File=NativeFile;}
 }"""
 
 
@@ -116,14 +123,18 @@ def main():
                 expected = page.evaluate(SEED)
                 page.reload()
                 interrupted = page.evaluate(VERIFY, {"expected": expected, "interrupt": True})
+                if interrupted["materializedPdfBytes"] != expected["size"]:
+                    raise AssertionError("First conversion must create one independent PDF File")
                 page.reload()
                 resumed = page.evaluate(VERIFY, {"expected": expected})
                 if resumed["added"] != 1:
                     raise AssertionError("Resume must only add the previously unfinished photo")
+                if resumed["materializedPdfBytes"] != 0:
+                    raise AssertionError("Resume must reuse the verified PDF without constructing another File")
                 page.reload()
                 reopened = page.evaluate(VERIFY, {"expected": expected})
-                if reopened["added"] != 0:
-                    raise AssertionError("Completed conversion must not write any cutoff again")
+                if reopened["added"] != 0 or reopened["constructedBytes"] != 0:
+                    raise AssertionError("Completed conversion must not materialize or write any cutoff again")
                 report = {"browser": args.browser, "result": "PASS", "interrupted": interrupted,
                           "resumed": resumed, "reopened": reopened, "actualIPhoneTest": False}
                 if args.output:
