@@ -24,6 +24,13 @@ MIB = 1024 * 1024
 VARIANTS = ["string", "uint8array", "blob", "http-fetch"]
 
 
+def allowed_probe_url(url, origin):
+    if url.startswith(origin + "/"):
+        return True
+    uuid = r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+    return re.fullmatch(r"blob:" + re.escape(origin) + "/" + uuid, url) is not None
+
+
 def binary_payload(index):
     # Same xorshift32 byte series as the existing boundary fixture's cache seed.
     state = 0x12457812 + index
@@ -269,7 +276,7 @@ def main():
                         entry["browserVersion"] = context.browser.version if context.browser else None
 
                         def route_request(route):
-                            if route.request.url.startswith(origin + "/"):
+                            if allowed_probe_url(route.request.url, origin):
                                 route.continue_()
                             else:
                                 report["blockedRequests"].append(route.request.url)
