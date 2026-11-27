@@ -205,6 +205,9 @@ test('a close event before an in-flight abort rejection keeps the close warning 
   finally{IDBObjectStore.prototype.put=put;f.release();}
   assert(closed,'The test must close the actual writer after queuing its mutations');await closed;
   const error=closeError(f.records);assert.equal(f.records.recordFailureDetails,null);
+  const history=clone(f.records.recordFailureHistory);
+  assert.deepEqual(history.events.map(event=>event.kind),['database-unexpected-close','record-save-failed']);
+  assert.equal(history.latestRecordFailure.errorName,'AbortError');assert.equal(history.firstRecordFailure.sequence,2);
   assert.equal(f.records.pending,true);assert.equal(f.records.getItem(DRAW),raw);
   await assert.rejects(f.records.retry(),caught=>caught===error);
   noFurtherIO(f);assert.deepEqual(await f.snapshot(),before);
@@ -222,6 +225,86 @@ test('the existing versionchange warning still preserves a pending draft without
   await assert.rejects(f.records.flush(),error=>error.code!=='RECORD_CONNECTION_CLOSED'&&/別の画面/.test(error.message));
   assert.equal(f.records.ready,true);assert.equal(f.records.failed,true);assert.equal(f.records.pending,true);
   assert.equal(f.records.getItem(DRAW),raw);noFurtherIO(f);assert.deepEqual(await f.snapshot(),before);
+}));
+
+test('quota then close retains the original safe failure history without changing the current failure or doing IO',()=>use(async f=>{
+  const before=await f.snapshot();
+  f.hold();const raw=f.draft('Synthetic secret memo /private/path'),restore=abortNextPut(f,META);let original;
+  try{await assert.rejects(f.records.flush(),error=>{original=error;return error.name==='QuotaExceededError';});}finally{restore();}
+  assert.throws(()=>f.records.assertSafe(),error=>error===original);
+  const originalDetail=clone(f.records.recordFailureDetails);
+  f.resetProbe();await f.forceClose();const error=closeError(f.records);f.release();
+  assert.equal(f.records.recordFailureDetails,null,'The historical cause must not replace the current close diagnosis');
+  const history=clone(f.records.recordFailureHistory),quota=history.latestRecordFailure;
+  assert.deepEqual(quota.detail,originalDetail);
+  assert.equal(quota.kind,'record-save-failed');assert.equal(quota.detail.errorName,'QuotaExceededError');assert.equal(quota.detail.phase,'commit');
+  assert.equal(quota.nativeMessageClass,'empty','FakeIndexedDB provides no quota message for this native-style abort');assert.equal(quota.sequence,1);assert(Number.isFinite(Date.parse(quota.observedAt)));
+  assert.deepEqual(history.events.map(event=>event.kind),['record-save-failed','database-unexpected-close']);
+  assert.deepEqual(history.events.map(event=>event.sequence),[1,2]);
+  assert.deepEqual(history.firstRecordFailure,quota);assert.deepEqual(history.latestRecordFailure,quota);
+  assert.deepEqual(history.current,{connection:'unexpected-close',recordsFailed:true});
+  assert.equal(history.events[1].reason,'not-reported');assert.equal(f.records.recordFailureDetails,null);
+  assert.equal(f.records.getItem(DRAW),raw);assert.equal(f.records.pending,true);
+  await assert.rejects(f.records.retry(),caught=>caught===error);
+  for(const secret of ['/private/path','Synthetic secret','synthetic-owner',FILE,DRAW])assert(!JSON.stringify(history).includes(secret));
+  const changed=f.records.recordFailureHistory;changed.firstRecordFailure.detail.errorName='changed';changed.latestRecordFailure.detail.phase='changed';changed.events[0].detail.store='changed';changed.current.connection='changed';
+  assert.deepEqual(clone(f.records.recordFailureHistory),history,'Every nested exported snapshot must be isolated from the writer');
+  noFurtherIO(f);assert.deepEqual(await f.snapshot(),before);
+}));
+
+for(const [name,newVersion,change]of [['delete request',null,'delete-request'],['upgrade request',3,'upgrade-request'],['untyped event',undefined,'unknown']]){
+  test('quota then '+name+' is recorded distinctly without asserting deletion completed',()=>use(async f=>{
+    const before=await f.snapshot();f.hold();const raw=f.draft(),restore=abortNextPut(f,META);
+    try{await assert.rejects(f.records.flush(),error=>error.name==='QuotaExceededError');}finally{restore();}
+    f.resetProbe();f.connection.onversionchange(newVersion===undefined?undefined:{oldVersion:2,newVersion});
+    f.connection.onclose();f.release();
+    await assert.rejects(f.records.flush(),error=>error.code!=='RECORD_CONNECTION_CLOSED'&&/別の画面/.test(error.message));
+    const history=clone(f.records.recordFailureHistory),event=history.events[1];
+    assert.deepEqual(history.events.map(value=>value.kind),['record-save-failed','database-versionchange']);
+    assert.equal(event.change,change);assert.equal(event.oldVersion,newVersion===undefined?null:2);assert.equal(event.newVersion,newVersion??null);
+    assert.equal(history.latestRecordFailure.detail.errorName,'QuotaExceededError');assert.equal(history.firstRecordFailure.sequence,1);
+    assert.deepEqual(history.current,{connection:'not-open',recordsFailed:true});assert.equal(f.records.recordFailureDetails,null);
+    assert.equal(f.records.getItem(DRAW),raw);assert.equal(f.records.pending,true);
+    noFurtherIO(f);assert.deepEqual(await f.snapshot(),before);
+  }));
+}
+
+test('history keeps its first and latest failures while bounded events show successful explicit retries',()=>use(async f=>{
+  for(let i=0;i<10;i++){
+    f.hold();f.draft('Synthetic revision '+i);const restore=abortNextPut(f,META);
+    try{await assert.rejects(f.records.flush(),error=>error.name==='QuotaExceededError');}finally{restore();f.release();}
+    await f.records.retry();f.records.assertSafe();
+  }
+  f.resetProbe();const history=clone(f.records.recordFailureHistory);
+  assert.equal(history.capacity,16);assert.equal(history.events.length,16);assert.equal(history.droppedEvents,4);
+  assert.equal(history.firstRecordFailure.sequence,1);assert.equal(history.latestRecordFailure.sequence,19);
+  assert.deepEqual(history.events.map(event=>event.sequence),Array.from({length:16},(_,i)=>i+5));
+  assert.equal(history.events.at(-1).kind,'record-save-completed');assert.equal(history.events.at(-1).afterFailureSequence,19);
+  assert.deepEqual(history.current,{connection:'open',recordsFailed:false});assert.equal(f.records.recordFailureDetails,null);
+  assert.equal(f.records.pending,false);noFurtherIO(f);
+}));
+
+test('native messages are classified into constants and never export arbitrary text, paths or names',()=>use(async f=>{
+  let revision=0;
+  for(const [name,message,expectedName,expectedClass]of [
+    ['QuotaExceededError','QuotaExceededError','QuotaExceededError','quota-mentioned'],
+    ['UnknownError','IO error: /private/synthetic-user/database','UnknownError','io-mentioned'],
+    ['UnknownError','No space left on device: /private/synthetic-user/database','UnknownError','disk-space-mentioned'],
+    ['InvalidStateError','The database connection is closing. /private/synthetic-user/database','InvalidStateError','connection-closed-mentioned'],
+    ['UnknownError','private-synthetic-account unknown failure','UnknownError','unclassified'],
+    ['private-synthetic-error-name','private-synthetic-message','Error','unclassified'],
+    ['UnknownError','private-synthetic-message'.repeat(100),'UnknownError','unavailable']
+  ]){
+    const original=new Error(message);original.name=name;const put=IDBObjectStore.prototype.put;let injected=false;
+    IDBObjectStore.prototype.put=function(...args){if(this.transaction.db===f.connection&&this.name==='files'&&args[1]===PREFIX+DRAW&&!injected){injected=true;throw original;}return put.apply(this,args);};
+    f.hold();f.draft('Synthetic revision '+(++revision));
+    try{await assert.rejects(f.records.flush(),error=>error===original);}finally{IDBObjectStore.prototype.put=put;f.release();}
+    assert.throws(()=>f.records.assertSafe(),error=>error===original);
+    const history=clone(f.records.recordFailureHistory),event=history.latestRecordFailure;
+    assert.equal(event.detail.errorName,expectedName);assert.equal(event.nativeMessageClass,expectedClass);
+    assert(!JSON.stringify(history).includes('private-synthetic'));assert(!JSON.stringify(history).includes('/private/'));
+    await f.records.retry();
+  }
 }));
 
 (async()=>{

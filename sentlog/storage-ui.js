@@ -42,9 +42,9 @@
 #sentlogStorageWarning{position:fixed;z-index:11000;bottom:calc(8px + env(safe-area-inset-bottom,0px));left:12px;right:12px;max-width:740px;max-height:calc(100vh - 24px);max-height:calc(100dvh - 24px - env(safe-area-inset-bottom,0px));overflow:auto;overscroll-behavior:contain;margin:0 auto;padding:14px;border:2px solid #b91c1c;border-radius:12px;background:#fff1f2;color:#881337;box-shadow:0 4px 20px #0003;font-size:13px;line-height:1.6;}
 #sentlogStorageWarning[hidden],#sentlogStorageWarning [hidden]{display:none!important;}#sentlogStorageWarning p{margin:6px 0;}
 #sentlogStorageWarning button{margin:6px 6px 0 0;min-height:44px;font-size:12px;}
-#sentlogStorageWarning .failure-details{border-top:1px solid #fecdd3;margin-top:8px;padding-top:4px;overflow-wrap:anywhere;}
-#sentlogStorageWarning .failure-details summary{min-height:44px;display:list-item;align-content:center;cursor:pointer;}
-#sentlogStorageWarning .failure-details p,#sentlogStorageWarning .record-rescue-note{font-size:12px;}
+#sentlogStorageWarning .failure-details,#sentlogStorageWarning .failure-history{border-top:1px solid #fecdd3;margin-top:8px;padding-top:4px;overflow-wrap:anywhere;}
+#sentlogStorageWarning .failure-details summary,#sentlogStorageWarning .failure-history summary{min-height:44px;display:list-item;align-content:center;cursor:pointer;}
+#sentlogStorageWarning .failure-details p,#sentlogStorageWarning .failure-history p,#sentlogStorageWarning .record-rescue-note{font-size:12px;}
 `;
   document.head.appendChild(style);
   const section=document.createElement('details');section.id='sentlogStorageSection';
@@ -170,7 +170,9 @@
   };
   const warning=document.createElement('aside');warning.id='sentlogStorageWarning';warning.hidden=true;warning.setAttribute('role','alert');
   warning.innerHTML='<strong>この端末に保存できていないデータがあります</strong><p class="message"></p><p>画面を閉じたり更新したりせず、まず控えを書き出してください。</p><button type="button" class="retry">記録を再保存</button><button type="button" class="rescue">未保存の記録を含む控えを書き出す</button><button type="button" class="record-rescue">記録だけを案件ごとに書き出す</button><p class="record-rescue-note">記録だけの控えには、PDF・写真画像そのものは含まれません。</p><p class="rescue-result" role="status" hidden></p><details class="failure-details" hidden><summary>保存エラーの詳細</summary><p class="failure-stage"></p><p class="failure-size"></p><p>記録本文全体のUTF-8換算です。本文内の識別情報・管理情報・写真リンクも含みます。IndexedDBの保存キー、本文とは別に保存する履歴・管理情報・PDF・写真ファイル、データベース内部の領域は含まず、実際の使用量や必要な空き容量を示す数値ではありません。</p></details>';
-  document.body.appendChild(warning);
+  const historyArea=document.createElement('details');historyArea.className='failure-history';historyArea.hidden=true;
+  historyArea.innerHTML='<summary>保存障害の経過</summary><p>この画面で記録した保存失敗と、保存先の変更・切断の順序を書き出せます。画面を閉じると経過は失われます。古い経過は一部省略されますが、最初と直近の記録保存失敗は残ります。</p><p>診断ファイルはデータの控えではありません。記録本文・識別情報・ファイル名・画像・エラー通知の原文は含みません。まず未保存の記録を含む控えも残してください。通知の種類だけで原因は確定できません。</p><button type="button" class="failure-history-export">保存障害の経過を書き出す</button><p class="failure-history-result" role="status" hidden></p>';
+  warning.appendChild(historyArea);document.body.appendChild(warning);
   const retry=warning.querySelector('.retry'),rescue=warning.querySelector('.rescue'),recordRescue=warning.querySelector('.record-rescue');
   const failureDetails=warning.querySelector('.failure-details'),rescueResult=warning.querySelector('.rescue-result');
   function showRecordFailureDetail(){
@@ -196,8 +198,23 @@
       const label=warning.querySelector('.message');if(label.textContent!==content)label.textContent=content;
     }
     showRecordFailureDetail();
+    historyArea.hidden=!store.recordFailureHistory?.events?.length;
   }
   store.subscribe(showFailure);showFailure();
+  const historyExport=historyArea.querySelector('.failure-history-export'),historyResult=historyArea.querySelector('.failure-history-result');
+  historyExport.onclick=()=>{
+    historyExport.disabled=true;let url=null,anchor=null;
+    try{
+      const history=store.recordFailureHistory;if(history?.version!==1||!history.events?.length)throw Error('No history');
+      // Read the bounded in-memory snapshot only. Do not flush, retry, or open
+      // the failed database merely to export its diagnostic chronology.
+      url=URL.createObjectURL(new Blob([JSON.stringify(history,null,2)],{type:'application/json'}));
+      anchor=document.createElement('a');anchor.href=url;anchor.download='sentlog-storage-failure-history.json';
+      document.body.appendChild(anchor);anchor.click();
+      historyResult.textContent='診断ファイルの保存を開始しました。データの控えは別に残してください。';
+    }catch{historyResult.textContent='診断ファイルの保存を開始できませんでした。画面を閉じず、未保存の記録を含む控えを残してください。';}
+    finally{anchor?.remove();if(url)setTimeout(()=>URL.revokeObjectURL(url),60000);historyExport.disabled=false;historyResult.hidden=false;}
+  };
   retry.onclick=async()=>{retry.disabled=true;try{await store.retry();if(typeof renderSelectedPhotos==='function')renderSelectedPhotos();}catch(_){}finally{retry.disabled=false;showFailure();}};
   rescue.onclick=async()=>{rescue.disabled=true;rescueResult.hidden=true;try{await exportSentlogBackup({allowPending:true});}
     catch(e){rescueResult.textContent='控えの書き出しは完了していません。「記録だけを案件ごとに書き出す」も選べます。'+(e?.message||e);rescueResult.hidden=false;}
