@@ -286,9 +286,6 @@ def main():
                             url = urlparse(route.request.url)
                             if f"{url.scheme}://{url.netloc}" == origin:
                                 route.continue_()
-                            elif args.scenario == "regular-pc":
-                                page.add_script_tag(url=origin + "/pc-safe-backup.js")
-                                case["proofs"].append(page.evaluate(REGULAR_PC_CASE, case_name))
                             else:
                                 case["blockedRequests"].append({"scheme": url.scheme, "host": url.hostname})
                                 route.abort()
@@ -315,6 +312,9 @@ def main():
                                     button.click()
                                     page.wait_for_function("!document.querySelector('main button').disabled && __nativePc.calls.filter(x=>x.action==='pc_complete'||x.action==='pc_error').length===2")
                                     case["proofs"].append(page.evaluate(PC_PROOF, True))
+                            elif args.scenario == "regular-pc":
+                                page.add_script_tag(url=origin + "/pc-safe-backup.js")
+                                case["proofs"].append(page.evaluate(REGULAR_PC_CASE, case_name))
                             else:
                                 page.evaluate("""()=>{
                                   localStorage.setItem('surveyFieldNoteWorkspaceV1',JSON.stringify({projects:[{id:'synthetic-project',name:'Synthetic',drawings:[{id:'synthetic-drawing',name:'Synthetic drawing'}]}]}));

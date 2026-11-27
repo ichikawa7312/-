@@ -112,7 +112,28 @@
         throw fail('NETWORK',messages.NETWORK);
       }finally{clearTimeout(timer);controllers.delete(controller);upstream?.removeEventListener('abort',abort);controller.signal.removeEventListener('abort',abortedNow);}
     }
-    const guard=guardFactory.create({key:OWN,storage:authStore,fetcher:network,baseUrl:BASE,apiKey:KEY,now,locks:options.locks===undefined?root.navigator?.locks:options.locks});
+    const nativeLocks=options.locks===undefined?root.navigator?.locks:options.locks;
+    // Waiting for another tab's refresh is also part of this action. Aborting
+    // only active fetches leaves a queued refresh free to start after Cancel.
+    // Keep the shared guard unchanged and fence its acquisition here instead.
+    const authLocks={request(name,callback){
+      const id=epoch,controller=new AbortController();controllers.add(controller);
+      let rejectAbort;const aborted=new Promise((resolve,reject)=>{rejectAbort=reject;});
+      const onAbort=()=>rejectAbort(fail('CANCELLED',messages.CANCELLED));
+      controller.signal.addEventListener('abort',onAbort,{once:true});
+      function current(){checkEpoch(id);if(controller.signal.aborted)throw fail('CANCELLED',messages.CANCELLED);}
+      const invoke=()=>{current();return callback();};
+      let acquired;
+      try{
+        current();acquired=typeof nativeLocks?.request==='function'?
+          nativeLocks.request(name,{mode:'exclusive',signal:controller.signal},invoke):Promise.resolve().then(invoke);
+      }catch(error){acquired=Promise.reject(error);}
+      // The race settles the old guard flight even if an adapter ignores its
+      // signal. Its eventual callback must still pass the captured epoch fence.
+      return Promise.race([acquired,aborted]).then(value=>{current();return value;},error=>{current();throw error;})
+        .finally(()=>{controllers.delete(controller);controller.signal.removeEventListener('abort',onAbort);});
+    }};
+    const guard=guardFactory.create({key:OWN,storage:authStore,fetcher:network,baseUrl:BASE,apiKey:KEY,now,locks:authLocks});
     function state(){
       const shared=existing();
       return {busy,status,warning,errorCode,user:user?{email:user.email}:null,source,projects:projects.map(p=>({...p})),hasMore,checkedAt,
