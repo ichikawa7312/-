@@ -48,11 +48,13 @@ KNOWN_PROBE_ERROR = "A native Blob probe failed; all observations are retained"
 
 def classify_case(case, *, expect_baseline_blob_failure=False):
     """Accept the observed old-writer regression without hiding actual failures."""
+    if (case.get("cleanupError") or
+            any(case.get(key) for key in ("blockedRequests", "pageErrors", "crashes"))):
+        return "unexpected-failure"
     if case.get("status") == "passed":
         return "passed"
     if (not expect_baseline_blob_failure or case.get("writer") != "v215" or
-            case.get("status") != "failed" or case.get("cleanupError") or
-            any(case.get(key) for key in ("blockedRequests", "pageErrors", "crashes"))):
+            case.get("status") != "failed"):
         return "unexpected-failure"
     snapshot_failure = (case.get("error") == KNOWN_SNAPSHOT_ERROR and
                         case.get("lastBrowserPhase") == "snapshot/hash-blobs/surveyFieldNoteDB")
@@ -291,6 +293,11 @@ def main():
                                     except Exception as error:
                                         case["status"] = "failed"
                                         case["cleanupError"] = str(error)[:1000]
+                                # Browser callbacks can arrive while close()
+                                # is being processed, after the earlier checks.
+                                if any(case.get(key) for key in ("blockedRequests", "pageErrors", "crashes")):
+                                    case["status"] = "failed"
+                                    case.setdefault("error", "Browser error/crash or unexpected external request observed before context closure completed")
                                 classification = classify_case(case, expect_baseline_blob_failure=args.expect_baseline_blob_failure)
                                 case["classification"] = classification
                                 case["accepted"] = classification in ("passed", "expected-baseline-blob-regression")
