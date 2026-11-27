@@ -1,9 +1,11 @@
 'use strict';
 // Disposable databases only. The diagnostic must never mutate app data/schema.
 const assert=require('node:assert/strict');
-const fs=require('node:fs'),vm=require('node:vm');
-const {IDBFactory,IDBKeyRange,IDBObjectStore}=require('fake-indexeddb');
-const D=require('../sentlog/storage-diagnostics.js');
+const fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
+const {IDBFactory,IDBKeyRange,IDBObjectStore,IDBDatabase,IDBCursor,forceCloseDatabase}=require('fake-indexeddb');
+const ROOT=path.resolve(process.env.SENTLOG_STORAGE_SOURCE_ROOT||path.join(__dirname,'..'));
+const diagnosticPath=path.join(ROOT,'sentlog/storage-diagnostics.js');
+const D=require(diagnosticPath);
 const tests=[];const test=(name,run)=>tests.push({name,run});
 async function seed(factory,name,stores,version=1){
   const db=await new Promise((resolve,reject)=>{const q=factory.open(name,version);q.onupgradeneeded=()=>{
@@ -21,6 +23,26 @@ async function contents(factory,name,store){
 const scan=(factory,options={})=>D.scan({indexedDB:factory,IDBKeyRange,...options});
 const blob=n=>new Blob([new Uint8Array(n)]);
 function store(result,name){for(const db of result.databases)for(const item of db.stores)if(item.name===name)return item;throw Error('missing '+name);}
+function format(result){
+  const context={document:{querySelector:()=>null},location:{pathname:'/sentlog/'}};
+  vm.runInNewContext(fs.readFileSync(path.join(ROOT,'sentlog/storage-diagnostics-ui.js'),'utf8'),context);
+  return context.SentlogStorageDiagnosticsUI.format(result);
+}
+async function readonly(factory,run){
+  const probe={opens:[],transactions:[],forbidden:[]},restores=[];
+  function replace(owner,key,value){const old=owner[key];owner[key]=value;restores.push(()=>{owner[key]=old;});}
+  const reject=label=>function(){probe.forbidden.push(label);throw Error('Read-only diagnostic attempted '+label);};
+  for(const [owner,methods]of [[factory,['deleteDatabase']],
+    [IDBDatabase.prototype,['createObjectStore','deleteObjectStore']],
+    [IDBObjectStore.prototype,['put','add','delete','clear','getAll','getAllKeys','createIndex','deleteIndex']],
+    [IDBCursor.prototype,['update','delete']],[Blob.prototype,['arrayBuffer','text','stream']]])
+    for(const method of methods)replace(owner,method,reject(method));
+  const open=factory.open.bind(factory),transaction=IDBDatabase.prototype.transaction;
+  replace(factory,'open',(name,...args)=>{probe.opens.push(name);assert.equal(args.length,0,'Diagnostics must not request a version');return open(name,...args);});
+  replace(IDBDatabase.prototype,'transaction',function(stores,mode,...args){probe.transactions.push(mode||'readonly');
+    assert.equal(mode||'readonly','readonly');return transaction.call(this,stores,mode,...args);});
+  try{return await run(probe);}finally{for(const restore of restores.reverse())restore();assert.deepEqual(probe.forbidden,[]);}
+}
 
 // Advance the timer independently of the wall clock. Native clocks may still
 // report the preceding millisecond when a deadline timer has already fired.
@@ -34,7 +56,7 @@ for(const scenario of [
   class CoarseDate extends Date{constructor(...args){super(...(args.length?args:[now]));}static now(){return now;}}
   const context={module:{exports:{}},Date:CoarseDate,
     setTimeout(fn,delay){const id=++serial;timers.set(id,{fn,delay});return id;},clearTimeout(id){timers.delete(id);}};
-  vm.runInNewContext(fs.readFileSync(require.resolve('../sentlog/storage-diagnostics.js'),'utf8'),context,{filename:'storage-diagnostics.js'});
+  vm.runInNewContext(fs.readFileSync(diagnosticPath,'utf8'),context,{filename:'storage-diagnostics.js'});
   const resultPromise=context.module.exports.scan({indexedDB:{
     databases(){enumerated++;return new Promise(()=>{});},open(){opened++;throw Error('must not open');}
   },IDBKeyRange,maxDurationMs:scenario.max,requestTimeoutMs:scenario.request});
@@ -104,10 +126,70 @@ test('global time limit also stops a nonresponsive enumeration without opening a
   assert.equal(result.status,'failed');assert.equal(result.complete,false);assert.match(result.reason,/時間/);assert.equal(opened,0);
 });
 
-test('missing known databases are not opened or created',async()=>{
-  const f=new IDBFactory();let opened=0;const old=f.open.bind(f);f.open=(...args)=>{opened++;return old(...args);};
-  const result=await scan(f);assert.equal(result.status,'complete');assert.equal(result.records,0);
-  assert.equal(result.missingDatabases.length,5);assert.equal(opened,0);assert.deepEqual(await f.databases(),[]);
+test('an empty inventory is unmeasured and cannot claim an empty or completely measured store',async()=>{
+  const f=new IDBFactory();await readonly(f,async probe=>{
+    const result=await scan(f);assert.equal(result.status,'failed');assert.equal(result.complete,false);
+    assert.equal(result.records,0);assert.equal(result.logicalBytes,0);assert.equal(result.databases.length,0);
+    assert.deepEqual(result.missingDatabases,[...D.databaseNames]);assert.equal(probe.opens.length,0);assert.equal(probe.transactions.length,0);
+    assert.match(result.reason,/確認できません|確認できませんでした/);assert.match(result.reason,/空とは判断できません/);
+    const text=format(result);assert.match(text,/未計測/);assert.match(text,/一覧で確認できない保存先/);
+    assert.match(text,/未作成・未使用の場合もあります/);assert(!text.includes('保存データの集計：0 B'));
+  });assert.deepEqual(await f.databases(),[]);
+});
+
+test('an unknown-only inventory does not open it or treat it as zero measured application data',async()=>{
+  const f=new IDBFactory();await seed(f,'unrelated-fixture-app',{private:[['secret','PRIVATE unrelated value']]});
+  const before=await f.databases();await readonly(f,async probe=>{
+    const result=await scan(f);assert.equal(result.status,'failed');assert.equal(result.complete,false);
+    assert.equal(result.records,0);assert.equal(result.logicalBytes,0);assert.equal(result.missingDatabases.length,5);
+    assert.equal(result.excludedDatabaseCount,1);assert.deepEqual(probe.opens,[]);assert.deepEqual(probe.transactions,[]);
+    assert.match(format(result),/未計測/);assert(!JSON.stringify(result).includes('PRIVATE unrelated value'));
+  });assert.deepEqual(await f.databases(),before);assert.deepEqual(await contents(f,'unrelated-fixture-app','private'),['PRIVATE unrelated value']);
+});
+
+test('a normally unused known database remains separate from the successfully measured existing store',async()=>{
+  const f=new IDBFactory();await seed(f,'surveyFieldNoteDB',{files:[[0,'kept']]});const before=await f.databases();
+  await readonly(f,async probe=>{
+    const result=await scan(f);assert.equal(result.status,'complete');assert.equal(result.complete,true);
+    assert.equal(result.records,1);assert.equal(result.textBytes,4);assert.equal(result.missingDatabases.length,4);
+    assert.deepEqual(probe.opens,['surveyFieldNoteDB']);assert(probe.transactions.every(mode=>mode==='readonly'));
+    const text=format(result);assert.match(text,/確認できた分：/);assert.match(text,/一覧で確認できない保存先/);
+    assert.match(text,/空、または消えたとは判断できません/);
+  });assert.deepEqual(await f.databases(),before);assert.deepEqual(await contents(f,'surveyFieldNoteDB','files'),['kept']);
+});
+
+test('a rejected enumeration reports unavailable without opening or altering the existing database',async()=>{
+  const f=new IDBFactory();await seed(f,'surveyFieldNoteDB',{files:[[0,'kept']]});
+  const enumerate=f.databases.bind(f),before=await enumerate();f.databases=async()=>{throw Error('Synthetic enumeration unavailable');};
+  await readonly(f,async probe=>{
+    const result=await scan(f);assert.equal(result.status,'failed');assert.equal(result.complete,false);
+    assert.equal(result.records,0);assert.deepEqual(probe.opens,[]);assert.match(format(result),/未計測/);
+  });f.databases=enumerate;assert.deepEqual(await f.databases(),before);assert.deepEqual(await contents(f,'surveyFieldNoteDB','files'),['kept']);
+});
+
+for(const [name,inventory]of [
+  ['non-array',null],['missing row name',[{}]],['empty row name',[{name:'',version:1}]],
+  ['null row',[null]],['duplicate known name',[{name:'surveyFieldNoteDB',version:2},{name:'surveyFieldNoteDB',version:2}]],
+  ['duplicate unknown name',[{name:'unrelated-fixture-app',version:1},{name:'unrelated-fixture-app',version:1}]],
+  ['missing known version',[{name:'surveyFieldNoteDB'}]],['zero known version',[{name:'surveyFieldNoteDB',version:0}]],
+  ['fractional known version',[{name:'surveyFieldNoteDB',version:1.5}]],
+  ['string known version',[{name:'surveyFieldNoteDB',version:'2'}]],
+  ['invalid later row',[{name:'surveyFieldNoteDB',version:2},{name:'',version:1}]]
+])test('invalid inventory '+name+' is rejected before any database open',async()=>{
+  let opened=0;const result=await D.scan({indexedDB:{databases:async()=>inventory,open(){opened++;throw Error('Must not open invalid inventory');}},IDBKeyRange});
+  assert.equal(result.status,'failed');assert.equal(result.complete,false);assert.equal(result.records,0);
+  assert.equal(result.databases.length,0);assert.equal(opened,0);assert.match(format(result),/未計測/);
+});
+
+test('an unexpected diagnostic connection close stops without reopening or changing any data',async()=>{
+  const f=new IDBFactory();await seed(f,'surveyFieldNoteDB',{files:[[0,blob(10)],[1,blob(20)],[2,blob(30)]]});
+  const before=await f.databases(),native=f.open.bind(f);let owned,closed=false;
+  f.open=(...args)=>{const q=native(...args);q.addEventListener('success',()=>{owned=q.result;});return q;};
+  await readonly(f,async probe=>{
+    const result=await scan(f,{yieldEvery:1,onProgress(value){if(value.records===1&&!closed){assert(owned);closed=true;forceCloseDatabase(owned);}}});
+    assert.equal(closed,true);assert.equal(result.status,'partial');assert.equal(result.complete,false);assert.equal(result.records,1);
+    assert.match(result.reason,/接続/);assert.match(result.reason,/空とは判断できません/);assert.deepEqual(probe.opens,['surveyFieldNoteDB']);
+  });assert.deepEqual(await f.databases(),before);assert.equal((await contents(f,'surveyFieldNoteDB','files')).length,3);
 });
 
 test('stale enumeration after deletion aborts implicit creation without leaving a database',async()=>{

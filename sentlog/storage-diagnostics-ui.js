@@ -23,18 +23,29 @@
     'sentlog-delta-assets-v1/assets':'同期受信・保管用のファイル',
     'sentlog-delta-v1/replicas':'差分同期の記録・送信待ち情報'
   };
+  const databaseLabels={
+    'surveyFieldNoteDB':'記録・図面・共有写真',
+    'sentlog-original-photos-v1':'この端末で撮影した元写真',
+    'sentlog-delta-migration-v1':'同期移行の控え',
+    'sentlog-delta-assets-v1':'同期受信・保管用のファイル',
+    'sentlog-delta-v1':'差分同期の記録・送信待ち情報'
+  };
+  function missingText(result){
+    const names=result.missingDatabases||[];if(!names.length)return null;
+    return '一覧で確認できない保存先：'+names.map(name=>databaseLabels[name]||name).join('、')+'。未作成・未使用の場合もあります。この一覧だけで、保存データが空、または消えたとは判断できません。';
+  }
   const states={complete:'確認済み',partial:'一部のみ',cancelled:'中止',unsupported:'非対応',failed:'確認できません',busy:'別の確認を実行中'};
   let section,output,status,start,cancel,copy,active=null,lastResult=null,observer=null;
   function rows(result){return (result?.databases||[]).flatMap(database=>(database.stores||[]).map(store=>({database,store})));}
   function label(database,store){return roles[database.name+'/'+store.name]||store.role||'その他の保存情報';}
   function measured(result){return result.complete||result.records>0||rows(result).some(({store})=>store.status==='complete');}
-  function amount(result){return measured(result)?(result.complete?'':'確認できた分：')+bytes(result.logicalBytes):'未計測';}
+  function amount(result){return measured(result)?(result.complete&&!result.missingDatabases?.length?'':'確認できた分：')+bytes(result.logicalBytes):'未計測';}
   function storeAmount(store){return store.status==='complete'?bytes(store.logicalBytes)+' / '+number(store.records)+'項目':
     store.records>0?'確認できた分：'+bytes(store.logicalBytes)+' / '+number(store.records)+'項目（途中）':'未計測';}
   function timestamp(value){if(value===null||value===undefined)return '不明';const date=new Date(value);return Number.isFinite(date.getTime())?date.toLocaleString('ja-JP'):String(value);}
   function resultText(result){
     const lines=['セントログ 内部保存の診断',
-      '状態：'+(states[result.status]||result.status),
+      '状態：'+(result.complete&&result.missingDatabases?.length?'一覧で確認できた保存先のみ確認済み':states[result.status]||result.status),
       '確認開始：'+result.startedAt,'確認終了：'+result.finishedAt,
       '保存データの集計：'+amount(result)+'（同じ内容の保持分も含む目安）',
       'これは本体の使用量・空き容量ではありません。物理的な重複の有無は判定していません。'];
@@ -47,6 +58,7 @@
       if(store.kinds&&Object.keys(store.kinds).length)lines.push('  記録種類：'+JSON.stringify(store.kinds));
     }
     for(const database of result.databases||[])if(database.reason)lines.push('保存先の確認状況：'+database.name+' / '+database.reason);
+    const missing=missingText(result);if(missing)lines.push(missing);
     if(result.reason)lines.push('全体の確認状況：'+result.reason);
     for(const warning of result.warnings||[])lines.push('補足：'+warning);
     if(result.excludedDatabases?.length)lines.push('集計対象外の同サイト保存先：'+result.excludedDatabases.map(d=>d.name).join('、'));
@@ -72,6 +84,7 @@
       card.append(detail);list.append(card);
     }
     output.append(list);
+    const missing=missingText(result);if(missing)output.append(node('p',missing));
     if(result.reason)output.append(node('p','確認状況：'+result.reason));
     for(const database of result.databases||[])if(database.reason)output.append(node('p',database.name+'：'+database.reason));
     for(const warning of result.warnings||[])output.append(node('p',warning));
@@ -92,7 +105,7 @@
       }});
       if(active!==controller)return;
       lastResult=result;render(result);
-      status.textContent=result.complete?'内部保存の確認が終わりました。':
+      status.textContent=result.complete?(result.missingDatabases?.length?'一覧で確認できた保存先の診断が終わりました。確認できない保存先があります。':'内部保存の確認が終わりました。'):
         result.status==='cancelled'?'確認を中止しました。ここまで確認できた範囲を表示します。':
         result.status==='unsupported'?'この端末では保存先の一覧を安全に取得できないため、診断を開始していません。':
         '全ては確認できませんでした。確認できた範囲を表示します。';

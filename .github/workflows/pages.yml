@@ -242,6 +242,8 @@ jobs:
           node tests/startup_backup_recovery_release.test.cjs
           SENTLOG_NORMALIZATION_SOURCE=sentlog/cloud-sync.js SENTLOG_BUILT_ROOT=. node tests/cloud_normalization_noop.test.cjs
           node tests/cloud_normalization_release.test.cjs
+          node tests/record_connection_lifecycle.test.cjs
+          node tests/storage_lifecycle_release.test.cjs
       - name: Setup Pages
         uses: actions/configure-pages@v5
         with:

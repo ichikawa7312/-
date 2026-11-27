@@ -112,6 +112,14 @@ FIXTURE_HELPERS = r"""(() => {
     await create('sentlog-delta-v1',{replicas:[['r',{outbox:[{memo:'PRIVATE fixture 日本語😀'}]}]]});
     await create('unrelated-fixture-app',{private:[['secret','PRIVATE unrelated value']]});
   }
+  async function seedUnknown(){
+    await create('unrelated-fixture-app',{private:[
+      ['secret','PRIVATE unrelated value'],
+      ['original',new File(['PRIVATE synthetic original bytes'],'PRIVATE-original.jpg',{
+        type:'image/jpeg',lastModified:1700000000000
+      })]
+    ]});
+  }
   async function summarize(value){
     if(value instanceof Blob)return {
       type:value instanceof File?'File':'Blob',size:value.size,mimeType:value.type,
@@ -190,7 +198,7 @@ FIXTURE_HELPERS = r"""(() => {
       window.__scanResult=result;return result;
     }};
   }
-  window.fixture={seed,snapshot,guard,wrapScan};
+  window.fixture={seed,seedUnknown,snapshot,guard,wrapScan};
 })();"""
 
 
@@ -298,6 +306,60 @@ def unsupported(page, base):
     unchanged(page, before)
 
 
+def no_known_databases(page, base, unknown_only=False):
+    page.goto(base + "/sentlog/")
+    page.add_script_tag(content=FIXTURE_HELPERS)
+    if unknown_only:
+        page.evaluate("() => fixture.seedUnknown()")
+    page.evaluate("() => localStorage.setItem('synthetic-fixture-setting','preserve this setting')")
+    before_local = page.evaluate("Object.entries(localStorage)")
+    before = page.evaluate("() => fixture.snapshot()")
+    check(len(before) == (1 if unknown_only else 0), "Native fixture inventory is not isolated")
+    if unknown_only:
+        check(before[0]["name"] == "unrelated-fixture-app", "Unknown-only fixture contains an application database")
+    page.evaluate("() => { window.__guard=fixture.guard(); }")
+    page.add_script_tag(url=base + "/source/storage-diagnostics.js")
+    install_ui(page, base)
+    page.evaluate("() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))")
+    check(page.evaluate("__scanCalls") == 0, "Loading an unmeasured UI started a scan")
+    check(page.evaluate("__guard.probe.enumerations") == 0, "Loading an unmeasured UI enumerated databases")
+    begin(page)
+    report = result(page)
+    check(report["status"] == "failed" and not report["complete"], "No known database was misleadingly reported as completely measured")
+    check(report["records"] == 0 and report["logicalBytes"] == 0, "Unmeasured result contains invented values")
+    check(report["databases"] == [], "Diagnostic claimed to measure an unlisted application database")
+    check(set(report["missingDatabases"]) == {
+        "surveyFieldNoteDB", "sentlog-original-photos-v1", "sentlog-delta-migration-v1",
+        "sentlog-delta-assets-v1", "sentlog-delta-v1",
+    }, "Not all five unlisted application databases were reported")
+    check(report["excludedDatabaseCount"] == (1 if unknown_only else 0), "Excluded inventory count differs")
+    probe = page.evaluate("__guard.probe")
+    check(probe["enumerations"] >= 1, "The case did not use native database enumeration")
+    check(probe["opens"] == [] and probe["transactions"] == [], "Diagnostic probed or created an unlisted database")
+    check(page.locator(".sl-diagnosis-total").inner_text() == "未計測", "Unmeasured result misleadingly displayed zero bytes")
+    text = page.locator("#sentlogStorageDiagnosticResult").inner_text()
+    labels = ["記録・図面・共有写真", "この端末で撮影した元写真", "同期移行の控え",
+              "同期受信・保管用のファイル", "差分同期の記録・送信待ち情報"]
+    check("一覧で確認できない保存先" in text and all(label in text for label in labels), "Missing database roles are not visible")
+    check("未作成・未使用の場合もあります" in text and "空、または消えたとは判断できません" in text,
+          "Unlisted database uncertainty was omitted")
+    check("PRIVATE" not in text and "PRIVATE" not in json.dumps(report), "Unknown database contents were exposed")
+    status = page.locator("#sentlogStorageDiagnosticSection [role='status']").inner_text()
+    check("確認でき" in status and "内部保存の確認が終わりました" not in status, "UI announced a successful full measurement")
+    box = page.locator("#sentlogStorageDiagnosticSection").bounding_box()
+    check(box and box["x"] >= 0 and box["x"] + box["width"] <= page.viewport_size["width"], "Unmeasured result overflows viewport")
+    page.evaluate("""() => Object.defineProperty(navigator,'clipboard',{
+      configurable:true,value:{writeText:async text=>{window.__copied=text;}}
+    })""")
+    page.get_by_role("button", name="診断結果をコピー", exact=True).click()
+    copied = page.evaluate("window.__copied")
+    check(copied and "未計測" in copied and "状態：確認できません" in copied, "Copied result claims a measurement")
+    check("一覧で確認できない保存先" in copied and all(label in copied for label in labels), "Copied result omits unlisted database roles")
+    check("PRIVATE" not in copied, "Copied result contains unrelated private values")
+    unchanged(page, before)
+    check(page.evaluate("Object.entries(localStorage)") == before_local, "Diagnostic changed localStorage")
+
+
 def cancel_in_progress(page, base):
     before = prepare(page, base, rows=1200)
     install_ui(page, base, {"yieldEvery": 1})
@@ -383,6 +445,8 @@ CASES = [
     ("PC manual start and readonly diagnosis", lambda p, b: manual_complete(p, b, pc=True)),
     ("row limit is an explicitly partial result", partial_limit),
     ("unsupported enumeration is unmeasured, not zero", unsupported),
+    ("empty native inventory stays unmeasured and displays missing database roles", no_known_databases),
+    ("unknown-only native inventory is not opened and stays unmeasured", lambda p, b: no_known_databases(p, b, unknown_only=True)),
     ("cancel during native readonly enumeration preserves data", cancel_in_progress),
     ("collapsing the section cancels before measurement", cancel_before_measurement),
     ("closing settings cancels before measurement", lambda p, b: cancel_before_measurement(p, b, close_modal=True)),

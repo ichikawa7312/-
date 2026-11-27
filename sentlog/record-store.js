@@ -13,15 +13,16 @@
   let memory=new Map(), durableMemory=new Map(), pending=new Map(), pendingOptions=[], revision=0, connection=null;
   let initialized=false, boot=null, flight=null, queued=false, inFlight=0, exclusive=false;
   let migrationInfo=null, operation=false, failure=null;
-  let recordFailure=null;
+  let recordFailure=null,connectionFailure=null;
   const recordTransactions=new WeakMap();
   const listeners=new Set(), failures=new Map(), fileTasks=new Set(), failedFiles=new Map(), fileWriters=new Map(), fileGenerations=new Map(), fileTaskOwners=new Map();
   let bindings=new Map(),cutoffFiles=new Map();
   function notify(){for(const fn of listeners){try{fn()}catch(e){console.warn('Storage status',e)}}}
-  function report(key,error){failures.set(String(key),error?.message||String(error));notify();}
-  function recovered(key){if(failures.delete(String(key)))notify();}
+  function report(key,error){key=String(key);if(key==='records'&&connectionFailure)error=connectionFailure;failures.set(key,error?.message||String(error));notify();}
+  function recovered(key){if(String(key)==='records'&&connectionFailure)return;if(failures.delete(String(key)))notify();}
   function assertReady(){if(!initialized)throw Error('保存先の準備が完了していません');}
   function transaction(mode){
+    if(connectionFailure)throw connectionFailure;
     if(!connection)throw Error('保存先との接続が切れました。画面を閉じず、再保存を試してください。');
     const stores=[STORE,JOURNAL,CONTROL];
     try{return connection.transaction(stores,mode,{durability:'strict'})}
@@ -79,6 +80,7 @@
     }catch{recordFailure=null;}
   }
   async function connect(){
+    if(connectionFailure)throw connectionFailure;
     if(connection)return;
     connection=await new Promise((resolve,reject)=>{
       const q=indexedDB.open(DB,DB_VERSION);
@@ -89,7 +91,15 @@
       q.onsuccess=()=>resolve(q.result);q.onerror=()=>reject(q.error);
       q.onblocked=()=>reject(Error('別のセントログ画面が保存先を使用中です。ほかの画面を閉じて再試行してください。'));
     });
-    connection.onversionchange=()=>{connection.close();connection=null;failure=Error('保存先が別の画面で更新されました。未保存の記録を退避してから更新してください。');report('records',failure);};
+    const db=connection;
+    db.onversionchange=()=>{if(connection!==db)return;db.close();connection=null;failure=Error('保存先が別の画面で更新されました。未保存の記録を退避してから更新してください。');report('records',failure);};
+    db.onclose=()=>{
+      if(connection!==db)return;
+      // An unexpected close does not authorize opening a new database or
+      // replaying this tab's memory into it. Keep the editable mirror for rescue.
+      connection=null;connectionFailure=Object.assign(Error('端末内の保存先との接続が予期せず終了しました。保存を停止しています。画面を閉じたり更新したりせず、まず記録の控えを書き出してください。'),{code:'RECORD_CONNECTION_CLOSED'});
+      failure=connectionFailure;report('records',failure);
+    };
   }
   async function editorLock(){
     if(!navigator.locks?.request)return;
@@ -1375,7 +1385,7 @@
           try{await commitBatch(write,contexts);}catch(error){
             for(const [k,v] of write)if(!pending.has(k))pending.set(k,v);
             pendingOptions=contexts.concat(pendingOptions);
-            failure=error;report('records',error);throw error;
+            failure=connectionFailure||error;report('records',failure);throw error;
           }finally{inFlight=0;}
         }
         recovered('records');
@@ -1519,6 +1529,7 @@
     await flush();
   }
   async function retry(){
+    if(connectionFailure)throw connectionFailure;
     failure=null;
     for(const [key,value] of [...failedFiles])await writeFile(key,value);
     try{await flush();recovered('import');}catch(e){report('records',e);throw e;}
@@ -1600,11 +1611,12 @@
   window.SentlogRecords={init,flush,settled,writeFile,retry,batch,replaceAll,stats,
     deltaJournal,openFilesDatabase,removeFiles,clearFiles,writerState,readFileStates,
     startupProtectionVersion:1,
+    storageLifecycleVersion:1,
     getFileWriteCapabilities:()=>({guarded:true,onlyIfMissing:true,writerState:true,fileWriteDedupVersion:1,journaled:connection?.version===DB_VERSION}),
     uncommittedFiles:()=>[...failedFiles].map(([key,value])=>({key,value})),
     get ready(){return initialized;},get pending(){return pending.size+inFlight>0||fileTasks.size>0||operation;},get failed(){return failures.size>0;},
     get issues(){return [...failures];},get migration(){return migrationInfo;},
-    get recordFailureDetails(){return recordFailure?.error===failure&&failures.has('records')?{...recordFailure.detail}:null;},
+    get recordFailureDetails(){return !connectionFailure&&recordFailure?.error===failure&&failures.has('records')?{...recordFailure.detail}:null;},
     getItem:k=>{assertReady();return memory.get(k)??null;},
     setItem:(k,v,options)=>batch([[k,String(v)]],options),removeItem:(k,options)=>batch([[k,null]],options),keys:()=>[...memory.keys()],
     subscribe(fn){listeners.add(fn);return()=>listeners.delete(fn);},report,recovered,

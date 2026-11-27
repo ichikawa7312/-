@@ -128,12 +128,13 @@
       requestTimeout=limit(options.requestTimeoutMs,5000,50,30000),
       deadline=Date.now()+limit(options.maxDurationMs,120000,50,600000),
       yieldEvery=limit(options.yieldEvery,32,1,256);
-    let lastYield=Date.now(),currentDatabase=null,currentStore=null,versionChanged=false,stopped=false;
+    let lastYield=Date.now(),currentDatabase=null,currentStore=null,versionChanged=false,connectionClosed=false,stopped=false;
     const cleanupActions=new Set(),connections=new Set();
     const check=()=>{
       if(signal?.aborted||stopped)throw failure('CANCELLED','診断を中止しました。');
       if(Date.now()>=deadline)throw failure('TIME_LIMIT','計測時間の上限に達しました。表示は途中までの集計です。');
       if(versionChanged)throw failure('VERSION_CHANGED','保存先の変更が始まったため、診断を中止しました。');
+      if(connectionClosed)throw failure('CONNECTION_CLOSED','保存先との接続が終了したため、診断を完了できませんでした。保存データが空とは判断できません。');
     };
     const emit=()=>{if(typeof options.onProgress==='function')try{options.onProgress(snapshot(report));}catch{/* A display error never changes stored data. */}};
     const pause=()=>new Promise(resolve=>setTimeout(resolve,0));
@@ -168,6 +169,8 @@
           connections.add(db);
           db.onversionchange=()=>{versionChanged=true;db.close();connections.delete(db);
             for(const cancel of [...cleanupActions])cancel(failure('VERSION_CHANGED','保存先の変更が始まったため、診断を中止しました。'));};
+          db.onclose=()=>{if(!connections.has(db))return;connectionClosed=true;connections.delete(db);
+            for(const cancel of [...cleanupActions])cancel(failure('CONNECTION_CLOSED','保存先との接続が終了したため、診断を完了できませんでした。保存データが空とは判断できません。'));};
           done(null,db);
         };
         // IDBOpenDBRequest cannot be cancelled. Its late upgrade is aborted and
@@ -202,13 +205,17 @@
       check();
       const listed=await requestWait(done=>{Promise.resolve(factory.databases()).then(value=>done(null,value),error=>done(error));});
       check();if(!Array.isArray(listed))throw failure('ENUMERATION_FAILED','保存先の一覧を確認できませんでした。');
-      const candidates=new Map();
+      const candidates=new Map(),listedNames=new Set();
       for(const row of listed){
-        if(!row||typeof row.name!=='string')continue;
+        if(!row||typeof row.name!=='string'||!row.name||listedNames.has(row.name)||
+          DATABASES.includes(row.name)&&(!Number.isSafeInteger(row.version)||row.version<1))
+          throw failure('ENUMERATION_FAILED','保存先の一覧の形式を確認できませんでした。保存データが空とは判断できません。');
+        listedNames.add(row.name);
         if(DATABASES.includes(row.name))candidates.set(row.name,row);
         else{report.excludedDatabaseCount++;if(report.excludedDatabases.length<128)report.excludedDatabases.push({name:row.name,version:row.version??null});}
       }
       report.missingDatabases=DATABASES.filter(name=>!candidates.has(name));
+      if(!candidates.size)return finish('failed','対象の保存先を一覧から確認できませんでした。保存先を開いて計測していないため、保存データが空とは判断できません。');
       // Hidden retention stores first, so a time-limited scan still has useful
       // evidence before traversing the already-visible photo collection.
       const order=['sentlog-delta-migration-v1','surveyFieldNoteDB','sentlog-delta-assets-v1',
