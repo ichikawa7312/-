@@ -1,0 +1,100 @@
+name: Sentlog record and original-file preservation
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/pages.yml'
+      - '.github/workflows/sentlog-reliability-check.yml'
+      - 'scripts/build_*.py'
+      - 'sentlog/record-store.js'
+      - 'sentlog/storage-ui.js'
+      - 'sentlog/archive-core.js'
+      - 'sentlog/archive-pc.js'
+      - 'sentlog/pc-safe-backup.js'
+      - 'sentlog/page-replacement.js'
+      - 'sentlog/cloud-check*'
+      - 'sentlog/session-guard.js'
+      - 'sw.js'
+      - 'tests/cloud_check*'
+      - 'tests/storage_preservation_native_ui.py'
+      - 'tests/record_batch_noop.test.cjs'
+      - 'tests/reliability_release.test.cjs'
+      - 'tests/page_replacement_runtime.test.cjs'
+      - 'tests/page_replacement_context_ui.py'
+      - 'tests/record_file_expected_state.test.cjs'
+      - 'tests/pc_safe_backup_acquisition.test.cjs'
+      - 'tests/pc_archive_root_context.test.cjs'
+      - 'tests/pc_archive_source_readonly.test.cjs'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: sentlog-preservation-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  native-preservation:
+    runs-on: ubuntu-24.04
+    container:
+      image: mcr.microsoft.com/playwright/python:v1.62.0-noble@sha256:aa81288e738725378becba5b3e06cb0f3a7f012a610e87e8d767a090ea3f740d
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: [chromium, webkit]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build and check the exact production app
+        id: production_build
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import subprocess
+          lines=Path('.github/workflows/pages.yml').read_text().splitlines()
+          marker='      - name: Build archive, management and capacity integration'
+          assert lines.count(marker)==1
+          start=lines.index(marker)+1
+          assert lines[start].strip()=='run: |'
+          commands=[]
+          for line in lines[start+1:]:
+              if not line.startswith('          '):break
+              commands.append(line[10:])
+          assert 'python3 scripts/build_reliability_release.py' in commands
+          subprocess.run(['bash','-e','-o','pipefail','-c','\n'.join(commands)],check=True)
+          PY
+      - name: Install the matching browser adapter
+        id: browser_adapter
+        run: python -m pip install --disable-pip-version-check playwright==1.62.0
+      - name: Verify read-only account check with synthetic authentication
+        run: python tests/cloud_check_ui.py --engine ${{ matrix.engine }} --out /tmp/sentlog-cloud-check-${{ matrix.engine }}
+      - name: Verify native IndexedDB net-zero batches
+        if: ${{ !cancelled() && steps.production_build.outcome == 'success' && steps.browser_adapter.outcome == 'success' }}
+        run: python tests/storage_preservation_native_ui.py --engine ${{ matrix.engine }} --scenario writer --built-root . --out /tmp/sentlog-native-writer-${{ matrix.engine }}
+      - name: Verify native PC file-handle preservation
+        if: ${{ !cancelled() && matrix.engine == 'chromium' && steps.production_build.outcome == 'success' && steps.browser_adapter.outcome == 'success' }}
+        run: python tests/storage_preservation_native_ui.py --engine chromium --scenario pc --built-root . --out /tmp/sentlog-native-pc
+      - name: Verify normal PC preservation at exclusive acquisition
+        if: ${{ !cancelled() && matrix.engine == 'chromium' && steps.production_build.outcome == 'success' && steps.browser_adapter.outcome == 'success' }}
+        run: python tests/storage_preservation_native_ui.py --engine chromium --scenario regular-pc --built-root . --out /tmp/sentlog-native-regular-pc
+      - name: Verify real PDF replacement across navigation and concurrent writes
+        if: ${{ !cancelled() && steps.production_build.outcome == 'success' && steps.browser_adapter.outcome == 'success' }}
+        run: python tests/page_replacement_context_ui.py --engine ${{ matrix.engine }} --out /tmp/sentlog-page-replacement-context-${{ matrix.engine }}
+      - name: Preserve synthetic validation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sentlog-preservation-${{ matrix.engine }}-${{ github.run_attempt }}
+          path: |
+            /tmp/sentlog-cloud-check-${{ matrix.engine }}/**/*.json
+            /tmp/sentlog-cloud-check-${{ matrix.engine }}/**/*.png
+            /tmp/sentlog-native-writer-${{ matrix.engine }}/**/*.json
+            /tmp/sentlog-native-pc/**/*.json
+            /tmp/sentlog-native-regular-pc/**/*.json
+            /tmp/sentlog-page-replacement-context-${{ matrix.engine }}/**/*.json
+            /tmp/sentlog-page-replacement-context-${{ matrix.engine }}/**/*.png
+          if-no-files-found: error
+          retention-days: 14

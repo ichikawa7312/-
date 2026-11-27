@@ -44,7 +44,10 @@ assert.match(source,/sourceDoc\.insertPage\(pageNo-1,newPage\)/);
 assert.match(source,/page-replace-backup:/);
 assert.match(source,/既存の記録・写真・コメントは保持されています/);
 assert.ok(!source.includes('state.shapes=[]'),'page replacement must never clear shapes');
-assert.ok(source.indexOf('writeFile(backupFileKey(),source)')<source.indexOf('await saveBackgroundFile(merged,activeDrawingId)'),'backup must be verified before replacement write');
+const replace=source.slice(source.indexOf('async function replaceCurrentPage('),source.indexOf('async function undoLast('));
+const independent=replace.indexOf('previous=await independentPdf(target,previous)'),backupWrite=replace.indexOf('const backup=await guardedWrite(target,target.backup,retainedSource,'),backupCheck=replace.indexOf('await verify(target,backup)'),replacement=replace.indexOf('await applyPdf(target,');
+assert.ok(independent>=0&&backupWrite>independent&&backupCheck>backupWrite&&replacement>backupCheck,'the captured drawing must own independent bytes and verify its backup before replacing the PDF');
+assert.match(source,/navigationGuardVersion:1/);
 
 const index=fs.readFileSync('sentlog/index.html','utf8');
 assert.match(index,/page-replacement\.js\?v=198/);

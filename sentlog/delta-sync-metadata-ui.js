@@ -2,12 +2,37 @@
  * the intended value. All labels and values are inserted as text, never HTML. */
 (function(root){
   'use strict';
-  const projects=new Map();let notice,dialog,body,message,busy=false;
+  const projects=new Map(),updates=new Map();let notice,dialog,body,message,busy=false,noticeCount=null,renderedReview=null;
   const labels={project:'案件',meta:'図面',state:'図面設定',order:'並び順',name:'名前',scale:'縮尺',rotation:'回転',
     pageCount:'ページ数',pages:'ページ',pageSettings:'ページ設定',sourceType:'図面の種類',fileName:'ファイル名',
     groupId:'グループ',groupName:'グループ名',groups:'グループ',unit:'単位'};
   const el=(tag,text)=>{const node=document.createElement(tag);if(text!==undefined)node.textContent=text;return node;};
   const clone=x=>root.structuredClone(x);
+  // Compare the review and its save preconditions, not a serialized label.
+  // In particular, an absent current value must not compare equal to null.
+  function sameReview(a,b){
+    if(Object.is(a,b))return true;
+    if(!a||!b||typeof a!=='object'||typeof b!=='object'||Array.isArray(a)!==Array.isArray(b))return false;
+    if(Array.isArray(a)){if(a.length!==b.length)return false;}
+    else if(Object.prototype.toString.call(a)!=='[object Object]'||Object.prototype.toString.call(b)!=='[object Object]')return false;
+    const keys=Object.keys(a);
+    return keys.length===Object.keys(b).length&&keys.every(key=>Object.prototype.hasOwnProperty.call(b,key)&&sameReview(a[key],b[key]));
+  }
+  function displayedValue(entry,conflict){
+    let value=entry.materialized[conflict.recordId];
+    for(const key of conflict.path||[])value=value?.[key];
+    return value;
+  }
+  function reviewSnapshot(){
+    return [...projects.values()].filter(entry=>entry.conflicts.length).map(entry=>({
+      cp:entry.cp,projectName:entry.projection.project?.name,
+      conflicts:entry.conflicts.map(conflict=>({conflict,
+        drawingName:entry.projection.drawings.find(d=>d.meta.id===conflict.drawingId)?.meta?.name,
+        expectedDocument:entry.documents[conflict.recordId]?.collab,
+        displayed:displayedValue(entry,conflict)}))
+    }));
+  }
+  function renderBusy(){for(const b of body.querySelectorAll('button'))b.disabled=busy;}
   function button(text,action){const b=el('button',text);b.type='button';b.style.cssText='min-height:44px;padding:8px 12px;margin:4px;white-space:normal';b.onclick=action;return b;}
   function valueText(value){if(value===undefined)return '値なし';if(typeof value==='string')return value||'空欄';return JSON.stringify(value);}
   function setup(){
@@ -22,7 +47,8 @@
     dialog.append(message,body,button('閉じる',()=>dialog.close()));document.body.append(dialog);
   }
   function count(){return [...projects.values()].reduce((n,p)=>n+p.conflicts.length,0);}
-  function renderNotice(){setup();const n=count();notice.replaceChildren();notice.hidden=!n;
+  function renderNotice(){setup();const n=count();notice.hidden=!n;
+    if(n===noticeCount)return;noticeCount=n;notice.replaceChildren();
     if(n)notice.append(button('図面設定 '+n+' 件を確認',()=>{render();if(!dialog.open)dialog.showModal();}));}
   async function save(entry,conflict,choice){
     if(busy)return;busy=true;message.textContent='選んだ内容を端末に保存しています…';
@@ -36,7 +62,11 @@
     finally{busy=false;render();}
   }
   function render(){
-    setup();body.replaceChildren();
+    setup();const review=reviewSnapshot();
+    // A repeated projection must not detach the focused/pressed native button.
+    // Busy state can change independently when save() reaches its finally block.
+    if(sameReview(review,renderedReview)){renderBusy();return;}
+    body.replaceChildren();
     for(const entry of projects.values())for(const conflict of entry.conflicts){
       const section=el('section');section.style.cssText='border-top:1px solid #ddd;margin-top:16px;padding-top:12px';
       const drawing=entry.projection.drawings.find(d=>d.meta.id===conflict.drawingId);
@@ -47,8 +77,7 @@
         section.append(button('図面を残す（別端末の記録も保持）',()=>save(entry,conflict,{keep:true})),
           button('確認した記録を含めて図面を削除',()=>save(entry,conflict,{keep:false})));
       }else{
-        const doc=entry.materialized[conflict.recordId];let displayed=doc;
-        for(const key of conflict.path)displayed=displayed?.[key];
+        const displayed=displayedValue(entry,conflict);
         section.append(el('p','現在の表示：'+valueText(displayed)));
         if(displayed!==undefined)section.append(button('現在の内容を残す',()=>save(entry,conflict,{value:clone(displayed)})));
         const seen=new Set();
@@ -64,16 +93,19 @@
       body.append(section);
     }
     if(!count())body.append(el('p','確認が必要な図面設定はありません。'));
-    for(const b of body.querySelectorAll('button'))b.disabled=busy;
+    renderedReview=clone(review);renderBusy();
   }
   async function update(cp,projection){
     const entry={cp:clone(cp),projection:clone(projection),conflicts:clone(projection.metadataConflicts||[]),
       documents:clone(projection.metadataRecords||projection.project?.deltaMetadata?.records||{}),materialized:{}};
-    projects.set(cp.client_key,entry);
+    updates.set(cp.client_key,entry);
     try{
       for(const id of new Set(entry.conflicts.map(x=>x.recordId)))entry.materialized[id]=await root.SentlogDeltaMetadata.materializeDocument(entry.documents[id]);
-      if(projects.get(cp.client_key)!==entry)return;renderNotice();if(dialog?.open)render();
+      if(updates.get(cp.client_key)!==entry)return;
+      // Keep other projects' last complete review visible while they materialize.
+      projects.set(cp.client_key,entry);renderNotice();if(dialog?.open)render();
     }catch(error){if(message)message.textContent=error.message;}
   }
-  root.SentlogDeltaMetadataUI={update,clear(){projects.clear();if(notice)notice.hidden=true;if(dialog?.open)dialog.close();}};
+  root.SentlogDeltaMetadataUI={stableRenderVersion:1,update,clear(){projects.clear();updates.clear();noticeCount=null;renderedReview=null;if(notice)notice.hidden=true;if(dialog?.open)dialog.close();}};
+  root.SentlogDeltaMetadataStableUI=root.SentlogDeltaMetadataUI;
 })(typeof window!=='undefined'?window:globalThis);

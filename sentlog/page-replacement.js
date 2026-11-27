@@ -56,8 +56,90 @@
 
   let library=null,busy=false;
   const byId=id=>document.getElementById(id);
-  const backupFileKey=()=> 'page-replace-backup:'+activeDrawingId;
-  const backupMetaKey=()=> 'page-replace-backup-meta:'+activeDrawingId;
+  const backupFileKey=id=> 'page-replace-backup:'+id;
+  const backupMetaKey=id=> 'page-replace-backup-meta:'+id;
+  const openingSequence=()=>typeof drawingOpenSequence==='number'?drawingOpenSequence:null;
+  const fileOpeningSequence=()=>typeof drawingFileOpenSequence==='number'?drawingFileOpenSequence:null;
+  function changed(message='操作中に開いている図面が変わりました。処理を中止しました。'){
+    return Object.assign(Error(message),{code:'PAGE_REPLACEMENT_CHANGED'});
+  }
+  function captureTarget(){
+    const records=root.SentlogRecords,cap=records?.getFileWriteCapabilities?.();
+    if(cap?.expectedFileStatesVersion!==1||cap.guarded!==true||typeof records.readFileStates!=='function'||typeof records.writerState!=='function')
+      throw Error('安全なPDF差し替えの保存機能を読み込めません。画面を更新してください。');
+    if(root.sentlogImporting)throw Error('別の取込み処理が進行しています。完了してから操作してください。');
+    const id=activeDrawingId;
+    return {records,projectId:activeProjectId,drawingId:id,state,opening:openingSequence(),fileOpening:fileOpeningSequence(),
+      background:'background:'+id,backup:backupFileKey(id),meta:backupMetaKey(id),importing:false,markerWritten:false};
+  }
+  function sameTarget(target){
+    return currentView==='editor'&&activeProjectId===target.projectId&&activeDrawingId===target.drawingId&&state===target.state&&
+      openingSequence()===target.opening&&fileOpeningSequence()===target.fileOpening&&root.SentlogRecords===target.records;
+  }
+  function checkTarget(target,navigation=true){
+    if(navigation&&!sameTarget(target))throw changed();
+    target.records.assertSafe();
+    for(const key of [target.background,target.backup,target.meta]){
+      const writer=target.records.writerState(key,{ownerToken:target});
+      if(writer.foreignPending||writer.failed)throw changed('対象図面のPDFを別の処理が保存しています。上書きせず停止しました。');
+    }
+    return true;
+  }
+  async function snapshot(target,key,navigation=true){
+    checkTarget(target,navigation);
+    const [before]=await target.records.readFileStates([key]);checkTarget(target,navigation);
+    const value=await getDBFile(key);checkTarget(target,navigation);
+    const sha256=value instanceof Blob?await hash(value):null;checkTarget(target,navigation);
+    const [after]=await target.records.readFileStates([key]);checkTarget(target,navigation);
+    if(before.sequence!==after.sequence)throw changed('確認中にPDFの保存内容が変わりました。上書きせず停止しました。');
+    return {key,sequence:after.sequence,value,sha256,size:value instanceof Blob?value.size:0};
+  }
+  async function verify(target,expected,navigation=true){
+    const current=await snapshot(target,expected.key,navigation);
+    if(current.sequence!==expected.sequence||current.sha256!==expected.sha256||current.size!==expected.size)
+      throw changed('確認したPDFの保存内容が変わりました。上書きせず停止しました。');
+    return current;
+  }
+  async function independentPdf(target,expected){
+    await verify(target,expected);checkTarget(target);
+    const source=expected.value,parts=[],chunk=2*1024*1024;
+    if(!(source instanceof Blob)||!source.size)throw Error('退避するPDFを読み取れません。元の保存内容は変更していません。');
+    try{
+      // A native database-backed Blob can lose readable backing bytes when its
+      // source row is replaced. Own independent bytes before writing a backup,
+      // applying undo, or retaining a rollback value. Blob([source]) is not a
+      // byte copy. Chunking bounds temporary buffers, not the final PDF size.
+      for(let offset=0;offset<source.size;offset+=chunk){
+        checkTarget(target);
+        const end=Math.min(source.size,offset+chunk),bytes=await source.slice(offset,end).arrayBuffer();checkTarget(target);
+        if(bytes.byteLength!==end-offset)throw Error('退避するPDFの読取りが途中で終了しました。元の保存内容は変更していません。');
+        parts.push(new Blob([bytes]));
+      }
+      const value=typeof File==='function'&&typeof source.name==='string'?
+        new File(parts,source.name,{type:source.type,lastModified:source.lastModified}):new Blob(parts,{type:source.type});
+      parts.length=0;
+      if(value.size!==expected.size||await hash(value)!==expected.sha256)
+        throw Error('退避するPDFの内容を照合できません。元の保存内容は変更していません。');
+      checkTarget(target);await verify(target,expected);checkTarget(target);
+      return {...expected,value};
+    }finally{parts.length=0;}
+  }
+  async function guardedWrite(target,key,value,expected,navigation=true){
+    checkTarget(target,navigation);
+    const sha256=await hash(value);checkTarget(target,navigation);
+    const result=await target.records.writeFile(key,value,{ownerToken:target,
+      validate:()=>checkTarget(target,navigation),expectedFileStates:expected.map(x=>({key:x.key,sequence:x.sequence}))});
+    if(!Number.isSafeInteger(result?.sequence)||result.sequence<0)throw Error('保存したPDFの世代を確認できません。');
+    return {key,sequence:result.sequence,value,sha256,size:value.size};
+  }
+  async function showOwnedPdf(target,file){
+    checkTarget(target);
+    const opening=openFile(file,false);
+    // The normal openFile and its PDF wrappers start their epoch synchronously.
+    // Do not accept a later opening, including the same drawing opened again.
+    target.fileOpening=fileOpeningSequence();
+    await opening;checkTarget(target);
+  }
 
   async function libs(){
     if(root.PDFLib)return root.PDFLib;
@@ -88,7 +170,7 @@
       return {pageCount:count,rotation,wMm:viewport.width*MM_PER_PT,hMm:viewport.height*MM_PER_PT};
     }finally{try{await doc.destroy?.();}catch{}}
   }
-  async function compose(source,replacement,pageNo){
+  async function compose(source,replacement,pageNo,fileName){
     const P=await libs();
     const sourceDoc=await P.PDFDocument.load(await source.arrayBuffer(),{updateMetadata:false});
     const donorDoc=await P.PDFDocument.load(await replacement.arrayBuffer(),{updateMetadata:false});
@@ -98,22 +180,66 @@
     sourceDoc.removePage(pageNo-1);
     sourceDoc.insertPage(pageNo-1,newPage);
     const bytes=await sourceDoc.save();
-    const name=source.name||state.fileName||'drawing.pdf';
+    const name=source.name||fileName||'drawing.pdf';
     return new File([bytes],name,{type:'application/pdf',lastModified:Date.now()});
   }
-  async function readMeta(){
-    const blob=await getDBFile(backupMetaKey());
+  async function readMeta(id){
+    const blob=await getDBFile(backupMetaKey(id));
     if(!(blob instanceof Blob)||!blob.size)return null;
     try{return JSON.parse(await blob.text());}catch{return null;}
   }
-  async function writeMeta(meta){
-    await root.SentlogRecords.writeFile(backupMetaKey(),new Blob([JSON.stringify(meta)],{type:'application/json'}));
+  function metaBlob(meta){return new Blob([JSON.stringify(meta)],{type:'application/json'});}
+  function parseMeta(value){
+    if(!(value instanceof Blob)||!value.size)return Promise.resolve(null);
+    return value.text().then(text=>{try{return JSON.parse(text);}catch{return null;}});
   }
-  async function waitForIdle(){
-    await root.SentlogRecords.settled();
-    root.SentlogRecords.assertSafe();
-    if(root.sentlogCloudIdle)await root.sentlogCloudIdle();
-    if(root.sentlogPdfRecoveryIdle)await root.sentlogPdfRecoveryIdle();
+  async function waitForIdle(target){
+    await target.records.settled();checkTarget(target);
+    if(root.sentlogCloudIdle){await root.sentlogCloudIdle();checkTarget(target);}
+    if(root.sentlogPdfRecoveryIdle){await root.sentlogPdfRecoveryIdle();checkTarget(target);}
+  }
+  function beginImport(target){
+    checkTarget(target);
+    if(root.sentlogImporting)throw Error('別の取込み処理が進行しています。完了してから操作してください。');
+    target.importing=true;root.sentlogImporting=true;
+  }
+  async function applyPdf(target,{previous,next,backup,metaState,meta,page,name,restored}){
+    await verify(target,previous);checkTarget(target);
+    target.previous=previous;target.extra=[backup,metaState];
+    target.writeAttempted=true;
+    target.committed=await guardedWrite(target,target.background,next,[previous,backup,metaState]);
+    await verify(target,target.committed);checkTarget(target);
+    // Verify the retained original after replacing its old live row, before
+    // rendering or marking the replacement complete. Rollback owns its bytes.
+    await verify(target,backup);checkTarget(target);
+    await showOwnedPdf(target,next);checkTarget(target);
+    // Rendering may yield to navigation or another writer. Check both the UI
+    // identity and the durable file before touching page markers or records.
+    await verify(target,target.committed);checkTarget(target);
+    state.currentPage=page;
+    state.pageReplacements=nextMarker(state.pageReplacements,page,name,Date.now(),restored,target.committed.sha256,next.size);
+    target.markerWritten=true;persist();await target.records.flush();checkTarget(target);
+    const completedMeta=restored?meta:{...meta,replacementSequence:target.committed.sequence};
+    await guardedWrite(target,target.meta,metaBlob(completedMeta),[target.committed,backup,metaState]);checkTarget(target);
+    render();renderSelectedPhotos();updatePageUI();
+  }
+  async function handleFailure(target,error,undo=false){
+    console.error(undo?'page replacement undo':'page replacement',error);
+    let restored=false;
+    // A navigation change may leave this operation's file on its original
+    // drawing. Only that exact committed version may be rolled back; never
+    // write through the now-active drawing, or guess after an ambiguous commit.
+    if(target?.committed&&!target.markerWritten){
+      try{
+        await verify(target,target.committed,false);
+        const restoredFile=await guardedWrite(target,target.background,target.previous.value,[target.committed,...target.extra],false);
+        await verify(target,restoredFile,false);restored=true;
+        if(sameTarget(target)){await showOwnedPdf(target,target.previous.value);checkTarget(target);persist();await target.records.flush();checkTarget(target);}
+      }catch(restoreError){console.error('page replacement rollback',restoreError);}
+    }
+    const status=restored?'対象図面の操作前のPDFへ戻しました。':target?.writeAttempted?
+      '処理の完了を確認できません。保存済みPDFと退避PDFを確認してください。':'PDFの置換前に処理を中止しました。';
+    alert((undo?'元に戻す処理を完了できませんでした。':'ページ差し替えを中止しました。')+'\n'+status+'\n'+(error?.message||error));
   }
   function summaryText(stats){
     const parts=[];
@@ -125,114 +251,87 @@
   }
   async function updateUndoButton(){
     const b=byId('sentlogPageReplaceUndoBtn');if(!b)return;
+    const id=activeDrawingId,opened=openingSequence(),model=state;
     try{
-      const meta=await readMeta();
-      b.disabled=busy||!meta?.applied||meta?.drawingId!==activeDrawingId;
+      const meta=await readMeta(id);
+      if(id!==activeDrawingId||opened!==openingSequence()||model!==state){b.disabled=true;return;}
+      b.disabled=busy||currentView!=='editor'||!meta?.applied||meta?.drawingId!==id;
       b.title=meta?.applied?'直前のページ差し替え前のPDF全体へ戻します。':'この端末に戻せるページ差し替えはありません。';
     }catch{b.disabled=true;}
   }
   async function replaceCurrentPage(file){
     if(busy)return;
-    if(state?.sourceType!=='pdf'||!activeDrawingId){alert('PDF図面を開いてから操作してください。');return;}
-    const page=Number(state.currentPage)||1;
-    const source=await getBackgroundFile(activeDrawingId);
-    if(!(source instanceof Blob)||!source.size){alert('元PDFがこの端末にありません。同期またはPDF再取得を確認してください。');return;}
-    let sourceInfo,replacementInfo;
+    if(currentView!=='editor'||state?.sourceType!=='pdf'||!activeDrawingId){alert('PDF図面を開いてから操作してください。');return;}
+    busy=true;let target;
     try{
-      sourceInfo=await inspectPage(source,page);
-      replacementInfo=await inspectPage(file,1);
-    }catch(e){alert('差し替え用PDFを確認できません。\n'+(e?.message||e));return;}
-    if(replacementInfo.pageCount!==1){alert('差し替え用PDFは1ページにしてください。\n元の8ページPDF全体は変更しません。');return;}
-    if(sourceInfo.pageCount!==Number(state.pageCount||sourceInfo.pageCount)){
-      alert('元PDFと記録上のページ数が一致しないため、差し替えを中止しました。記録は変更していません。');return;
-    }
-    const compatible=frameCompatible(sourceInfo,replacementInfo);
-    if(!compatible.ok){
-      alert('このページは安全に差し替えできません。\n\n'+compatible.reason+'\n\n既存の記録・写真・メモは変更していません。');return;
-    }
-    const stats=pageRecordStats(state.shapes,page);
-    const name=file.name||'差し替えPDF';
-    if(!confirm(
-      page+'ページ目だけを「'+name+'」の1ページに差し替えます。\n\n'+
-      'PDF全体の '+sourceInfo.pageCount+'ページ構成、ページ番号、他ページは変更しません。\n'+
-      summaryText(stats)+' はそのまま保持します。\n'+
-      '縮尺設定・写真リンク・コメントも削除しません。\n\n差し替えますか？'
-    ))return;
+      target=captureTarget();checkTarget(target);updateUndoButton();
+      const page=Number(target.state.currentPage)||1,fileName=target.state.fileName;
+      let previous=await snapshot(target,target.background);const source=previous.value;
+      if(!(source instanceof Blob)||!source.size)throw Error('元PDFがこの端末にありません。同期またはPDF再取得を確認してください。');
+      const sourceInfo=await inspectPage(source,page);checkTarget(target);
+      const replacementInfo=await inspectPage(file,1);checkTarget(target);
+      if(replacementInfo.pageCount!==1){alert('差し替え用PDFは1ページにしてください。\n元のPDF全体は変更しません。');return;}
+      if(sourceInfo.pageCount!==Number(state.pageCount||sourceInfo.pageCount)){
+        alert('元PDFと記録上のページ数が一致しないため、差し替えを中止しました。記録は変更していません。');return;
+      }
+      const compatible=frameCompatible(sourceInfo,replacementInfo);
+      if(!compatible.ok){
+        alert('このページは安全に差し替えできません。\n\n'+compatible.reason+'\n\n既存の記録・写真・メモは変更していません。');return;
+      }
+      const stats=pageRecordStats(state.shapes,page);
+      const name=file.name||'差し替えPDF';
+      if(!confirm(
+        page+'ページ目だけを「'+name+'」の1ページに差し替えます。\n\n'+
+        'PDF全体の '+sourceInfo.pageCount+'ページ構成、ページ番号、他ページは変更しません。\n'+
+        summaryText(stats)+' はそのまま保持します。\n'+
+        '縮尺設定・写真リンク・コメントも削除しません。\n\n差し替えますか？'
+      ))return;
 
-    busy=true;updateUndoButton();
-    let changedBackground=false;
-    root.sentlogImporting=true;
-    try{
-      await waitForIdle();
-      const sourceHash=await hash(source);
-      await root.SentlogRecords.writeFile(backupFileKey(),source);
-      const backup=await getDBFile(backupFileKey());
-      if(!(backup instanceof Blob)||backup.size!==source.size||await hash(backup)!==sourceHash)
-        throw Error('差し替え前PDFの退避照合に失敗しました。');
-
-      const meta={version:1,drawingId:activeDrawingId,page,savedAt:new Date().toISOString(),sourceHash,sourceSize:source.size,applied:false};
-      await writeMeta(meta);
-
-      const merged=await compose(source,file,page);
-      const mergedInfo=await inspectPage(merged,page);
+      beginImport(target);await waitForIdle(target);
+      previous=await independentPdf(target,previous);const retainedSource=previous.value;
+      const oldBackup=await snapshot(target,target.backup),oldMeta=await snapshot(target,target.meta);
+      const backup=await guardedWrite(target,target.backup,retainedSource,[previous,oldBackup,oldMeta]);
+      await verify(target,backup);checkTarget(target);
+      const meta={version:1,drawingId:target.drawingId,page,savedAt:new Date().toISOString(),sourceHash:previous.sha256,sourceSize:source.size,applied:false};
+      const metaState=await guardedWrite(target,target.meta,metaBlob(meta),[previous,backup,oldMeta]);checkTarget(target);
+      const merged=await compose(retainedSource,file,page,fileName);checkTarget(target);
+      const mergedInfo=await inspectPage(merged,page);checkTarget(target);
       if(mergedInfo.pageCount!==sourceInfo.pageCount)throw Error('差し替え後PDFのページ数が変わっています。');
       const verified=frameCompatible(sourceInfo,{...mergedInfo,pageCount:1});
       if(!verified.ok)throw Error('差し替え後ページの照合に失敗しました。'+verified.reason);
 
-      await saveBackgroundFile(merged,activeDrawingId);
-      changedBackground=true;
-      const stored=await getBackgroundFile(activeDrawingId);
-      const mergedHash=await hash(merged);
-      if(!(stored instanceof Blob)||stored.size!==merged.size||await hash(stored)!==mergedHash)
-        throw Error('差し替え後PDFの端末保存照合に失敗しました。');
-
-      const keepPage=page;
-      await openFile(merged,false);
-      state.currentPage=keepPage;
-      state.pageReplacements=nextMarker(state.pageReplacements,page,name,Date.now(),false,mergedHash,merged.size);
-      persist();
-      await root.SentlogRecords.flush();
-      await writeMeta({...meta,applied:true,replacementName:name,replacementHash:mergedHash,replacementSize:merged.size});
-      render();renderSelectedPhotos();updatePageUI();
+      const mergedHash=await hash(merged);checkTarget(target);
+      await applyPdf(target,{previous,next:merged,backup,metaState,page,name,restored:false,
+        meta:{...meta,applied:true,replacementName:name,replacementHash:mergedHash,replacementSize:merged.size}});
       alert(page+'ページ目だけを差し替えました。\n既存の記録・写真・コメントは保持されています。');
-    }catch(e){
-      console.error('page replacement',e);
-      if(changedBackground){
-        try{
-          await saveBackgroundFile(source,activeDrawingId);
-          await openFile(source,false);
-          persist();await root.SentlogRecords.flush();
-        }catch(restoreError){console.error('page replacement rollback',restoreError);}
-      }
-      alert('ページ差し替えを中止しました。元PDFと記録を保持します。\n'+(e?.message||e));
+    }catch(e){await handleFailure(target,e);
     }finally{
-      root.sentlogImporting=false;busy=false;await updateUndoButton();
+      if(target?.importing)root.sentlogImporting=false;busy=false;await updateUndoButton();
     }
   }
   async function undoLast(){
     if(busy)return;
-    const meta=await readMeta();
-    if(!meta?.applied||meta.drawingId!==activeDrawingId){alert('この端末に戻せるページ差し替えはありません。');return;}
-    const backup=await getDBFile(backupFileKey());
-    if(!(backup instanceof Blob)||!backup.size){alert('差し替え前PDFの退避データが見つかりません。');return;}
-    if(backup.size!==Number(meta.sourceSize)||await hash(backup)!==meta.sourceHash){alert('差し替え前PDFの照合に失敗したため、元に戻しません。');return;}
-    if(!confirm('直前のページ差し替え前のPDF全体へ戻します。\n変状・写真・コメントなどの記録は削除しません。\n\n元に戻しますか？'))return;
-    busy=true;updateUndoButton();root.sentlogImporting=true;
+    if(currentView!=='editor'||state?.sourceType!=='pdf'||!activeDrawingId){alert('PDF図面を開いてから操作してください。');return;}
+    busy=true;let target;
     try{
-      await waitForIdle();
-      await saveBackgroundFile(backup,activeDrawingId);
-      const stored=await getBackgroundFile(activeDrawingId);
-      if(!(stored instanceof Blob)||stored.size!==backup.size||await hash(stored)!==meta.sourceHash)throw Error('復元後PDFの照合に失敗しました。');
+      target=captureTarget();checkTarget(target);updateUndoButton();
+      const metaState=await snapshot(target,target.meta),meta=await parseMeta(metaState.value);checkTarget(target);
+      if(!meta?.applied||meta.drawingId!==target.drawingId)throw Error('この端末に戻せるページ差し替えはありません。');
+      let backup=await snapshot(target,target.backup),previous=await snapshot(target,target.background);
+      if(!(backup.value instanceof Blob)||!backup.size||backup.size!==Number(meta.sourceSize)||backup.sha256!==meta.sourceHash)
+        throw Error('差し替え前PDFの照合に失敗したため、元に戻しません。');
+      if(!meta.replacementHash||!meta.replacementSize||previous.sha256!==meta.replacementHash||previous.size!==Number(meta.replacementSize)||
+        meta.replacementSequence!==undefined&&(!Number.isSafeInteger(meta.replacementSequence)||meta.replacementSequence!==previous.sequence))
+        throw changed('差し替え後にPDFが変更されています。現在のPDFを上書きせず停止しました。');
+      if(!confirm('直前のページ差し替え前のPDF全体へ戻します。\n変状・写真・コメントなどの記録は削除しません。\n\n元に戻しますか？'))return;
+      beginImport(target);await waitForIdle(target);
+      backup=await independentPdf(target,backup);previous=await independentPdf(target,previous);
       const page=Math.min(Math.max(1,Number(meta.page)||1),Number(state.pageCount)||1);
-      await openFile(backup,false);
-      state.currentPage=page;
-      state.pageReplacements=nextMarker(state.pageReplacements,page,'差し替え前に復元',Date.now(),true,meta.sourceHash,backup.size);
-      persist();await root.SentlogRecords.flush();
-      await writeMeta({...meta,applied:false,restoredAt:new Date().toISOString()});
-      render();renderSelectedPhotos();updatePageUI();
+      await applyPdf(target,{previous,next:backup.value,backup,metaState,page,name:'差し替え前に復元',restored:true,
+        meta:{...meta,applied:false,restoredAt:new Date().toISOString()}});
       alert('直前のページ差し替え前へ戻しました。記録は保持されています。');
-    }catch(e){console.error('page replacement undo',e);alert('元に戻す処理を完了できませんでした。\n'+(e?.message||e));}
-    finally{root.sentlogImporting=false;busy=false;await updateUndoButton();}
+    }catch(e){await handleFailure(target,e,true);}
+    finally{if(target?.importing)root.sentlogImporting=false;busy=false;await updateUndoButton();}
   }
   function install(){
     const host=byId('sentlogPageManagementActions');
@@ -249,6 +348,6 @@
     updateUndoButton();
   }
 
-  root.SentlogPageReplacement={...pure,replaceCurrentPage,undoLast};
+  root.SentlogPageReplacement={...pure,navigationGuardVersion:1,replaceCurrentPage,undoLast};
   Promise.resolve(root.sentlogAppReady).then(()=>queueMicrotask(install)).catch(()=>{});
 })(typeof globalThis!=='undefined'?globalThis:this);

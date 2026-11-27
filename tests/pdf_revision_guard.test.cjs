@@ -37,5 +37,6 @@ assert.match(source,/PDF更新待ち/);
 const replacement=fs.readFileSync('sentlog/page-replacement.js','utf8');
 assert.match(replacement,/pdfHash/);
 assert.match(replacement,/pdfSize/);
-assert.match(replacement,/mergedHash,merged\.size/);
+assert.match(replacement,/nextMarker\(state\.pageReplacements,page,name,Date\.now\(\),restored,target\.committed\.sha256,next\.size\)/);
+assert.match(replacement,/replacementHash:mergedHash,replacementSize:merged\.size/);
 console.log('PASS PDF revision guard blocks stale device uploads and preserves the newest page-replaced PDF');

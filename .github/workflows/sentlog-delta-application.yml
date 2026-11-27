@@ -16,6 +16,8 @@ on:
       - 'sentlog/collaboration-sync-runtime.txt'
       - 'sentlog/session-guard.js'
       - 'tests/delta_app_*'
+      - 'tests/delta_metadata_ui.py'
+      - 'tests/fixtures/delta_metadata_ui_v212.js'
       - 'tests/delta_drawing_*'
       - 'tests/individual_sync_app.py'
       - 'tests/record_storage_scale_ui.py'
@@ -37,6 +39,7 @@ on:
       - 'tests/cloud_asset_save_failure_gate.test.cjs'
       - 'tests/helpers/cloud_asset_failure_fixture.cjs'
       - 'tests/recovery_retry_release.test.cjs'
+      - 'tests/metadata_choice_release.test.cjs'
       - 'tests/photo_grid_layout_ui.py'
       - 'tests/fixtures/render_selected_photos_v205.js'
       - 'tests/asset_download_budget.test.cjs'
@@ -101,6 +104,9 @@ jobs:
         run: |
           NODE_PATH="$RUNNER_TEMP/sentlog-app-test-deps/node_modules" node tests/pdf_recovery_budget.test.cjs
           NODE_PATH="$RUNNER_TEMP/sentlog-app-test-deps/node_modules" node tests/pdf_handover_guard.test.cjs
+      - name: Verify metadata choices survive unchanged synchronization
+        timeout-minutes: 2
+        run: python tests/delta_metadata_ui.py --engine ${{ matrix.engine }} --output-dir /tmp/sentlog-delta-app-metadata-ui
       - name: Verify explicit drawing recovery preserves pending photo references
         run: |
           NODE_PATH="$RUNNER_TEMP/sentlog-app-test-deps/node_modules" node tests/delta_drawing_review_integration.test.cjs

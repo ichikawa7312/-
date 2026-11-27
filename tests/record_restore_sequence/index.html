@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="ja">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; connect-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self'; worker-src 'none'; object-src 'none'; base-uri 'none'">
+<title>合成データの復旧・追記検証</title>
+<style>
+body{font:16px/1.6 system-ui,sans-serif;margin:0;background:#f5f7fa;color:#17212f}main{max-width:1000px;padding:24px;margin:auto}h1{font-size:1.6rem}p{max-width:70ch}button,select{font:inherit;padding:10px 15px;margin:6px 8px 6px 0}button{cursor:pointer}button:disabled{cursor:default}label{display:block;margin:12px 0}#status{padding:16px;background:#fff;border-left:5px solid #2765aa;white-space:pre-wrap}pre{padding:16px;background:#fff;border:1px solid #ccd3dd;overflow:auto;max-height:65vh;font-size:12px}.note{color:#465469;font-size:.94rem}
+</style>
+<main>
+<h1>合成データの復旧・追記検証</h1>
+<p>実際の保存モジュールで、6 案件・217 図面・35 添付の復旧後、別の案件に 9 個の記録を追記します。内容・識別子・添付本体はすべて新しく生成した検証用データです。</p>
+<p class="note">ログインやクラウド同期全体は実行しません。受信時の記録保存順を再構成した比較です。既存データの削除・再試行・容量上限の変更は行いません。未知の DB がある場合、製品の復旧保護が停止します。</p>
+<label>文字の条件 <select id="variant"><option value="unicode">Unicode：日本語を含む文字数・UTF-8 サイズ</option><option value="ascii">ASCII：同じ UTF-8 サイズ</option></select></label>
+<label><input id="baseline" type="checkbox"> 既存 6 案件の同期基準を事前保存する追加仮定（通常は off）</label>
+<div><button id="start">合成データで開始</button><button id="observe">保存領域を読むだけで確認</button><button id="reload">この画面を再読込</button><button id="verify">再読込後の保存内容を照合</button><button id="download">結果 JSON を保存</button></div>
+<p id="status" role="status">準備中</p><pre id="report"></pre>
+</main>
+<script src="app/blob-sha256.js"></script>
+<script src="app/backup-format.js"></script>
+<script src="app/startup-backup-recovery.js"></script>
+<script src="app/record-store.js"></script>
+<script src="model.js"></script>
+<script src="runner.js"></script>
+</html>

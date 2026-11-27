@@ -201,6 +201,7 @@ jobs:
           node tests/manual_dimension_priority.test.cjs
           node tests/core.test.cjs
           node tests/pc.test.cjs
+          node tests/pc_archive_source_readonly.test.cjs
           node tests/integration.test.cjs
           node tests/management.test.cjs
           node tests/capacity.test.cjs
@@ -224,6 +225,7 @@ jobs:
           node tests/single_number_ui.test.cjs
           node tests/optional_symbol_ui.test.cjs
           node tests/record_save_diagnostics.test.cjs
+          node tests/record_batch_noop.test.cjs
           node tests/record_rescue_failure.test.cjs
           node tests/legacy_receive_scope.test.cjs
           node tests/storage_recovery_release.test.cjs
@@ -252,6 +254,35 @@ jobs:
           node tests/delta_save_failure_gate.test.cjs
           node tests/cloud_asset_save_failure_gate.test.cjs
           node tests/recovery_retry_release.test.cjs
+          python3 scripts/build_metadata_choice_release.py
+          node tests/storage_recovery_release.test.cjs
+          node tests/startup_protection_release.test.cjs
+          node tests/file_journal_wake_release.test.cjs
+          node tests/startup_backup_recovery_release.test.cjs
+          node tests/cloud_normalization_release.test.cjs
+          node tests/storage_lifecycle_release.test.cjs
+          node tests/pdf_save_failure_release.test.cjs
+          node tests/recovery_retry_release.test.cjs
+          node tests/metadata_choice_release.test.cjs
+          python3 scripts/build_cloud_check.py
+          node tests/cloud_check.test.cjs
+          node tests/cloud_check_build.test.cjs
+          node tests/cloud_check_root_worker.test.cjs
+          node tests/pc_safe_backup_acquisition.test.cjs
+          node tests/record_file_expected_state.test.cjs
+          node tests/page_replacement_runtime.test.cjs
+          python3 scripts/build_reliability_release.py
+          node tests/reliability_release.test.cjs
+          node tests/pc_archive_root_context.test.cjs
+          node tests/storage_recovery_release.test.cjs
+          node tests/startup_protection_release.test.cjs
+          node tests/file_journal_wake_release.test.cjs
+          node tests/startup_backup_recovery_release.test.cjs
+          node tests/cloud_normalization_release.test.cjs
+          node tests/storage_lifecycle_release.test.cjs
+          node tests/pdf_save_failure_release.test.cjs
+          node tests/recovery_retry_release.test.cjs
+          node tests/metadata_choice_release.test.cjs
       - name: Setup Pages
         uses: actions/configure-pages@v5
         with:
@@ -304,6 +335,7 @@ jobs:
           names+=['part01.txt','part02.txt','part03.txt','part04.txt','part05.txt',
                   'part06.txt','part07.txt','part08.txt','part09.txt']
           names+=['storage-restore.html','backup-format.js','startup-backup-recovery.js',
+                  'cloud-check.html','cloud-check.js','cloud-check-auth.js','page-replacement.js','archive-pc.js',
                   'storage-check.html','startup-storage-diagnostics.js',
                   'record-store.js','record-rescue.js','photo-recovery.js','blob-sha256.js','storage-ui.js','storage-diagnostics.js','storage-diagnostics-ui.js',
                   'pdf-recovery.js','archive.js','archive-core.js','archive-capacity.js',
@@ -314,11 +346,12 @@ jobs:
                   'delta-sync-asset-runtime.js','delta-sync-app-journal.js','delta-sync-app-migration.js','delta-sync-migration-recovery.js',
                   'delta-sync-app-runtime.js','delta-sync-metadata-ui.js','delta-sync-capacity.js','delta-sync-capacity-gc.js',
                   'delta-sync-drawing-review.js','sync-status.js','sync-work-status.js']
+          names=['sentlog/'+name for name in names]+['sw.js','sentlog-pc/index.html','sentlog/pc-safe-backup.js']
           base=os.environ['SENTLOG_DEPLOYMENT_URL'].rstrip('/')+'/'
           assert base.startswith('https://')
           def verify(name):
-              expected=sha256((Path('sentlog')/name).read_bytes()).hexdigest()
-              url=urljoin(base,'sentlog/'+name)+'?release-check='+expected[:16]
+              expected=sha256(Path(name).read_bytes()).hexdigest()
+              url=urljoin(base,name)+'?release-check='+expected[:16]
               for attempt in range(10):
                   try:
                       request=Request(url,headers={'Cache-Control':'no-cache'})

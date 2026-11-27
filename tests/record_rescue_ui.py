@@ -1,9 +1,13 @@
-"""One emergency-record download through the complete built application.
+"""Emergency-record and failure-history downloads in the complete built app.
 
 Native browser input, downloads and IndexedDB run in a new temporary profile
 at 375 x 667 CSS pixels. Only synthetic records are used. A test-only put()
 fault raises QuotaExceededError in a real transaction; this does not exhaust
-a disk or test physical iOS hardware. Web Share is disabled in this isolated
+a disk or test physical iOS hardware. After the existing rescue checks, the
+actual writer handle is closed and a test-only close event exercises its handler.
+This models an invalid connection; it does not induce a browser storage reset.
+The history download must work with storage and retry entry points blocked.
+Web Share is disabled in this isolated
 profile to exercise the application's download fallback. All external network
 traffic is blocked; PDF.js requests are fulfilled from the local build vendor.
 
@@ -16,6 +20,7 @@ import base64
 import functools
 import hashlib
 import json
+import re
 import struct
 import sys
 import tempfile
@@ -67,7 +72,7 @@ FAIL_SAVE = r"""async()=>{
   const quota=new DOMException('Synthetic isolated record-save quota','QuotaExceededError');
   IDBObjectStore.prototype.put=function(value,key){
     if(this.transaction.db.name==='surveyFieldNoteDB'&&this.name==='files'&&
-      key==='__sentlog_record__:'+drawingStorageKey(f.drawing)){test.fired++;throw quota;}
+      key==='__sentlog_record__:'+drawingStorageKey(f.drawing)){test.fired++;test.failedConnection=this.transaction.db;throw quota;}
     return native.apply(this,arguments);
   };
   test.restoreFault=()=>{IDBObjectStore.prototype.put=native;};
@@ -88,15 +93,15 @@ FAIL_SAVE = r"""async()=>{
     fired:test.fired,failed:SentlogRecords.failed,pending:SentlogRecords.pending};
 }"""
 
-NATIVE_PROOF = r"""async()=>{
-  const db=await SentlogRecords.openFilesDatabase();let data;
+NATIVE_PROOF = r"""async useObserver=>{
+  const db=useObserver?window.__recordRescueUi.diagnosticObserver:await SentlogRecords.openFilesDatabase();let data;
   try{data=await new Promise((resolve,reject)=>{
     const names=['files','sentlog_delta_journal_v1','sentlog_delta_control_v1'];
     const tx=db.transaction(names,'readonly'),out={};
     for(const name of names){const rows=out[name]=[],q=tx.objectStore(name).openCursor();
       q.onsuccess=()=>{const cursor=q.result;if(cursor){rows.push([cursor.key,cursor.value]);cursor.continue();}};}
     tx.oncomplete=()=>resolve(out);tx.onabort=()=>reject(tx.error||Error('Synthetic read-only proof aborted'));
-  });}finally{db.close();}
+  });}finally{if(!useObserver)db.close();}
   for(const rows of Object.values(data))for(const row of rows){const value=row[1];
     if(value instanceof Blob){
       const bytes=await value.arrayBuffer(),digest=await crypto.subtle.digest('SHA-256',bytes);
@@ -106,6 +111,38 @@ NATIVE_PROOF = r"""async()=>{
     }
   }
   return data;
+}"""
+
+CLOSE_FOR_HISTORY_EXPORT = r"""async()=>{
+  const test=window.__recordRescueUi,db=test.failedConnection,originalDetail=SentlogRecords.recordFailureDetails;
+  if(!db||typeof db.onclose!=='function'||originalDetail?.errorName!=='QuotaExceededError')
+    throw Error('The quota-failed writer and its original diagnostic must exist');
+  // Keep one independent readonly observer for the final equality check.
+  // It is never used by the UI and never writes or recreates a database.
+  test.diagnosticObserver=await SentlogRecords.openFilesDatabase();test.restoreFault();
+  db.close();let closedHandleError=null;
+  try{db.transaction(['files'],'readonly');}catch(error){closedHandleError=error.name;}
+  if(closedHandleError!=='InvalidStateError')throw Error('The native writer handle was not invalidated');
+  // Explicit close does not emit an unexpected-close event. Dispatch only this
+  // test event to exercise the real handler; do not claim native eviction.
+  db.dispatchEvent(new Event('close'));
+  let currentErrorCode=null;try{SentlogRecords.assertSafe();}catch(error){currentErrorCode=error.code;}
+  if(currentErrorCode!=='RECORD_CONNECTION_CLOSED'||SentlogRecords.recordFailureDetails!==null||
+    !SentlogRecords.failed||!SentlogRecords.pending)throw Error('The real connection-close guard did not remain active');
+  const counts=test.diagnosticIO={open:0,deleteDatabase:0,transaction:0,retry:0,flush:0,settled:0,openFilesDatabase:0};
+  const restore=[];
+  function block(object,key,label){const original=object[key];restore.push(()=>{object[key]=original;});
+    object[key]=function(){counts[label]++;throw Error('History export attempted forbidden '+label);};}
+  test.restoreDiagnosticGuards=()=>{for(const fn of restore.splice(0).reverse())fn();};
+  block(indexedDB,'open','open');block(indexedDB,'deleteDatabase','deleteDatabase');
+  block(IDBDatabase.prototype,'transaction','transaction');
+  for(const method of ['retry','flush','settled','openFilesDatabase'])block(SentlogRecords,method,method);
+  test.diagnosticClicks={trusted:0,untrusted:0};
+  document.querySelector('#sentlogStorageWarning .failure-history-export').addEventListener('click',event=>{
+    test.diagnosticClicks[event.isTrusted?'trusted':'untrusted']++;
+  },{capture:true});
+  return {originalDetail,history:SentlogRecords.recordFailureHistory,closedHandleError,currentErrorCode,
+    issues:JSON.stringify(SentlogRecords.issues)};
 }"""
 
 
@@ -208,12 +245,90 @@ def run(page, expect, report, report_path, download_directory):
     assert page.evaluate('__recordRescueUi.fired') == 1, 'Rescue must not retry the failing writer'
     assert evaluate(page, NATIVE_PROOF) == native_before, 'Rescue changed durable records, files, journal or control data'
     assert page.evaluate("JSON.parse(SentlogRecords.getItem(drawingStorageKey(__recordRescueUi.fixture.drawing))).shapes[0].memo") == UNSAVED_MEMO
-    report.update(phase='complete', download={
+    report.update(phase='record-rescue-complete', download={
         'suggestedFilename': download.suggested_filename, 'bytes': downloaded.stat().st_size,
         'sha256': hashlib.sha256(downloaded.read_bytes()).hexdigest(), 'projects': 1, 'drawingStates': 1,
         'photoReferences': len(payload['drawingStates'][DRAWING]['shapes'][0]['photos']), 'includesFileData': False},
         newestMemoExported=True, otherProjectExcluded=True, failedWarningRetained=True,
         allThreeNativeStoresUnchanged=True, nativeFilesPreserved=2, faultCalls=1)
+    check_history_download(page, expect, report, download_directory, native_before)
+    report['phase'] = 'complete'
+
+
+def check_history_download(page, expect, report, download_directory, native_before):
+    """One real UI download after the writer's native connection is invalid."""
+    report['phase'] = 'closed writer and native failure-history download'
+    closed = evaluate(page, CLOSE_FOR_HISTORY_EXPORT)
+    warning = page.locator('#sentlogStorageWarning')
+    expect(warning).to_be_visible()
+    expect(warning.locator('.failure-details')).to_be_hidden()
+    history = warning.locator('.failure-history')
+    expect(history).to_be_visible()
+    history.locator('summary').tap()
+    expect(history).to_have_js_property('open', True)
+    button = history.get_by_role('button', name='保存障害の経過を書き出す', exact=True)
+    expect(button).to_be_enabled()
+    report['historyExportButton'] = clickable_proof(button)
+    with page.expect_download(timeout=20000) as event:
+        button.tap()
+    download = event.value
+    assert download.failure() is None, 'History download failed with the writer connection closed'
+    assert download.suggested_filename == 'sentlog-storage-failure-history.json'
+    downloaded = download_directory / 'synthetic-storage-failure-history.json'
+    download.save_as(str(downloaded))
+    payload = json.loads(downloaded.read_text(encoding='utf-8'))
+    assert payload == closed['history'], 'Native download must contain the exact pre-click memory snapshot'
+    assert set(payload) == {'version', 'scope', 'capacity', 'droppedEvents', 'firstRecordFailure',
+                            'latestRecordFailure', 'current', 'events'}, 'Unexpected diagnostic fields'
+    assert payload['version'] == 1 and payload['scope'] == 'current-page-memory'
+    assert payload['capacity'] == 16 and payload['droppedEvents'] == 0
+    assert payload['current'] == {'connection': 'unexpected-close', 'recordsFailed': True}
+    assert len(payload['events']) == 2 <= payload['capacity']
+    first, last = payload['events']
+    assert first == payload['firstRecordFailure'] == payload['latestRecordFailure']
+    assert set(first) == {'sequence', 'observedAt', 'kind', 'errorName', 'nativeMessageClass', 'detail'}
+    assert first['kind'] == 'record-save-failed' and first['errorName'] == 'QuotaExceededError'
+    assert first['nativeMessageClass'] == 'quota-mentioned'
+    detail = first['detail']
+    assert detail == closed['originalDetail'], 'The original quota detail was lost after connection close'
+    assert set(detail) == {'version', 'errorName', 'phase', 'store', 'operation', 'requestedRecords',
+                           'recordsToWrite', 'recordsToDelete', 'recordValueBytes'}
+    assert detail['version'] == 1 and detail['errorName'] == 'QuotaExceededError'
+    assert (detail['phase'], detail['store'], detail['operation']) == ('request-create', 'files', 'put')
+    assert (detail['requestedRecords'], detail['recordsToWrite'], detail['recordsToDelete']) == (2, 2, 0)
+    assert isinstance(detail['recordValueBytes'], int) and detail['recordValueBytes'] > 0
+    assert set(last) == {'sequence', 'observedAt', 'kind', 'reason'}
+    assert last['kind'] == 'database-unexpected-close' and last['reason'] == 'not-reported'
+    assert (first['sequence'], last['sequence']) == (1, 2)
+    for entry in payload['events']:
+        assert re.fullmatch(r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z', entry['observedAt'])
+    assert downloaded.stat().st_size < 32768, 'Bounded diagnostic unexpectedly contains a large payload'
+    text = json.dumps(payload, ensure_ascii=False)
+    for secret in [PROJECT, DRAWING, OTHER_PROJECT, OTHER_DRAWING, SAVED_MEMO, UNSAVED_MEMO,
+                   'synthetic-record', 'synthetic-photo', 'synthetic-pending-photo', 'synthetic.pdf', 'synthetic.png',
+                   'Synthetic isolated record-save quota', 'Synthetic PDF file bytes', 'Synthetic target',
+                   '__sentlog_record__:', 'surveyFieldNoteWorkspaceV1', base64.b64encode(tiny_png()).decode('ascii')]:
+        assert secret not in text, 'Diagnostic export exposed synthetic record, file, key or raw-error content'
+    expect(history.locator('.failure-history-result')).to_contain_text('保存を開始しました')
+    expect(button).to_be_enabled()
+    after = page.evaluate("""()=>({io:{...__recordRescueUi.diagnosticIO},clicks:{...__recordRescueUi.diagnosticClicks},
+      failed:SentlogRecords.failed,pending:SentlogRecords.pending,issues:JSON.stringify(SentlogRecords.issues),
+      currentDetail:SentlogRecords.recordFailureDetails,faultCalls:__recordRescueUi.fired,
+      memo:JSON.parse(SentlogRecords.getItem(drawingStorageKey(__recordRescueUi.fixture.drawing))).shapes[0].memo})""")
+    assert after['io'] == {name: 0 for name in ['open', 'deleteDatabase', 'transaction', 'retry', 'flush', 'settled', 'openFilesDatabase']}
+    assert after['clicks'] == {'trusted': 1, 'untrusted': 0}, 'The real history button must receive one native click'
+    assert after['failed'] and after['pending'] and after['currentDetail'] is None
+    assert after['issues'] == closed['issues'] and after['faultCalls'] == 1 and after['memo'] == UNSAVED_MEMO
+    page.evaluate('__recordRescueUi.restoreDiagnosticGuards()')
+    assert evaluate(page, NATIVE_PROOF, True) == native_before, 'History export changed any native store or Blob'
+    page.evaluate('__recordRescueUi.diagnosticObserver.close()')
+    report['historyDownload'] = {
+        'faultModel': 'Real native writer handle closed; synthetic close event dispatches the real handler. No native eviction induced.',
+        'closedHandleError': closed['closedHandleError'], 'currentErrorCode': closed['currentErrorCode'],
+        'suggestedFilename': download.suggested_filename, 'bytes': downloaded.stat().st_size,
+        'sha256': hashlib.sha256(downloaded.read_bytes()).hexdigest(), 'payload': payload,
+        'entryPointCalls': after['io'], 'buttonClicks': after['clicks'], 'originalQuotaPreserved': True,
+        'privateSyntheticContentExcluded': True, 'failedAndPendingRetained': True, 'allThreeNativeStoresUnchanged': True}
 
 
 def main():
@@ -323,7 +438,9 @@ def main():
                 active_failure = sys.exc_info()[0] is not None
                 try:
                     if page and not page.is_closed():
-                        page.evaluate('window.__recordRescueUi?.restoreFault?.()')
+                        page.evaluate('window.__recordRescueUi?.restoreDiagnosticGuards?.(); '
+                                      'window.__recordRescueUi?.diagnosticObserver?.close(); '
+                                      'window.__recordRescueUi?.restoreFault?.()')
                 except Exception as cleanup_error:
                     # The temporary browser is closed below regardless. Keep
                     # the actual test failure when its page is already gone.
@@ -349,7 +466,8 @@ def main():
         report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
     if report['status'] == 'passed':
         print('PASS ' + args.engine + ': native record rescue download at 375px; latest unsaved memo, '
-              'selected project only, picker above warning, failed state and durable bytes preserved', flush=True)
+              'selected project only, picker above warning, failed state and durable bytes preserved; '
+              'native history download after writer close, original quota retained, storage and retry calls zero', flush=True)
         return 0
     print(report['status'].upper() + ' ' + args.engine + ': ' + report.get('error', 'record rescue UI test failed'), file=sys.stderr, flush=True)
     return 2 if report['status'] == 'blocked' else 1

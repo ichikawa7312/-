@@ -15,6 +15,10 @@
   let migrationInfo=null, operation=false, failure=null;
   let recordFailure=null,connectionFailure=null;
   const recordTransactions=new WeakMap();
+  const FAILURE_HISTORY_LIMIT=16,failureEvents=[];
+  const diagnosticErrorNames=['AbortError','ConstraintError','DataCloneError','DataError','InvalidAccessError','InvalidStateError','NotFoundError',
+    'NotReadableError','QuotaExceededError','ReadOnlyError','SecurityError','TimeoutError','TransactionInactiveError','UnknownError','VersionError','TypeError','Error'];
+  let failureSequence=0,droppedFailureEvents=0,firstRecordFailureEvent=null,latestRecordFailureEvent=null;
   const listeners=new Set(), failures=new Map(), fileTasks=new Set(), failedFiles=new Map(), fileWriters=new Map(), fileGenerations=new Map(), fileTaskOwners=new Map();
   let bindings=new Map(),cutoffFiles=new Map();
   function notify(){for(const fn of listeners){try{fn()}catch(e){console.warn('Storage status',e)}}}
@@ -32,6 +36,46 @@
     tx.oncomplete=resolve;tx.onabort=()=>reject(tx.sentlogJournalError||tx.error||Error('端末への保存が中断されました'));
     tx.onerror=()=>{};
   });}
+  function diagnosticErrorName(error){try{const name=error?.name;return diagnosticErrorNames.includes(name)?name:'Error';}catch{return 'Error';}}
+  function nativeMessageClass(error){
+    // Export constants only, never the native message itself: it can contain
+    // record keys, account identifiers or filesystem paths. A matched phrase is
+    // evidence about the message, not a diagnosis of the underlying cause.
+    try{
+      const message=error?.message;if(typeof message!=='string'||message.length>1024)return 'unavailable';
+      if(!message)return 'empty';
+      if(/disk full|no space left|not enough (?:disk )?space/i.test(message))return 'disk-space-mentioned';
+      if(/\bi\/?o error\b/i.test(message))return 'io-mentioned';
+      if(/(?:database )?connection (?:is |was |has been )?(?:clos(?:ed|ing)|lost)/i.test(message))return 'connection-closed-mentioned';
+      if(/\bquota(?:exceedederror)?\b/i.test(message))return 'quota-mentioned';
+      if(/\babort(?:ed)?\b/i.test(message))return 'abort-mentioned';
+      return 'unclassified';
+    }catch{return 'unavailable';}
+  }
+  function copyFailureEvent(event){return event?{...event,...(event.detail?{detail:{...event.detail}}:{})}:null;}
+  function rememberFailureEvent(kind,fields={}){
+    // This history lives only in this page's memory. Never open storage, retry,
+    // or change exception handling in order to record a diagnostic event.
+    try{
+      const event={sequence:++failureSequence,observedAt:new Date().toISOString(),kind,...fields};
+      failureEvents.push(event);if(failureEvents.length>FAILURE_HISTORY_LIMIT){failureEvents.shift();droppedFailureEvents++;}
+      if(kind==='record-save-failed'){firstRecordFailureEvent=firstRecordFailureEvent||event;latestRecordFailureEvent=event;}
+    }catch{}
+  }
+  function rememberVersionChange(event){
+    let oldVersion=null,newVersion=null,change='unknown';
+    try{
+      const old=event?.oldVersion,next=event?.newVersion;
+      if(Number.isSafeInteger(old)&&old>=0)oldVersion=old;
+      if(next===null)change='delete-request';
+      else if(Number.isSafeInteger(next)&&next>0){newVersion=next;change='upgrade-request';}
+    }catch{}
+    rememberFailureEvent('database-versionchange',{change,oldVersion,newVersion});
+  }
+  function failureHistory(){return {version:1,scope:'current-page-memory',capacity:FAILURE_HISTORY_LIMIT,droppedEvents:droppedFailureEvents,
+    firstRecordFailure:copyFailureEvent(firstRecordFailureEvent),latestRecordFailure:copyFailureEvent(latestRecordFailureEvent),
+    current:{connection:connectionFailure?'unexpected-close':connection?'open':'not-open',recordsFailed:failures.has('records')},
+    events:failureEvents.map(copyFailureEvent)};}
   // Observe record batches without changing request/transaction error handling.
   // No keys, values, account IDs, messages or Blob contents enter this detail.
   function recordStoreName(source){
@@ -73,11 +117,10 @@
         if(value===null){recordsToDelete++;continue;}recordsToWrite++;
         if(recordValueBytes!==null)try{recordValueBytes+=new Blob([value]).size;}catch{recordValueBytes=null;}
       }
-      const names=['AbortError','ConstraintError','DataCloneError','DataError','InvalidAccessError','InvalidStateError','NotFoundError',
-        'NotReadableError','QuotaExceededError','ReadOnlyError','SecurityError','TimeoutError','TransactionInactiveError','UnknownError','VersionError','TypeError','Error'];
-      recordFailure={error,detail:{version:1,errorName:names.includes(error?.name)?error.name:'Error',...cause,
+      recordFailure={error,detail:{version:1,errorName:diagnosticErrorName(error),...cause,
         requestedRecords:batch.size,recordsToWrite,recordsToDelete,recordValueBytes}};
     }catch{recordFailure=null;}
+    rememberFailureEvent('record-save-failed',{errorName:diagnosticErrorName(error),nativeMessageClass:nativeMessageClass(error),detail:recordFailure?{...recordFailure.detail}:null});
   }
   async function connect(){
     if(connectionFailure)throw connectionFailure;
@@ -92,9 +135,10 @@
       q.onblocked=()=>reject(Error('別のセントログ画面が保存先を使用中です。ほかの画面を閉じて再試行してください。'));
     });
     const db=connection;
-    db.onversionchange=()=>{if(connection!==db)return;db.close();connection=null;failure=Error('保存先が別の画面で更新されました。未保存の記録を退避してから更新してください。');report('records',failure);};
+    db.onversionchange=event=>{if(connection!==db)return;rememberVersionChange(event);db.close();connection=null;failure=Error('保存先が別の画面で更新されました。未保存の記録を退避してから更新してください。');report('records',failure);};
     db.onclose=()=>{
       if(connection!==db)return;
+      rememberFailureEvent('database-unexpected-close',{reason:'not-reported'});
       // An unexpected close does not authorize opening a new database or
       // replaying this tab's memory into it. Keep the editable mirror for rescue.
       connection=null;connectionFailure=Object.assign(Error('端末内の保存先との接続が予期せず終了しました。保存を停止しています。画面を閉じたり更新したりせず、まず記録の控えを書き出してください。'),{code:'RECORD_CONNECTION_CLOSED'});
@@ -465,7 +509,15 @@
           fileWrites[0].key===unchangedFile.key&&fileStates.get(unchangedFile.key)===unchangedFile.sequence&&
           fileIdentity(oldFiles.get(unchangedFile.key))===unchangedFile.identity&&
           fileIdentity(fileWrites[0].value)===unchangedFile.identity){
-          mutate({unchanged:true,value:oldFiles.get(unchangedFile.key)});return;
+          mutate({unchanged:true,value:oldFiles.get(unchangedFile.key),sequence:fileStates.get(unchangedFile.key)});return;
+        }
+        // Pending edits can return to their durable value, including while an
+        // earlier save is in flight. Only these same-transaction preimages can
+        // prove that no write is needed. Keep lifecycle contexts and all of the
+        // revision/ownership checks above even when the record values match.
+        if(kind==='batch'&&!fileWrites.length&&!fileDeletes.length&&!changes.length&&
+          !archiveContext&&!contexts.some(x=>x.operation==='restore')){
+          mutate({unchanged:true,recordChanges:changes});return;
         }
         const seq=clock+1;
         const ownedIds=new Set(workspaceOf(workspaceAfter).projects.flatMap(project=>(project.drawings||[]).map(d=>d.id)));
@@ -491,7 +543,7 @@
         }
         tx.sentlogFileKeys=fileKeys;
         for(const key of fileKeys)recordRequest(tx,control,'put',seq,'file:'+key);
-        recordRequest(tx,control,'put',seq,'clock');mutate();
+        recordRequest(tx,control,'put',seq,'clock');mutate({recordChanges:changes,sequence:seq});
       }catch(error){stop(error);}
     }
     control.get('clock').onsuccess=e=>{clock=Number(e.target.result)||0;ready();};
@@ -1361,18 +1413,20 @@
   };
   async function commitBatch(batch,options=[]){
     let tx;try{tx=transaction('readwrite');}catch(error){rememberRecordFailure(error,batch,null);throw error;}
-    const done=complete(tx),s=tx.objectStore(STORE),probe=observeRecordTransaction(tx);let conflict=false;
+    const done=complete(tx),s=tx.objectStore(STORE),probe=observeRecordTransaction(tx);let conflict=false,unchanged=false;
     s.get(META).onsuccess=e=>{
       if(!e.target.result || Number(e.target.result.revision)!==revision){conflict=true;tx.abort();return;}
-      journalMutation(tx,{writes:[...batch],kind:'batch',contexts:options},()=>{
-        for(const [key,value] of batch){if(value===null)recordRequest(tx,s,'delete',PREFIX+key);else recordRequest(tx,s,'put',value,PREFIX+key);}
+      journalMutation(tx,{writes:[...batch],kind:'batch',contexts:options},result=>{
+        if(result.unchanged){unchanged=true;return;}
+        for(const {key,after:value} of result.recordChanges){if(value===null)recordRequest(tx,s,'delete',PREFIX+key);else recordRequest(tx,s,'put',value,PREFIX+key);}
         recordRequest(tx,s,'put',{...e.target.result,revision:revision+1,updatedAt:new Date().toISOString()},META);probe.queued=true;
       });
     };
     try{await done;}catch(e){const error=conflict?Error('別の画面で記録が変更されています。上書きを止めました。未保存の記録を退避してから画面を更新してください。'):e;
       rememberRecordFailure(error,batch,tx);throw error;}
+    if(recordFailure)rememberFailureEvent('record-save-completed',{afterFailureSequence:latestRecordFailureEvent?.sequence??null});
     recordFailure=null;
-    committedBindings(tx);revision++;for(const [key,value] of batch)if(value===null)durableMemory.delete(key);else durableMemory.set(key,value);
+    committedBindings(tx);if(!unchanged)revision++;for(const [key,value] of batch)if(value===null)durableMemory.delete(key);else durableMemory.set(key,value);
   }
   function kick(){if(queued || failure)return;queued=true;queueMicrotask(()=>{queued=false;flush().catch(()=>{});});}
   function batch(writes,options={}){
@@ -1412,8 +1466,12 @@
     if(exclusive) return Promise.reject(Error('復元中です'));
     const guarded=Object.keys(options).length>0;
     const validate=options.validate,onlyIfMissing=options.onlyIfMissing===true,signal=options.signal;
+    const hasExpected=options.expectedFileStates!==undefined;
+    const expectedFileStates=Array.isArray(options.expectedFileStates)?options.expectedFileStates.map(x=>x&&({key:x.key,sequence:x.sequence})):options.expectedFileStates;
     function fileError(code,message){return Object.assign(Error(message),{code});}
     function check(){
+      if(hasExpected&&(!Array.isArray(expectedFileStates)||expectedFileStates.some(x=>!x||typeof x.key!=='string'||!Number.isSafeInteger(x.sequence)||x.sequence<0)||onlyIfMissing))
+        throw fileError('FILE_WRITE_GUARD','ファイルを置き換える前の保存世代を確認できません');
       if(signal?.aborted)throw fileError('FILE_WRITE_ABORTED','ファイルの保存を中止しました');
       if(validate!==undefined){
         if(typeof validate!=='function')throw fileError('FILE_WRITE_GUARD','保存する対象を確認できません');
@@ -1506,9 +1564,9 @@
             if(settled)return;
             try{
               check();
-              journalMutation(tx,{fileWrites:[{key,value}],kind:'file-write',contexts:[contextOf(options)],unchangedFile},result=>{
-                if(result?.unchanged){check();saved={written:false,value:result.value,unchanged:true};return;}
-                check();saved={written:true,value};const q=store.put(value,key);
+              journalMutation(tx,{fileWrites:[{key,value}],kind:'file-write',contexts:[contextOf(options)],unchangedFile,expectedFileStates:expectedFileStates||[]},result=>{
+                if(result?.unchanged){check();saved={written:false,value:result.value,unchanged:true,...(hasExpected?{sequence:result.sequence}:{})};return;}
+                check();saved={written:true,value,...(hasExpected?{sequence:result.sequence}:{})};const q=store.put(value,key);
                 q.onerror=()=>{reason=reason||q.error;};
                 q.onsuccess=()=>{if(settled)return;try{check();}catch(error){abort(error);}};
               });
@@ -1627,11 +1685,14 @@
     startupProtectionVersion:1,
     storageLifecycleVersion:1,
     cutoffResumeVersion:1,
-    getFileWriteCapabilities:()=>({guarded:true,onlyIfMissing:true,writerState:true,fileWriteDedupVersion:1,journaled:connection?.version===DB_VERSION}),
+    recordBatchNoopVersion:1,
+    recordFailureHistoryVersion:1,
+    getFileWriteCapabilities:()=>({guarded:true,onlyIfMissing:true,writerState:true,fileWriteDedupVersion:1,expectedFileStatesVersion:1,journaled:connection?.version===DB_VERSION}),
     uncommittedFiles:()=>[...failedFiles].map(([key,value])=>({key,value})),
     get ready(){return initialized;},get pending(){return pending.size+inFlight>0||fileTasks.size>0||operation;},get failed(){return failures.size>0;},
     get issues(){return [...failures];},get migration(){return migrationInfo;},
     get recordFailureDetails(){return !connectionFailure&&recordFailure?.error===failure&&failures.has('records')?{...recordFailure.detail}:null;},
+    get recordFailureHistory(){return failureHistory();},
     getItem:k=>{assertReady();return memory.get(k)??null;},
     setItem:(k,v,options)=>batch([[k,String(v)]],options),removeItem:(k,options)=>batch([[k,null]],options),keys:()=>[...memory.keys()],
     subscribe(fn){listeners.add(fn);return()=>listeners.delete(fn);},report,recovered,
