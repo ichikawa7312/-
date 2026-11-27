@@ -79,15 +79,16 @@ HELPERS = r"""(() => {
   const completed=tx=>new Promise((resolve,reject)=>{tx.oncomplete=resolve;tx.onabort=()=>reject(tx.error||Error('Native transaction aborted'));});
   async function digest(value){const bytes=value instanceof Blob?await value.arrayBuffer():new TextEncoder().encode(value);
     return [...new Uint8Array(await crypto.subtle.digest('SHA-256',bytes))].map(n=>n.toString(16).padStart(2,'0')).join('');}
-  async function normalize(value){
+  async function normalize(value,path='$'){
     if(value===undefined)return {undefined:true};
-    if(value instanceof Blob)return {blob:true,size:value.size,type:value.type,sha256:await digest(value),
-      ...(value instanceof File?{name:value.name,lastModified:value.lastModified}:{})};
-    if(Array.isArray(value)){const out=[];for(const item of value)out.push(await normalize(item));return out;}
-    if(value&&typeof value==='object'){const out={};for(const key of Object.keys(value).sort())out[key]=await normalize(value[key]);return out;}
+    if(value instanceof Blob){try{return {blob:true,size:value.size,type:value.type,sha256:await digest(value),
+      ...(value instanceof File?{name:value.name,lastModified:value.lastModified}:{})};}
+      catch(error){throw Error('Native Blob read failed at '+path+' (size='+value.size+', type='+value.type+'): '+(error?.name||'Error')+': '+(error?.message||error));}}
+    if(Array.isArray(value)){const out=[];for(let i=0;i<value.length;i++)out.push(await normalize(value[i],path+'['+i+']'));return out;}
+    if(value&&typeof value==='object'){const out={};for(const key of Object.keys(value).sort())out[key]=await normalize(value[key],path+'.'+key);return out;}
     return value;
   }
-  const fingerprint=async value=>digest(JSON.stringify(await normalize(value)));
+  const fingerprint=async (value,path)=>digest(JSON.stringify(await normalize(value,path)));
   async function snapshot(){
     // Fixture proof reads one native value at a time, outside the measured
     // product phase. It never materializes the entire heavy journal in memory.
@@ -97,7 +98,7 @@ HELPERS = r"""(() => {
         for(const name of [...db.objectStoreNames]){
           let tx=db.transaction(name,'readonly'),done=completed(tx),keys=await request(tx.objectStore(name).getAllKeys());await done;
           const rows=[];for(const key of keys){tx=db.transaction(name,'readonly');done=completed(tx);const value=await request(tx.objectStore(name).get(key));await done;
-            rows.push([key,await fingerprint(value)]);}
+            rows.push([key,await fingerprint(value,info.name+'/'+name+'/'+String(key))]);}
           stores[name]={count:rows.length,rows,sha256:await fingerprint(rows)};
         }databases[info.name]={version:db.version,stores};
       }finally{db.close();}}

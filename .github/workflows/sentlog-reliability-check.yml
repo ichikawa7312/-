@@ -98,9 +98,13 @@ jobs:
         if: ${{ !cancelled() && steps.production_build.outcome == 'success' && steps.browser_adapter.outcome == 'success' }}
         timeout-minutes: 7
         run: |
-          git fetch --no-tags --depth=1 origin b1adff4c19ea8d7745ea401288c203fae08d533a
-          git show b1adff4c19ea8d7745ea401288c203fae08d533a:sentlog/record-store.js > /tmp/sentlog-operation-v215.js
+          git -c safe.directory="$GITHUB_WORKSPACE" fetch --no-tags --depth=1 origin b1adff4c19ea8d7745ea401288c203fae08d533a
+          git -c safe.directory="$GITHUB_WORKSPACE" show b1adff4c19ea8d7745ea401288c203fae08d533a:sentlog/record-store.js > /tmp/sentlog-operation-v215.js
           python tests/storage_operation_scale_ui.py --engine ${{ matrix.engine }} --built-root . --baseline-writer /tmp/sentlog-operation-v215.js --out /tmp/sentlog-operation-${{ matrix.engine }}
+      - name: Compare frozen v2.15 native Blob preservation on WebKit
+        if: ${{ !cancelled() && matrix.engine == 'webkit' && steps.production_build.outcome == 'success' && steps.browser_adapter.outcome == 'success' }}
+        timeout-minutes: 3
+        run: python tests/storage_maintenance_ui.py --engine webkit --built-root . --writer-source /tmp/sentlog-operation-v215.js --case native-files-and-backups --out /tmp/sentlog-maintenance-v215-webkit
       - name: Verify native PC file-handle preservation
         if: ${{ !cancelled() && matrix.engine == 'chromium' && steps.production_build.outcome == 'success' && steps.browser_adapter.outcome == 'success' }}
         run: python tests/storage_preservation_native_ui.py --engine chromium --scenario pc --built-root . --out /tmp/sentlog-native-pc
@@ -123,6 +127,8 @@ jobs:
             /tmp/sentlog-maintenance-${{ matrix.engine }}/**/*.png
             /tmp/sentlog-operation-${{ matrix.engine }}/**/*.json
             /tmp/sentlog-operation-${{ matrix.engine }}/**/*.png
+            /tmp/sentlog-maintenance-v215-webkit/**/*.json
+            /tmp/sentlog-maintenance-v215-webkit/**/*.png
             /tmp/sentlog-native-pc/**/*.json
             /tmp/sentlog-native-regular-pc/**/*.json
             /tmp/sentlog-page-replacement-context-${{ matrix.engine }}/**/*.json
