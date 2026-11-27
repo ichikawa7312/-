@@ -73,7 +73,7 @@ test('mixed batches skip the unchanged large workspace while committing a real e
   assert.equal(mutations.length,4,'exactly WAL, clock, changed record and META must be written');
   const after=await f.disk(),rows=[...after[LOG].values()];assert.equal(rows.length,1);
   assert.deepEqual(rows[0].changes,[{key:DRAW+'one',before:before.files.get(PREFIX+DRAW+'one'),after:value}]);
-  assert.equal(rows[0].workspaceBefore,workspace);assert.equal(rows[0].workspaceAfter,workspace);
+  assert.equal('workspaceBefore' in rows[0],false);assert.equal('workspaceAfter' in rows[0],false);
   assert.deepEqual(rows[0].projectIds,[project.id]);assert.deepEqual(rows[0].drawingIds,['one']);
   assert.equal(after.files.get(PREFIX+WS),workspace);assert.equal(after.files.get(PREFIX+DRAW+'one'),value);
   assert.equal(after.files.get(META).revision,before.files.get(META).revision+1);

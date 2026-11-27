@@ -7,6 +7,7 @@ on:
       - 'scripts/build_*.py'
       - 'sentlog/record-store.js'
       - 'sentlog/storage-ui.js'
+      - 'sentlog/storage-maintenance-ui.js'
       - 'sentlog/archive-core.js'
       - 'sentlog/archive-pc.js'
       - 'sentlog/pc-safe-backup.js'
@@ -24,6 +25,14 @@ on:
       - 'tests/pc_safe_backup_acquisition.test.cjs'
       - 'tests/pc_archive_root_context.test.cjs'
       - 'tests/pc_archive_source_readonly.test.cjs'
+      - 'tests/record_journal_workspace_compaction.test.cjs'
+      - 'tests/fixtures/record_journal_readers_v214.cjs'
+      - 'tests/record_projection_noop.test.cjs'
+      - 'tests/projection_noop_view.test.cjs'
+      - 'tests/storage_redundant_files.test.cjs'
+      - 'tests/storage_maintenance_ui_progress.test.cjs'
+      - 'tests/capacity_maintenance_release.test.cjs'
+      - 'tests/storage_maintenance_ui.py'
   workflow_dispatch:
 permissions:
   contents: read
@@ -74,6 +83,9 @@ jobs:
       - name: Verify native IndexedDB net-zero batches
         if: ${{ !cancelled() && steps.production_build.outcome == 'success' && steps.browser_adapter.outcome == 'success' }}
         run: python tests/storage_preservation_native_ui.py --engine ${{ matrix.engine }} --scenario writer --built-root . --out /tmp/sentlog-native-writer-${{ matrix.engine }}
+      - name: Verify native local maintenance and preserved working data
+        if: ${{ !cancelled() && steps.production_build.outcome == 'success' && steps.browser_adapter.outcome == 'success' }}
+        run: python tests/storage_maintenance_ui.py --engine ${{ matrix.engine }} --built-root . --out /tmp/sentlog-maintenance-${{ matrix.engine }}
       - name: Verify native PC file-handle preservation
         if: ${{ !cancelled() && matrix.engine == 'chromium' && steps.production_build.outcome == 'success' && steps.browser_adapter.outcome == 'success' }}
         run: python tests/storage_preservation_native_ui.py --engine chromium --scenario pc --built-root . --out /tmp/sentlog-native-pc
@@ -92,6 +104,8 @@ jobs:
             /tmp/sentlog-cloud-check-${{ matrix.engine }}/**/*.json
             /tmp/sentlog-cloud-check-${{ matrix.engine }}/**/*.png
             /tmp/sentlog-native-writer-${{ matrix.engine }}/**/*.json
+            /tmp/sentlog-maintenance-${{ matrix.engine }}/**/*.json
+            /tmp/sentlog-maintenance-${{ matrix.engine }}/**/*.png
             /tmp/sentlog-native-pc/**/*.json
             /tmp/sentlog-native-regular-pc/**/*.json
             /tmp/sentlog-page-replacement-context-${{ matrix.engine }}/**/*.json
