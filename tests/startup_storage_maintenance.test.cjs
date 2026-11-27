@@ -79,7 +79,7 @@ test('explicit preparation is read-only initialization only; repeated clicks can
   assert.equal(f.element('open').getAttribute('aria-disabled'),'true');assert.equal(f.element('open').click().prevented,true);assert(f.element('host').hidden);
   gate.resolve();await first;await pause();assert.equal(f.calls.length,0);assert.equal(f.normalInits,0);assert.equal(f.network,0);
   assert(!f.element('host').hidden);assert(!f.element('host').inert);assert(f.element('prepare').hidden);assert.equal(f.element('open').getAttribute('aria-disabled'),null);
-  assert.match(f.element('status').textContent,/まだ整理は実行していません/);assert.equal(f.context.SentlogStartupStorageMaintenance.ready,true);
+  assert.equal(f.element('status').textContent,'準備できました。下の「容量を整理」欄から進めてください。');assert.equal(f.context.SentlogStartupStorageMaintenance.ready,true);
 });
 test('a missing maintenance capability stops before initialization and exposes no cleanup controls',async()=>{
   const f=fixture();f.records.maintenanceInitVersion=0;await f.prepare();assert.equal(f.inits,0);assert(f.element('host').hidden);assert(!f.element('prepare').disabled);
@@ -94,6 +94,7 @@ test('standalone preview and fresh cleanup reuse all three bounded safety APIs',
   const f=fixture();await f.prepare();await f.action('review');assert.equal(f.calls.length,3);assert(f.calls.every(call=>call.dryRun));assert(!f.element('run').hidden);
   await f.action('run');assert.equal(f.calls.length,6);assert(f.calls.slice(3).every(call=>!call.dryRun));
   assert.deepEqual(f.calls.slice(3).map(call=>call.cursor),[0,0,'']);assert.match(f.element('workStatus').textContent,/整理が完了しました/);
+  assert.equal(f.element('status').textContent,'準備できました。下の「容量を整理」欄から進めてください。');
   assert.equal(f.element('open').href,'./');assert.equal(f.element('open').getAttribute('aria-disabled'),null);assert.equal(f.network,0);
 });
 test('all exit links are blocked throughout an in-flight pass and restored after cancellation',async()=>{

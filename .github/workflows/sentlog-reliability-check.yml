@@ -40,6 +40,7 @@ on:
       - 'tests/record_maintenance_init.test.cjs'
       - 'tests/record_journal_read_budget.test.cjs'
       - 'tests/record_journal_claim_scope.test.cjs'
+      - 'tests/record_retention_blob_handle.test.cjs'
       - 'tests/startup_storage_maintenance.test.cjs'
       - 'tests/operation_memory_release.test.cjs'
   workflow_dispatch:
@@ -62,7 +63,9 @@ jobs:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          # Native File structuredClone support is required by the retention
+          # metadata oracle (added in Node 23); browsers are tested below too.
+          node-version: '24'
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -84,6 +87,9 @@ jobs:
           assert 'python3 scripts/build_reliability_release.py' in commands
           subprocess.run(['bash','-e','-o','pipefail','-c','\n'.join(commands)],check=True)
           PY
+      - name: Verify retained File metadata and complete transaction rollback
+        if: ${{ !cancelled() && steps.production_build.outcome == 'success' }}
+        run: node tests/record_retention_blob_handle.test.cjs
       - name: Install the matching browser adapter
         id: browser_adapter
         run: python -m pip install --disable-pip-version-check playwright==1.62.0
@@ -102,14 +108,10 @@ jobs:
           git -c safe.directory="$GITHUB_WORKSPACE" fetch --no-tags --depth=1 origin b1adff4c19ea8d7745ea401288c203fae08d533a
           git -c safe.directory="$GITHUB_WORKSPACE" show b1adff4c19ea8d7745ea401288c203fae08d533a:sentlog/record-store.js > /tmp/sentlog-operation-v215.js
           python tests/storage_operation_scale_ui.py --engine ${{ matrix.engine }} --built-root . --baseline-writer /tmp/sentlog-operation-v215.js --out /tmp/sentlog-operation-${{ matrix.engine }}
-      - name: Compare frozen v2.15 native Blob preservation on WebKit
-        if: ${{ !cancelled() && matrix.engine == 'webkit' && steps.production_build.outcome == 'success' && steps.browser_adapter.outcome == 'success' }}
-        timeout-minutes: 3
-        run: python tests/storage_maintenance_ui.py --engine webkit --built-root . --writer-source /tmp/sentlog-operation-v215.js --case native-files-and-backups --out /tmp/sentlog-maintenance-v215-webkit
       - name: Trace native Blob lifetime before and after real journal compaction
         if: ${{ !cancelled() && matrix.engine == 'webkit' && steps.production_build.outcome == 'success' && steps.browser_adapter.outcome == 'success' }}
         timeout-minutes: 5
-        run: python tests/storage_blob_lifetime_diagnostic.py --engine webkit --built-root . --baseline-writer /tmp/sentlog-operation-v215.js --out /tmp/sentlog-blob-lifetime-webkit
+        run: python tests/storage_blob_lifetime_diagnostic.py --engine webkit --built-root . --baseline-writer /tmp/sentlog-operation-v215.js --expect-baseline-blob-failure --out /tmp/sentlog-blob-lifetime-webkit
       - name: Verify native PC file-handle preservation
         if: ${{ !cancelled() && matrix.engine == 'chromium' && steps.production_build.outcome == 'success' && steps.browser_adapter.outcome == 'success' }}
         run: python tests/storage_preservation_native_ui.py --engine chromium --scenario pc --built-root . --out /tmp/sentlog-native-pc
@@ -132,8 +134,6 @@ jobs:
             /tmp/sentlog-maintenance-${{ matrix.engine }}/**/*.png
             /tmp/sentlog-operation-${{ matrix.engine }}/**/*.json
             /tmp/sentlog-operation-${{ matrix.engine }}/**/*.png
-            /tmp/sentlog-maintenance-v215-webkit/**/*.json
-            /tmp/sentlog-maintenance-v215-webkit/**/*.png
             /tmp/sentlog-blob-lifetime-webkit/**/*.json
             /tmp/sentlog-native-pc/**/*.json
             /tmp/sentlog-native-regular-pc/**/*.json

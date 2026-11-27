@@ -305,6 +305,17 @@
     return JSON.stringify([value.size,value.type,typeof value.name==='string'?value.name:null,
       Number.isFinite(value.lastModified)?value.lastModified:null]);
   }
+  function retainedFileImage(value){
+    if(!(value instanceof Blob))return value;
+    // Do not re-put the database-backed Blob handle when trimming a WAL row.
+    // Keep this synchronous: the original row and its replacement must commit
+    // together, with identical bytes and all File identity fields preserved.
+    const next=typeof File==='function'&&typeof value.name==='string'?
+      new File([value],value.name,{type:value.type,lastModified:value.lastModified}):new Blob([value],{type:value.type});
+    if(fileIdentity(next)!==fileIdentity(value))
+      throw journalError('JOURNAL_RETENTION_BLOB','写真・PDFの控えの情報を保持できません。元の履歴を残して整理を停止しました');
+    return next;
+  }
   async function recordBlobHash(blob){
     if(window.SentlogBlobSha256?.digest)return window.SentlogBlobSha256.digest(blob,{crypto});
     if(blob.size>FILE_CHUNK_BYTES)throw journalError('JOURNAL_HASH_UNAVAILABLE','大きなファイルを安全に照合する機能を読み込めません。保存済みデータを保持して停止しました。画面を更新してください。');
@@ -1573,7 +1584,7 @@
           return binding.lastLocalArchiveSeq>=row.seq&&certificate?.schema===1&&certificate.projectId===binding.scope.projectId&&
             typeof certificate.payloadSha256==='string'&&/^[0-9a-f]{64}$/.test(certificate.payloadSha256);
         }
-        const q=log.openCursor(start?IDBKeyRange.lowerBound(start,true):undefined);q.onsuccess=()=>{
+        const q=log.openCursor(start?IDBKeyRange.lowerBound(start,true):undefined);q.onsuccess=()=>{try{
           const cursor=q.result;if(!cursor){control.put(0,'compactCursor');return;}
           const row=cursor.value;result.scanned++;let projectIds=row.projectIds||[],eligible=row.kind==='sentlog-app-intent'&&!claimed.has(row.id);
           if(eligible&&!projectIds.length){
@@ -1588,14 +1599,15 @@
           if(eligible){
             if(row.files.length){
               const retained={version:row.version,kind:'sentlog-file-retention',id:row.id,seq:row.seq,at:row.at,mutationKind:row.mutationKind,
-                projectIds:row.projectIds,drawingIds:row.drawingIds,resolvedProjectIds:projectIds,files:row.files,
+                projectIds:row.projectIds,drawingIds:row.drawingIds,resolvedProjectIds:projectIds,
+                files:row.files.map(file=>({...file,before:retainedFileImage(file.before),after:retainedFileImage(file.after)})),
                 proofs:projectIds.map(id=>({localProjectId:id,scope:bound.get(id).scope,proof:bound.get(id).lastProof||bound.get(id).baselineProof||bound.get(id).archive.context.deltaCheckpoint}))};
               cursor.update(retained);result.retainedFiles++;
             }else{cursor.delete();result.removed++;}
           }
           if(result.removed+result.retainedFiles>=limit||result.scanned>=scanLimit){control.put(row.seq,'compactCursor');return;}
           cursor.continue();
-        };
+        }catch(error){tx.sentlogJournalError=error;tx.abort();}};
       }catch(error){tx.sentlogJournalError=error;tx.abort();}}
       journalControls(control,'retention').onsuccess=e=>{all=e.target.result;ready();};
       tx.objectStore(STORE).get(PREFIX+WS).onsuccess=e=>{workspace=e.target.result??null;ready();};

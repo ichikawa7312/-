@@ -35,7 +35,7 @@
       records.assertSafe();
       if(!ui.install())throw Error('整理の操作画面を表示できませんでした。');
       prepared=true;host.inert=false;host.hidden=false;start.hidden=true;
-      status.textContent='準備できました。「整理できる重複を確認」から進めてください。まだ整理は実行していません。';
+      status.textContent='準備できました。下の「容量を整理」欄から進めてください。';
     }catch(error){
       host.hidden=true;host.inert=true;start.disabled=false;
       status.textContent='準備できませんでした：'+(error?.message||String(error));

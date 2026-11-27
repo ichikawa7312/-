@@ -10,6 +10,9 @@ complete native-byte snapshot still run. No maintenance UI operation is run.
 Early reads may change scheduling, Blob references and garbage collection. The
 unprobed arm deliberately installs no hook; comparison is diagnostic evidence,
 not a claim that early hashing repairs the browser or proves a product cause.
+By default every case must pass. An explicit comparison flag can accept only
+the known frozen-v2.15 preimage NotFound regression, retaining its failed case
+and all evidence. Current-writer failures are never accepted.
 Browser processes run only in the GitHub native-browser workflow.
 """
 import argparse
@@ -33,6 +36,59 @@ ROOT = Path(__file__).resolve().parents[1]
 BASELINE_SHA256 = "fa82b9f297c44ddaa91b9d72b9465da540bef422b23534190d278612a45f611a"
 PROBE_PHASES = ("before-distinct-write", "after-distinct-write", "after-real-drain")
 PHOTO_BYTES = 128 * 1024
+JOURNAL_ROW_PATH = "surveyFieldNoteDB/sentlog_delta_journal_v1/7"
+PREIMAGE_PATH = JOURNAL_ROW_PATH + ".files[0].before"
+LIVE_PATH = "surveyFieldNoteDB/files/photo:one:different"
+KNOWN_SNAPSHOT_ERROR = (
+    "Page.evaluate: Error: Native Blob read failed at " + PREIMAGE_PATH +
+    " (size=131072, type=image/jpeg): NotFoundError: The object can not be found here."
+)
+KNOWN_PROBE_ERROR = "A native Blob probe failed; all observations are retained"
+
+
+def classify_case(case, *, expect_baseline_blob_failure=False):
+    """Accept the observed old-writer regression without hiding actual failures."""
+    if case.get("status") == "passed":
+        return "passed"
+    if (not expect_baseline_blob_failure or case.get("writer") != "v215" or
+            case.get("status") != "failed" or case.get("cleanupError") or
+            any(case.get(key) for key in ("blockedRequests", "pageErrors", "crashes"))):
+        return "unexpected-failure"
+    snapshot_failure = (case.get("error") == KNOWN_SNAPSHOT_ERROR and
+                        case.get("lastBrowserPhase") == "snapshot/hash-blobs/surveyFieldNoteDB")
+    if not case.get("probeEnabled"):
+        return ("expected-baseline-blob-regression" if snapshot_failure and not case.get("probes")
+                else "unexpected-failure")
+
+    # Require all three checkpoints and exactly the original ten observations.
+    # In particular, the preimage must have been readable after the overwrite;
+    # only its post-drain NotFound error may differ from the healthy result.
+    expected_paths = [
+        (PROBE_PHASES[0], LIVE_PATH), (PROBE_PHASES[0], JOURNAL_ROW_PATH),
+        *[(phase, path) for phase in PROBE_PHASES[1:]
+          for path in (LIVE_PATH, JOURNAL_ROW_PATH, PREIMAGE_PATH,
+                       JOURNAL_ROW_PATH + ".files[0].after")],
+    ]
+    probes = case.get("probes", [])
+    if [(item.get("phase"), item.get("path")) for item in probes] != expected_paths:
+        return "unexpected-failure"
+    failed = [item for item in probes if item.get("ok") is not True]
+    if len(failed) != 1:
+        return "unexpected-failure"
+    failure = failed[0]
+    if (failure.get("phase") != "after-real-drain" or failure.get("path") != PREIMAGE_PATH or
+            failure.get("present") is not True or failure.get("size") != PHOTO_BYTES or
+            failure.get("type") != "image/jpeg" or
+            failure.get("error", {}).get("name") != "NotFoundError" or
+            failure.get("error", {}).get("message") != "The object can not be found here."):
+        return "unexpected-failure"
+    completed_snapshot_with_probe_failure = (
+        case.get("error") == KNOWN_PROBE_ERROR and "setup" in case and
+        case.get("lastBrowserPhase") == "prepare/done"
+    )
+    if not snapshot_failure and not completed_snapshot_with_probe_failure:
+        return "unexpected-failure"
+    return "expected-baseline-blob-regression"
 
 INSTALL_PROBE = r"""expected => {
   const database='surveyFieldNoteDB',log='sentlog_delta_journal_v1',key='photo:one:different',seq=7;
@@ -99,6 +155,8 @@ def main():
     parser.add_argument("--baseline-writer", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--repetitions", type=int, default=3)
+    parser.add_argument("--expect-baseline-blob-failure", action="store_true",
+                        help="Accept only the frozen-v2.15 seq-7 preimage NotFound regression; preserve all failure evidence")
     args = parser.parse_args()
     args.out = args.out.resolve()
     if not args.out.is_relative_to(Path("/tmp")):
@@ -116,6 +174,8 @@ def main():
                "externalTrafficBlocked": True, "freshPersistentProfilePerCase": True,
                "retries": 0, "existingPrepareAndSnapshotUnchanged": True,
                "maintenanceUIOperated": False, "probeMayAffectBlobLifetimeAndScheduling": True,
+               "expectBaselineBlobFailure": args.expect_baseline_blob_failure,
+               "baselineRegressionReproduced": False,
                "fixtureSHA256": hashlib.sha256((Path(__file__).parent / "storage_maintenance_ui.py").read_bytes()).hexdigest(),
                "diagnosticSHA256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
     summary_path = args.out / "summary.json"
@@ -231,10 +291,16 @@ def main():
                                     except Exception as error:
                                         case["status"] = "failed"
                                         case["cleanupError"] = str(error)[:1000]
+                                classification = classify_case(case, expect_baseline_blob_failure=args.expect_baseline_blob_failure)
+                                case["classification"] = classification
+                                case["accepted"] = classification in ("passed", "expected-baseline-blob-regression")
                                 record_progress(case, destination, "case-finished")
-                                entry.update(status=case["status"], sha256=hashlib.sha256(destination.read_bytes()).hexdigest())
+                                entry.update(status=case["status"], classification=classification,
+                                             accepted=case["accepted"], sha256=hashlib.sha256(destination.read_bytes()).hexdigest())
+                                summary["baselineRegressionReproduced"] = any(
+                                    item.get("classification") == "expected-baseline-blob-regression" for item in summary["cases"])
                                 write_json(summary_path, summary)
-            summary["status"] = "passed" if len(summary["cases"]) == summary["expectedCases"] and all(case["status"] == "passed" for case in summary["cases"]) else "failed"
+            summary["status"] = "passed" if len(summary["cases"]) == summary["expectedCases"] and all(case.get("accepted") for case in summary["cases"]) else "failed"
     except Exception as error:
         summary["status"] = "blocked" if not summary["cases"] else "failed"
         summary["error"] = str(error)[:6000]
