@@ -87,7 +87,13 @@ async function main(){
     tx.objectStore(CONTROL).delete(missingKey);tx.oncomplete=resolve;tx.onabort=()=>reject(tx.error);});db.close();
   await assert.rejects(opened.records.deltaJournal.readCutoff({scope,localProjectId}),
     error=>error.code==='JOURNAL_CUTOFF_REF');
-  console.log('PASS iPhone: no global original-Blob read at launch, light scope checks, exact on-demand recovery, eviction without deletion, missing-proof refusal');
+  const beforeFailedBoot=await opened.disk(CONTROL);
+  await assert.rejects(app({factory:f.factory,local:f.local}),
+    error=>error.code==='JOURNAL_CUTOFF_REF',
+    'missing protected PDF/photo key must stop normal startup rather than silently replacing it');
+  const afterFailedBoot=await opened.disk(CONTROL);
+  assert.deepEqual([...afterFailedBoot.keys()], [...beforeFailedBoot.keys()]);
+  console.log('PASS iPhone: no global original-Blob read at launch, light scope checks, exact on-demand recovery, eviction without deletion, missing-proof startup refusal');
 
   const editor=await app(),bound=await bind(editor,{metadata:true});
   const c=bound.controller();let compactions=0,lastOptions=null;

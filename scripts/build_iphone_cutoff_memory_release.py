@@ -58,6 +58,21 @@ change(writer, '  async function ensureCutoffFiles(){', '''  function releaseIdl
         if(next.has(binding.localProjectId))throw journalError('JOURNAL_BINDING','案件の保存先が重複しています');
         next.set(binding.localProjectId,binding);
       }
+      // Preserve the old startup protection: a referenced original row must
+      // exist. Inspect only its primary key, never the photo/PDF Blob body.
+      const referenced=[];
+      for(const binding of next.values())for(const file of binding.cutoff?.files||[])
+        if(typeof file?.valueRef==='string')referenced.push(file.valueRef);
+      if(referenced.length){
+        const tx=transaction('readonly'),done=complete(tx),store=tx.objectStore(CONTROL),present=new Set();
+        const q=store.openKeyCursor(IDBKeyRange.bound('cutoff-file:','cutoff-file:\uffff'));
+        q.onsuccess=()=>{try{const item=q.result;if(!item)return;
+          present.add(item.primaryKey);item.continue();
+        }catch(error){tx.sentlogJournalError=error;tx.abort();}};
+        await done;
+        for(const key of referenced)if(!present.has(key))
+          throw journalError('JOURNAL_CUTOFF_REF','保護したPDF・写真の控えが見つかりません。上書きせず起動を停止しました');
+      }
       bindings=next;cutoffFiles=new Map();return;
     }''')
 # A read-only binding-state inspection must not hydrate all of the prior PDFs
