@@ -396,5 +396,29 @@ await test('a failed native flush never claims successful local decision and kee
   assert.equal(pending.length,1,'a rejected flush must not discard the pending action');
 });
 
+
+await test('post-write native flush failure stays pending and retry confirms the same immutable deletion once',async()=>{
+  const f=fixture();
+  f.ctx.navigator.onLine=false;
+  let attempts=0;
+  f.ctx.SentlogRecords.flush=async()=>{if(++attempts===2)throw Error('native commit was not confirmed');};
+  f.ctx.SentlogRecords.assertSafe=()=>{};
+  await f.document.getElementById('deleteBtn').onclick();
+  await f.click('この端末に変更を保存（共有は後で）',f.document.querySelector('.sl-collab-dialog'));
+  const dialog=f.document.querySelector('.sl-collab-dialog');
+  assert.equal(dialog.hidden,false);
+  assert(dialog.querySelector('[data-status]').textContent.includes('native commit was not confirmed'));
+  assert.equal(f.ctx.state.collabDeletedRecords.length,1,'the attempted revision is preserved for retry');
+  const id=f.ctx.state.collabDeletedRecords[0].collab.deletion.revisions.at(-1).id;
+  const pendingBefore=[...f.storage].filter(([key])=>key.startsWith('sentlogCollaborativeDecisionsV1:')).flatMap(([,v])=>JSON.parse(v));
+  assert.equal(pendingBefore[0].localRevisionId,id);
+  await f.click('この端末に変更を保存（共有は後で）',dialog);
+  assert.equal(dialog.hidden,true);
+  assert.equal(f.writes,1);
+  assert.equal(f.ctx.state.collabDeletedRecords[0].collab.deletion.revisions.at(-1).id,id,'retry did not append a second deletion');
+  const pendingAfter=[...f.storage].filter(([key])=>key.startsWith('sentlogCollaborativeDecisionsV1:')).flatMap(([,v])=>JSON.parse(v));
+  assert.deepEqual(pendingAfter,[]);
+});
+
 console.log(passed+' collaborative editor scenarios passed');
 })().catch(e=>{console.error(e);process.exitCode=1;});
