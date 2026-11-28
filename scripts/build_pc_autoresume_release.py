@@ -77,8 +77,10 @@ async function resumeAutoSync(){
 }""",['clearInterval','setSync'])
 change("await ensureSession();await ensureDevice();if(!(await permission()))throw Error('保存先フォルダへの書き込み許可が必要です');",
        "await ensureSession();await ensureDevice();if(!(await pcFolderGranted()))throw Error('保存先フォルダへの書き込み許可が必要です');")
-change("setSync(remaining.length?'未完了：PC処理待ち '+remaining.length+'件'+(problems?'（今回の処理保留 '+problems+'件）':''):'PC同期完了：未処理データはありません',remaining.length?'warn':'ok');",
-       "setSync(remaining.length?'未完了：PC処理待ち '+remaining.length+'件'+(problems?'（今回の処理保留 '+problems+'件）':''):'クラウド登録済みファイルのPC処理完了（端末から未送信のファイルは未確認）',remaining.length?'warn':'ok');")
+change("この画面をEdgeで開いておけば、新しい写真・図面PDFを約5秒ごとに確認します。",
+       "このPCで自動同期を開始すると設定を保持します。保存許可が継続していれば、画面を開いた際に自動再開し、約15秒ごとに確認します。")
+change("必要端末への配信も確認できたデータだけSupabaseから削除します。</p>",
+       "必要端末への配信も確認できたデータだけSupabaseから削除します。PC同期の「完了」はクラウドに登録されたファイルの処理完了を示すもので、端末から未送信の写真・図面がないことは保証しません。</p>")
 change("$('permissionBtn').onclick=permission;$('startBtn').onclick=start;$('stopBtn').onclick=stop;$('onceBtn').onclick=syncOnce;",
        "$('permissionBtn').onclick=async()=>{if(await permission())await resumeAutoSync()};"
        "$('startBtn').onclick=()=>start(true);$('stopBtn').onclick=stop;"
