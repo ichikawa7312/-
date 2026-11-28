@@ -2,7 +2,7 @@
 const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
 const pc=fs.readFileSync('sentlog-pc/index.html','utf8');
 assert(pc.includes("const PC_AUTO_SYNC_PREF='sentlogPcAutoSyncEnabledV1'"));
-assert(pc.includes('クラウド登録済みファイルのPC処理完了（端末から未送信のファイルは未確認）'));
+assert(pc.includes('PC同期の「完了」はクラウドに登録されたファイルの処理完了を示すもので、端末から未送信の写真・図面がないことは保証しません。'));
 assert(pc.includes("$('startBtn').onclick=()=>start(true)"));
 assert(pc.includes("await resumeAutoSync();\n  log('PC同期画面を起動しました')"));
 assert(!pc.includes('timer=setInterval(syncOnce,5000)'));
