@@ -212,6 +212,43 @@ for file in (ROOT/'tests').iterdir():
     if file.name=='iphone_stability_release.test.cjs':
         value=value.replace('const records={startupReadBudgetVersion,maintenanceInitVersion:1,',
                             'const records={lazyStartupVersion:1,startupReadBudgetVersion,maintenanceInitVersion:1,')
+    # The cloud runtime is a newly pinned resource. Keep every historical
+    # gate, but require the current source URL/marker for this single module
+    # instead of demanding the obsolete version be the executed one.
+    match_cloud=re.compile(r"(\['cloud-sync',')([^']+)(',')([^']+)(')")
+    value=match_cloud.sub(lambda m:m.group(1)+TOKEN+m.group(3)+MARKER+m.group(5),value)
+    if file.name=='storage_recovery_release.test.cjs':
+        old="['record-store','storage-ui','record-rescue','cloud-sync','photo-recovery']"
+        if value.count(old)!=1:raise RuntimeError('Storage recovery module matrix changed')
+        value=value.replace(old,"['record-store','storage-ui','record-rescue','photo-recovery']")
+        pos="assert(index.includes('phone-runtime.js?v="
+        if value.count(pos)!=1:raise RuntimeError('Storage recovery proof location changed')
+        extra=("assert(index.includes(\"['cloud-sync.js?v="+TOKEN+"','"+MARKER+"']\"));\n"
+               "assert(index.includes('./cloud-sync.js?v="+TOKEN+"'));\n"
+               "assert(fs.readFileSync('sentlog/cloud-sync.js','utf8').startsWith('// "+MARKER+"\\n'));\n")
+        value=value.replace(pos,extra+pos)
+    if file.name=='file_journal_wake_release.test.cjs':
+        old="['delta-sync-app-runtime','cloud-sync']"
+        if value.count(old)!=1:raise RuntimeError('File journal module matrix changed')
+        value=value.replace(old,"['delta-sync-app-runtime']")
+        pos="const receiveUrl="
+        extra=("const newCloudUrl='cloud-sync.js?v="+TOKEN+"';\n"
+               "assert.equal(index.split(newCloudUrl).length-1,2);\n"
+               "assert(index.includes(\"['\"+newCloudUrl+\"','"+MARKER+"']\"));\n"
+               "assert(fs.readFileSync('sentlog/cloud-sync.js','utf8').startsWith('// "+MARKER+"\\n'));\n")
+        if value.count(pos)!=1:raise RuntimeError('File journal cloud proof location changed')
+        value=value.replace(pos,extra+pos)
+    if file.name=='cloud_normalization_release.test.cjs':
+        old="const token='20261127-normalization-noop-209',marker='sentlog-normalization-noop-v209'"
+        # This historical release was version-pinned by prior build steps;
+        # replace the exact cloud assertion after validating its old shape.
+        found=re.search(r"const token='[^']+',marker='[^']+',url='cloud-sync\.js\?v='\+token;",value)
+        if not found:raise RuntimeError('Normalization cloud proof changed')
+        value=value[:found.start()]+"const token='"+TOKEN+"',marker='"+MARKER+"',url='cloud-sync.js?v='+token;"+value[found.end():]
+        old_start="assert(cloud.startsWith('// '+marker+'\\n// sentlog-file-journal-wake-v207\\n'));"
+        new_start="assert(cloud.startsWith('// '+marker+'\\n'));assert(cloud.includes('// sentlog-file-journal-wake-v207\\n'));"
+        if value.count(old_start)!=1:raise RuntimeError('Normalization historical marker check changed')
+        value=value.replace(old_start,new_start)
     if file.name=='metadata_choice_release.test.cjs':
         value=value.replace('if(window.SentlogRecords?.startupReadBudgetVersion!==1||',
                             'if(window.SentlogRecords?.lazyStartupVersion!==1||window.SentlogRecords?.startupReadBudgetVersion!==1||')
