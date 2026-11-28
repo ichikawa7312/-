@@ -52,12 +52,12 @@ if ("['record-store.js?v=" + TOKEN + "','sentlog-iphone-cutoff-memory-v219']" no
     raise RuntimeError("Versioned writer/photo dependency preflight is missing")
 
 phone = read("sentlog/phone-runtime.js")
-if phone.count("v2.19") != 5:
+if phone.count("v2.19") != 4:
     raise RuntimeError("Phone runtime label/capability identity changed")
 phone = replace(phone, OLD_LABEL, LABEL, 1, "sentlog/phone-runtime.js")
 phone = phone.replace("v2.19", "v2.20")
-# The earlier label replacement has already changed one of five occurrences.
-if phone.count("v2.20") != 5:
+# The earlier label replacement has already advanced one of four occurrences.
+if phone.count("v2.20") != 4:
     raise RuntimeError("Phone runtime version labels are inconsistent")
 pc = replace(read("sentlog-pc/index.html"), OLD_LABEL, LABEL, 1, "sentlog-pc/index.html")
 worker = replace(read("sentlog/sw.js"), "sentlog-pwa-v261", "sentlog-pwa-v262", 1,
