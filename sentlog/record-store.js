@@ -2456,7 +2456,10 @@
     projectionNoopVersion:1,
     getFileWriteCapabilities:()=>({guarded:true,onlyIfMissing:true,writerState:true,fileWriteDedupVersion:1,expectedFileStatesVersion:1,journaled:connection?.version===DB_VERSION}),
     uncommittedFiles:()=>[...failedFiles].map(([key,value])=>({key,value})),
-    get ready(){return initialized;},get pending(){return pending.size+inFlight>0||fileTasks.size>0||operation;},get failed(){return failures.size>0;},
+    get ready(){return initialized;},get pending(){return pending.size+inFlight>0||fileTasks.size>0||operation;},
+    // Record attachment may proceed while unrelated PDF/photo file transfers
+    // remain in flight. Archive/restore and record transactions still fence it.
+    get recordPending(){return pending.size+inFlight>0||operation||exclusive;},get failed(){return failures.size>0;},
     get issues(){return [...failures];},get migration(){return migrationInfo;},
     get recordFailureDetails(){return !connectionFailure&&recordFailure?.error===failure&&failures.has('records')?{...recordFailure.detail}:null;},
     get recordFailureHistory(){return failureHistory();},
