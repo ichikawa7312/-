@@ -478,7 +478,7 @@
     });
     if(changed){render();renderSelectedPhotos();refresh();}
   }
-  root.SentlogCollaboration={actor,flushDraft,refresh,recordHistory,afterStoredNormalization,
+  root.SentlogCollaboration={offlineDamageDecisionsVersion:1,actor,flushDraft,refresh,recordHistory,afterStoredNormalization,
     requestPhotoRemoval(capture,photoId){
       const c={accountId:capture?.ownerId||'',projectId:capture?.projectId,drawingId:capture?.drawingId,recordId:capture?.recordId};
       if(!sameDrawing(c))throw Error('撮影先の図面を開いてから写真を外してください。');
