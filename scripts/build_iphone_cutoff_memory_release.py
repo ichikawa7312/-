@@ -136,6 +136,7 @@ change(index,check+found.group(1)+"']",check+MARKER+"']")
 change('sentlog/startup-storage-maintenance.js', '// '+OLD_MARKER+'\n',
        '// '+MARKER+'\n')
 change('sentlog/storage-maintenance.html', OLD_TOKEN, TOKEN, 3)
+change(index,'storage-maintenance.html?v='+OLD_TOKEN,'storage-maintenance.html?v='+TOKEN)
 change(index,'if(window.SentlogRecords?.lazyStartupVersion!==1||',
        'if(window.SentlogRecords?.deferredCutoffStartupVersion!==1||window.SentlogRecords?.lazyStartupVersion!==1||')
 change(index,'phone-runtime.js?v=218','phone-runtime.js?v=219',2)
