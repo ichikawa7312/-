@@ -158,8 +158,6 @@ cloud='sentlog/cloud-sync.js'
 change(cloud,"    try{\n      if(lp&&", "    try{\n      if(lp&&window.SentlogRecords.lazyStartup){await window.SentlogRecords.ensureProjectLoaded(id);context.assertCurrent();}\n      if(lp&&")
 change(cloud,"      try{\n        context.assertCurrent();const cycleAssets=new Map();files+=await pullProjectAssets(cp,metadata.deviceId,cycleAssets);",
        "      try{\n        if(window.SentlogRecords.lazyStartup){await window.SentlogRecords.ensureProjectLoaded(id);context.assertCurrent();}\n        context.assertCurrent();const cycleAssets=new Map();files+=await pullProjectAssets(cp,metadata.deviceId,cycleAssets);")
-# Eviction is only after both metadata and file checks of a project; never
-# while a retained in-flight editor snapshot is being used by that worker.
 # Eviction is attempted only after an entire file project finishes. The
 # same safe check below also covers the metadata round, so 15 projects cannot
 # collect 15 hydrated copies before the asset stage begins. The writer itself
@@ -167,9 +165,7 @@ change(cloud,"      try{\n        context.assertCurrent();const cycleAssets=new 
 cloud_value=source(cloud)
 for marker, replacement in [
     ('collaborationMetadataFailures.set(id,failure);failed.add(id);defer(id,cp,failure.retryAt);\n    }\n  }\n  for(const id of needsFiles)',
-     'collaborationMetadataFailures.set(id,failure);failed.add(id);defer(id,cp,failure.retryAt);\n    }finally{window.SentlogRecords.evictProject?.(id);}\n  }\n  for(const id of needsFiles)'),
-    ('collaborationFileFailures.set(id,failure);retryById[id]=failure.retryAt;\n      }\n    }\n    await window.SentlogRecords.settled()',
-     'collaborationFileFailures.set(id,failure);retryById[id]=failure.retryAt;\n      }finally{window.SentlogRecords.evictProject?.(id);}\n    }\n    await window.SentlogRecords.settled()')]:
+     'collaborationMetadataFailures.set(id,failure);failed.add(id);defer(id,cp,failure.retryAt);\n    }finally{window.SentlogRecords.evictProject?.(id);}\n  }\n  for(const id of needsFiles)')]:
     if cloud_value.count(marker)!=1:
         raise RuntimeError(f'Expected one compiled sync release boundary: {marker[:90]} ({cloud_value.count(marker)})')
     cloud_value=cloud_value.replace(marker,replacement)
@@ -231,6 +227,31 @@ for file in (ROOT/'tests').iterdir():
     if file.name=='metadata_choice_release.test.cjs':
         value=value.replace('if(window.SentlogRecords?.startupReadBudgetVersion!==1||',
                             'if(window.SentlogRecords?.lazyStartupVersion!==1||window.SentlogRecords?.startupReadBudgetVersion!==1||')
+    # The previous native test used the platform default UA: even its WebKit
+    # branch did not exercise iOS cold-start behavior. Explicitly use iPhone UA
+    # for the real persistent authenticated WebKit/Chromium sessions, while all
+    # real user data remains out of the synthetic fixture.
+    if file.name=='normal_startup_residency_ui.py':
+        old='is_mobile=True, has_touch=True, service_workers="block", timeout=30000)'
+        new=('is_mobile=True, has_touch=True, '
+             'user_agent="Mozilla/5.0 (iPhone; CPU iPhone OS 18_4 like Mac OS X) '
+             'AppleWebKit/605.1.15 Version/18.4 Mobile/15E148 Safari/604.1", '
+             'service_workers="block", timeout=30000)')
+        if value.count(old)!=1:raise RuntimeError('Native iOS test setup changed')
+        value=value.replace(old,new)
+        before='const h=__operationHelpers,all=await h.snapshot(),main=all.databases.surveyFieldNoteDB.stores;'
+        after='const h=__operationHelpers;await SentlogRecords.ensureAllLoaded?.();const all=await h.snapshot(),main=all.databases.surveyFieldNoteDB.stores;'
+        if value.count(before)!=1:raise RuntimeError('Native preservation oracle changed')
+        value=value.replace(before,after)
+        old_pending="const R=SentlogRecords,h=__operationHelpers,key='surveyFieldNoteDrawingV1:'+drawingId;"
+        new_pending=old_pending+'\n  await R.ensureDrawingLoaded?.(drawingId);'
+        if value.count(old_pending)!=1:raise RuntimeError('Pending-edit fixture changed')
+        value=value.replace(old_pending,new_pending)
+        # Native instrumentation must observe the cold mirror BEFORE any
+        # intentionally materializing full-backup proof.
+        hook='startup=page.evaluate("__normalResidency")'
+        if hook not in value:raise RuntimeError('Native cold-start observation changed')
+        value=value.replace(hook, 'assert page.evaluate("SentlogRecords.lazyStartup===true")\n                '+hook)
     if value!=source(name):pending[name]=value
 
 for name,value in pending.items():(ROOT/name).write_text(value,encoding='utf-8')
