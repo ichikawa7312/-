@@ -347,10 +347,7 @@ await test('offline deletion is explicitly saved as a tombstone and concurrent p
   f.ctx.navigator.onLine=false;
   await f.document.getElementById('deleteBtn').onclick();
   await f.click('削除する',f.document.querySelector('.sl-collab-dialog'));
-  assert.equal(f.ctx.state.shapes.length,1,'normal fresh-server delete must fail closed while offline');
-  assert.equal(f.writes,0);
-  await f.click('この端末に変更を保存（共有は後で）',f.document.querySelector('.sl-collab-dialog'));
-  assert.equal(f.ctx.state.shapes.length,0);
+  assert.equal(f.ctx.state.shapes.length,0,'offline delete confirms locally without a second button');
   assert.equal(f.ctx.state.collabDeletedRecords.length,1);
   assert.equal(f.writes,1,'one explicitly confirmed local deletion');
   assert(C.isDeleted(f.ctx.state.collabDeletedRecords[0]));
@@ -367,10 +364,8 @@ await test('offline damage name edit persists a field revision, and the standard
   f.ctx.navigator.onLine=false;
   f.current.type='漏水';
   f.ctx.persist();f.drain();
-  assert.equal(f.current.type,'ひび割れ','pending field cannot overwrite a guarded value');
-  assert.equal(f.document.querySelector('.sl-collab-dialog').hidden,false);
-  await f.click('この端末に変更を保存（共有は後で）',f.document.querySelector('.sl-collab-dialog'));
-  assert.equal(f.current.type,'漏水');
+  assert.equal(f.current.type,'漏水','offline type selection commits like a normal edit');
+  assert.equal(f.document.querySelector('.sl-collab-dialog'),null,'no extra offline confirmation is needed');
   assert.equal(C.view(f.current).fields.type.value,'漏水');
   assert.equal(JSON.parse(f.records.get('draw:d1')).shapes[0].type,'漏水');
   const peer=fixture();
@@ -388,7 +383,7 @@ await test('a failed native flush never claims successful local decision and kee
   f.ctx.SentlogRecords.flush=async()=>{throw Error('native flush refused');};
   f.ctx.SentlogRecords.assertSafe=()=>{};
   await f.document.getElementById('deleteBtn').onclick();
-  await f.click('この端末に変更を保存（共有は後で）',f.document.querySelector('.sl-collab-dialog'));
+  await f.click('削除する',f.document.querySelector('.sl-collab-dialog'));
   const dialog=f.document.querySelector('.sl-collab-dialog');
   assert.equal(dialog.hidden,false,'failed durability must not dismiss the confirmation');
   assert(dialog.querySelector('[data-status]').textContent.includes('native flush refused'));
@@ -404,7 +399,7 @@ await test('post-write native flush failure stays pending and retry confirms the
   f.ctx.SentlogRecords.flush=async()=>{if(++attempts===2)throw Error('native commit was not confirmed');};
   f.ctx.SentlogRecords.assertSafe=()=>{};
   await f.document.getElementById('deleteBtn').onclick();
-  await f.click('この端末に変更を保存（共有は後で）',f.document.querySelector('.sl-collab-dialog'));
+  await f.click('削除する',f.document.querySelector('.sl-collab-dialog'));
   const dialog=f.document.querySelector('.sl-collab-dialog');
   assert.equal(dialog.hidden,false);
   assert(dialog.querySelector('[data-status]').textContent.includes('native commit was not confirmed'));
@@ -412,12 +407,47 @@ await test('post-write native flush failure stays pending and retry confirms the
   const id=f.ctx.state.collabDeletedRecords[0].collab.deletion.revisions.at(-1).id;
   const pendingBefore=[...f.storage].filter(([key])=>key.startsWith('sentlogCollaborativeDecisionsV1:')).flatMap(([,v])=>JSON.parse(v));
   assert.equal(pendingBefore[0].localRevisionId,id);
-  await f.click('この端末に変更を保存（共有は後で）',dialog);
+  await f.click('削除する',dialog);
   assert.equal(dialog.hidden,true);
   assert.equal(f.writes,1);
   assert.equal(f.ctx.state.collabDeletedRecords[0].collab.deletion.revisions.at(-1).id,id,'retry did not append a second deletion');
   const pendingAfter=[...f.storage].filter(([key])=>key.startsWith('sentlogCollaborativeDecisionsV1:')).flatMap(([,v])=>JSON.parse(v));
   assert.deepEqual(pendingAfter,[]);
+});
+
+await test('offline photo unlink preserves original metadata and unrelated peer photos',async()=>{
+  const initial=C.addPhoto(shape(),{id:'own-photo',name:'撮影写真.jpg',size:128},remoteOpts('Original'));
+  const f=fixture({shapes:[initial]});
+  f.ctx.navigator.onLine=false;
+  await f.ctx.removeSelectedPhoto('own-photo');f.drain();
+  const d=f.document.querySelector('.sl-collab-dialog');assert(d&&!d.hidden);
+  await f.click('写真を外す',d);
+  assert.equal(C.view(f.current).photos.find(p=>p.id==='own-photo').deleted,true);
+  const stored=C.view(f.current).photos.find(p=>p.id==='own-photo').heads;
+  assert(stored.some(h=>h.value.name==='撮影写真.jpg'));
+  const peer=C.addPhoto(initial,{id:'other-photo',name:'相手の写真.jpg',size:222},remoteOpts('Peer'));
+  const merged=C.mergeRecords(f.current,peer,{base:initial}).record;
+  const view=C.view(merged);
+  assert.equal(view.photos.find(p=>p.id==='own-photo').deleted,true);
+  assert.equal(view.photos.find(p=>p.id==='other-photo').deleted,false);
+  assert.equal(merged.photos.length,1);
+  assert.equal(merged.photos[0].id,'other-photo');
+});
+
+await test('offline type edit after a peer revision does not silently erase the peer field',async()=>{
+  const f=fixture(),original=copy(f.current);
+  // An unseen incoming peer revision reached the durable store while the
+  // stale local UI still retained the earlier projection.
+  const peer=C.setField(original,'type','剥離',{...remoteOpts('Peer'),expectedHeads:C.view(original).fields.type.headIds});
+  f.records.set('draw:d1',JSON.stringify({...f.state(),shapes:[peer]}));
+  f.ctx.navigator.onLine=false;
+  f.current.type='漏水';
+  f.ctx.persist();f.drain();
+  const saved=JSON.parse(f.records.get('draw:d1')).shapes[0];
+  const v=C.view(saved);
+  assert.equal(v.fields.type.conflict,true,'unknown peer changes must remain as alternatives');
+  assert(v.fields.type.heads.some(h=>h.value==='剥離'));
+  assert(v.fields.type.heads.some(h=>h.value==='漏水'));
 });
 
 console.log(passed+' collaborative editor scenarios passed');
