@@ -4,6 +4,7 @@ on:
     paths:
       - '.github/workflows/photo-save-performance.yml'
       - 'tests/photo_save_performance_ui.py'
+      - 'tests/photo_save_sync_interference.test.cjs'
       - 'sentlog/continuous-camera.js'
       - 'sentlog/collaboration-photos.js'
       - 'sentlog/original-photo-store.js'
@@ -63,6 +64,8 @@ jobs:
               assert any('build_delta_sync.py' in command for command in commands)
               subprocess.run(['bash','-e','-o','pipefail','-c','\n'.join(commands)],cwd=root,check=True)
           PY
+      - name: Check foreground photo against unrelated file writer
+        run: node tests/photo_save_sync_interference.test.cjs
       - name: Install matching browser test package
         run: python -m pip install playwright==1.57.0 pillow==11.3.0
       - name: Compare photo save work and native durability
