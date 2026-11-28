@@ -158,19 +158,6 @@ cloud='sentlog/cloud-sync.js'
 change(cloud,"    try{\n      if(lp&&", "    try{\n      if(lp&&window.SentlogRecords.lazyStartup){await window.SentlogRecords.ensureProjectLoaded(id);context.assertCurrent();}\n      if(lp&&")
 change(cloud,"      try{\n        context.assertCurrent();const cycleAssets=new Map();files+=await pullProjectAssets(cp,metadata.deviceId,cycleAssets);",
        "      try{\n        if(window.SentlogRecords.lazyStartup){await window.SentlogRecords.ensureProjectLoaded(id);context.assertCurrent();}\n        context.assertCurrent();const cycleAssets=new Map();files+=await pullProjectAssets(cp,metadata.deviceId,cycleAssets);")
-# Eviction is attempted only after an entire file project finishes. The
-# same safe check below also covers the metadata round, so 15 projects cannot
-# collect 15 hydrated copies before the asset stage begins. The writer itself
-# refuses eviction while a drawing is active or records are being saved.
-cloud_value=source(cloud)
-for marker, replacement in [
-    ('collaborationMetadataFailures.set(id,failure);failed.add(id);defer(id,cp,failure.retryAt);\n    }\n  }\n  for(const id of needsFiles)',
-     'collaborationMetadataFailures.set(id,failure);failed.add(id);defer(id,cp,failure.retryAt);\n    }finally{window.SentlogRecords.evictProject?.(id);}\n  }\n  for(const id of needsFiles)')]:
-    if cloud_value.count(marker)!=1:
-        raise RuntimeError(f'Expected one compiled sync release boundary: {marker[:90]} ({cloud_value.count(marker)})')
-    cloud_value=cloud_value.replace(marker,replacement)
-pending[cloud]=cloud_value
-
 for name in ['record-store','delta-sync-app-runtime','delta-sync-app-journal','cloud-sync']:
     path='sentlog/'+name+'.js';pending[path]='// '+MARKER+'\n'+source(path)
 

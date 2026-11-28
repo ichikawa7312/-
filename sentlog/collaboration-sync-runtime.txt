@@ -386,7 +386,7 @@ async function collaborationMetadataRound(ids,context){
         collaborationMetadataFailures.delete(id);recoveringFiles+=error.remaining;defer(id,cp);continue;
       }
       const failure=collaborationProjectFailure(id,lp?.name||cp?.name,stage,error);collaborationMetadataFailures.set(id,failure);failed.add(id);defer(id,cp,failure.retryAt);
-    }
+    }finally{window.SentlogRecords?.evictProject?.(id);}
   }
   for(const id of needsFiles)if(!collaborationFilePreparation.has('*')&&!collaborationFilePreparation.has(id))collaborationFileWorker.request([id]);
   if(!syncing){
@@ -476,7 +476,7 @@ async function collaborationFileRound(ids,context){
       }catch(error){
         await collaborationCheckSharedState(context,error);deferred.add(id);failed.add(id);
         const failure=collaborationProjectFailure(id,lp.name||cp.name,stage,error);collaborationFileFailures.set(id,failure);retryById[id]=failure.retryAt;
-      }
+      }finally{window.SentlogRecords?.evictProject?.(id);}
     }
     await window.SentlogRecords.settled();window.SentlogRecords.assertSafe();context.assertCurrent();
     if(ids.includes('*')&&!deferred.size)collaborationFileFailures.delete('*');
