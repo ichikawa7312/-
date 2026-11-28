@@ -245,10 +245,10 @@ for file in (ROOT/'tests').iterdir():
         found=re.search(r"const token='[^']+',marker='[^']+',url='cloud-sync\.js\?v='\+token;",value)
         if not found:raise RuntimeError('Normalization cloud proof changed')
         value=value[:found.start()]+"const token='"+TOKEN+"',marker='"+MARKER+"',url='cloud-sync.js?v='+token;"+value[found.end():]
-        old_start="assert(cloud.startsWith('// '+marker+'\\n// sentlog-file-journal-wake-v207\\n'));"
+        old_start=re.search(r"assert\(cloud\.startsWith\([^;]+\);",value)
+        if not old_start:raise RuntimeError('Normalization historical marker check changed')
         new_start="assert(cloud.startsWith('// '+marker+'\\n'));assert(cloud.includes('// sentlog-file-journal-wake-v207\\n'));"
-        if value.count(old_start)!=1:raise RuntimeError('Normalization historical marker check changed')
-        value=value.replace(old_start,new_start)
+        value=value[:old_start.start()]+new_start+value[old_start.end():]
     if file.name=='metadata_choice_release.test.cjs':
         value=value.replace('if(window.SentlogRecords?.startupReadBudgetVersion!==1||',
                             'if(window.SentlogRecords?.lazyStartupVersion!==1||window.SentlogRecords?.startupReadBudgetVersion!==1||')
