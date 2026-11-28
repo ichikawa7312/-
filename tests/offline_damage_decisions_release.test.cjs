@@ -9,8 +9,11 @@ assert.equal(count(index,'collaboration-editor.js?v='+token),2);
 assert(index.includes("['collaboration-editor.js?v="+token+"','offlineDamageDecisionsVersion']"));
 assert.equal(count(index,'phone-runtime.js?v=221'),2);
 assert(index.includes("['phone-runtime.js?v=221','v2.21']"));
-assert(edit.includes('offlineDamageDecisionsVersion:2'));
+assert(edit.includes('offlineDamageDecisionsVersion:3'));
 assert(edit.includes('async function confirmDecision({localOnly=!navigator.onLine}={})'));
+assert(edit.includes('()=>confirmDecision({localOnly:localFirst})'));
+assert(edit.includes('最新の共有記録を確認して変更'));
+
 assert(edit.includes("if(!localOnly&&navigator.onLine)"));
 assert(edit.includes("opts({expectedToken:d.token,...(localOnly?{revisionId:d.localRevisionId}:{})})"));
 assert(edit.includes("function localDecisionApplied(d,target)"));
