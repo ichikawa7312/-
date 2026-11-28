@@ -28,7 +28,7 @@ def change(path, old, new, count=1):
 
 
 editor = source("sentlog/collaboration-editor.js")
-if ("offlineDamageDecisionsVersion:2" not in editor
+if ("offlineDamageDecisionsVersion:3" not in editor
         or "async function confirmDecision({localOnly=!navigator.onLine}={})" not in editor
         or "function localDecisionApplied(d,target)" not in editor
         or "deferRender:localOnly" not in editor
