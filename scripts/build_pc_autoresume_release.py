@@ -23,8 +23,7 @@ def change(old,new,count=1):
 
 change('let session=null, rootHandle=null, timer=null, busy=false, savedCount=0, deletedCount=0;',
        "const PC_AUTO_SYNC_PREF='sentlogPcAutoSyncEnabledV1';\nlet session=null, rootHandle=null, timer=null, busy=false, savedCount=0, deletedCount=0;")
-change("""function start(){if(timer)return;syncOnce();timer=setInterval(syncOnce,5000);setSync('自動同期ON','ok');refreshUI();log('自動同期を開始')}
-function stop(){if(timer){clearInterval(timer);timer=null}setSync('停止中');refreshUI();log('自動同期を停止')}""",
+change("function start(){if(timer)return;syncOnce();timer=setInterval(syncOnce,5000);setSync('自動同期ON','ok');refreshUI();log('自動同期を開始')}",
 """async function pcFolderGranted(){
   if(!rootHandle||typeof rootHandle.queryPermission!=='function')return false;
   try{return (await rootHandle.queryPermission({mode:'readwrite'}))==='granted';}catch{return false;}
@@ -49,8 +48,9 @@ async function start(userInitiated=false){
     refreshUI();log('PC自動同期を開始');
     void autoSyncOnce();
   }catch(error){setSync('PC同期開始の確認が必要です：'+error.message,'err');log('PC自動同期の開始を保留: '+error.message);}
-}
-function stop(){
+}""")
+change("function stop(){if(timer){clearInterval(timer);timer=null}setSync('停止中');refreshUI();log('自動同期を停止')}",
+"""function stop(){
   if(timer){clearInterval(timer);timer=null;}
   try{localStorage.setItem(PC_AUTO_SYNC_PREF,'0');}catch(error){log('自動同期停止設定の保存を確認できません: '+error.message);}
   setSync('停止中');refreshUI();log('自動同期を停止');
