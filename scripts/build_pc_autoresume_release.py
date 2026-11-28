@@ -23,8 +23,24 @@ def change(old,new,count=1):
 
 change('let session=null, rootHandle=null, timer=null, busy=false, savedCount=0, deletedCount=0;',
        "const PC_AUTO_SYNC_PREF='sentlogPcAutoSyncEnabledV1';\nlet session=null, rootHandle=null, timer=null, busy=false, savedCount=0, deletedCount=0;")
-change("function start(){if(timer)return;syncOnce();timer=setInterval(syncOnce,5000);setSync('自動同期ON','ok');refreshUI();log('自動同期を開始')}",
-"""async function pcFolderGranted(){
+def replace_pc_function(name,replacement,required):
+    global text
+    before=r'function '+re.escape(name)+r'\\(\\)\\{'
+    after=r'(?=\\s*function stop\\(\\))' if name=='start' else r"(?=\\s*\\$\\('loginBtn'\\)\\.onclick)"
+    # The exact function boundaries are stable, while earlier release builders
+    # may wrap or format its body differently.
+    pat=before+r'[\\s\\S]*?\\}'+after
+    matches=list(re.finditer(pat,text))
+    if len(matches)!=1:
+        i=text.find('function '+name+'()')
+        raise RuntimeError('PC '+name+' integration point changed: '+repr(text[i:i+440]))
+    m=matches[0]
+    old=m.group()
+    if not all(term in old for term in required):
+        raise RuntimeError('PC '+name+' behavior differs: '+repr(old[:440]))
+    text=text[:m.start()]+replacement+text[m.end():]
+
+replace_pc_function('start',"""async function pcFolderGranted(){
   if(!rootHandle||typeof rootHandle.queryPermission!=='function')return false;
   try{return (await rootHandle.queryPermission({mode:'readwrite'}))==='granted';}catch{return false;}
 }
@@ -48,9 +64,8 @@ async function start(userInitiated=false){
     refreshUI();log('PC自動同期を開始');
     void autoSyncOnce();
   }catch(error){setSync('PC同期開始の確認が必要です：'+error.message,'err');log('PC自動同期の開始を保留: '+error.message);}
-}""")
-change("function stop(){if(timer){clearInterval(timer);timer=null}setSync('停止中');refreshUI();log('自動同期を停止')}",
-"""function stop(){
+}""",['timer','syncOnce','setInterval'])
+replace_pc_function('stop',"""function stop(){
   if(timer){clearInterval(timer);timer=null;}
   try{localStorage.setItem(PC_AUTO_SYNC_PREF,'0');}catch(error){log('自動同期停止設定の保存を確認できません: '+error.message);}
   setSync('停止中');refreshUI();log('自動同期を停止');
@@ -59,7 +74,7 @@ async function resumeAutoSync(){
   if(localStorage.getItem(PC_AUTO_SYNC_PREF)!=='1'||timer||!session||!rootHandle)return;
   if(!await pcFolderGranted()){setSync('自動同期の再開待ち：PCの保存許可を確認してください','warn');return;}
   await start(false);
-}""")
+}""",['clearInterval','setSync'])
 change("await ensureSession();await ensureDevice();if(!(await permission()))throw Error('保存先フォルダへの書き込み許可が必要です');",
        "await ensureSession();await ensureDevice();if(!(await pcFolderGranted()))throw Error('保存先フォルダへの書き込み許可が必要です');")
 change("setSync(remaining.length?'未完了：PC処理待ち '+remaining.length+'件'+(problems?'（今回の処理保留 '+problems+'件）':''):'PC同期完了：未処理データはありません',remaining.length?'warn':'ok');",
