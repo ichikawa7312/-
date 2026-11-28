@@ -68,5 +68,5 @@ async function testActualRecordWriterStillWaits(){
   assert.equal(f.api.pendingSnapshot().length,0);
   console.log('PASS photo keeps the record/restore safety fence and preserves its original');
 }
-(async()=>{await testNoUnrelatedWait();await testActualRecordWriterStillWaits();})
+(async()=>{await testNoUnrelatedWait();await testActualRecordWriterStillWaits();})()
  .catch(error=>{console.error(error);process.exitCode=1;});
