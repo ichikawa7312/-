@@ -10,7 +10,7 @@ import subprocess
 ROOT = Path(__file__).resolve().parents[1]
 OLD_TOKEN = "20261128-iphone-cutoff-memory-219"
 TOKEN = "20261128-photo-foreground-220"
-OLD_PHOTO_TOKEN = "20261121-camera-landscape"
+OLD_PHOTO_TOKEN = "20261126-camera-order-return-1"
 OLD_LABEL = "v2.19 · iPhoneの保存・同期負荷を軽減"
 LABEL = "v2.20 · 写真保存中の不要な待機を軽減"
 
@@ -48,7 +48,7 @@ index = replace(index, "['phone-runtime.js?v=220','v2.19']",
 # Keep the v2.19 prefix on unchanged protection code. Its body is tested
 # separately; moving the URL ensures the replacement is fetched on phones.
 if ("['record-store.js?v=" + TOKEN + "','sentlog-iphone-cutoff-memory-v219']" not in index
-        or "['collaboration-photos.js?v=" + TOKEN + "','prepareCapture']" not in index):
+        or "['collaboration-photos.js?v=" + TOKEN + "','sentlog-camera-order-return-v1']" not in index):
     raise RuntimeError("Versioned writer/photo dependency preflight is missing")
 
 phone = read("sentlog/phone-runtime.js")
