@@ -25,11 +25,11 @@ change('let session=null, rootHandle=null, timer=null, busy=false, savedCount=0,
        "const PC_AUTO_SYNC_PREF='sentlogPcAutoSyncEnabledV1';\nlet session=null, rootHandle=null, timer=null, busy=false, savedCount=0, deletedCount=0;")
 def replace_pc_function(name,replacement,required):
     global text
-    before=r'function '+re.escape(name)+r'\\(\\)\\{'
-    after=r'(?=\\s*function stop\\(\\))' if name=='start' else r"(?=\\s*\\$\\('loginBtn'\\)\\.onclick)"
+    before=r'function '+re.escape(name)+r'\(\)\{'
+    after=r'(?=\s*function stop\(\))' if name=='start' else r"(?=\s*\$\('loginBtn'\)\.onclick)"
     # The exact function boundaries are stable, while earlier release builders
     # may wrap or format its body differently.
-    pat=before+r'[\\s\\S]*?\\}'+after
+    pat=before+r'[\s\S]*?\}'+after
     matches=list(re.finditer(pat,text))
     if len(matches)!=1:
         i=text.find('function '+name+'()')
