@@ -9,7 +9,7 @@ assert.equal(count(index,'collaboration-editor.js?v='+token),2);
 assert(index.includes("['collaboration-editor.js?v="+token+"','offlineDamageDecisionsVersion']"));
 assert.equal(count(index,'phone-runtime.js?v=221'),2);
 assert(index.includes("['phone-runtime.js?v=221','v2.21']"));
-assert(edit.includes('offlineDamageDecisionsVersion:1'));
+assert(edit.includes('offlineDamageDecisionsVersion:2'));
 assert(edit.includes('async function confirmDecision({localOnly=false}={})'));
 assert(edit.includes("if(!localOnly&&navigator.onLine)"));
 assert(edit.includes("opts({expectedToken:d.token,...(localOnly?{revisionId:d.localRevisionId}:{})})"));
