@@ -10,6 +10,18 @@ assert(index.includes("['collaboration-editor.js?v="+token+"','offlineDamageDeci
 assert.equal(count(index,'phone-runtime.js?v=221'),2);
 assert(index.includes("['phone-runtime.js?v=221','v2.21']"));
 assert(edit.includes('offlineDamageDecisionsVersion:3'));
+const token='20261128-safe-original-recovery-221';
+const recoveryModules={
+  'original-photo-store':'async function getOriginalMeta(',
+  'delta-sync-asset-runtime':'ASSET_ORIGINAL_RECOVERY_BATCH',
+  'delta-sync-app-runtime':'recoverShared:recoverShared?',
+  'cloud-sync':'async function sentlogDeltaRecoverSharedOriginal('
+};
+for(const [module,marker] of Object.entries(recoveryModules)){
+  assert.equal(count(index,module+'.js?v='+token),2,'stale iPhone asset: '+module);
+  assert(read('sentlog/'+module+'.js').includes(marker),'missing safe-original recovery: '+module);
+}
+
 assert(edit.includes('async function confirmDecision({localOnly=!navigator.onLine}={})'));
 assert(edit.includes('()=>confirmDecision({localOnly:localFirst})'));
 assert(edit.includes('最新の共有記録を確認して変更'));
