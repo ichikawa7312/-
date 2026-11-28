@@ -28,6 +28,22 @@
   const copy=value=>JSON.parse(JSON.stringify(value));
   const problem=code=>Object.assign(new Error(code),{diagnosticCode:code});
   const presentUnknown=()=>({status:'unconfirmed',meta:null,workspace:null,legacyArchive:null});
+  // A Safari tab and an installed iPhone Home Screen web app use isolated
+  // IndexedDB/localStorage. Detect only presentation mode, never read data.
+  // This cannot prove that another installation's local data is missing.
+  function launchContext(){
+    try{
+      let standalone=null;
+      const native=root.navigator?.standalone;
+      if(typeof native==='boolean')standalone=native;
+      if(typeof root.matchMedia==='function'){
+        const query=root.matchMedia('(display-mode: standalone)');
+        if(typeof query?.matches==='boolean')standalone=query.matches||standalone===true;
+      }
+      return {status:standalone===null?'unconfirmed':'complete',
+        mode:standalone===true?'home-screen-app':standalone===false?'browser':'unknown'};
+    }catch{return {status:'unconfirmed',mode:'unknown'};}
+  }
   function failed(error,fallback){
     const code=['CANCELLED','TIME_LIMIT','REQUEST_TIMEOUT','DATABASE_CHANGED','OPEN_BLOCKED','VERSION_CHANGED','INVALID_RESPONSE'].includes(error?.diagnosticCode)?error.diagnosticCode:fallback;
     const status=code==='CANCELLED'?'cancelled':code==='TIME_LIMIT'||code==='REQUEST_TIMEOUT'?'timeout':'error';
@@ -37,6 +53,7 @@
   async function scan(options={}){
     const report={format:'sentlog-startup-storage-diagnostics',version:1,readOnly:true,status:'running',
       startedAt:new Date().toISOString(),finishedAt:null,
+      launchContext:launchContext(),
       marker:{status:'unconfirmed',present:null},estimate:{status:'unconfirmed',usageBytes:null,quotaBytes:null},
       persisted:{status:'unconfirmed',persisted:null},cache:{status:'unconfirmed',count:null,generations:[]},
       indexedDB:{status:'unconfirmed',listedSentlogDatabaseCount:null,excludedDatabaseCount:null,databases:DATABASES.map(spec=>({
@@ -218,7 +235,11 @@
       const line=(label,value)=>{const p=node('p');p.append(node('strong',label+'：'),doc.createTextNode(value));return p;};
       function render(report){
         output.replaceChildren();
-        const general=node('section');general.className='result-card';general.append(node('h2','ブラウザの保存情報'));
+        const general=node('section');general.className='result-card';general.append(node('h2','この画面の保存情報'));
+        const mode=report.launchContext?.mode;
+        general.append(line('診断画面の起動元',
+          mode==='home-screen-app'?'ホーム画面のWebアプリ':mode==='browser'?'Safari等のブラウザ':'未確認'));
+        general.append(node('p','iPhoneのホーム画面アプリとSafariでは保存領域が別です。同じURLでも別の画面のデータは確認できません。'));
         general.append(line('移行済みマーカー',report.marker.status==='complete'?yes(report.marker.present):state(report.marker)));
         general.append(line('使用量の見積り',report.estimate.status==='complete'?bytes(report.estimate.usageBytes):state(report.estimate)));
         general.append(line('保存上限の見積り',report.estimate.status==='complete'?bytes(report.estimate.quotaBytes):state(report.estimate)));
@@ -227,6 +248,18 @@
         general.append(line('アプリ用キャッシュ',report.cache.status==='complete'?report.cache.count+' 個'+(report.cache.generations.length?'（'+report.cache.generations.map(n=>'v'+n).join('、')+'）':''):state(report.cache)));
         output.append(general);
         const heading=node('h2','セントログの保存領域');output.append(heading,line('一覧の確認',state(report.indexedDB)));
+        if(report.indexedDB.status==='complete'&&report.indexedDB.listedSentlogDatabaseCount===0){
+          const warning=node('section');warning.className='result-card';
+          warning.append(node('h3','重要：保存データの消失とは断定できません'));
+          const message=mode==='browser'
+            ?'この結果はSafari等のブラウザ側の保存領域です。ホーム画面のセントログの保存データは確認できていません。元のホーム画面アイコンから開く診断画面で確認する必要があります。'
+            :mode==='home-screen-app'
+            ?'このホーム画面アプリの現在の保存領域では、セントログのデータベースが一覧にありません。iOS内部に元のファイルが残っているか、復旧できるかはこの診断だけでは分かりません。'
+            :'この画面の保存領域では、セントログのデータベースが一覧にありません。Safariとホーム画面アプリのどちらを確認したかは判定できません。';
+          warning.append(node('p',message));
+          warning.append(node('p','アプリの削除・再インストール、Webサイトデータ削除、バックアップの復元・同期のやり直しは行わず、現状を保持してください。'));
+          output.append(warning);
+        }
         for(const database of report.indexedDB.databases){
           const card=node('section');card.className='result-card';card.append(node('h3',database.label+' '+database.sequence));
           card.append(line('状態',state(database)));if(database.version!==null)card.append(line('DBバージョン',String(database.version)));
