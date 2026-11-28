@@ -310,6 +310,19 @@ jobs:
           node tests/storage_lifecycle_release.test.cjs
           node tests/startup_backup_recovery_release.test.cjs
           node tests/metadata_choice_release.test.cjs
+          python3 scripts/build_iphone_stability_release.py
+          node tests/record_startup_read_budget.test.cjs
+          node tests/delta_app_runtime_residency.test.cjs
+          node tests/photo_thumbnails.test.cjs
+          node tests/iphone_stability_release.test.cjs
+          node tests/operation_memory_release.test.cjs
+          node tests/capacity_maintenance_release.test.cjs
+          node tests/reliability_release.test.cjs
+          node tests/storage_recovery_release.test.cjs
+          node tests/startup_protection_release.test.cjs
+          node tests/storage_lifecycle_release.test.cjs
+          node tests/startup_backup_recovery_release.test.cjs
+          node tests/metadata_choice_release.test.cjs
       - name: Setup Pages
         uses: actions/configure-pages@v5
         with:
@@ -354,7 +367,7 @@ jobs:
           import os,time
           names=['index.html','sw.js','record-collaboration.js','collaboration-editor.js',
                  'collaboration-channel.js','collaboration-photos.js','continuous-camera.js','cloud-sync.js',
-                 'photo-display-order.js','camera-return.js','phone-runtime.js',
+                 'photo-display-order.js','photo-thumbnails.js','camera-return.js','phone-runtime.js',
                  'sync-merge.js','sync-view.js','original-photo-store.js',
                  'original-photo-export.js','original-photo-export-worker.js','original-photo-zip.js','record-transfer.js',
                  'photo-ledger.js','photo-ledger-visual3.js','photo-viewer.js',

@@ -167,7 +167,7 @@
   }
   async function readAll(){
     const tx=transaction('readonly'),done=complete(tx),s=tx.objectStore(STORE);
-    let meta=null,archive=null,metaExists=false,archiveExists=false,journalCount=0,controlCount=0,keys=[],values=[];
+    let meta=null,archive=null,metaExists=false,archiveExists=false,journalCount=0,controlCount=0;const map=new Map();
     s.get(META).onsuccess=e=>meta=e.target.result;
     s.get(ARCHIVE).onsuccess=e=>archive=e.target.result;
     s.count(META).onsuccess=e=>metaExists=e.target.result>0;
@@ -175,11 +175,11 @@
     tx.objectStore(JOURNAL).count().onsuccess=e=>journalCount=e.target.result;
     tx.objectStore(CONTROL).count().onsuccess=e=>controlCount=e.target.result;
     const range=IDBKeyRange.bound(PREFIX,PREFIX+'\uffff');
-    s.getAllKeys(range).onsuccess=e=>keys=e.target.result;
-    s.getAll(range).onsuccess=e=>values=e.target.result;
+    const request=s.openCursor(range);
+    request.onsuccess=()=>{try{const item=request.result;if(!item)return;map.set(String(item.key).slice(PREFIX.length),item.value);item.continue();}
+      catch(error){tx.sentlogJournalError=error;tx.abort();}};
     await done;
-    return {meta,archive,metaExists,archiveExists,recordCount:keys.length,journalCount,controlCount,
-      map:new Map(keys.map((k,i)=>[k.slice(PREFIX.length),values[i]]))};
+    return {meta,archive,metaExists,archiveExists,recordCount:map.size,journalCount,controlCount,map};
   }
   function legacy(){
     const out=new Map();
@@ -586,8 +586,21 @@
     cutoffFiles=files;bindings=next;
   }
   async function readControls(){
-    const tx=transaction('readonly'),done=complete(tx);let rows=[];
-    tx.objectStore(CONTROL).getAll().onsuccess=e=>rows=e.target.result;await done;return rows;
+    const tx=transaction('readonly'),done=complete(tx),store=tx.objectStore(CONTROL),rows=[];
+    // Keep the same complete public binding cache, without asking WebKit to
+    // materialize every retained file and snapshot in one IPC/getAll result.
+    const request=store.indexNames.contains('kind')?store.index('kind').openCursor(IDBKeyRange.bound('binding','cutoff-file')):store.openCursor();
+    request.onsuccess=()=>{try{const item=request.result;if(!item)return;const row=item.value;
+      if(row?.kind==='binding'||row?.kind==='cutoff-file')rows.push(row);item.continue();
+    }catch(error){tx.sentlogJournalError=error;tx.abort();}};
+    await done;return rows;
+  }
+  async function retainedBindingKeys(){
+    const tx=transaction('readonly'),done=complete(tx),store=tx.objectStore(CONTROL),keys=[];
+    const request=store.indexNames.contains('kind')?store.index('kind').openKeyCursor(IDBKeyRange.only('binding')):
+      store.openKeyCursor(IDBKeyRange.bound('binding:','binding:\uffff'));
+    request.onsuccess=()=>{const item=request.result;if(!item)return;keys.push(item.primaryKey);item.continue();};
+    await done;return keys;
   }
   async function readControl(key){
     const tx=transaction('readonly'),done=complete(tx);let value;
@@ -615,7 +628,11 @@
     return hydrated;
   }
   async function splitEmbeddedCutoff(binding){
-    const beforeText=archiveReleaseText(binding),files=binding.cutoff?.files||[],refs=new Map();
+    const files=binding.cutoff?.files||[];
+    // Most devices already completed this conversion. Do not stringify every
+    // project's full historical snapshot just to find there is nothing to do.
+    if(!files.some(file=>!file.valueRef&&file.value instanceof Blob))return;
+    const beforeText=archiveReleaseText(binding),refs=new Map();
     // Old embedded cutoffs are converted once, one file at a time. A crash
     // leaves the original binding intact and add-only staged rows reusable.
     for(const [index,file]of files.entries()){
@@ -677,8 +694,9 @@
   }
   async function ensureCutoffFiles(){
     for(let attempt=0;attempt<3;attempt++){
-      const rows=await readControls();
-      try{for(const binding of rows.filter(row=>row?.kind==='binding'))await splitEmbeddedCutoff(binding);}
+      const keys=await retainedBindingKeys();
+      try{for(const key of keys){const binding=await readControl(key);
+        if(binding?.kind==='binding')await splitEmbeddedCutoff(binding);}}
       catch(error){if(error.code==='JOURNAL_CUTOFF_STALE'&&attempt<2)continue;throw error;}
       cacheControls(await readControls());return;
     }
@@ -2433,6 +2451,7 @@
     recordFailureHistoryVersion:1,
     storageMaintenanceVersion:1,
     maintenanceInitVersion:1,
+    startupReadBudgetVersion:1,
     journalReadBudgetVersion:1,
     projectionNoopVersion:1,
     getFileWriteCapabilities:()=>({guarded:true,onlyIfMissing:true,writerState:true,fileWriteDedupVersion:1,expectedFileStatesVersion:1,journaled:connection?.version===DB_VERSION}),

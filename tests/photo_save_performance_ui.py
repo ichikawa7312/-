@@ -12,6 +12,9 @@ times are diagnostic only. Durable records, original hashes and photo IDs are
 asserted; request/row/byte counts provide hardware-independent work evidence.
 Closing the camera is measured separately, including the final visible
 thumbnail refresh, so deferred repaint work remains visible in the report.
+Both versions must retain every photo placeholder in order. Readiness requires
+decoded previews inside the actual viewport/scroll clips; it does not force
+the candidate's offscreen placeholders to decode their full-size source.
 """
 import argparse
 import base64
@@ -107,7 +110,8 @@ TRACE = r"""()=>{
   let active=null,lastFrame=performance.now(),closeObserver=null,readyObserver=null,readyListener=null;
   const clearCloseObservers=()=>{
     closeObserver?.disconnect();closeObserver=null;readyObserver?.disconnect();readyObserver=null;
-    if(readyListener)document.removeEventListener('load',readyListener,true);readyListener=null;
+    if(readyListener){document.removeEventListener('load',readyListener,true);
+      document.removeEventListener('transitionend',readyListener,true);}readyListener=null;
   };
   const closeMark=name=>{
     const phases=active?.closePhases;
@@ -116,6 +120,38 @@ TRACE = r"""()=>{
   document.addEventListener('click',event=>{
     if(active?.closePhases&&event.target.closest?.('#slCameraDone'))closeMark('click');
   },true);
+  // Observe DOM geometry independently of the production thumbnail queue.
+  // Playwright's isVisible() intentionally includes offscreen elements, so it
+  // cannot distinguish a retained lazy placeholder from a visible preview.
+  const inVisibleArea=element=>{
+    const box=element.getBoundingClientRect();
+    if(!element.isConnected||box.width<=0||box.height<=0)return false;
+    let left=Math.max(0,box.left),top=Math.max(0,box.top),
+      right=Math.min(innerWidth,box.right),bottom=Math.min(innerHeight,box.bottom);
+    for(let node=element;node;node=node.parentElement){
+      const style=getComputedStyle(node);
+      if(style.display==='none'||style.visibility==='hidden'||style.visibility==='collapse')return false;
+      const bounds=node.getBoundingClientRect();
+      if(/auto|scroll|hidden|clip/.test(style.overflowX)){left=Math.max(left,bounds.left);right=Math.min(right,bounds.right);}
+      if(/auto|scroll|hidden|clip/.test(style.overflowY)){top=Math.max(top,bounds.top);bottom=Math.min(bottom,bounds.bottom);}
+    }
+    return right>left&&bottom>top;
+  };
+  const thumbnailsReadyState=expected=>{
+    const names=Array.isArray(expected)?expected.map(value=>typeof value==='string'?value:value.name):null;
+    const count=names?names.length:expected,items=[...document.querySelectorAll('#photoGrid .photo-thumb')];
+    const identitiesMatch=items.length===count&&items.every((item,index)=>{
+      const image=item.querySelector('img');
+      return !!image&&(!names||item.title===names[index]&&image.alt===names[index]);
+    });
+    const decoded=item=>{const image=item.querySelector('img');return !!image?.getAttribute('src')&&image.complete&&image.naturalWidth>0;};
+    const visibleIndices=items.flatMap((item,index)=>inVisibleArea(item)?[index]:[]);
+    const readyVisible=visibleIndices.filter(index=>decoded(items[index])).length;
+    const offscreenLoaded=items.filter((item,index)=>!visibleIndices.includes(index)&&decoded(item)).length;
+    return {ready:identitiesMatch&&(count===0||visibleIndices.length>0)&&readyVisible===visibleIndices.length,
+      placeholders:items.length,identitiesMatch,visible:visibleIndices.length,readyVisible,
+      offscreen:items.length-visibleIndices.length,offscreenLoaded,visibleIndices};
+  };
   const summary=()=>({stages:{},idb:{},digests:{calls:0,bytes:0,ms:0},
     imageLoads:0,canvasEncodes:0,canvasEncodedPixels:0,maxCanvasPixels:0,
     drawCalls:0,renderCalls:0,photoListRenders:0,frameCount:0,maxFrameGapMs:0,
@@ -207,6 +243,7 @@ TRACE = r"""()=>{
     lastFrame=at;requestAnimationFrame(frame);}
   requestAnimationFrame(frame);
   window.photoPerformance={
+    thumbnailsReadyState,
     start(label,photoIds=[],photoNames=[]){
       clearCloseObservers();
       active={label,...summary(),started:performance.now()};lastFrame=performance.now();
@@ -218,17 +255,14 @@ TRACE = r"""()=>{
         // events, independently of when the automation driver next polls it.
         const available=()=>{
           if(active!==scope||!modal.hidden||scope.closePhases.offsetsMs.modalHidden===null)return;
-          const thumbnails=[...document.querySelectorAll('#photoGrid .photo-thumb')];
-          if(thumbnails.length===photoNames.length&&thumbnails.every((item,index)=>{
-            const image=item.querySelector('img');
-            return item.title===photoNames[index]&&image?.alt===photoNames[index]&&
-              image.complete&&image.naturalWidth>0;
-          })){
+          if(thumbnailsReadyState(photoNames).ready){
             closeMark('thumbnailsAvailable');readyObserver?.disconnect();
             document.removeEventListener('load',available,true);
+            document.removeEventListener('transitionend',available,true);
           }
         };
         readyListener=available;document.addEventListener('load',available,true);
+        document.addEventListener('transitionend',available,true);
         readyObserver=new MutationObserver(available);
         readyObserver.observe(document.getElementById('photoGrid'),{
           childList:true,subtree:true,attributes:true,attributeFilter:['src','alt','title']});
@@ -238,7 +272,7 @@ TRACE = r"""()=>{
         closeObserver.observe(modal,{attributes:true,attributeFilter:['hidden']});
       }
     },
-    thumbnailsReady(){closeMark('thumbnailsReady');},
+    thumbnailsReady(){readyListener?.();closeMark('thumbnailsReady');},
     async stop(){
       closeMark('stopCalled');
       await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
@@ -395,17 +429,18 @@ def profile_case(playwright, engine, built_root, workload, encoded, shots, *, ca
                 page.locator('#slCameraDone').click()
                 page.wait_for_function('!SentlogContinuousCamera.isOpen()')
                 page.wait_for_function("""expected=>{
-                  const thumbnails=[...document.querySelectorAll('#photoGrid .photo-thumb')];
-                  const ready=thumbnails.length===expected.length&&thumbnails.every((item,index)=>{
-                    const image=item.querySelector('img');
-                    return item.title===expected[index].name&&image?.alt===expected[index].name&&
-                      image.complete&&image.naturalWidth>0;
-                  });
+                  const ready=photoPerformance.thumbnailsReadyState(expected).ready;
                   if(ready)photoPerformance.thumbnailsReady();
                   return ready;
                 }""", arg=visible_photos)
                 expect(page.locator('#photoGrid')).to_be_visible()
                 close_result = page.evaluate('photoPerformance.stop()')
+                readiness = page.evaluate('expected=>photoPerformance.thumbnailsReadyState(expected)', visible_photos)
+                assert readiness['ready'] and readiness['identitiesMatch'], readiness
+                assert readiness['placeholders'] == len(visible_photos), readiness
+                assert readiness['visible'] == readiness['readyVisible'] > 0, readiness
+                close_result['thumbnailReadiness'] = readiness
+                close_result['visiblePreviewPhotoIds'] = [visible_photos[index]['id'] for index in readiness['visibleIndices']]
                 assert not close_result['idbErrors'], close_result
                 if candidate:
                     assert close_result['renderCalls'] == close_result['photoListRenders'] == 1, close_result
@@ -461,6 +496,7 @@ def summarize(case):
             'closeRenderCalls': close['renderCalls'],
             'closePhotoListRenders': close['photoListRenders'],
             'closeImageLoads': close['imageLoads'],
+            'closeThumbnailReadiness': close['thumbnailReadiness'],
             'closeDrawingRect': close['stages'].get('ui.drawingRect', {'calls': 0, 'ms': 0, 'maxMs': 0}),
             'closeFocus': close['stages'].get('ui.focus', {'calls': 0, 'ms': 0, 'maxMs': 0}),
             'closePhasesMs': close['closePhases']['durationsMs'],
@@ -482,6 +518,7 @@ def main():
               'scope': {'nativeStorage': ['all original photos', 'fresh shared photos', 'records'],
                         'memoryFixtures': ['drawing backgrounds', 'preexisting shared thumbnails'],
                         'deltaBindingActive': False,
+                        'thumbnailReadiness': 'Every photo placeholder and display identity/order, plus decoded previews clipped to the visible viewport; offscreen decoding is not required for either version',
                         'timing': 'Advisory headless-browser measurements including driver/UI wait overhead; not physical iPhone timings'},
               'results': {}, 'comparison': {}}
     with sync_playwright() as playwright:

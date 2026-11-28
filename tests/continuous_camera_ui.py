@@ -555,6 +555,13 @@ def run_orientation(page, engine, screenshot_dir=None):
         ratio = min(1, 1600/max(width, height))
         return round(width*ratio), round(height*ratio)
 
+    def grid_size(width, height):
+        # The ephemeral list preview is bounded independently of the saved
+        # shared JPEG. Keep original/shared/review dimensions checked above.
+        width, height = shared_size(width, height)
+        ratio = min(1, 384/max(width, height))
+        return round(width*ratio), round(height*ratio)
+
     def review_pixels(photo_id):
         # Keep the actual review node throughout loading and painting. A
         # locator that resolves again could silently select a replacement.
@@ -603,19 +610,49 @@ def run_orientation(page, engine, screenshot_dir=None):
           const items=[...document.querySelectorAll('#photoGrid .photo-thumb')];
           return items.length===names.length&&names.every(name=>{
             const matches=items.filter(item=>item.title===name),image=matches[0]?.querySelector('img');
-            return matches.length===1&&image?.src&&image.complete&&image.naturalWidth>0;
+            return matches.length===1&&image?.alt===name;
           });
         }""", arg=[photo['name'] for photo in photos])
-        image = page.locator('#photoGrid').get_by_alt_text(name, exact=True)
-        image.scroll_into_view_if_needed()
-        return image.evaluate(r"""async image=>{
-          const source=image.currentSrc||image.src;
-          if(!image.isConnected||!source)throw Error('Photo-list image is no longer current');
-          const pixels=await (""" + IMAGE_PIXELS + r""")(image);
-          if(!image.isConnected||(image.currentSrc||image.src)!==source)
-            throw Error('Photo list changed during pixel verification');
-          return pixels;
-        }""")
+        # Retain all placeholders, then exercise the real scroll-triggered
+        # load of this target. Offscreen photos need not decode together.
+        item = page.locator('#photoGrid').get_by_title(name, exact=True)
+        item.scroll_into_view_if_needed()
+        image = item.locator('img').element_handle()
+        assert image is not None, ('Missing photo-list image', photo_id)
+        page.wait_for_function("""({image,name})=>{
+          if(!image.isConnected||image.closest('.photo-thumb')?.title!==name)
+            throw Error('Photo-list image changed while loading');
+          const rect=image.getBoundingClientRect();
+          return !!image.getAttribute('src')&&!!image.currentSrc&&image.complete&&image.naturalWidth>0&&image.naturalHeight>0&&
+            getComputedStyle(image).visibility==='visible'&&rect.width>0&&rect.height>0&&
+            rect.right>0&&rect.left<innerWidth&&rect.bottom>0&&rect.top<innerHeight;
+        }""", arg={'image': image, 'name': name}, timeout=5000)
+        return image.evaluate(r"""async (image,name)=>{
+          const source=image.currentSrc,attributeSource=image.getAttribute('src');
+          const current=()=>{
+            const rect=image.getBoundingClientRect();
+            return !!source&&!!attributeSource&&image.isConnected&&image.getAttribute('src')===attributeSource&&
+              image.currentSrc===source&&image.complete&&image.naturalWidth>0&&image.naturalHeight>0&&
+              image.closest('.photo-thumb')?.title===name&&getComputedStyle(image).visibility==='visible'&&
+              rect.width>0&&rect.height>0&&rect.right>0&&rect.left<innerWidth&&rect.bottom>0&&rect.top<innerHeight;
+          };
+          if(!current())throw Error('Photo-list image is no longer current');
+          await image.decode();
+          // Match the review's asynchronous-image paint boundary. Sample the
+          // same visible node once; a failed pixel assertion is never retried.
+          let deadline;
+          try{
+            await Promise.race([
+              new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))),
+              new Promise((_,reject)=>{deadline=setTimeout(()=>reject(Error('Photo-list paint did not finish')),5000);})
+            ]);
+          }finally{clearTimeout(deadline);}
+          if(!current())throw Error('Photo list changed before pixel verification');
+          const pixels=await (""" + IMAGE_PIXELS + r""")(image,{decoded:true});
+          if(!current())throw Error('Photo list changed during pixel verification');
+          return {...pixels,ready:{connected:image.isConnected,complete:image.complete,
+            source,attributeSource,visibility:getComputedStyle(image).visibility,viewport:[innerWidth,innerHeight]}};
+        }""", name)
 
     devices = [
         ('iPhone', {'userAgent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_4 like Mac OS X) AppleWebKit/605.1.15 Version/18.4 Mobile/15E148 Safari/604.1',
@@ -692,7 +729,7 @@ def run_orientation(page, engine, screenshot_dir=None):
             page.wait_for_function('!SentlogContinuousCamera.isOpen()')
             page.evaluate('SentlogRecords.settled()')
             for photo_id, width, height, digest in checked:
-                assert_orientation(grid_pixels(photo_id), *shared_size(width, height), device+' photo list')
+                assert_orientation(grid_pixels(photo_id), *grid_size(width, height), device+' photo list')
                 assert saved_pixels(photo_id, original=True)['sha256'] == digest, 'display must not rewrite the retained original'
             print('PASS '+engine+': '+device+' preview pixels and full stream dimensions survive capture, shared conversion, review and photo list')
             print('PASS '+engine+': '+device+' right-side landscape shutter, full-frame preview, safe touch areas and portrait return', layouts)

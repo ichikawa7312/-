@@ -112,8 +112,7 @@ RESOURCES = r"""()=>{
     const check=()=>{
       if(!modal.hidden||state.click===null)return;
       if(state.hidden===null)state.hidden=performance.now();
-      const images=[...document.querySelectorAll('#photoGrid .photo-thumb img')];
-      if(images.length===expected&&images.every(i=>i.complete&&i.naturalWidth>0)&&state.ready===null)state.ready=performance.now();
+      if(photoPerformance.thumbnailsReadyState(expected).ready&&state.ready===null)state.ready=performance.now();
     };
     const click=e=>{if(e.target.closest?.('#slCameraDone'))state.click=performance.now();};
     const observer=new MutationObserver(check);observer.observe(modal,{attributes:true,attributeFilter:['hidden']});
@@ -202,6 +201,17 @@ def stats(values):
 def open_drawing(page, drawing='memo-plan-a'):
     page.evaluate("""async id=>{await openDrawing('memo-project',id);SentlogFieldRecords.selectRecord('survey-a');
       $('inspector').classList.add('open');await SentlogRecords.settled();}""", drawing)
+
+
+def reveal_first_photo(page):
+    # The camera's completion refresh can replace photo cards while Playwright
+    # waits for an old card to become stable. The grid itself is permanent:
+    # find and scroll its current first child within one synchronous operation.
+    page.locator('#photoGrid').evaluate("""grid=>{
+      const first=grid.firstElementChild;
+      if(!first||!first.classList.contains('photo-thumb'))throw Error('Expected a photo preview to reveal');
+      first.scrollIntoView({block:'nearest'});
+    }""")
 
 
 def boot_page(context, origin, errors):
@@ -301,6 +311,7 @@ def run(playwright, engine, root, report, report_path=None):
                         assert page.evaluate('SentlogContinuousCamera.isOpen()'), 'Done discarded a save still in flight'
                         page.evaluate('heavyResources.release()')
                         page.wait_for_function('!SentlogContinuousCamera.isOpen()')
+                        reveal_first_photo(page)
                         page.wait_for_function('heavyResources.close.ready!==null')
                         closes.append(page.evaluate('heavyResources.closeResult()'))
                     else:
@@ -318,8 +329,25 @@ def run(playwright, engine, root, report, report_path=None):
                     scan = trace['idb'].get('sentlog-original-photos-v1/meta/getAll', {})
                     assert scan.get('unboundedCalls', 0) == 0, scan
                     assert scan.get('boundedCalls') == 1 and scan.get('rows') == len(before), scan
-                    assert trace['maxCanvasPixels'] == 12000000 and trace['canvasEncodes'] == 2, trace
+                    assert trace['maxCanvasPixels'] == 12000000, trace
+                    # Original and shared-photo capture must still encode once
+                    # each. Only closing the camera may additionally encode
+                    # small, visible display previews; these never enter storage.
+                    encoded = {}
+                    for name, stage in trace['stages'].items():
+                        if name.startswith('canvas.toBlob.'):
+                            dimensions = tuple(map(int, name.removeprefix('canvas.toBlob.').split('x')))
+                            encoded[dimensions] = stage['calls']
+                    ratio = 1600 / max(width, height)
+                    capture_sizes = {(width, height), (round(width*ratio), round(height*ratio))}
+                    assert all(encoded.get(size) == 1 for size in capture_sizes), (capture_sizes, encoded)
+                    preview_encodes = sum(calls for size, calls in encoded.items() if size not in capture_sizes)
+                    assert all(max(size) <= 384 for size in encoded if size not in capture_sizes), encoded
+                    assert trace['canvasEncodes'] == 2 + preview_encodes, trace
+                    trace['captureEncodes'] = 2
+                    trace['visiblePreviewEncodes'] = preview_encodes
                     if not ending:
+                        assert preview_encodes == 0, 'Photo previews ran behind the open camera'
                         assert trace['renderCalls'] == trace['photoListRenders'] == 0, trace
                     resources = page.evaluate('heavyResources.snapshot()')
                     assert not resources['unreleasedEncodedCanvases'] and resources['hiddenFits'] == 0, resources
@@ -338,8 +366,8 @@ def run(playwright, engine, root, report, report_path=None):
                             expect(page.locator('#slCameraShutter')).to_be_enabled()
                             page.locator('#slCameraDone').click()
                             page.wait_for_function('!SentlogContinuousCamera.isOpen()')
-                            page.wait_for_function("""count=>{const images=[...document.querySelectorAll('#photoGrid .photo-thumb img')];
-                              return images.length===count&&images.every(image=>image.complete&&image.naturalWidth>0);}""", arg=40+number)
+                            reveal_first_photo(page)
+                            page.wait_for_function('count=>photoPerformance.thumbnailsReadyState(count).ready', arg=40+number)
                         assert page.evaluate('cameraMock.calls') == calls, 'Plain reopen repeatedly requested camera access'
                         reopened = page.evaluate('heavyResources.snapshot()')
                         assert reopened['liveObjectUrls'] <= 40+number+12 and reopened['activeTracks'] <= 1, reopened
