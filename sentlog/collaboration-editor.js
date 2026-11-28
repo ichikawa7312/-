@@ -176,8 +176,8 @@
     // Explicit local intent: do not pretend to have verified the remote head.
     // Immutable field/delete revisions retain concurrent peer edits as conflicts
     // when the shared record is eventually reconciled.
-    if(d.kind==='delete'||d.kind==='field')
-      actions.append(button('この端末に変更を保存（共有は後で）',()=>confirmDecision({localOnly:true})));
+    if(navigator.onLine&&(d.kind==='delete'||d.kind==='field'||d.kind==='photo-remove'))
+      actions.append(button('通信せず端末に保存',()=>confirmDecision({localOnly:true})));
     dialog.hidden=false;
   }
   function cancelConfirmation(){const old=confirmation;confirmation=null;old?.controller.abort();}
@@ -189,16 +189,17 @@
   function localDecisionApplied(d,target){
     if(!d?.localRevisionId||!target?.collab)return false;
     const revisions=d.kind==='delete'?target.collab.deletion?.revisions:
-      d.kind==='field'?target.collab.fields?.[d.key]?.revisions:null;
+      d.kind==='field'?target.collab.fields?.[d.key]?.revisions:
+      d.kind==='photo-remove'?target.collab.photos?.[d.photoId]?.revisions:null;
     return Array.isArray(revisions)&&revisions.some(row=>row.id===d.localRevisionId);
   }
-  async function confirmDecision({localOnly=false}={}){
+  async function confirmDecision({localOnly=!navigator.onLine}={}){
     const d=decision;if(!d||confirmation)return;
     const attempt={decision:d,controller:new AbortController()};confirmation=attempt;
     const status=dialog.querySelector('[data-status]'),buttons=dialog.querySelectorAll('button');buttons.forEach((b,index)=>b.disabled=index!==0);
     try{
       if(localOnly){
-        if(d.kind!=='delete'&&d.kind!=='field')throw Error('この操作の端末内保存には対応していません。');
+        if(d.kind!=='delete'&&d.kind!=='field'&&d.kind!=='photo-remove')throw Error('この操作の端末内保存には対応していません。');
         if(root.SentlogRecords?.ready===false)throw Error('端末内の保存先を確認できません。変更せず停止しました。');
         // Fail before touching a record if older uncommitted edits cannot
         // reach the native IndexedDB writer.
@@ -249,7 +250,8 @@
         if(d.kind==='delete'){
           const removed=M.markDeleted(target,opts({expectedToken:d.token,...(localOnly?{revisionId:d.localRevisionId}:{})}));
           state.shapes=state.shapes.filter(s=>s.id!==target.id);state.collabDeletedRecords=[...(state.collabDeletedRecords||[]).filter(s=>s.id!==target.id),removed];selected=null;
-        }else if(d.kind==='photo-remove')replaceRecord(M.removePhoto(target,d.photoId,opts({expectedHeads:d.headIds})));
+        }else if(d.kind==='photo-remove')replaceRecord(M.removePhoto(target,d.photoId,opts({expectedHeads:d.headIds,
+          ...(localOnly?{revisionId:d.localRevisionId}:{})})));
         else replaceRecord(M.setField(target,d.key,d.value,opts({expectedHeads:d.headIds,unset:d.unset===true,
           ...(localOnly?{revisionId:d.localRevisionId}:{})})));
       },()=>{
@@ -383,6 +385,10 @@
         const existing=observed[field];if(same(existing,after[field])&&own(observed,field)===own(after,field))continue;
         if(same(prior[field],after[field])&&own(prior,field)===own(after,field))continue;
         if((existing===undefined||existing===null||existing==='')&&(prior[field]===undefined||prior[field]===null||prior[field]===''))continue;
+        // An offline edit is a normal local revision. Its observed parents
+        // remain explicit; an unseen peer change becomes a merge conflict,
+        // never an implicit overwrite. The writer still guards durable saves.
+        if(!navigator.onLine)continue;
         const pending={accountId:accountId(),projectId:activeProjectId,drawingId:activeDrawingId,recordId:s.id,kind:'field',key:field,value:copy(after[field]),unset:!own(after,field),headIds:view.fields[field]?.headIds||[]};
         warnings.push(pending);if(own(observed,field))after[field]=copy(observed[field]);else delete after[field];
       }
@@ -478,7 +484,7 @@
     });
     if(changed){render();renderSelectedPhotos();refresh();}
   }
-  root.SentlogCollaboration={offlineDamageDecisionsVersion:1,actor,flushDraft,refresh,recordHistory,afterStoredNormalization,
+  root.SentlogCollaboration={offlineDamageDecisionsVersion:2,actor,flushDraft,refresh,recordHistory,afterStoredNormalization,
     requestPhotoRemoval(capture,photoId){
       const c={accountId:capture?.ownerId||'',projectId:capture?.projectId,drawingId:capture?.drawingId,recordId:capture?.recordId};
       if(!sameDrawing(c))throw Error('撮影先の図面を開いてから写真を外してください。');
