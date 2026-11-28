@@ -55,9 +55,11 @@ function setup(allowed,pref){
     assert.equal(f.calls.prompt,0);assert.equal(f.calls.sync,1);
     await f.s.autoSyncOnce();assert.equal(f.calls.sync,2);
     f.s.navigator.onLine=false;await f.s.autoSyncOnce();assert.equal(f.calls.sync,2);
-    f.s.navigator.onLine=true;f.s.document.hidden=true;await f.s.autoSyncOnce();assert.equal(f.calls.sync,2);
+    // PC storage backup is expected to operate while the Edge tab is not
+    // foregrounded; an iPhone metadata worker has a different budget.
+    f.s.navigator.onLine=true;f.s.document.hidden=true;await f.s.autoSyncOnce();assert.equal(f.calls.sync,3);
     f.s.document.hidden=false;f.allowed.value='prompt';await f.s.autoSyncOnce();
-    assert.equal(f.calls.sync,2);assert.equal(f.calls.prompt,0);
+    assert.equal(f.calls.sync,3);assert.equal(f.calls.prompt,0);
   }
   console.log('PASS PC consented autostart, automatic permission safety, STOP and offline/hidden protection');
 })().catch(e=>{console.error(e);process.exitCode=1});
