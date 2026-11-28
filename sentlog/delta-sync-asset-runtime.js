@@ -64,7 +64,7 @@
   return [...photos.values()].sort((a,b)=>target(a).localeCompare(target(b)));
  }
  function createRuntime({scope:inputScope,transport,store,localFiles,currentScope,currentSnapshotToken,
-  authGeneration,subscribeAuth,onPhotoReceived=()=>{},timeoutMs=30000,maxBytes=22*1024*1024,allowArchivedRestore=false}={}){
+  authGeneration,subscribeAuth,onPhotoReceived=()=>{},recoverShared=null,timeoutMs=30000,maxBytes=22*1024*1024,allowArchivedRestore=false}={}){
   const scope=Object.freeze(Object.fromEntries(SCOPE.map(k=>[k,inputScope?.[k]])));
   const capabilities=localFiles?.getCapabilities?.();
   insist(A&&T&&SCOPE.every(k=>valid(scope[k]))&&sameScope(scope,transport?.getScope?.())&&sameScope(scope,store?.getScope?.())&&
@@ -72,6 +72,7 @@
    ['ensure','read','received','acknowledged'].every(k=>typeof store?.[k]==='function')&&
    ['read','write','withLock','getCapabilities','assertExclusive'].every(k=>typeof localFiles?.[k]==='function')&&
    [currentScope,currentSnapshotToken,authGeneration,subscribeAuth,onPhotoReceived].every(f=>typeof f==='function')&&
+   (recoverShared===null||typeof recoverShared==='function')&&
    capabilities?.guarded===true&&capabilities.onlyIfMissing===true&&Number.isSafeInteger(timeoutMs)&&timeoutMs>0&&Number.isSafeInteger(maxBytes)&&maxBytes>0&&typeof allowArchivedRestore==='boolean',
    'ASSET_RUNTIME_CONFIG','写真の保存・認証・表示対象の確認方法が不足しています');
   let closed=false,pump=null,active=null;
@@ -104,7 +105,7 @@
    // Other files are checked before their own work and their final readback.
    function checkAll(){check(null);for(const item of descriptors)checkFile(item);}
    const options={signal:ctx.controller.signal,validate:check};
-   const issues=[],refs=[];let descriptors=[],currentItem=null;
+   const issues=[],refs=[];let descriptors=[],currentItem=null,originalRecoveries=0;
    function issue(item,e){issues.push({drawingId:item?.drawingId||null,photoId:item?.photoId||null,
     code:typeof e?.code==='string'?e.code:e?.name==='QuotaExceededError'?'ASSET_QUOTA':'ASSET_LOCAL_FAILURE',
     message:typeof e?.code==='string'?String(e.message):'写真の保存・照合を完了できません。元の写真は保持しています'});}
@@ -164,6 +165,21 @@
         'ASSET_COLLISION','記録とサーバーで同じ写真IDの内容が異なります。両方を保持しています');
       }else{
        let blob;await localFiles.withLock(fileKey(item),async()=>{check();blob=await localFiles.read(fileKey(item));check();});check();
+       if(blob===undefined&&recoverShared){
+         // An original can rebuild a missing *shared* JPEG only if its exact
+         // historical hash and size match. Never replace a mismatched file.
+         // Cap expensive image decodes per cycle to protect iOS memory.
+         insist(originalRecoveries++<3,'ASSET_ORIGINAL_RECOVERY_BATCH','元写真の再照合を分割しています。写真は端末に保持して続けます');
+         const rebuilt=await recoverShared({...item},{scope:copy(scope),validate:()=>check(item),signal:ctx.controller.signal});check(item);
+         if(rebuilt!==undefined){
+           insist(rebuilt instanceof root.Blob&&typeof item.sha256==='string'&&Number.isSafeInteger(item.size),
+             'ASSET_ORIGINAL_RECOVERY_INVALID','元写真からの確認用画像を照合できません。元の写真は保持しています');
+           await A.verifyBlob(rebuilt,item,{validate:()=>check(item),signal:ctx.controller.signal});check(item);
+           // Reuse the only-if-missing, writer-owned journal path and verify the
+           // committed bytes before initiating any cloud file upload.
+           await mirror(item,rebuilt);check(item);blob=rebuilt;
+         }
+       }
        insist(blob!==undefined,'ASSET_REFERENCE_MISSING','共有写真の本体またはサーバー登録を取得待ちです');
        insist(blob instanceof root.Blob,'ASSET_LOCAL_COLLISION','写真の端末保存先に別の内容があります。上書きを止めました');
        const uploaded=await transport.uploadPhoto(item,blob,{...options,validate:()=>check(item)});check();ref=T.referenceFromAsset(uploaded.asset,scope);
