@@ -27,11 +27,11 @@
     return [...new Uint8Array(await root.crypto.subtle.digest('SHA-256',bytes))].map(b=>b.toString(16).padStart(2,'0')).join('');
   }
   function createRuntime({records,url,key,session,ensureSession,authGeneration,subscribeAuth,deviceId,
-    install,applyProjection,readFile,withFileLock,actor,onStatus=()=>{},onPhotoReceived=()=>{},onFileJournaled=()=>{},canProject=()=>true,
+    install,applyProjection,readFile,withFileLock,actor,onStatus=()=>{},onPhotoReceived=()=>{},onFileJournaled=()=>{},canProject=()=>true,recoverShared=null,
     network=()=>root.navigator?.onLine!==false,visible=()=>!root.document?.hidden,
     factories={},fetch:fetcher=root.fetch}={}){
     insist(records?.deltaJournal&&[session,ensureSession,authGeneration,subscribeAuth,deviceId,install,
-      applyProjection,readFile,withFileLock,actor,canProject,onFileJournaled].every(x=>typeof x==='function'),
+      applyProjection,readFile,withFileLock,actor,canProject,onFileJournaled].every(x=>typeof x==='function')&&(recoverShared===null||typeof recoverShared==='function'),
       'DELTA_APP_CONFIG','編集・保存・同期の接続方法を確認できません');
     const contexts=new Map();let closed=false,usage=0,trimTimer=null,background=Promise.resolve();
     const heavy=['controller','bridge','replica','assets','assetTransport','assetStore','store'];
@@ -284,6 +284,7 @@
           c.assetTransport=make.assetTransport({url,key,scope:c.scope,localProjectId:c.localProjectId,session,ensureSession,
             subscribeAuth,authGeneration,currentScope:currentPhotos,fetch:fetcher,network});
           c.assets=make.assets({scope:c.scope,store:c.assetStore,transport:c.assetTransport,currentScope:currentPhotos,
+            recoverShared:recoverShared?(item,options)=>recoverShared(c.cp,item,options):null,
             // A cleared device can restore shared bytes only after the explicit
             // restore flow removes its marker. currentPhotos also fences a
             // new cleanup or identity change while any request is in flight.
