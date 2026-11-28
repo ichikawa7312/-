@@ -17,7 +17,7 @@ function setup(allowed,pref){
   const settings=new Map(pref===undefined?[]:[['sentlogPcAutoSyncEnabledV1',pref]]),
     calls={sync:0,prompt:0,queries:0,schedule:0,stopped:0,events:[]};
   const rootHandle={queryPermission:async()=>{calls.queries++;return allowed.value;}};
-  const s={console,localStorage:{getItem:k=>settings.get(k)||null,setItem:(k,v)=>settings.set(k,v)},
+  const s={console,PC_AUTO_SYNC_PREF:'sentlogPcAutoSyncEnabledV1',localStorage:{getItem:k=>settings.get(k)||null,setItem:(k,v)=>settings.set(k,v)},
     rootHandle,session:{user:{id:'owner'}},busy:false,navigator:{onLine:true},document:{hidden:false},
     timer:null,log:m=>calls.events.push(m),refreshUI:()=>{},setSync:(text,level)=>calls.events.push([text,level]),
     async permission(){calls.prompt++;allowed.value='granted';return true;},
