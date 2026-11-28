@@ -72,6 +72,10 @@ pending = {
 # Legacy regression tests are source-version-locked. Advance their release
 # expectations without changing any assertions or fixture data.
 for path in (ROOT / "tests").iterdir():
+    # The v2.20 release assertion already contains both old/new tokens as
+    # comparison targets. Rewriting itself would invalidate the test oracle.
+    if path.name == "photo_foreground_release.test.cjs":
+        continue
     if path.suffix not in (".py", ".cjs"):
         continue
     filename = str(path.relative_to(ROOT))
