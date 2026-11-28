@@ -80,6 +80,16 @@ change(writer, "      memory.delete(meta);durableMemory.delete(meta);coldRecordK
        "      memory.delete(meta);durableMemory.delete(meta);coldRecordKeys.add(meta);\n    }\n    releaseIdleCutoffFiles(localProjectId);\n    return true;")
 # A full public binding reader still requires proof bytes. An ordinary read of
 # the binding *state* does not; never silently return an incomplete cutoff.
+# ACK always commits its verified proof before optional cleanup. iOS must not
+# run the old full 1,024-row cleanup here and then a second pass in drain().
+# Never hydrate massive cutoff PDF/photo copies merely to return an ACK that
+# the mobile controller deliberately discards. Its ownership state is enough.
+change(writer,
+       "      try{await this.compact();}catch(error){console.warn('Journal retention cleanup deferred',error);}",
+       "      if(!lazyRecordStartup)try{await this.compact();}catch(error){console.warn('Journal retention cleanup deferred',error);}")
+change(writer,
+       "      return hydrateBinding(result);\n    },\n    async compactRedundantRecords(",
+       "      return lazyRecordStartup?bindingState(result):hydrateBinding(result);\n    },\n    async compactRedundantRecords(")
 change(writer, '    storageLifecycleVersion:1,', '    storageLifecycleVersion:1,\n    deferredCutoffStartupVersion:1,')
 
 journal = 'sentlog/delta-sync-app-journal.js'
