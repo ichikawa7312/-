@@ -1,7 +1,7 @@
 'use strict';
 // A real photo delivery queue, hashed in IndexedDB, with a synthetic server.
 // No real account, original photo, or Supabase project is touched.
-const assert=require('node:assert/strict');
+const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
 const {webcrypto}=require('node:crypto');
 const {IDBFactory}=require('fake-indexeddb');
 const D=require('../sentlog/delta-sync-core.js');
@@ -96,5 +96,36 @@ async function test(label,fn){await fn();console.log('PASS '+label);}
      assert.equal(f.calls.recover,0);assert.equal(f.calls.writes,0);assert.equal(f.calls.upload,1);
    }finally{f.close();}
  });
- console.log('4 original/shared preservation and delivery scenarios passed');
+ await test('real recovery helper accepts only the capturing account, project, record and historical SHA',async()=>{
+   const source=fs.readFileSync('sentlog/delta-sync-cloud-runtime.txt','utf8');
+   const start=source.indexOf('async function sentlogDeltaRecoverSharedOriginal(');
+   const end=source.indexOf('const sentlogDeltaApp=',start);
+   assert(start>=0&&end>start,'production helper is present');
+   const cp={id:scope.projectId,client_key:'local-photo-project',status:'active'};
+   const original={projectId:cp.client_key,drawingId:'drawing',photoId:'photo',
+     recordId:'record',ownerId:scope.ownerId};
+   const meta={projectId:cp.client_key,drawingId:'drawing',photoId:'photo',
+     size:bytes.size,type:bytes.type,originalRevision:'preserved-original-revision',
+     photoAssociation:{version:1,photoId:'photo',status:'attached',target:original}};
+   const item={drawingId:'drawing',photoId:'photo',recordId:'record',mimeType:bytes.type,
+     size:bytes.size,sha256:await sha(bytes)};
+   let originals=0,reencodes=0,validations=0;
+   const api={getOriginalMeta:async()=>meta,getOriginal:async()=>{originals++;return bytes;},
+      makeSharedPhoto:async()=>{reencodes++;return bytes;}};
+   const context={window:{SentlogOriginalPhotos:api},navigator:{onLine:true},
+     session:{user:{id:scope.ownerId}},Blob,sha256Hex:sha,Error,Number};
+   vm.createContext(context);
+   vm.runInContext(source.slice(start,end)+'\nthis.recover=sentlogDeltaRecoverSharedOriginal;',context);
+   const params={scope,validate:()=>{validations++;}};
+   assert.equal(await context.recover(cp,item,params),bytes);
+   assert.equal(originals,1);assert.equal(reencodes,1);assert(validations>=4);
+   assert.equal(await context.recover({...cp,client_key:'other-project'},item,params),undefined);
+   assert.equal(await context.recover(cp,{...item,recordId:'another-shape'},params),undefined);
+   assert.equal(await context.recover(cp,item,{scope:{...scope,ownerId:'other'},validate:()=>{}}),undefined);
+   assert.equal(originals,1,'never read unrelated originals');
+   api.makeSharedPhoto=async()=>new Blob(['different-shared-content'],{type:'image/jpeg'});
+   await assert.rejects(context.recover(cp,item,params),e=>e.code==='ASSET_ORIGINAL_REENCODE_MISMATCH');
+   assert.equal(originals,2,'recovery still cannot alter the original bytes');
+ });
+ console.log('5 original/shared preservation and delivery scenarios passed');
 })().catch(err=>{console.error(err);process.exitCode=1;});
