@@ -332,15 +332,26 @@
       recordLabel:record.autoLabel||record.type||'記録',photoNames:(record.photos||[]).map(p=>p.name).filter(Boolean),actor:actor()};
   }
   function status(message){const el=document.getElementById('photoStatus');if(el)el.textContent=message;}
+  // Await durable record mutations, not unrelated cloud PDF/photo file
+  // transfers. The shared record DB still serializes journal transactions.
+  // Fallback protects older writers until both APIs are present.
+  async function settleRecordWrites(){
+    const store=root.SentlogRecords;
+    const scoped=typeof store.flush==='function'&&typeof store.recordPending==='boolean';
+    if(scoped)await store.flush();else await store.settled();
+    store.assertSafe();
+    return scoped;
+  }
   async function readyForWrite(){
-    const store=root.SentlogRecords;await store.settled();store.assertSafe();
-    if(!store.pending)return;
-    // archiveAtomic has a short exclusive interval not included in settled().
-    // Resume on a later task so its owner can update the visible record first.
+    const store=root.SentlogRecords,scoped=await settleRecordWrites();
+    const busy=()=>scoped?store.recordPending:store.pending;
+    if(!busy())return;
+    // Archive/restore and active record batches still prevent attachment.
+    // A PDF/photo transfer alone is not a record/restore exclusive lock.
     await new Promise((resolve,reject)=>{
       let unsubscribe=()=>{};
       const timeout=setTimeout(()=>{unsubscribe();reject(error('SAVE_BUSY','別の保存処理が続いています。写真は保存待ちに残しています。'));},5000);
-      const check=()=>{if(!store.pending){clearTimeout(timeout);unsubscribe();setTimeout(resolve,0);}};
+      const check=()=>{if(!busy()){clearTimeout(timeout);unsubscribe();setTimeout(resolve,0);}};
       unsubscribe=store.subscribe(check);check();
     });
     store.assertSafe();
@@ -382,7 +393,7 @@
          Number(state.currentPage||1)===Number(patch.record.page||1))
         root.SentlogCollaboration?.recordHistory?.(latest.drawing,patch.drawing);
     }finally{committing--;}
-    await root.SentlogRecords.settled();root.SentlogRecords.assertSafe();
+    await settleRecordWrites();
   }
   const service=createService({originals,
     shared:{get:(id,did)=>getPhotoBlob(id,did),put:(id,blob,did)=>savePhotoBlob(id,blob,did),make:file=>originals.makeSharedPhoto(file),
