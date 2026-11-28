@@ -36,6 +36,17 @@ if ("offlineDamageDecisionsVersion:3" not in editor
     raise RuntimeError("Verified local deletion/name edit implementation is absent")
 if "sentlog-pwa-v262" not in source("sentlog/sw.js"):
     raise RuntimeError("v2.20 source build is required")
+# Require the exact optional shared-file reconstruction and owner-fenced
+# original read. These are already assembled into cloud-sync by build_delta_sync.
+for path, marker in (
+    ("sentlog/original-photo-store.js", "async function getOriginalMeta("),
+    ("sentlog/delta-sync-asset-runtime.js", "ASSET_ORIGINAL_RECOVERY_BATCH"),
+    ("sentlog/delta-sync-app-runtime.js", "recoverShared:recoverShared?"),
+    ("sentlog/cloud-sync.js", "async function sentlogDeltaRecoverSharedOriginal("),
+):
+    if marker not in source(path):
+        raise RuntimeError("Missing reviewed original-photo recovery: " + path)
+
 
 index = "sentlog/index.html"
 editor_tokens = re.findall(r'collaboration-editor\.js\?v=([A-Za-z0-9._-]+)', source(index))
@@ -46,6 +57,18 @@ change(index, "collaboration-editor.js?v=" + old_edit_token,
        "collaboration-editor.js?v=" + NEW_EDIT, 2)
 change(index, "['collaboration-editor.js?v=" + NEW_EDIT + "','requestPhotoRemoval']",
        "['collaboration-editor.js?v=" + NEW_EDIT + "','offlineDamageDecisionsVersion']", 1)
+# Change cache URLs for every modified runtime, not just the editor. Otherwise
+# Safari may run a new shell against stale photo workers after app resume.
+RECOVERY_TOKEN = "20261128-safe-original-recovery-221"
+recovery_modules = ("original-photo-store", "delta-sync-asset-runtime", "delta-sync-app-runtime", "cloud-sync")
+old_versions = {}
+for module in recovery_modules:
+    found = re.findall(re.escape(module)+r'\.js\?v=([A-Za-z0-9._-]+)',source(index))
+    if len(found)!=2 or len(set(found))!=1 or found[0]==RECOVERY_TOKEN:
+        raise RuntimeError("Recovery module URL references changed: "+module+": "+str(found))
+    old_versions[module]=found[0]
+    change(index,module+".js?v="+found[0],module+".js?v="+RECOVERY_TOKEN,2)
+
 change(index, "phone-runtime.js?v=220", "phone-runtime.js?v=221", 2)
 change(index, "['phone-runtime.js?v=221','v2.20']",
        "['phone-runtime.js?v=221','v2.21']", 1)
@@ -63,7 +86,9 @@ for path in (ROOT / "tests").iterdir():
     before = source(name)
     after = before
     for old, new in (
+        *[(module+".js?v="+old_versions[module],module+".js?v="+RECOVERY_TOKEN) for module in recovery_modules],
         ("collaboration-editor.js?v=" + old_edit_token, "collaboration-editor.js?v=" + NEW_EDIT),
+        *[(module+r"\.js\?v="+old_versions[module],module+r"\.js\?v="+RECOVERY_TOKEN) for module in recovery_modules],
         (r"collaboration-editor\.js\?v=" + old_edit_token, r"collaboration-editor\.js\?v=" + NEW_EDIT),
         ("phone-runtime.js?v=220", "phone-runtime.js?v=221"),
         (r"phone-runtime\.js\?v=220", r"phone-runtime\.js\?v=221"),
@@ -77,6 +102,6 @@ for path in (ROOT / "tests").iterdir():
 
 for path, content in pending.items():
     (ROOT / path).write_text(content, encoding="utf-8")
-for module in ("collaboration-editor", "phone-runtime"):
+for module in ("collaboration-editor", "phone-runtime", *recovery_modules):
     subprocess.run(["node", "--check", "sentlog/" + module + ".js"], cwd=ROOT, check=True)
 print("Built v2.21: ordinary offline damage edits, immutable revisions and fresh iPhone cache")
