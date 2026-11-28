@@ -136,10 +136,11 @@ change('sentlog/record-store.js',"committedBindings(tx);revision++;memory=new Ma
 part='sentlog/part07.txt'
 change(part,"  activeProjectId=projectId;activeDrawingId=drawingId;const p=getProject(projectId),d=getDrawingMeta(projectId,drawingId);if(!p||!d)return;",
        "  const p=getProject(projectId),d=getDrawingMeta(projectId,drawingId);if(!p||!d)return;\n"
-       "  if(window.SentlogRecords.lazyStartup){try{await window.SentlogRecords.ensureDrawingLoaded(drawingId);}\n"
-       "    catch(error){console.warn('Protected drawing load',error);alert('端末内の図面記録を読み込めません。上書きせず停止しました。');return;}\n"
-       "    if(opening!==drawingOpenSequence)return;}\n"
-       "  activeProjectId=projectId;activeDrawingId=drawingId;window.SentlogRecords.pinDrawing?.(drawingId);")
+       "  if(window.SentlogRecords.lazyStartup){window.SentlogRecords.pinDrawing?.(drawingId);\n"
+       "    try{await window.SentlogRecords.ensureDrawingLoaded(drawingId);}\n"
+       "    catch(error){window.SentlogRecords.unpinDrawing?.(drawingId);console.warn('Protected drawing load',error);alert('端末内の図面記録を読み込めません。上書きせず停止しました。');return;}\n"
+       "    if(opening!==drawingOpenSequence){window.SentlogRecords.unpinDrawing?.(drawingId);return;}}\n"
+       "  activeProjectId=projectId;activeDrawingId=drawingId;")
 change(part,"  try{const saved=JSON.parse(window.SentlogRecords.getItem(drawingStorageKey(drawingId))||'null');state={...freshDrawingState(p.name),...(saved||{})}}catch{state=freshDrawingState(p.name)}",
        "  try{const saved=JSON.parse(window.SentlogRecords.getItem(drawingStorageKey(drawingId))||'null');state={...freshDrawingState(p.name),...(saved||{})}}\n"
        "  catch(error){if(window.SentlogRecords.lazyStartup){window.SentlogRecords.unpinDrawing?.(drawingId);alert('図面の記録を確認できません。保存内容を保持して開くのを停止しました。');return;}state=freshDrawingState(p.name)}")
@@ -158,7 +159,7 @@ cloud='sentlog/cloud-sync.js'
 change(cloud,"    try{\n      if(lp&&", "    try{\n      if(lp&&window.SentlogRecords.lazyStartup){await window.SentlogRecords.ensureProjectLoaded(id);context.assertCurrent();}\n      if(lp&&")
 change(cloud,"      try{\n        context.assertCurrent();const cycleAssets=new Map();files+=await pullProjectAssets(cp,metadata.deviceId,cycleAssets);",
        "      try{\n        if(window.SentlogRecords.lazyStartup){await window.SentlogRecords.ensureProjectLoaded(id);context.assertCurrent();}\n        context.assertCurrent();const cycleAssets=new Map();files+=await pullProjectAssets(cp,metadata.deviceId,cycleAssets);")
-for name in ['record-store','delta-sync-app-runtime','delta-sync-app-journal','cloud-sync']:
+for name in ['record-store','delta-sync-app-runtime','delta-sync-app-journal','cloud-sync','startup-storage-maintenance']:
     path='sentlog/'+name+'.js';pending[path]='// '+MARKER+'\n'+source(path)
 
 index='sentlog/index.html'
