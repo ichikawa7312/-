@@ -1,4 +1,4 @@
-"""Release validated explicit local damage decisions after the entire v2.20 build.
+"""Release validated offline-first local damage decisions after the entire v2.20 build.
 
 No schema, photo, PDF, cloud sync, or file deletion logic changes. Bump the
 loaded editor identity and PWA cache as one safe package so an installed iPhone
@@ -29,7 +29,7 @@ def change(path, old, new, count=1):
 
 editor = source("sentlog/collaboration-editor.js")
 if ("offlineDamageDecisionsVersion:2" not in editor
-        or "async function confirmDecision({localOnly=false}={})" not in editor
+        or "async function confirmDecision({localOnly=!navigator.onLine}={})" not in editor
         or "function localDecisionApplied(d,target)" not in editor
         or "deferRender:localOnly" not in editor
         or "localRevisionId" not in editor):
@@ -79,4 +79,4 @@ for path, content in pending.items():
     (ROOT / path).write_text(content, encoding="utf-8")
 for module in ("collaboration-editor", "phone-runtime"):
     subprocess.run(["node", "--check", "sentlog/" + module + ".js"], cwd=ROOT, check=True)
-print("Built v2.21: explicit local offline damage intents, immutable revisions, fresh iPhone cache")
+print("Built v2.21: ordinary offline damage edits, immutable revisions and fresh iPhone cache")
