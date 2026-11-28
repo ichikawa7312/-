@@ -273,7 +273,9 @@ await test('failed deletion persist retains the record selection and every pendi
   const pending=()=>[...f.storage].filter(([key])=>key.startsWith('sentlogCollaborativeDecisionsV1:')).flatMap(([,value])=>JSON.parse(value));
   const before=copy(pending());f.failNextWrite();await f.click('削除する',f.document.querySelector('.sl-collab-dialog'));
   assert.equal(f.ctx.selected,'s1');assert.equal(f.ctx.state.shapes.length,1);assert.equal(f.ctx.state.collabDeletedRecords.length,0);
-  assert.deepEqual(pending(),before);assert.equal(f.document.querySelector('.sl-collab-dialog').hidden,false);
+  const afterFailed=pending();assert.deepEqual(afterFailed.map(({localRevisionId,...item})=>item),before);
+  assert.equal(typeof afterFailed[0].localRevisionId,'string','the attempted deletion keeps one stable retry identity');
+  assert.equal(f.document.querySelector('.sl-collab-dialog').hidden,false);
   assert(f.document.querySelector('[data-status]').textContent.includes('保存失敗'));
   await f.click('削除する',f.document.querySelector('.sl-collab-dialog'));
   assert.equal(f.ctx.state.shapes.length,0);assert.deepEqual(pending().map(d=>d.kind),['field']);
