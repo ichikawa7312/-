@@ -17,10 +17,10 @@ assert.equal(copies(index,'record-store.js?v='+token),2);
 assert.equal(copies(index,'collaboration-photos.js?v='+token),2);
 assert.equal(copies(index,'phone-runtime.js?v=220'),2);
 assert(index.includes("['record-store.js?v="+token+"','sentlog-iphone-cutoff-memory-v219']"));
-assert(index.includes("['collaboration-photos.js?v="+token+"','SentlogCollaborationPhotos']"));
+assert(index.includes("['collaboration-photos.js?v="+token+"','prepareCapture']"));
 assert(index.includes("['phone-runtime.js?v=220','v2.20']"));
 assert.equal(copies(index,'record-store.js?v=20261128-iphone-cutoff-memory-219'),0);
-assert.equal(copies(index,'collaboration-photos.js?v=20261118-collaboration-photos'),0);
+assert.equal(copies(index,'collaboration-photos.js?v=20261121-camera-landscape'),0);
 assert(writer.startsWith('// sentlog-iphone-cutoff-memory-v219\n'));
 assert(writer.includes('get recordPending(){return pending.size+inFlight>0||operation||exclusive;}'));
 assert(writer.includes('get pending(){return pending.size+inFlight>0||fileTasks.size>0||operation;}'),
