@@ -317,6 +317,13 @@ def download_report(page, folder, trace):
     check(report["format"] == "sentlog-startup-storage-diagnostics" and report["version"] == 1 and report["readOnly"] is True,
           "Unexpected diagnostic report format")
     check({row["kind"] for row in report["indexedDB"]["databases"]} == KINDS, "Diagnostic omitted a database category")
+    check(report.get("launchContext") == {"status": "complete", "mode": "browser"},
+          "A Safari-like browser page must not be mistaken for the installed Home Screen app")
+    check("診断画面の起動元" in rendered and "Safari等のブラウザ" in rendered,
+          "Diagnostic UI did not display its actual storage context")
+    if report["indexedDB"]["status"] == "complete" and report["indexedDB"]["listedSentlogDatabaseCount"] == 0:
+        check("保存データの消失とは断定できません" in rendered,
+              "An empty Safari partition was falsely presented as confirmed data loss")
     return report
 
 
