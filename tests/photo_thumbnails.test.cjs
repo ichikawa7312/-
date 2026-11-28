@@ -15,10 +15,10 @@ function fixture({observer=true}={}){
   const reads=[],draws=[],urls=new Map(),urlHistory=new Map(),originals=new Map(),dimensions=new WeakMap();
   const readGates=new Map(),decodeGates=new Map(),encodeGates=new Map(),failDecode=new Set();
   const listeners=new Map(),docListeners=new Map(),observers=[],calls=[],decoders=[];
-  let nextUrl=0,activeSources=0,maxSources=0,writes=0;
+  let nextUrl=0,activeSources=0,maxSources=0,writes=0,cameraVisible=false;
   const rect=(left,top,width,height)=>({left,top,width,height,right:left+width,bottom:top+height});
   class Element{
-    constructor(tag){this.tagName=tag.toUpperCase();this.nodeType=1;this.parentElement=null;this.children=[];this._className='';this._text='';this.attributes={};this.computed={};this.scrollTop=0;}
+    constructor(tag){this.tagName=tag.toUpperCase();this.nodeType=1;this.parentElement=null;this.children=[];this._className='';this._text='';this.attributes={};this.computed={};this.style={};this.scrollTop=0;}
     get className(){return this._className;}
     set className(value){this._className=value;}
     get classList(){const self=this;return {add(...names){self._className=[...new Set([...self._className.split(/\s+/).filter(Boolean),...names])].join(' ');},remove(...names){self._className=self._className.split(/\s+/).filter(x=>!names.includes(x)).join(' ');},contains(name){return self._className.split(/\s+/).includes(name);}};}
@@ -49,13 +49,14 @@ function fixture({observer=true}={}){
       const blob=urls.get(value),info=dimensions.get(blob);
       assert(info,'Only fixture originals or generated previews may be decoded');
       this.info=info;this.complete=false;
-      if(!info.preview){this.sourceActive=true;activeSources++;maxSources=Math.max(maxSources,activeSources);}
+      const originalDecoder=!info.preview&&!this.isConnected;
+      if(originalDecoder){this.sourceActive=true;activeSources++;maxSources=Math.max(maxSources,activeSources);}
       const complete=()=>{
         if(this._src!==value)return;
-        if(failDecode.has(info.key)&&!info.preview){this.onerror?.(new Error('fixture decode error'));return;}
+        if(failDecode.has(info.key)&&originalDecoder){this.onerror?.(new Error('fixture decode error'));return;}
         this.naturalWidth=info.width;this.naturalHeight=info.height;this.complete=true;this.onload?.();
       };
-      if(!info.preview&&decodeGates.has(info.key))decodeGates.get(info.key).promise.then(complete);
+      if(originalDecoder&&decodeGates.has(info.key))decodeGates.get(info.key).promise.then(complete);
       else queueMicrotask(complete);
     }
     removeAttribute(name){
@@ -91,6 +92,7 @@ function fixture({observer=true}={}){
     addEventListener:(name,fn)=>add(docListeners,name,fn)};
   const context={document,Image:FakeImage,Blob,console,Promise,Symbol,WeakMap,setTimeout,clearTimeout,
     innerWidth:600,innerHeight:500,SentlogPhotoDisplayOrder:order,
+    SentlogContinuousCamera:{isOpen:()=>cameraVisible},
     addEventListener:(name,fn)=>add(listeners,name,fn),
     requestAnimationFrame:fn=>setTimeout(fn,0),cancelAnimationFrame:clearTimeout,
     getComputedStyle:node=>({display:'block',visibility:'visible',overflowX:'visible',overflowY:'visible',...node.computed}),
@@ -138,10 +140,11 @@ function fixture({observer=true}={}){
     }
     return photos;
   }
-  function emit(map,name){for(const fn of map.get(name)||[])fn({type:name});}
+  function emit(map,name,detail){for(const fn of map.get(name)||[])fn({type:name,detail});}
   return {context,document,grid,inspector,elements,reads,draws,urls,urlHistory,originals,dimensions,readGates,decodeGates,encodeGates,failDecode,observers,calls,decoders,
     select,addPhotos,run:code=>vm.runInContext(code,context),render:()=>context.renderSelectedPhotos(),api:context.SentlogPhotoThumbnails,
     docEvent:name=>emit(docListeners,name),event:name=>emit(listeners,name),reinstall:()=>vm.runInContext(source,context),
+    camera(open,notify=true){cameraVisible=open;if(notify)emit(listeners,'sentlog-camera-visibility',{open});},
     stats:()=>({activeSources,maxSources,writes,listeners:[...listeners.values(),...docListeners.values()].reduce((n,list)=>n+list.length,0)}),
     async flush(){for(let n=0;n<5;n++)await tick();},
     async hashes(){return Promise.all([...originals].map(async([key,blob])=>[key,crypto.createHash('sha256').update(Buffer.from(await blob.arrayBuffer())).digest('hex')]));}
@@ -167,6 +170,8 @@ test('190 records keep every ordered placeholder but read only six visible photo
   assert.equal(f.api.status().maxDecoding,1);assert.equal(f.api.status().ready,6);assert.equal(f.urls.size,6);
   assert(f.draws.every(d=>d.width===384&&d.height===288&&d.activeSources===1));
   assert.equal(f.grid.children.filter(item=>item.children[0].src).length,6);
+  assert(f.grid.children.slice(0,6).every(item=>item.children[0].style.visibility==='visible'));
+  assert(f.grid.children.slice(6).every(item=>item.children[0].style.visibility==='hidden'&&item.children[0].alt===item.title));
   assert.equal(JSON.stringify(photos),metadata);assert.deepEqual(await f.hashes(),bytes);assert.equal(f.stats().writes,0);
   assert.deepEqual(plain(f.observers[0].options),{root:null,rootMargin:'0px',threshold:0});
   f.api.release();assert.equal(f.urls.size,0);
@@ -178,6 +183,7 @@ test('scrolling releases offscreen previews and reuses the full list for the nex
   assert.deepEqual(f.reads.slice(6).map(x=>x.id),['p6','p7','p8','p9','p10','p11']);
   assert(firstUrls.every(url=>!f.urls.has(url)));assert.equal(f.urls.size,6);
   assert(f.grid.children.slice(0,6).every(item=>!item.children[0].src));
+  assert(f.grid.children.slice(0,6).every(item=>item.children[0].style.visibility==='hidden'));
   f.inspector.scrollTop=360;f.observers[0].emit();await f.flush();
   assert.deepEqual(f.reads.slice(12).map(x=>x.id),['p12','p13']);assert.equal(f.urls.size,2);
   f.inspector.scrollTop=0;f.observers[0].emit();await f.flush();
@@ -189,6 +195,7 @@ test('await render waits for initial visible decode but does not wait for an off
   const f=fixture(),photos=f.addPhotos(9),gate=deferred();f.decodeGates.set('drawing:p0',gate);f.readGates.set('drawing:p8',deferred());
   f.select(photos);let completed=false;const pending=f.render().then(()=>{completed=true;});await f.flush();
   assert.equal(completed,false);assert.equal(f.reads.length,1);assert.equal(f.stats().activeSources,1);
+  assert(f.grid.children.every(item=>item.children[0].style.visibility==='hidden'),'pending images must not show missing-source icons');
   gate.resolve();await pending;assert.equal(completed,true);assert.equal(f.reads.length,6);assert.equal(f.api.status().ready,6);f.api.release();
 });
 
@@ -241,15 +248,43 @@ test('collapsed inspector is not decoded; transition refresh and non-Intersectio
   assert.deepEqual(f.reads.slice(6).map(x=>x.id),['p6','p7','p8','p9','p10','p11']);assert.equal(f.urls.size,6);f.api.release();
 });
 
-test('viewer/delete controls retain metadata identity and small originals are not enlarged',async()=>{
+test('viewer/delete controls retain metadata identity and small originals need no canvas encode or byte rewrite',async()=>{
   const f=fixture(),photos=f.addPhotos(1,{width:160,height:90});freeze(photos);f.select(photos);await f.render();
   const item=f.grid.children[0];item.onclick();let stopped=false;item.children[1].onclick({stopPropagation(){stopped=true;}});
   assert.equal(stopped,true);assert.deepEqual(plain(f.calls),[['viewer','p0','p0.jpg'],['delete','p0']]);
-  assert.deepEqual(f.draws,[{key:'drawing:p0',width:160,height:90,activeSources:1}]);assert.equal(f.stats().writes,0);f.api.release();
+  assert.deepEqual(f.draws,[]);assert.equal(f.urls.get(item.children[0].src),f.originals.get('drawing:p0'));
+  assert.equal(item.children[0].naturalWidth,160);assert.equal(item.children[0].naturalHeight,90);
+  assert.equal(f.stats().activeSources,0);assert.equal(f.stats().writes,0);f.api.release();
+});
+
+test('opaque camera cancels pending previews, prevents background encodes and resumes once after completion',async()=>{
+  const f=fixture(),photos=f.addPhotos(12),gate=deferred();freeze(photos);const before=JSON.stringify(photos);
+  f.readGates.set('drawing:p0',gate);f.select(photos);const initial=f.render();await f.flush();
+  assert.equal(f.reads.length,1);f.camera(true);await initial;
+  gate.resolve(f.originals.get('drawing:p0'));await f.flush();
+  assert.equal(f.api.status().active,false);assert.equal(f.urls.size,0);assert.equal(f.draws.length,0);
+  f.docEvent('visibilitychange');f.event('resize');f.docEvent('transitionend');await f.render();await f.flush();
+  assert.equal(f.reads.length,1,'no hidden editor work may run behind the camera');assert.equal(f.draws.length,0);
+  f.camera(false);await f.render(); // The camera's existing deferred editor refresh.
+  await new Promise(resolve=>setTimeout(resolve,5));await f.flush();
+  assert.equal(f.reads.length,7,'the close event must not duplicate the ordinary completion render');
+  assert.equal(f.api.status().ready,6);assert.equal(f.draws.length,6);assert.equal(f.urls.size,6);
+  f.camera(true);assert.equal(f.urls.size,0);assert.equal(f.stats().activeSources,0);
+  f.camera(false);f.run('showProjects()');await new Promise(resolve=>setTimeout(resolve,5));await f.flush();
+  assert.equal(f.reads.length,7,'navigation cancels the camera-close fallback frame');
+  assert.equal(JSON.stringify(photos),before);assert.equal(f.stats().writes,0);
+});
+
+test('a camera already open at render is detected without relying on its opening event',async()=>{
+  const f=fixture();f.select(f.addPhotos(8));f.camera(true,false);await f.render();await f.flush();
+  assert.equal(f.reads.length,0);assert.equal(f.draws.length,0);assert.equal(f.urls.size,0);
+  f.camera(false);await new Promise(resolve=>setTimeout(resolve,5));await f.flush();
+  assert.equal(f.api.status().ready,6);assert.equal(f.reads.length,6);f.api.release();
 });
 
 test('failed decode releases the original without falling back to a full-sized DOM image or retry loop',async()=>{
   const f=fixture(),photos=f.addPhotos(1);f.failDecode.add('drawing:p0');f.select(photos);await f.render();
   assert.equal(f.grid.children[0].children[0].alt,'読込エラー');assert.equal(f.grid.children[0].children[0].src,'');
+  assert.equal(f.grid.children[0].children[0].style.visibility,'visible');
   assert.equal(f.urls.size,0);assert.equal(f.stats().activeSources,0);f.api.refresh();await f.flush();assert.equal(f.reads.length,1);f.api.release();
 });

@@ -61,10 +61,14 @@ OBSERVE = r"""(() => {
 
 SEED = r"""async ({packs,encoded,owner,device})=>{
   const R=SentlogRecords,C=SentlogRecordCollaboration,h=__operationHelpers;
+  // Large existing records belong in the application's native store. Staging
+  // all upgraded histories in localStorage would test its separate quota.
+  await R.init();const writes=[];
   for(const pack of packs){pack.project.collaborationVersion=1;for(const drawing of pack.drawings){
     drawing.state.shapes=drawing.state.shapes.map(record=>C.upgrade(record));
-    localStorage.setItem('surveyFieldNoteDrawingV1:'+drawing.meta.id,JSON.stringify(drawing.state));}}
-  localStorage.setItem('surveyFieldNoteWorkspaceV1',JSON.stringify({projects:packs.map(p=>p.project)}));await R.init();
+    writes.push(['surveyFieldNoteDrawingV1:'+drawing.meta.id,JSON.stringify(drawing.state)]);}}
+  writes.unshift(['surveyFieldNoteWorkspaceV1',JSON.stringify({projects:packs.map(p=>p.project)})]);
+  R.batch(writes);await R.settled();
   const image=new File(['<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="800"><rect width="1200" height="800" fill="white"/></svg>'],
     'fixture.svg',{type:'image/svg+xml',lastModified:1});
   const photo=new File([Uint8Array.from(atob(encoded),c=>c.charCodeAt(0))],'synthetic.png',{type:'image/png',lastModified:1});
@@ -268,7 +272,9 @@ def main():
                 assert page.evaluate("window.SENTLOG_LOCAL_WORK!==true && window.sentlogImporting!==true"), "The normal startup was suppressed"
                 page.evaluate("__normalResidency.bind()")
             def tap(selector, label):
-                node=page.locator(selector); node.wait_for(state="visible"); node.scroll_into_view_if_needed(); node.tap(); report["actions"].append(label)
+                # The locator's native action resolves its target again if the
+                # normal sync renderer replaces it before input is dispatched.
+                page.locator(selector).tap(); report["actions"].append(label)
             def open_record():
                 tap('#projectsGrid .manager-card:has-text("合成案件 0") button.sl-archive-main', "project")
                 page.locator("#drawingsView").wait_for(state="visible")
@@ -340,7 +346,7 @@ def main():
                 report["editSavedWhileAutomaticAppendPending"]=True
                 cloud.release()
                 page.locator("#photoGrid .photo-thumb").first.scroll_into_view_if_needed()
-                wait(lambda: page.evaluate("!!window.SentlogPhotoThumbnails && SentlogPhotoThumbnails.status().ready>0"),"Visible photos did not produce thumbnails")
+                wait(lambda: page.evaluate("(()=>{const s=window.SentlogPhotoThumbnails?.status();return !!s&&s.visible>0&&s.ready===s.visible&&s.queued===0&&s.decoding===0;})()"),"The initially visible photos did not all finish decoding")
                 photo_status=page.evaluate("SentlogPhotoThumbnails.status()")
                 assert photo_status["maxDecoding"] <= 1 and photo_status["urls"] <= photo_status["visible"], photo_status
                 assert page.locator("#photoGrid img").count()==14, "Lazy previews removed photo entries"

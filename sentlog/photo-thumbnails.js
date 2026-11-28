@@ -3,13 +3,14 @@
   'use strict';
   if(root.SentlogPhotoThumbnails)return;
   const VERSION='20261128-visible-thumbnails-1',MAX_EDGE=384,CANCEL=Symbol('thumbnail-cancelled');
-  let active=null,queue=[],running=null,pumping=false,frame=0,decoded=0,maxDecoded=0;
+  let active=null,queue=[],running=null,pumping=false,frame=0,resumeFrame=0,decoded=0,maxDecoded=0;
   const el=id=>document.getElementById(id);
   const deferred=()=>{let resolve;const promise=new Promise(r=>{resolve=r;});return {promise,resolve};};
   const editor=()=>typeof currentView!=='undefined'&&currentView==='editor';
   const hidden=()=>document.hidden===true||document.visibilityState==='hidden';
+  const cameraOpen=()=>root.SentlogContinuousCamera?.isOpen?.()===true||el('sentlogContinuousCamera')?.hidden===false;
   function current(context){
-    return active===context&&!context.cancelled&&!hidden()&&editor()&&
+    return active===context&&!context.cancelled&&!hidden()&&!cameraOpen()&&editor()&&
       typeof activeDrawingId!=='undefined'&&activeDrawingId===context.drawingId&&
       typeof selected!=='undefined'&&selected===context.recordId&&
       typeof photoRenderSeq!=='undefined'&&photoRenderSeq===context.sequence&&
@@ -26,7 +27,7 @@
   }
   function releaseSlot(slot){
     slot.epoch++;slot.visible=false;slot.status='idle';
-    slot.img.onload=null;slot.img.onerror=null;slot.img.removeAttribute('src');
+    slot.img.onload=null;slot.img.onerror=null;slot.img.style.visibility='hidden';slot.img.removeAttribute('src');
     forgetUrl(slot.url);slot.url=null;settle(slot);
     if(running&&running.slot===slot)running.cancel();
   }
@@ -35,6 +36,7 @@
     if(typeof photoRenderSeq!=='undefined')photoRenderSeq++;
     const previous=active;active=null;queue=[];
     if(frame){root.cancelAnimationFrame(frame);frame=0;}
+    if(resumeFrame){root.cancelAnimationFrame(resumeFrame);resumeFrame=0;}
     if(previous){
       previous.cancelled=true;previous.cancel.resolve();
       if(previous.observer)previous.observer.disconnect();
@@ -116,6 +118,9 @@
       }));
       const width=image.naturalWidth||image.width,height=image.naturalHeight||image.height;
       if(!(width>0&&height>0))throw new Error('Photo preview dimensions are unavailable');
+      // Already-small files need no canvas encoding. They obey the same pixel
+      // bound and remain read-only; the decoder is still disposed in finally.
+      if(width<=MAX_EDGE&&height<=MAX_EDGE)return blob;
       const ratio=Math.min(1,MAX_EDGE/Math.max(width,height));
       canvas=document.createElement('canvas');canvas.width=Math.max(1,Math.round(width*ratio));
       canvas.height=Math.max(1,Math.round(height*ratio));
@@ -136,7 +141,7 @@
     const slot=job.slot;
     try{
       const blob=await stage(job,getPhotoBlob(slot.meta.id,job.context.drawingId));
-      if(!blob){slot.img.alt='写真データなし';slot.status='error';return;}
+      if(!blob){slot.img.alt='写真データなし';slot.img.style.visibility='visible';slot.status='error';return;}
       const preview=await thumbnail(job,blob);if(!valid(job))throw CANCEL;
       const url=URL.createObjectURL(preview);slot.url=url;
       if(typeof photoThumbUrls!=='undefined')photoThumbUrls.push(url);
@@ -144,11 +149,11 @@
         slot.img.onload=resolve;slot.img.onerror=()=>reject(new Error('Photo preview display failed'));
         slot.img.src=url;
       }));
-      slot.img.alt=slot.meta.name||'変状写真';slot.status='ready';
+      slot.img.alt=slot.meta.name||'変状写真';slot.img.style.visibility='visible';slot.status='ready';
     }catch(error){
       if(error!==CANCEL&&valid(job)){
         slot.img.removeAttribute('src');forgetUrl(slot.url);slot.url=null;
-        slot.img.alt='読込エラー';slot.status='error';
+        slot.img.alt='読込エラー';slot.img.style.visibility='visible';slot.status='error';
       }
     }finally{
       // A newer visibility cycle owns its own handlers and completion promise.
@@ -179,13 +184,13 @@
       return;
     }
     if(empty)empty.classList.add('hidden');
-    if(!editor()||hidden()||typeof activeDrawingId==='undefined'||!activeDrawingId)return;
+    if(!editor()||hidden()||cameraOpen()||typeof activeDrawingId==='undefined'||!activeDrawingId)return;
     const context={grid,drawingId:activeDrawingId,recordId:shape.id,sequence:photoRenderSeq,
       cancelled:false,cancel:deferred(),slots:[],observer:null};active=context;
     const byElement=new WeakMap();
     for(const meta of photos){
       const item=document.createElement('div');item.className='photo-thumb';item.title=meta.name||'変状写真';
-      const img=document.createElement('img');img.alt=meta.name||'変状写真';img.decoding='async';
+      const img=document.createElement('img');img.alt=meta.name||'変状写真';img.decoding='async';img.style.visibility='hidden';
       const del=document.createElement('button');del.type='button';del.className='photo-del';del.textContent='×';del.title='この写真を外す';
       del.onclick=event=>{event.stopPropagation();if(current(context))removeSelectedPhoto(meta.id);};
       item.onclick=()=>{if(current(context))openPhotoViewer(meta.id,meta.name);};
@@ -218,6 +223,16 @@
   document.addEventListener('visibilitychange',()=>{if(hidden())release();else render();});
   root.addEventListener('pagehide',release);
   root.addEventListener('pageshow',()=>{if(!hidden()&&editor())render();});
+  root.addEventListener('sentlog-camera-visibility',event=>{
+    if(event.detail?.open!==false){release();return;}
+    // Camera completion invokes its deferred editor refresh synchronously.
+    // Let that render cancel this single fallback frame, avoiding a second
+    // decode pass. A camera closed without new photos still restores previews.
+    if(resumeFrame)return;
+    resumeFrame=root.requestAnimationFrame(()=>{
+      resumeFrame=0;if(!hidden()&&!cameraOpen()&&editor())render();
+    });
+  });
   root.addEventListener('resize',scheduleRefresh);
   document.addEventListener('scroll',()=>{if(active&&!active.observer)scheduleRefresh();},true);
   // Drawer transforms/visibility can change without an intersection threshold crossing.

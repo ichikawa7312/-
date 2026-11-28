@@ -3,7 +3,7 @@
 // The current production writer must migrate them without re-putting a Blob
 // inside a mutable binding, and its ordinary replay/GC APIs remain unchanged.
 const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
-const {webcrypto}=require('node:crypto'),{IDBFactory,IDBKeyRange,IDBObjectStore}=require('fake-indexeddb');
+const {webcrypto}=require('node:crypto'),{IDBFactory,IDBKeyRange,IDBObjectStore,IDBIndex}=require('fake-indexeddb');
 if(!globalThis.crypto?.subtle)Object.defineProperty(globalThis,'crypto',{value:webcrypto});
 const C=require('../sentlog/record-collaboration.js'),D=require('../sentlog/delta-sync-core.js');
 const B=require('../sentlog/delta-sync-app-bridge.js'),J=require('../sentlog/delta-sync-app-journal.js');
@@ -88,22 +88,42 @@ function observeMaterialization(app){
  return {calls,close(){app.context.Blob=original;}};
 }
 function observeBindingReads(app,{forbidHydration=false}={}){
- const originalClone=app.context.structuredClone,originals={get:IDBObjectStore.prototype.get,getAll:IDBObjectStore.prototype.getAll};
+ const originalClone=app.context.structuredClone,originals=[],cursorValues=new WeakMap();
  const counts={gets:0,getAll:0,rows:0,cutoffRows:0,bindingClones:0,blobClones:0,keys:[]};
+ const rowRead=row=>{if(row===undefined)return;counts.rows++;if(row?.kind==='cutoff-file')counts.cutoffRows++;};
+ function cursorRead(request){request.addEventListener('success',()=>{
+  const cursor=request.result;if(!cursor)return;
+  let seen=cursorValues.get(cursor);
+  if(seen){seen.read=false;return;}
+  const descriptor=Object.getOwnPropertyDescriptor(cursor,'value');
+  assert(descriptor?.configurable&&'value' in descriptor,'fixture must expose actual cursor value reads');
+  seen={value:descriptor.value,read:false};cursorValues.set(cursor,seen);
+  Object.defineProperty(cursor,'value',{configurable:true,enumerable:true,
+   get(){if(!seen.read){seen.read=true;rowRead(seen.value);}return seen.value;},
+   set(value){seen.value=value;seen.read=false;}});
+ });}
  app.context.structuredClone=value=>{
   if(value?.kind==='binding')counts.bindingClones++;
   if(value instanceof Blob)counts.blobClones++;
   if(forbidHydration&&(value?.kind==='binding'||value instanceof Blob))throw Error('A status check must not hydrate a cutoff');
   return originalClone(value);
  };
- for(const method of ['get','getAll'])IDBObjectStore.prototype[method]=function(...args){
-  const request=originals[method].apply(this,args);
-  if(this.name===CONTROL){if(method==='get'){counts.gets++;counts.keys.push(args[0]);}else counts.getAll++;
-   request.addEventListener('success',()=>{const rows=method==='getAll'?request.result:request.result?[request.result]:[];
-    counts.rows+=rows.length;counts.cutoffRows+=rows.filter(row=>row?.kind==='cutoff-file').length;});}
-  return request;
- };
- return {counts,close(){app.context.structuredClone=originalClone;for(const method of ['get','getAll'])IDBObjectStore.prototype[method]=originals[method];}};
+ for(const [prototype,methods] of [[IDBObjectStore.prototype,['get','getAll','openCursor']],[IDBIndex.prototype,['getAll','openCursor']]]){
+  for(const method of methods){const original=prototype[method];originals.push([prototype,method,original]);
+   prototype[method]=function(...args){
+    const request=original.apply(this,args),store=this.objectStore||this;
+    if(store.name===CONTROL&&store.transaction.mode==='readonly'){
+     if(method==='openCursor')cursorRead(request);
+     else{
+      if(method==='get'){counts.gets++;counts.keys.push(args[0]);}else counts.getAll++;
+      request.addEventListener('success',()=>{if(method==='getAll')request.result.forEach(rowRead);else rowRead(request.result);});
+     }
+    }
+    return request;
+   };
+  }
+ }
+ return {counts,close(){app.context.structuredClone=originalClone;for(const [prototype,method,original]of originals)prototype[method]=original;}};
 }
 const cutoffRows=rows=>[...rows.values()].filter(row=>row?.kind==='cutoff-file');
 async function hydratedSame(actual,expected){
