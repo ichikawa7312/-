@@ -162,14 +162,14 @@ await test('existing scalar changes wait for fresh revision-bound confirmation a
 await test('a peer edit during confirmation forces a second confirmation of the new head',async()=>{
   const f=fixture();f.current.crackWidthMm=0.3;f.ctx.persist();f.drain();let calls=0;
   f.ctx.sentlogCollabRefresh=async projectId=>{if(++calls===1)f.receive(C.setField(f.current,'crackWidthMm',0.4,{...remoteOpts('Peer'),expectedHeads:C.view(f.current).fields.crackWidthMm.headIds}));return {fresh:true,projectId};};
-  await f.click('変更する',f.document.querySelector('.sl-collab-dialog'));assert.equal(f.current.crackWidthMm,0.4);assert(f.document.querySelector('[data-status]').textContent.includes('もう一度'));
-  await f.click('変更する',f.document.querySelector('.sl-collab-dialog'));assert.equal(f.current.crackWidthMm,0.3);
+  await f.click('最新の共有記録を確認して変更',f.document.querySelector('.sl-collab-dialog'));assert.equal(f.current.crackWidthMm,0.4);assert(f.document.querySelector('[data-status]').textContent.includes('もう一度'));
+  await f.click('最新の共有記録を確認して変更',f.document.querySelector('.sl-collab-dialog'));assert.equal(f.current.crackWidthMm,0.3);
 });
 
 await test('async confirmations do not mutate after selection or account changes, or a deferred refresh',async()=>{
   for(const change of ['selection','account','not-fresh']){
     const f=fixture({shapes:[shape('s1'),shape('s2')]});f.current.crackWidthMm=0.3;f.ctx.persist();f.drain();let done;
-    f.ctx.sentlogCollabRefresh=()=>new Promise(resolve=>{done=resolve;});const pending=f.click('変更する',f.document.querySelector('.sl-collab-dialog'));
+    f.ctx.sentlogCollabRefresh=()=>new Promise(resolve=>{done=resolve;});const pending=f.click('最新の共有記録を確認して変更',f.document.querySelector('.sl-collab-dialog'));
     if(change==='selection')f.ctx.selectShape('s2');if(change==='account')f.setAccount('account-b');done(change==='not-fresh'?{started:false}:{fresh:true,projectId:'p1'});await pending;
     assert.equal(f.ctx.state.shapes.find(s=>s.id==='s1').crackWidthMm,0.2,change);assert.equal(f.ctx.state.shapes.find(s=>s.id==='s2').crackWidthMm,0.2,change);
   }
@@ -229,9 +229,9 @@ await test('continuous-camera review targets its bound record and uses existing 
 await test('a changed photo head requires review again and an account change cancels the pending unlink',async()=>{
   const initial=C.addPhoto(shape(),{id:'photo-a',name:'最初の名前.jpg'},remoteOpts('Initial')),f=fixture({shapes:[initial]});await f.ctx.removeSelectedPhoto('photo-a');f.drain();let pulls=0;
   f.ctx.sentlogCollabRefresh=async projectId=>{if(++pulls===1){const row=C.view(f.current).photos.find(p=>p.id==='photo-a');f.receive(C.restorePhoto(f.current,'photo-a',{...remoteOpts('Peer'),expectedHeads:row.headIds,metadata:{...row.metadata,name:'更新された名前.jpg'}}));}return {fresh:true,projectId};};
-  await f.click('写真を外す',f.document.querySelector('.sl-collab-dialog'));assert.equal(f.current.photos.length,1);assert(f.document.querySelector('[data-status]').textContent.includes('もう一度'));assert(f.document.querySelector('[data-summary]').textContent.includes('更新された名前.jpg'));
-  await f.click('写真を外す',f.document.querySelector('.sl-collab-dialog'));assert.equal(f.current.photos.length,0);
-  const other=fixture({shapes:[initial]});await other.ctx.removeSelectedPhoto('photo-a');let done;other.ctx.sentlogCollabRefresh=()=>new Promise(resolve=>{done=resolve;});const pending=other.click('写真を外す',other.document.querySelector('.sl-collab-dialog'));
+  await f.click('最新の共有記録を確認して変更',f.document.querySelector('.sl-collab-dialog'));assert.equal(f.current.photos.length,1);assert(f.document.querySelector('[data-status]').textContent.includes('もう一度'));assert(f.document.querySelector('[data-summary]').textContent.includes('更新された名前.jpg'));
+  await f.click('最新の共有記録を確認して変更',f.document.querySelector('.sl-collab-dialog'));assert.equal(f.current.photos.length,0);
+  const other=fixture({shapes:[initial]});await other.ctx.removeSelectedPhoto('photo-a');let done;other.ctx.sentlogCollabRefresh=()=>new Promise(resolve=>{done=resolve;});const pending=other.click('最新の共有記録を確認して変更',other.document.querySelector('.sl-collab-dialog'));
   other.setAccount('other-account');done({fresh:true,projectId:'p1'});await pending;assert.equal(other.current.photos.length,1);assert.equal(other.writes,0);
 });
 
@@ -283,9 +283,9 @@ await test('deletion waits for a fresh record token and retains all 31 photos wh
   const original=C.upgrade({id:'s1',kind:'field-record',memo:'',photos:Array.from({length:31},(_,n)=>({id:'photo-'+n,name:'写真-'+n+'.jpg',size:100+n}))});
   const f=fixture({shapes:[original,shape('s2')]});let checks=0;
   f.ctx.sentlogCollabRefresh=async()=>{if(++checks===1)f.receive(C.appendComment(f.current,'相手の新しい記録',remoteOpts('Peer')));return {fresh:true};};
-  await f.document.getElementById('deleteBtn').onclick();await f.click('削除する',f.document.querySelector('.sl-collab-dialog'));
+  await f.document.getElementById('deleteBtn').onclick();await f.click('最新の共有記録を確認して変更',f.document.querySelector('.sl-collab-dialog'));
   assert.equal(f.ctx.state.shapes.length,2);assert.equal(f.ctx.state.collabDeletedRecords.length,0);assert(f.document.querySelector('[data-status]').textContent.includes('もう一度'));
-  await f.click('削除する',f.document.querySelector('.sl-collab-dialog'));
+  await f.click('最新の共有記録を確認して変更',f.document.querySelector('.sl-collab-dialog'));
   assert.deepEqual(Array.from(f.ctx.state.shapes,r=>r.id),['s2']);const removed=f.ctx.state.collabDeletedRecords[0];
   assert.equal(removed.photos.length,31);assert.equal(Object.keys(removed.collab.photos).length,31);assert.match(removed.memo,/相手の新しい記録/);assert.equal(C.isDeleted(removed),true);
 });
@@ -293,10 +293,10 @@ await test('deletion waits for a fresh record token and retains all 31 photos wh
 await test('pending delete keeps cancel usable and a late cancelled result cannot affect the next decision',async()=>{
   const f=fixture();let resolveFirst,resolveSecond,firstSignal,calls=0;
   f.ctx.sentlogCollabRefresh=(projectId,{signal})=>new Promise(resolve=>{if(++calls===1){resolveFirst=resolve;firstSignal=signal;}else resolveSecond=resolve;});
-  await f.document.getElementById('deleteBtn').onclick();const first=f.click('削除する',f.document.querySelector('.sl-collab-dialog'));
+  await f.document.getElementById('deleteBtn').onclick();const first=f.click('最新の共有記録を確認して変更',f.document.querySelector('.sl-collab-dialog'));
   assert.equal(f.buttons('キャンセル',f.document.querySelector('.sl-collab-dialog'))[0].disabled,false);
   await f.click('キャンセル',f.document.querySelector('.sl-collab-dialog'));assert.equal(firstSignal.aborted,true);assert.equal(f.ctx.state.shapes.length,1);
-  await f.document.getElementById('deleteBtn').onclick();const second=f.click('削除する',f.document.querySelector('.sl-collab-dialog'));
+  await f.document.getElementById('deleteBtn').onclick();const second=f.click('最新の共有記録を確認して変更',f.document.querySelector('.sl-collab-dialog'));
   resolveFirst({fresh:true});await first;assert.equal(f.ctx.state.shapes.length,1);assert.equal(f.document.querySelector('.sl-collab-dialog').hidden,false);
   resolveSecond({fresh:true});await second;assert.equal(f.ctx.state.shapes.length,0);assert.equal(f.ctx.state.collabDeletedRecords.length,1);assert.equal(f.writes,1);
 });
@@ -359,7 +359,7 @@ await test('offline deletion is explicitly saved as a tombstone and concurrent p
   assert.match(merged.memo,/相手が後から追加したコメント/);
 });
 
-await test('offline damage name edit persists a field revision, and the standard online path still requires fresh server proof',async()=>{
+await test('online and offline edits persist locally without a network proof',async()=>{
   const f=fixture();
   f.ctx.navigator.onLine=false;
   f.current.type='漏水';
@@ -368,13 +368,14 @@ await test('offline damage name edit persists a field revision, and the standard
   assert.equal(f.document.querySelector('.sl-collab-dialog'),null,'no extra offline confirmation is needed');
   assert.equal(C.view(f.current).fields.type.value,'漏水');
   assert.equal(JSON.parse(f.records.get('draw:d1')).shapes[0].type,'漏水');
-  const peer=fixture();
-  peer.ctx.sentlogCollabRefresh=async()=>{throw Error('sync unavailable');};
+  const peer=fixture();let requests=0;
+  peer.ctx.sentlogCollabRefresh=async()=>{requests++;throw Error('sync unavailable');};
   await peer.document.getElementById('deleteBtn').onclick();
   await peer.click('削除する',peer.document.querySelector('.sl-collab-dialog'));
-  assert.equal(peer.ctx.state.shapes.length,1,'a failed remote check never deletes by default');
-  assert(peer.document.querySelector('[data-status]').textContent.includes('sync unavailable'));
-  assert.equal(peer.writes,0);
+  assert.equal(peer.ctx.state.shapes.length,0,'normal online delete also saves locally');
+  assert.equal(peer.ctx.state.collabDeletedRecords.length,1);
+  assert.equal(requests,0,'online-looking network failure must not block a local edit');
+  assert.equal(peer.writes,1);
 });
 
 await test('a failed native flush never claims successful local decision and keeps the pending confirmation',async()=>{
