@@ -17,13 +17,14 @@
     #storageCheckStatus{min-height:3.4em;font-weight:600}#storageCheckResult p{font-size:.95rem}#storageCheckResult>h2{margin-top:28px}
     @media(max-width:420px){main{padding:22px 14px 48px}h1{font-size:1.4rem}.actions{flex-direction:column}.actions button{width:100%}.notice,.result-card{padding:14px}}
   </style>
-  <script src="./startup-storage-diagnostics.js?v=1" defer></script>
+  <script src="./startup-storage-diagnostics.js?v=2" defer></script>
 </head>
 <body>
 <main>
   <span class="tag">読取り専用</span>
   <h1>セントログ<br>保存領域の確認</h1>
   <p>セントログを起動できないときも、このブラウザ内の保存領域の有無と件数を確認できます。</p>
+  <p>iPhoneではSafariとホーム画面から起動するセントログの保存領域が異なります。診断結果に起動元も表示し、別の保存領域を「データ消失」と誤判定しないようにします。</p>
   <div class="notice">
     <p><strong>保存済みデータの書き込み・削除や、同期・復元は行いません。</strong></p>
     <p>案件名・記録本文・写真・ログイン情報は読み取りません。確認するのは、保存領域ごとの件数、起動用管理項目の有無、ブラウザが返す保存情報です。</p>
