@@ -163,23 +163,40 @@ async function test(label,fn){await fn();console.log('PASS '+label);}
        localFiles.set(key,value);return {written:true,value};
      },
      withLock:async(key,fn)=>fn(),assertExclusive:()=>true};
-   const runtime=AR.createRuntime({scope,transport,store,localFiles:io,
+   const priorLocalStorage=globalThis.localStorage,ordinalStore=new Map();
+   globalThis.localStorage={getItem:key=>ordinalStore.get(key)??null,
+     setItem(key,value){
+       assert(key.startsWith('sentlogSharedPhotoRecoveryCursorV1:'+scope.ownerId+':'+scope.projectId+':'+scope.deviceId));
+       ordinalStore.set(key,String(value));
+     }};
+   const create=()=>AR.createRuntime({scope,transport,store,localFiles:io,
      currentScope:()=>scope,currentSnapshotToken:()=>token,
      authGeneration:()=>1,subscribeAuth:()=>()=>{},
      recoverShared:async item=>{
        attempts.push(item.photoId);return item.photoId==='photo-8'?bytes:undefined;
      }});
    try{
+     // Close/recreate the runtime between rounds: reproduces mobile page
+     // reload and the delta coordinator parking an idle project.
      for(let cycle=0;cycle<3;cycle++){
-       const result=await runtime.sync({snapshot,snapshotToken:token});
-       assert.equal(result.complete,false,'all unrecovered originals must remain pending');
-       assert.equal(attempts.length,3*(cycle+1));
+       const runtime=create();
+       try{
+         const result=await runtime.sync({snapshot,snapshotToken:token});
+         assert.equal(result.complete,false,'all unrecovered originals must remain pending');
+         assert.equal(attempts.length,3*(cycle+1));
+       }finally{runtime.close();}
      }
-     assert.deepEqual(attempts,ids,'every missing photo must get a turn even when earlier originals are missing');
+     assert.deepEqual(attempts,ids,'every missing photo must get a turn even after a runtime restart');
      assert.deepEqual(uploads,['photo-8']);
      assert(localFiles.has('photo:drawing:photo-8'));
      assert.equal(await sha(localFiles.get('photo:drawing:photo-8')),digest);
-   }finally{runtime.close();store.close();}
+     assert.equal(ordinalStore.size,1,'only a scoped recovery ordinal is retained');
+     assert.equal([...ordinalStore.values()][0],'0','after three batches the cursor wraps safely');
+   }finally{
+     store.close();
+     if(priorLocalStorage===undefined)delete globalThis.localStorage;
+     else globalThis.localStorage=priorLocalStorage;
+   }
  });
  console.log('6 original/shared preservation and delivery scenarios passed');
 })().catch(err=>{console.error(err);process.exitCode=1;});
