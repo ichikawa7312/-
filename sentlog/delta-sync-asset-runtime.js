@@ -75,7 +75,7 @@
    (recoverShared===null||typeof recoverShared==='function')&&
    capabilities?.guarded===true&&capabilities.onlyIfMissing===true&&Number.isSafeInteger(timeoutMs)&&timeoutMs>0&&Number.isSafeInteger(maxBytes)&&maxBytes>0&&typeof allowArchivedRestore==='boolean',
    'ASSET_RUNTIME_CONFIG','写真の保存・認証・表示対象の確認方法が不足しています');
-  let closed=false,pump=null,active=null;
+  let closed=false,pump=null,active=null,recoveryCursor=0;
   function alive(){
    insist(!closed,'ASSET_CLOSED','共有写真の同期を終了しました');
    insist(sameScope(scope,currentScope()),'ASSET_SCOPE','写真同期中に利用者・案件・端末が変わりました');
@@ -147,6 +147,11 @@
    try{
     ctx.queue=A.createQueue({scope,store,transport:linked,currentScope,assertCurrent:check,timeoutMs,maxBytes,allowOriginals:false,allowArchivedRestore});
     check();descriptors=collectPhotos(snapshot);checkAll();let assets=[];
+    // Do not retry the same first three missing photos indefinitely if one
+    // original is absent or its re-encoding differs. Rotate the bounded
+    // recovery window over the entire immutable snapshot, then wrap around.
+    const recoveryStart=descriptors.length?recoveryCursor%descriptors.length:0;
+    if(descriptors.length)recoveryCursor=(recoveryStart+3)%descriptors.length;
     if(descriptors.length){
      try{assets=await transport.listPhotos(options);check();}
      catch(e){check();if(globalFailure(e))throw e;issue(null,e);}
@@ -156,8 +161,8 @@
      const ref=T.referenceFromAsset(asset,scope),id=target(ref);
      insist(!byTarget.has(id),'ASSET_COLLISION','同じ共有写真に複数の登録があります。写真を保持して確認を待っています');byTarget.set(id,ref);
     }
-    for(const item of descriptors){
-     currentItem=item;
+    for(let index=0;index<descriptors.length;index++){
+     const item=descriptors[index];currentItem=item;
      check();try{
       let ref=byTarget.get(target(item));
       if(ref){
@@ -169,7 +174,9 @@
          // An original can rebuild a missing *shared* JPEG only if its exact
          // historical hash and size match. Never replace a mismatched file.
          // Cap expensive image decodes per cycle to protect iOS memory.
-         insist(originalRecoveries++<3,'ASSET_ORIGINAL_RECOVERY_BATCH','元写真の再照合を分割しています。写真は端末に保持して続けます');
+         const turn=(index-recoveryStart+descriptors.length)%descriptors.length;
+         insist(turn<3&&originalRecoveries++<3,'ASSET_ORIGINAL_RECOVERY_BATCH',
+           '元写真の再照合を分割しています。ほかの写真も順次確認します。元データは端末に保持します');
          const rebuilt=await recoverShared({...item},{scope:copy(scope),validate:()=>check(item),signal:ctx.controller.signal});check(item);
          if(rebuilt!==undefined){
            insist(rebuilt instanceof root.Blob&&typeof item.sha256==='string'&&Number.isSafeInteger(item.size),
