@@ -127,5 +127,59 @@ async function test(label,fn){await fn();console.log('PASS '+label);}
    await assert.rejects(context.recover(cp,item,params),e=>e.code==='ASSET_ORIGINAL_REENCODE_MISMATCH');
    assert.equal(originals,2,'recovery still cannot alter the original bytes');
  });
- console.log('5 original/shared preservation and delivery scenarios passed');
+
+ await test('nine missing photos rotate through bounded recovery and do not starve later files',async()=>{
+   const digest=await sha(bytes);
+   const ids=Array.from({length:9},(_,i)=>'photo-'+i);
+   const record=C.upgrade({id:'record',type:'ひび割れ',memo:'',photos:ids.map(id=>({
+      id,name:id+'.jpg',sha256:digest,size:bytes.size,type:bytes.type}))});
+   const snapshot={version:2,scope,cursor:0,
+     records:{[D.keyOf('drawing','record')]:record},outbox:[]};
+   const token={version:1};D.validateState(snapshot,scope,true);
+   const store=A.createIndexedDBStore({...scope,indexedDB:new IDBFactory(),
+     databaseName:'sentlog-delta-assets-test-fair-rescue-'+(++serial)});
+   const localFiles=new Map(),cloudAssets=[],attempts=[],uploads=[];
+   const transport={getScope:()=>scope,online:()=>true,
+     async listPhotos(){return [...cloudAssets];},
+     async uploadPhoto(item,blob){
+       uploads.push(item.photoId);assert.equal(await sha(blob),digest);
+       const n=ids.indexOf(item.photoId);
+       const ref={id:'44444444-4444-4444-8444-'+String(n+1).padStart(12,'0'),
+         owner_id:scope.ownerId,project_id:scope.projectId,kind:'photo',
+         client_key:'photo:drawing:'+item.photoId,
+         file_name:item.photoId+'.jpg',sha256:digest,byte_size:bytes.size,
+         mime_type:bytes.type,status:'uploaded',
+         storage_path:scope.ownerId+'/'+scope.projectId+'/photos/'+item.photoId+'.jpg',
+         metadata:{drawing_id:'drawing',photo_id:item.photoId}};
+       cloudAssets.push(ref);return {asset:ref,uploaded:true};
+     },
+     async download(){throw Error('unexpected download');},
+     async acknowledge(ref){return {...ref,deviceId:scope.deviceId,durable:true};}
+   };
+   const io={getCapabilities:()=>({guarded:true,onlyIfMissing:true}),
+     read:async key=>localFiles.get(key),
+     async write(key,value,options){
+       assert.equal(options.onlyIfMissing,true);assert.equal(localFiles.has(key),false);
+       localFiles.set(key,value);return {written:true,value};
+     },
+     withLock:async(key,fn)=>fn(),assertExclusive:()=>true};
+   const runtime=AR.createRuntime({scope,transport,store,localFiles:io,
+     currentScope:()=>scope,currentSnapshotToken:()=>token,
+     authGeneration:()=>1,subscribeAuth:()=>()=>{},
+     recoverShared:async item=>{
+       attempts.push(item.photoId);return item.photoId==='photo-8'?bytes:undefined;
+     }});
+   try{
+     for(let cycle=0;cycle<3;cycle++){
+       const result=await runtime.sync({snapshot,snapshotToken:token});
+       assert.equal(result.complete,false,'all unrecovered originals must remain pending');
+       assert.equal(attempts.length,3*(cycle+1));
+     }
+     assert.deepEqual(attempts,ids,'every missing photo must get a turn even when earlier originals are missing');
+     assert.deepEqual(uploads,['photo-8']);
+     assert(localFiles.has('photo:drawing:photo-8'));
+     assert.equal(await sha(localFiles.get('photo:drawing:photo-8')),digest);
+   }finally{runtime.close();store.close();}
+ });
+ console.log('6 original/shared preservation and delivery scenarios passed');
 })().catch(err=>{console.error(err);process.exitCode=1;});
