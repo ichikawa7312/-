@@ -341,5 +341,60 @@ await test('switching to edit another comment cannot discard an unsaved stale dr
   const f=fixture();f.type('自分の追記');f.api.flushDraft();const own=C.view(f.current).comments.at(-1),peer=C.editComment(f.current,own.id,'相手が変更',{...remoteOpts('Peer'),expectedHeads:own.headIds});f.receive(peer);f.type('残すべき未保存文');
   await f.click('修正',f.panel);await f.click('修正する',f.document.querySelector('.sl-collab-dialog'));assert.equal(f.input.value,'残すべき未保存文');assert(f.document.querySelector('[data-status]').textContent.includes('先に保存'));
 });
+
+await test('offline deletion is explicitly saved as a tombstone and concurrent peer work survives the eventual merge',async()=>{
+  const original=shape(),f=fixture({shapes:[original]});
+  f.ctx.navigator.onLine=false;
+  await f.document.getElementById('deleteBtn').onclick();
+  await f.click('削除する',f.document.querySelector('.sl-collab-dialog'));
+  assert.equal(f.ctx.state.shapes.length,1,'normal fresh-server delete must fail closed while offline');
+  assert.equal(f.writes,0);
+  await f.click('この端末に変更を保存（共有は後で）',f.document.querySelector('.sl-collab-dialog'));
+  assert.equal(f.ctx.state.shapes.length,0);
+  assert.equal(f.ctx.state.collabDeletedRecords.length,1);
+  assert.equal(f.writes,1,'one explicitly confirmed local deletion');
+  assert(C.isDeleted(f.ctx.state.collabDeletedRecords[0]));
+  const persisted=JSON.parse(f.records.get('draw:d1'));
+  assert.equal(persisted.collabDeletedRecords.length,1,'the local change is durably recorded in the fixture');
+  const peer=C.appendComment(original,'相手が後から追加したコメント',remoteOpts('Peer'));
+  const merged=C.mergeRecords(f.ctx.state.collabDeletedRecords[0],peer,{base:original}).record;
+  assert.equal(C.view(merged).pendingDelete,true,'the offline delete cannot silently erase a peer change');
+  assert.match(merged.memo,/相手が後から追加したコメント/);
+});
+
+await test('offline damage name edit persists a field revision, and the standard online path still requires fresh server proof',async()=>{
+  const f=fixture();
+  f.ctx.navigator.onLine=false;
+  f.current.type='漏水';
+  f.ctx.persist();f.drain();
+  assert.equal(f.current.type,'ひび割れ','pending field cannot overwrite a guarded value');
+  assert.equal(f.document.querySelector('.sl-collab-dialog').hidden,false);
+  await f.click('この端末に変更を保存（共有は後で）',f.document.querySelector('.sl-collab-dialog'));
+  assert.equal(f.current.type,'漏水');
+  assert.equal(C.view(f.current).fields.type.value,'漏水');
+  assert.equal(JSON.parse(f.records.get('draw:d1')).shapes[0].type,'漏水');
+  const peer=fixture();
+  peer.ctx.sentlogCollabRefresh=async()=>{throw Error('sync unavailable');};
+  await peer.document.getElementById('deleteBtn').onclick();
+  await peer.click('削除する',peer.document.querySelector('.sl-collab-dialog'));
+  assert.equal(peer.ctx.state.shapes.length,1,'a failed remote check never deletes by default');
+  assert(peer.document.querySelector('[data-status]').textContent.includes('sync unavailable'));
+  assert.equal(peer.writes,0);
+});
+
+await test('a failed native flush never claims successful local decision and keeps the pending confirmation',async()=>{
+  const f=fixture();
+  f.ctx.navigator.onLine=false;
+  f.ctx.SentlogRecords.flush=async()=>{throw Error('native flush refused');};
+  f.ctx.SentlogRecords.assertSafe=()=>{};
+  await f.document.getElementById('deleteBtn').onclick();
+  await f.click('この端末に変更を保存（共有は後で）',f.document.querySelector('.sl-collab-dialog'));
+  const dialog=f.document.querySelector('.sl-collab-dialog');
+  assert.equal(dialog.hidden,false,'failed durability must not dismiss the confirmation');
+  assert(dialog.querySelector('[data-status]').textContent.includes('native flush refused'));
+  const pending=[...f.storage].filter(([key])=>key.startsWith('sentlogCollaborativeDecisionsV1:')).flatMap(([,value])=>JSON.parse(value));
+  assert.equal(pending.length,1,'a rejected flush must not discard the pending action');
+});
+
 console.log(passed+' collaborative editor scenarios passed');
 })().catch(e=>{console.error(e);process.exitCode=1;});
