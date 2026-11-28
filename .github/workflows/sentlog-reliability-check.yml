@@ -6,6 +6,8 @@ on:
       - '.github/workflows/sentlog-reliability-check.yml'
       - 'scripts/build_*.py'
       - 'sentlog/record-store.js'
+      - 'sentlog/delta-sync-app-runtime.js'
+      - 'sentlog/photo-thumbnails.js'
       - 'sentlog/storage-ui.js'
       - 'sentlog/storage-maintenance-ui.js'
       - 'sentlog/storage-maintenance.html'
@@ -36,6 +38,11 @@ on:
       - 'tests/capacity_maintenance_release.test.cjs'
       - 'tests/storage_maintenance_ui.py'
       - 'tests/storage_operation_scale_ui.py'
+      - 'tests/normal_startup_residency_ui.py'
+      - 'tests/record_startup_read_budget.test.cjs'
+      - 'tests/delta_app_runtime_residency.test.cjs'
+      - 'tests/photo_thumbnails.test.cjs'
+      - 'tests/iphone_stability_release.test.cjs'
       - 'tests/storage_blob_lifetime_diagnostic.py'
       - 'tests/record_maintenance_init.test.cjs'
       - 'tests/record_journal_read_budget.test.cjs'
@@ -114,6 +121,12 @@ jobs:
         if: ${{ !cancelled() && matrix.engine == 'webkit' && steps.production_build.outcome == 'success' && steps.browser_adapter.outcome == 'success' }}
         timeout-minutes: 5
         run: python tests/storage_blob_lifetime_diagnostic.py --engine webkit --built-root . --baseline-writer /tmp/sentlog-operation-v215.js --expect-baseline-blob-failure --out /tmp/sentlog-blob-lifetime-webkit
+      - name: Verify normal authenticated startup and native touch editing
+        if: ${{ !cancelled() && steps.production_build.outcome == 'success' && steps.browser_adapter.outcome == 'success' }}
+        timeout-minutes: 7
+        run: |
+          npm install --prefix "$RUNNER_TEMP/sentlog-residency-deps" --ignore-scripts --no-audit --no-fund --save-exact @electric-sql/pglite@0.5.17
+          NODE_PATH="$RUNNER_TEMP/sentlog-residency-deps/node_modules" python tests/normal_startup_residency_ui.py --engine ${{ matrix.engine }} --built-root . --out /tmp/sentlog-normal-residency-${{ matrix.engine }}
       - name: Verify native PC file-handle preservation
         if: ${{ !cancelled() && matrix.engine == 'chromium' && steps.production_build.outcome == 'success' && steps.browser_adapter.outcome == 'success' }}
         run: python tests/storage_preservation_native_ui.py --engine chromium --scenario pc --built-root . --out /tmp/sentlog-native-pc
@@ -136,6 +149,8 @@ jobs:
             /tmp/sentlog-maintenance-${{ matrix.engine }}/**/*.png
             /tmp/sentlog-operation-${{ matrix.engine }}/**/*.json
             /tmp/sentlog-operation-${{ matrix.engine }}/**/*.png
+            /tmp/sentlog-normal-residency-${{ matrix.engine }}/**/*.json
+            /tmp/sentlog-normal-residency-${{ matrix.engine }}/**/*.png
             /tmp/sentlog-blob-lifetime-webkit/**/*.json
             /tmp/sentlog-native-pc/**/*.json
             /tmp/sentlog-native-regular-pc/**/*.json
