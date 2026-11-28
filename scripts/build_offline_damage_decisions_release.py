@@ -5,10 +5,10 @@ loaded editor identity and PWA cache as one safe package so an installed iPhone
 does not silently continue running the old decision handler.
 """
 from pathlib import Path
+import re
 import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
-OLD_EDIT = "20261121-camera-landscape"
 NEW_EDIT = "20261128-local-damage-decisions-221"
 OLD_LABEL = "v2.20 · 写真保存中の不要な待機を軽減"
 NEW_LABEL = "v2.21 · 損傷の変更を端末内に安全に保存"
@@ -38,7 +38,11 @@ if "sentlog-pwa-v262" not in source("sentlog/sw.js"):
     raise RuntimeError("v2.20 source build is required")
 
 index = "sentlog/index.html"
-change(index, "collaboration-editor.js?v=" + OLD_EDIT,
+editor_tokens = re.findall(r'collaboration-editor\.js\?v=([A-Za-z0-9._-]+)', source(index))
+if len(editor_tokens)!=2 or len(set(editor_tokens))!=1 or editor_tokens[0]==NEW_EDIT:
+    raise RuntimeError("v2.21 expects two matching previous editor references")
+old_edit_token = editor_tokens[0]
+change(index, "collaboration-editor.js?v=" + old_edit_token,
        "collaboration-editor.js?v=" + NEW_EDIT, 2)
 change(index, "['collaboration-editor.js?v=" + NEW_EDIT + "','requestPhotoRemoval']",
        "['collaboration-editor.js?v=" + NEW_EDIT + "','offlineDamageDecisionsVersion']", 1)
@@ -59,8 +63,8 @@ for path in (ROOT / "tests").iterdir():
     before = source(name)
     after = before
     for old, new in (
-        ("collaboration-editor.js?v=" + OLD_EDIT, "collaboration-editor.js?v=" + NEW_EDIT),
-        (r"collaboration-editor\.js\?v=" + OLD_EDIT, r"collaboration-editor\.js\?v=" + NEW_EDIT),
+        ("collaboration-editor.js?v=" + old_edit_token, "collaboration-editor.js?v=" + NEW_EDIT),
+        (r"collaboration-editor\.js\?v=" + old_edit_token, r"collaboration-editor\.js\?v=" + NEW_EDIT),
         ("phone-runtime.js?v=220", "phone-runtime.js?v=221"),
         (r"phone-runtime\.js\?v=220", r"phone-runtime\.js\?v=221"),
         ("sentlog-pwa-v262", "sentlog-pwa-v263"),
