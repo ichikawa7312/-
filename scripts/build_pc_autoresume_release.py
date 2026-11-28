@@ -81,7 +81,7 @@ scope_marker='<div id="syncStatus"'
 if text.count(scope_marker)!=1:
     raise RuntimeError('PC sync status display anchor changed')
 scope_notice='<p class="muted" id="pcSyncScopeNotice">PC同期の「完了」はクラウドに登録されたファイルの処理完了を示すもので、端末から未送信の写真・図面がないことは保証しません。</p>'
-text=text.replace(scope_marker,scope_notice+'\\n    '+scope_marker)
+text=text.replace(scope_marker,scope_notice+'\n    '+scope_marker)
 # Update older instructional captions only when those exact words remain.
 text=text.replace('約5秒ごとに確認します','約15秒ごとに確認します')
 change("$('permissionBtn').onclick=permission;$('startBtn').onclick=start;$('stopBtn').onclick=stop;$('onceBtn').onclick=syncOnce;",
