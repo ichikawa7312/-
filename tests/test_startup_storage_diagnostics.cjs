@@ -454,6 +454,38 @@ test('progress snapshots are defensive and a throwing observer cannot break the 
   assert.deepEqual(await snapshot(factory),before);
 });
 
+test('iPhone Home Screen, Safari and unknown launch contexts remain separated without opening any database',async()=>{
+  for(const sample of [
+    {name:'home-screen',standalone:true,display:true,expected:'home-screen-app'},
+    {name:'Safari',standalone:false,display:false,expected:'browser'},
+    {name:'unsupported',standalone:undefined,display:undefined,expected:'unknown'}
+  ]){
+    const ctx={navigator:{},document:null,console,setTimeout,clearTimeout,AbortController,structuredClone};
+    if(sample.standalone!==undefined)ctx.navigator.standalone=sample.standalone;
+    if(sample.display!==undefined)ctx.matchMedia=query=>{
+      assert.equal(query,'(display-mode: standalone)');return {matches:sample.display};
+    };
+    vm.createContext(ctx);vm.runInContext(SOURCE,ctx);
+    const audit={enumerations:0,marker:0,opens:0,changes:0};
+    const denied=()=>{audit.changes++;throw Error('Forbidden storage write/open');};
+    const result=await ctx.SentlogStartupStorageDiagnostics.scan({
+      indexedDB:{async databases(){audit.enumerations++;return [];},open:denied,deleteDatabase:denied},
+      localStorage:{getItem(key){assert.equal(key,MARKER);audit.marker++;return null;},
+        setItem:denied,removeItem:denied,clear:denied},
+      storageManager:{async estimate(){return {usage:1000,quota:1000000};},
+        async persisted(){return false;},persist:denied},
+      caches:{async keys(){return [];},open:denied,delete:denied,match:denied},
+      requestTimeoutMs:100,maxDurationMs:1200
+    });
+    assert.equal(result.indexedDB.listedSentlogDatabaseCount,0,sample.name);
+    assert.equal(result.launchContext.mode,sample.expected,sample.name);
+    assert.equal(result.launchContext.status,sample.expected==='unknown'?'unconfirmed':'complete');
+    assert.deepEqual(audit,{enumerations:1,marker:1,opens:0,changes:0});
+    assert.equal(result.readOnly,true);
+    privacy(result);
+  }
+});
+
 (async()=>{
   let passed=0;
   for(const {name,run}of cases){await run();passed++;console.log('PASS '+name);}
