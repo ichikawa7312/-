@@ -11,7 +11,7 @@
     {method:'compactRedundantFiles',cursor:0,label:'PDF・写真の重複履歴'},
     {method:'compactRedundantPageBackups',cursor:'',label:'使用済みのPDF退避データ'}
   ];
-  let section,review,run,stop,status,result,active=null,reviewed=false,observer=null,reviewProgress=null,cleanupProgress=null;
+  let section,review,run,stop,status,result,active=null,reviewed=false,observer=null,reviewProgress=null,cleanupProgress=null,standalone=false;
   const empty=()=>({scanned:0,eligible:0,updated:0,logicalBytesEligible:0,logicalBytesRemoved:0,skippedClaims:0,skippedUnproven:0,skippedLarge:0});
   const progress=()=>({phaseIndex:0,cursor:phases[0].cursor,total:empty(),before:null});
   function writer(){
@@ -71,7 +71,7 @@
         const phase=phases[current.phaseIndex],cursor=current.cursor;
         writer();
         status.textContent=(dryRun?'確認中：':'整理中：')+phase.label+' / '+total.scanned.toLocaleString('ja-JP')+'項目を確認';
-        const value=checked(await records.deltaJournal[phase.method]({cursor,scanLimit:128,limit:32,dryRun,signal:task.controller.signal}));
+        const value=checked(await records.deltaJournal[phase.method]({cursor,scanLimit:standalone?32:128,limit:standalone?8:32,dryRun,signal:task.controller.signal}));
         if(dryRun&&(value.updated!==0||value.logicalBytesRemoved!==0))throw Error('読取り確認の結果が不正です。処理を止めました。');
         add(total,value);
         if(value.done){current.phaseIndex++;current.cursor=phases[current.phaseIndex]?.cursor??null;}
@@ -101,8 +101,11 @@
   }
   function install(){
     if(section)return true;
-    const host=doc.querySelector('#sentlogSettingsModal .modal-card');if(!host)return false;
+    const dedicated=doc.getElementById('startupMaintenanceHost');
+    const host=dedicated||doc.querySelector('#sentlogSettingsModal .modal-card');if(!host)return false;
+    standalone=!!dedicated;
     section=node('details');section.id='sentlogStorageMaintenanceSection';
+    if(standalone)section.open=true;
     section.append(node('summary','容量を整理（記録・原本を保持）'));
     section.append(node('p','同じ内容を重ねて持っている保存履歴を整理します。現在の記録・PDF・写真、未送信の変更、内容が異なる旧版は保持します。ログインや会社PCへの接続は必要ありません。'));
     const actions=node('div');actions.className='sl-maintenance-actions';
@@ -113,6 +116,18 @@
     actions.append(review,run,stop);section.append(actions);
     status=node('p','最初の確認では保存データを変更しません。');status.id='sentlogStorageMaintenanceStatus';status.setAttribute('role','status');status.setAttribute('aria-live','polite');section.append(status);
     result=node('div');result.id='sentlogStorageMaintenanceResult';section.append(result);
+    if(!standalone){
+      const entry=node('p'),link=node('a','通常画面が重いときは、軽い整理画面を開く');
+      link.id='sentlogStandaloneMaintenanceLink';link.href='./storage-maintenance.html?v=20261128-operation-memory-216';
+      link.onclick=event=>{
+        if(active||root.SentlogRecords?.pending||root.SentlogRecords?.failed){
+          event.preventDefault();
+          status.textContent=active?'整理処理が進行中です。中止または完了してから開いてください。':
+            '保存が完了していないため、この画面は開いたままにしてください。保存警告がある場合は、まず「未保存の記録を含む控えを書き出す」で控えを残してください。';
+        }
+      };
+      entry.append(link);section.append(entry);
+    }
     const further=node('details');further.append(node('summary','さらに容量を空ける方法'));
     further.append(node('p','保管済み案件のPDF・写真は、保管フォルダの「PDF・写真を端末から外す」で整理できます。会社PCで案件一式を照合してから実行します。'));
     further.append(node('p','この端末で撮影した元写真は、設定の「元写真をまとめて保存（この端末）」でZIPを保存し、保存先のファイルを確認してから、保存確認済みの元写真を整理できます。'));
@@ -134,7 +149,7 @@
       .observe(modal,{attributes:true,attributeFilter:['aria-hidden']});
     return true;
   }
-  root.SentlogStorageMaintenanceUI={version:1,install,cancel};
+  root.SentlogStorageMaintenanceUI={version:1,install,cancel,get busy(){return !!active;}};
   if(!install()&&root.MutationObserver&&doc.documentElement){
     observer=new MutationObserver(()=>{if(install()){observer.disconnect();observer=null;}});
     observer.observe(doc.documentElement,{childList:true,subtree:true});

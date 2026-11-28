@@ -83,11 +83,12 @@ PREPARE = r"""async caseName=>{
   }
   async function snapshot(){
     stage('snapshot/start');
-    async function normalized(value){
-      if(value instanceof Blob)return {nativeBlob:true,size:value.size,type:value.type,sha256:await hash(value),
-        ...(value instanceof File?{name:value.name,lastModified:value.lastModified}:{})};
-      if(Array.isArray(value))return Promise.all(value.map(normalized));
-      if(value&&typeof value==='object')return Object.fromEntries(await Promise.all(Object.keys(value).sort().map(async key=>[key,await normalized(value[key])])));
+    async function normalized(value,path){
+      if(value instanceof Blob){try{return {nativeBlob:true,size:value.size,type:value.type,sha256:await hash(value),
+        ...(value instanceof File?{name:value.name,lastModified:value.lastModified}:{})};}
+        catch(error){throw Error('Native Blob read failed at '+path+' (size='+value.size+', type='+value.type+'): '+(error?.name||'Error')+': '+(error?.message||error));}}
+      if(Array.isArray(value))return Promise.all(value.map((item,index)=>normalized(item,path+'['+index+']')));
+      if(value&&typeof value==='object')return Object.fromEntries(await Promise.all(Object.keys(value).sort().map(async key=>[key,await normalized(value[key],path+'.'+key)])));
       return value;
     }
     const out={localStorage:Object.keys(localStorage).sort().map(key=>[key,localStorage.getItem(key)]),databases:{}};
@@ -97,7 +98,10 @@ PREPARE = r"""async caseName=>{
       const db=await new Promise((resolve,reject)=>{const q=indexedDB.open(info.name);q.onupgradeneeded=()=>q.transaction.abort();q.onsuccess=()=>resolve(q.result);q.onerror=()=>reject(q.error);});
       try{stage('snapshot/read/'+info.name);const names=Array.from(db.objectStoreNames),raw=await new Promise((resolve,reject)=>{const tx=db.transaction(names,'readonly'),stores={};
         for(const name of names){const rows=stores[name]=[],q=tx.objectStore(name).openCursor();q.onsuccess=()=>{const c=q.result;if(c){rows.push([c.key,c.value]);c.continue();}};}
-        tx.oncomplete=()=>resolve(stores);tx.onabort=()=>reject(tx.error);});stage('snapshot/hash-blobs/'+info.name);out.databases[info.name]={version:db.version,stores:await normalized(raw)};
+        tx.oncomplete=()=>resolve(stores);tx.onabort=()=>reject(tx.error);});stage('snapshot/hash-blobs/'+info.name);
+        const normalizedStores=Object.fromEntries(await Promise.all(Object.keys(raw).sort().map(async name=>[name,
+          await Promise.all(raw[name].map(async([key,value])=>[await normalized(key,info.name+'/'+name+'/key'),await normalized(value,info.name+'/'+name+'/'+String(key))]))])));
+        out.databases[info.name]={version:db.version,stores:normalizedStores};
       }finally{db.close();}
     }stage('snapshot/done');return out;
   }
@@ -113,8 +117,13 @@ PREPARE = r"""async caseName=>{
     const replica=D.createReplica({...scope,store,transport,reconcileIntervalMs:0});
     const bridge=SentlogDeltaAppBridge.createBridge({replica,scope,localProjectId:pid,currentScope:()=>scope});
     const controller=SentlogDeltaAppJournal.createController({records:R,scope,localProjectId:pid,replica,replicaStore:store,bridge,metadata:M,currentScope:()=>scope});
-    stage('prepare/write-exact-retention');await R.writeFile('photo:one:exact',photo);stage('prepare/write-distinct-retention');await R.writeFile('photo:one:different',photo);
-    stage('prepare/drain-real-replay');await controller.drain();stage('prepare/close-replica');controller.close();bridge.close();replica.close();store.close();
+    stage('prepare/write-exact-retention');await R.writeFile('photo:one:exact',photo);
+    if(typeof window.__maintenanceBlobProbe==='function')await window.__maintenanceBlobProbe('before-distinct-write');
+    stage('prepare/write-distinct-retention');await R.writeFile('photo:one:different',photo);
+    if(typeof window.__maintenanceBlobProbe==='function')await window.__maintenanceBlobProbe('after-distinct-write');
+    stage('prepare/drain-real-replay');await controller.drain();
+    if(typeof window.__maintenanceBlobProbe==='function')await window.__maintenanceBlobProbe('after-real-drain');
+    stage('prepare/close-replica');controller.close();bridge.close();replica.close();store.close();
     const rows=await disk(LOG);s.exactSeq=[...rows].find(([,row])=>row.files?.some(file=>file.key==='photo:one:exact'))?.[0];
     s.differentSeq=[...rows].find(([,row])=>row.files?.some(file=>file.key==='photo:one:different'))?.[0];
     need(Number.isSafeInteger(s.exactSeq)&&Number.isSafeInteger(s.differentSeq)&&[...rows.values()].every(row=>row.kind==='sentlog-file-retention'),'Actual replay did not create native retention rows');
@@ -313,17 +322,21 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--engine", choices=("chromium", "webkit"), required=True)
     parser.add_argument("--built-root", type=Path, default=ROOT)
+    parser.add_argument("--writer-source", type=Path, help="Diagnostic comparison: serve this exact writer and record its SHA-256")
+    parser.add_argument("--case", choices=CASES, help="Diagnostic comparison: run one unchanged case")
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
     args.out = args.out.resolve()
     if not args.out.is_relative_to(Path("/tmp")):
         parser.error("--out must be under /tmp; profiles and customer workspace files are never used")
     args.out.mkdir(parents=True, exist_ok=True)
+    selected_cases = (args.case,) if args.case else CASES
     summary = {"format": "sentlog-storage-maintenance-native-ui-v1", "status": "running", "engine": args.engine,
                "viewport": {"width": 320, "height": 760}, "cases": [], "customerDataUsed": False,
                "productionOriginAccessed": False, "physicalDeviceTested": False, "physicalBytesReclaimedMeasured": False,
                "fullApplicationStarted": False, "settingsHostFixture": True, "externalTrafficBlocked": True,
                "freshContextPerCase": True, "persistentTemporaryProfilePerCase": args.engine == "webkit",
+               "selectedCases": list(selected_cases), "diagnosticWriterOverride": args.writer_source is not None,
                "fixtureSHA256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
     server = None
     try:
@@ -337,7 +350,8 @@ def main():
             (package / "index.html").write_text(HTML)
             summary["sourceModules"] = []
             for name in MODULES:
-                data = (args.built_root.resolve() / "sentlog" / name).read_bytes()
+                source = args.writer_source if name == "record-store.js" and args.writer_source else args.built_root.resolve() / "sentlog" / name
+                data = source.read_bytes()
                 (package / name).write_bytes(data)
                 summary["sourceModules"].append({"path": "sentlog/" + name, "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()})
 
@@ -357,7 +371,7 @@ def main():
                     browser = getattr(playwright, args.engine).launch(headless=True)
                 summary["browserVersion"] = browser.version
                 try:
-                    for name in CASES:
+                    for name in selected_cases:
                         case = {"name": name, "status": "running", "blockedRequests": [], "pageErrors": [], "controls": [], "proofs": []}
                         destination = args.out / (name + ".json")
                         record_progress(case, destination, "case-start")
@@ -482,7 +496,7 @@ def main():
                 finally:
                     with deadline(15, "native browser close"):
                         browser.close()
-            summary["status"] = "passed" if len(summary["cases"]) == len(CASES) and all(case["status"] == "passed" for case in summary["cases"]) else "failed"
+            summary["status"] = "passed" if len(summary["cases"]) == len(selected_cases) and all(case["status"] == "passed" for case in summary["cases"]) else "failed"
     except Exception as error:
         summary["status"] = "blocked" if not summary["cases"] else "failed"
         summary["error"] = str(error)[:3000]
