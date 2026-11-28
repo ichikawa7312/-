@@ -185,7 +185,7 @@ old_proof=re.search(r"\['cloud-sync\.js\?v="+re.escape(TOKEN)+r"','([^']+)'\]",s
 if not old_proof:raise RuntimeError('Cloud module proof was not found')
 change(index,"['cloud-sync.js?v="+TOKEN+"','"+old_proof.group(1)+"']",
        "['cloud-sync.js?v="+TOKEN+"','"+MARKER+"']")
-change('sentlog/phone-runtime.js','v2.17','v2.18',5)
+change('sentlog/phone-runtime.js','v2.17','v2.18',4)
 change('sentlog-pc/index.html','v2.17 · 起動と写真表示の負荷軽減','v2.18 · iPhoneの記録読込を分割')
 change('sentlog/phone-runtime.js','v2.18 · 起動と写真表示の負荷軽減','v2.18 · iPhoneの記録読込を分割')
 change('sentlog/sw.js','sentlog-pwa-v259','sentlog-pwa-v260')
