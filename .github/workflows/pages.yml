@@ -337,6 +337,7 @@ jobs:
           node tests/collaboration_editor.test.cjs
           python3 scripts/build_pc_autoresume_release.py
           node tests/pc_autoresume_release.test.cjs
+          node tests/delta_original_photo_rescue.test.cjs
       - name: Setup Pages
         uses: actions/configure-pages@v5
         with:
