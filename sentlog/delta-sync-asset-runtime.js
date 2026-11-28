@@ -177,7 +177,29 @@
      finally{currentItem=null;}
     }
     refs.sort((a,b)=>a.assetId.localeCompare(b.assetId));
-    await ctx.queue.ensure(refs);check();
+    try{await ctx.queue.ensure(refs);check();}
+    catch(error){
+     check();if(error?.name!=='NotReadableError'||typeof store.repairUnreadable!=='function')throw error;
+     // Older WebKit ACK updates could leave a redundant queue Blob unreadable.
+     // Recover only from the already-present, independently verified main
+     // mirror. Keep both receipts and never overwrite or delete that mirror.
+     for(const ref of refs){
+      currentItem=ref;
+      try{
+       const row=await store.read(ref);check();
+       if(!row||!['received','acknowledged'].includes(row.phase))continue;
+       try{await A.verifyBlob(row.blob,ref,{validate:()=>check(ref),signal:ctx.controller.signal});check();}
+       catch(readError){
+        check();if(readError?.name!=='NotReadableError')throw readError;
+        await localFiles.withLock(fileKey(ref),async()=>{
+         const source=await local(ref,false);check();
+         await store.repairUnreadable(ref,source,{validate:()=>check(ref)});check();
+        });check();
+       }
+      }finally{currentItem=null;}
+     }
+     await ctx.queue.ensure(refs);check();
+    }
     for(const ref of refs){
      currentItem=ref;
      check();try{
@@ -230,6 +252,6 @@
    close(){if(closed)return;closed=true;cancel('ASSET_CLOSED');if(typeof unsubscribe==='function')unsubscribe();}
   };
  }
- const api={version:1,createRuntime,collectPhotos};
+ const api={version:1,unreadableCacheRepairVersion:1,createRuntime,collectPhotos};
  if(typeof module==='object'&&module.exports)module.exports=api;else root.SentlogDeltaAssetRuntime=api;
 })(typeof window!=='undefined'?window:globalThis);

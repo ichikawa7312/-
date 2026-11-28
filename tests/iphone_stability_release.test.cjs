@@ -2,12 +2,14 @@
 const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
 const read=name=>fs.readFileSync(name,'utf8'),index=read('sentlog/index.html');
 const token='20261128-iphone-stability-217',marker='sentlog-iphone-stability-v217';
-for(const name of ['record-store','storage-maintenance-ui','sync-view','delta-sync-app-runtime','photo-thumbnails']){
+for(const name of ['record-store','storage-maintenance-ui','sync-view','delta-sync-app-runtime','delta-sync-assets','delta-sync-asset-runtime','photo-thumbnails']){
   assert.equal(index.split(name+'.js?v='+token).length-1,2,name+' checked and executed');
   assert(index.includes("['"+name+'.js?v='+token+"','"+marker+"']"));
   assert(read('sentlog/'+name+'.js').startsWith('// '+marker+'\n'));
 }
 assert(index.includes("['phone-runtime.js?v=217','v2.17']"));
+assert(read('sentlog/delta-sync-assets.js').includes('byteBackedBlobVersion:1'));
+assert(read('sentlog/delta-sync-asset-runtime.js').includes('unreadableCacheRepairVersion:1'));
 assert(index.indexOf('<script src="./photo-thumbnails.js')>index.lastIndexOf('<script src="./active-media-restore.js'));
 assert(index.indexOf('<script src="./photo-thumbnails.js')<index.indexOf('document.open();'));
 assert(!/local-work-mode|local-photo-window|work-local\.html/.test(index));

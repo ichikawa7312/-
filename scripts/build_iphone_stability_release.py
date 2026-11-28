@@ -11,6 +11,8 @@ OLD_TOKEN, TOKEN = '20261128-operation-memory-216', '20261128-iphone-stability-2
 OLD_MARKER, MARKER = 'sentlog-operation-memory-v216', 'sentlog-iphone-stability-v217'
 RUNTIME_TOKEN = '20261127-delta-save-failure-gate-212'
 RUNTIME_MARKER = 'sentlog-delta-save-failure-gate-v212'
+ASSETS_TOKEN = '20261126-drawing-recovery-201'
+ASSETS_MARKER = 'sentlog-drawing-recovery-v201'
 pending = {}
 
 
@@ -31,6 +33,8 @@ if ("['phone-runtime.js?v=216','v2.16']" not in source('sentlog/index.html')
 if 'startupReadBudgetVersion:1' not in source('sentlog/record-store.js'):
     raise RuntimeError('The normal startup reader is missing')
 for name, required in [('delta-sync-app-runtime', 'function park(c)'),
+                       ('delta-sync-assets', 'byteBackedBlobVersion:1'),
+                       ('delta-sync-asset-runtime', 'unreadableCacheRepairVersion:1'),
                        ('photo-thumbnails', 'SentlogPhotoThumbnails')]:
     if required not in source('sentlog/' + name + '.js'):
         raise RuntimeError('The reviewed normal runtime is missing: ' + name)
@@ -43,13 +47,17 @@ for name in ['record-store', 'storage-maintenance-ui', 'sync-view']:
     change('sentlog/index.html', name + '.js?v=' + OLD_TOKEN, name + '.js?v=' + TOKEN, 2)
     change('sentlog/index.html', "['" + name + '.js?v=' + TOKEN + "','" + OLD_MARKER + "']",
            "['" + name + '.js?v=' + TOKEN + "','" + MARKER + "']")
-for name in ['startup-storage-maintenance', 'delta-sync-app-runtime', 'photo-thumbnails']:
+for name in ['startup-storage-maintenance', 'delta-sync-app-runtime', 'delta-sync-assets', 'delta-sync-asset-runtime', 'photo-thumbnails']:
     path = 'sentlog/' + name + '.js'
     pending[path] = '// ' + MARKER + '\n' + source(path)
 change('sentlog/index.html', 'delta-sync-app-runtime.js?v=' + RUNTIME_TOKEN,
        'delta-sync-app-runtime.js?v=' + TOKEN, 2)
 change('sentlog/index.html', "['delta-sync-app-runtime.js?v=" + TOKEN + "','" + RUNTIME_MARKER + "']",
        "['delta-sync-app-runtime.js?v=" + TOKEN + "','" + MARKER + "']")
+for name in ['delta-sync-assets', 'delta-sync-asset-runtime']:
+    change('sentlog/index.html', name + '.js?v=' + ASSETS_TOKEN, name + '.js?v=' + TOKEN, 2)
+    change('sentlog/index.html', "['" + name + '.js?v=' + TOKEN + "','" + ASSETS_MARKER + "']",
+           "['" + name + '.js?v=' + TOKEN + "','" + MARKER + "']")
 
 old_guard = 'if(window.SentlogRecords?.maintenanceInitVersion!==1||'
 new_guard = 'if(window.SentlogRecords?.startupReadBudgetVersion!==1||window.SentlogRecords?.maintenanceInitVersion!==1||'
@@ -102,6 +110,6 @@ for path in (ROOT / 'tests').iterdir():
 
 for name, value in pending.items():
     (ROOT / name).write_text(value, encoding='utf-8')
-for name in ['record-store', 'delta-sync-app-runtime', 'photo-thumbnails', 'storage-maintenance-ui', 'sync-view']:
+for name in ['record-store', 'delta-sync-app-runtime', 'delta-sync-assets', 'delta-sync-asset-runtime', 'photo-thumbnails', 'storage-maintenance-ui', 'sync-view']:
     subprocess.run(['node', '--check', 'sentlog/' + name + '.js'], cwd=ROOT, check=True)
-print('Built v2.17: normal startup, idle sync residency and visible photo previews; ' + CACHE)
+print('Built v2.17: normal startup, idle sync residency, durable asset bytes and visible photo previews; ' + CACHE)

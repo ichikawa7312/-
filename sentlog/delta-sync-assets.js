@@ -87,6 +87,30 @@
     }
     insist(hash===ref.sha256,'ASSET_CONTENT_MISMATCH','写真の内容が登録内容と一致しません。上書きを止めました');
   }
+  async function byteBackedBlob(blob,ref,check){
+    check();insist(blob instanceof root.Blob&&blob.size===ref.size,
+      'ASSET_CONTENT_MISMATCH','写真のサイズが登録内容と一致しません。元のファイルは保持しています');
+    // A native database-backed Blob is not safe to re-put over its own row in
+    // WebKit. Structured cloning or new Blob([blob]) can retain that backing
+    // file. Read bounded byte chunks before opening the write transaction.
+    const parts=[],chunkBytes=2*1024*1024,deadline=Date.now()+30000;
+    try{
+      for(let offset=0;offset<blob.size;offset+=chunkBytes){
+        check();const end=Math.min(blob.size,offset+chunkBytes),remaining=deadline-Date.now();let timer,bytes;
+        insist(remaining>0,'ASSET_COPY_TIMEOUT','写真の控えを読み取れません。元の写真と受信待ちを保持しています');
+        try{bytes=await Promise.race([blob.slice(offset,end).arrayBuffer(),new Promise((_,reject)=>{
+          timer=setTimeout(()=>reject(problem('ASSET_COPY_TIMEOUT','写真の控えを読み取れません。元の写真と受信待ちを保持しています')),remaining);
+        })]);}finally{clearTimeout(timer);}
+        check();insist(Object.prototype.toString.call(bytes)==='[object ArrayBuffer]'&&bytes.byteLength===end-offset,
+          'ASSET_CONTENT_MISMATCH','写真を最後まで読み取れません。元のファイルは保持しています');
+        parts.push(new root.Blob([bytes]));bytes=null;
+        if(end<blob.size){await new Promise(resolve=>setTimeout(resolve,0));check();}
+      }
+      const result=typeof root.File==='function'&&blob instanceof root.File?
+        new root.File(parts,blob.name,{type:blob.type,lastModified:blob.lastModified}):new root.Blob(parts,{type:blob.type});
+      await verifyBlob(result,ref,{validate:check});check();return result;
+    }finally{parts.length=0;}
+  }
   function validateRow(row,ref,scope){
     if(row===undefined||row===null)return null;
     insist(object(row)&&row.version===1&&sameScope(row.scope,scope)&&same(row.reference,ref)&&
@@ -122,6 +146,11 @@
     const active=new Map();
     const key=ref=>JSON.stringify([...SCOPE.map(k=>scope[k]),typeof ref==='string'?ref:ref.assetId]);
     function alive(){insist(!closed,'ASSET_CLOSED','写真の保存処理を終了しています');}
+    function guarded(validate){
+      alive();const result=validate();if(result&&typeof result.then==='function')Promise.resolve(result).catch(()=>{});
+      insist(result!==false&&!(result&&typeof result.then==='function'),
+        'ASSET_CONTEXT','写真の保存対象を同期的に確認できません');return true;
+    }
     function connect(){
       alive();if(db)return Promise.resolve(db);if(opening)return opening;
       const task=new Promise((resolve,reject)=>{
@@ -147,9 +176,7 @@
       opening=task;task.then(()=>{if(opening===task)opening=null;},()=>{if(opening===task)opening=null;});return task;
     }
     async function operation(ref,mode,mutate,validate=()=>{}){
-      const check=()=>{alive();const result=validate();if(result&&typeof result.then==='function')Promise.resolve(result).catch(()=>{});
-        insist(result!==false&&!(result&&typeof result.then==='function'),
-        'ASSET_CONTEXT','写真の保存対象を同期的に確認できません');};
+      const check=()=>guarded(validate);
       check();const connection=await connect();check();
       return new Promise((resolve,reject)=>{
         let tx;
@@ -210,25 +237,48 @@
       read(input){const ref=reference(input,scope);alive();return operation(ref,'readonly',row=>row);},
       async received(input,blob,{validate=()=>{},restoreArchived=false}={}){
         insist(typeof restoreArchived==='boolean','ASSET_ARCHIVE_CONTEXT','写真復元の指定を確認できません');
-        const ref=reference(input,scope);alive();await verifyBlob(blob,ref,{validate:()=>{alive();return validate();}});alive();
+        const ref=reference(input,scope);alive();
+        const independent=await byteBackedBlob(blob,ref,()=>guarded(validate));
         return operation(ref,'readwrite',row=>{
           insist(row,'ASSET_NOT_QUEUED','写真の受信予定を確認できません');
           // A repeated response cannot roll back an already acknowledged item.
           if(row.phase==='archived')insist(restoreArchived,'ASSET_ARCHIVED_COPY','この写真はPCへ保管済みです。復元操作から読み戻してください');
           else if(row.phase!=='waiting')return row;
-          return {...row,revision:nextRevision(row),phase:'received',blob,
+          return {...row,revision:nextRevision(row),phase:'received',blob:independent,
             localReceipt:{...receipt(ref,scope),verified:true},remoteReceipt:null};
         },validate);
       },
-      acknowledged(input,proof,{validate=()=>{}}={}){
+      async acknowledged(input,proof,{validate=()=>{}}={}){
         const ref=reference(input,scope),ack=copy(proof);alive();
         insist(matchesReceipt(ack,ref,scope)&&ack.durable===true,
           'ASSET_ACK_MISMATCH','この端末・写真の受領確認が一致しません');
+        const before=await operation(ref,'readonly',row=>row,validate);
+        insist(before&&['received','acknowledged'].includes(before.phase),'ASSET_NOT_DURABLE','写真本体を端末へ保存する前に完了扱いにはできません');
+        if(before.phase==='acknowledged')return before;
+        const independent=await byteBackedBlob(before.blob,ref,()=>guarded(validate));
         return operation(ref,'readwrite',row=>{
           insist(row&&['received','acknowledged'].includes(row.phase),'ASSET_NOT_DURABLE','写真本体を端末へ保存する前に完了扱いにはできません');
           if(row.phase==='acknowledged')return row;
-          return {...row,revision:nextRevision(row),phase:'acknowledged',remoteReceipt:ack};
+          insist(row.revision===before.revision,'ASSET_STORE_STALE','確認中に写真の保存状態が変わりました。現在の写真を保持しています');
+          return {...row,revision:nextRevision(row),phase:'acknowledged',blob:independent,remoteReceipt:ack};
         },validate);
+      },
+      async repairUnreadable(input,blob,{validate=()=>{}}={}){
+        const ref=reference(input,scope),check=()=>guarded(validate);check();
+        const before=await operation(ref,'readonly',row=>row,validate);check();
+        insist(before&&['received','acknowledged'].includes(before.phase),'ASSET_NOT_DURABLE','復旧する写真の受領記録を確認できません');
+        try{await verifyBlob(before.blob,ref,{validate:check});check();return {repaired:false,row:before};}
+        catch(error){check();if(error?.name!=='NotReadableError')throw error;}
+        // Only an unreadable redundant copy can be replaced, and only by bytes
+        // proving the same immutable identity. Originals/main files are not
+        // touched; a collision or changed receipt keeps the current row intact.
+        const independent=await byteBackedBlob(blob,ref,check);
+        const row=await operation(ref,'readwrite',current=>{
+          insist(current&&current.revision===before.revision&&current.phase===before.phase,
+            'ASSET_STORE_STALE','復旧の確認中に写真の保存状態が変わりました。現在の写真を保持しています');
+          return {...current,revision:nextRevision(current),blob:independent};
+        },validate);
+        return {repaired:true,row};
       },
       async releaseArchivedCopies(input){
         const plan=archivePlan(input,scope),validate=input.validate,check=()=>{alive();archiveCheck(validate);},candidates=[];check();
@@ -376,7 +426,7 @@
     return {complete:recordComplete&&photosComplete,recordsComplete:recordComplete,photosComplete,
       level:recordComplete&&photosComplete?'ok':recordComplete?'photos-waiting':'records-waiting'};
   }
-  const api={version:1,createIndexedDBStore,createQueue,combinedStatus,verifyBlob};
+  const api={version:1,byteBackedBlobVersion:1,createIndexedDBStore,createQueue,combinedStatus,verifyBlob};
   if(typeof module==='object'&&module.exports)module.exports=api;
   else root.SentlogDeltaAssets=api;
 })(typeof window!=='undefined'?window:globalThis);

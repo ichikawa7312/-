@@ -203,6 +203,17 @@ def open_drawing(page, drawing='memo-plan-a'):
       $('inspector').classList.add('open');await SentlogRecords.settled();}""", drawing)
 
 
+def reveal_first_photo(page):
+    # The camera's completion refresh can replace photo cards while Playwright
+    # waits for an old card to become stable. The grid itself is permanent:
+    # find and scroll its current first child within one synchronous operation.
+    page.locator('#photoGrid').evaluate("""grid=>{
+      const first=grid.firstElementChild;
+      if(!first||!first.classList.contains('photo-thumb'))throw Error('Expected a photo preview to reveal');
+      first.scrollIntoView({block:'nearest'});
+    }""")
+
+
 def boot_page(context, origin, errors):
     page = context.pages[0] if context.pages else context.new_page()
     page.set_default_timeout(30000)
@@ -300,7 +311,7 @@ def run(playwright, engine, root, report, report_path=None):
                         assert page.evaluate('SentlogContinuousCamera.isOpen()'), 'Done discarded a save still in flight'
                         page.evaluate('heavyResources.release()')
                         page.wait_for_function('!SentlogContinuousCamera.isOpen()')
-                        page.locator('#photoGrid .photo-thumb').first.scroll_into_view_if_needed()
+                        reveal_first_photo(page)
                         page.wait_for_function('heavyResources.close.ready!==null')
                         closes.append(page.evaluate('heavyResources.closeResult()'))
                     else:
@@ -355,7 +366,7 @@ def run(playwright, engine, root, report, report_path=None):
                             expect(page.locator('#slCameraShutter')).to_be_enabled()
                             page.locator('#slCameraDone').click()
                             page.wait_for_function('!SentlogContinuousCamera.isOpen()')
-                            page.locator('#photoGrid .photo-thumb').first.scroll_into_view_if_needed()
+                            reveal_first_photo(page)
                             page.wait_for_function('count=>photoPerformance.thumbnailsReadyState(count).ready', arg=40+number)
                         assert page.evaluate('cameraMock.calls') == calls, 'Plain reopen repeatedly requested camera access'
                         reopened = page.evaluate('heavyResources.snapshot()')
