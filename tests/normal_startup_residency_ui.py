@@ -10,6 +10,7 @@ import copy
 import functools
 import hashlib
 import json
+import platform
 import struct
 import tempfile
 import threading
@@ -123,8 +124,51 @@ ASSET_ROUNDTRIP = r"""async ({ownerId,projectId,deviceId,drawingId,sha256,size})
     if((await observe('after-ack-before-close')).phase!=='acknowledged')throw Error('The real asset ACK did not commit');
     store.close();probe.phase='reopen-after-ack';store=SentlogDeltaAssets.createIndexedDBStore({...scope,databaseName:name});
     if((await observe('after-reopen')).phase!=='acknowledged')throw Error('The acknowledged asset did not survive reopening');
+    // Independent native byte controls distinguish Blob/File lifetime from
+    // application ACK updates. The product never opens this test-only DB.
+    probe.phase='save-independent-byte-controls';const bytes=new Uint8Array(await initial.main.arrayBuffer());
+    const db=await h.request(indexedDB.open(name));try{
+      const tx=db.transaction('assets','readwrite'),done=h.completed(tx),s=tx.objectStore('assets');
+      s.put(new Blob([new Uint8Array(bytes)],{type:'image/png'}),'control:blob');
+      s.put(new File([new Uint8Array(bytes)],'synthetic-control.png',{type:'image/png',lastModified:1}),'control:file');
+      s.put(new Uint8Array(bytes),'control:array');await done;
+    }finally{db.close();}
     probe.phase='passed';return probe;
   }finally{store.close();}
+}"""
+
+BYTE_DIAGNOSTIC = r"""async ({phase,ownerId,projectId,deviceId,drawingId,assetId,sha256,size})=>{
+  const h=__operationHelpers,name='sentlog-delta-assets-test-normal-native',ids=[ownerId,projectId,deviceId];
+  const targets=[
+    {kind:'main',database:'surveyFieldNoteDB',store:'files',key:'photo:'+drawingId+':preview-0'},
+    {kind:'original',database:'sentlog-original-photos-v1',store:'photos',key:drawingId+':original'},
+    {kind:'probe-asset',database:name,store:'assets',key:JSON.stringify([...ids,'normal-native-probe']),rowBlob:true},
+    {kind:'control-blob',database:name,store:'assets',key:'control:blob'},
+    {kind:'control-file',database:name,store:'assets',key:'control:file'},
+    {kind:'control-array',database:name,store:'assets',key:'control:array'},
+    {kind:'production-asset',database:'sentlog-delta-assets-v1',store:'assets',key:JSON.stringify([...ids,assetId]),rowBlob:true,mayBeAbsent:true}
+  ];
+  const available=new Set((await indexedDB.databases()).map(db=>db.name)),observations=[];
+  for(const target of targets){const entry={kind:target.kind,database:target.database,key:target.key};observations.push(entry);
+    if(!available.has(target.database)){entry.status=target.mayBeAbsent?'not-created':'failed';if(!target.mayBeAbsent)entry.error='Expected native database is missing';continue;}
+    let db;
+    try{db=await h.request(indexedDB.open(target.database));const tx=db.transaction(target.store,'readonly'),done=h.completed(tx);
+      const row=await h.request(tx.objectStore(target.store).get(target.key));await done;
+      if(row===undefined&&target.mayBeAbsent){entry.status='not-created';continue;}
+      const value=target.rowBlob?row?.blob:row;entry.rowPhase=target.rowBlob?row?.phase:undefined;
+      if(value instanceof Blob){entry.size=value.size;entry.type=value.type;entry.file=value instanceof File;
+        if(value instanceof File){entry.name=value.name;entry.lastModified=value.lastModified;}
+        entry.sha256=await h.digest(value);
+      }else if(ArrayBuffer.isView(value)){
+        entry.size=value.byteLength;entry.type=value.constructor.name;
+        entry.sha256=[...new Uint8Array(await crypto.subtle.digest('SHA-256',new Uint8Array(value.buffer,value.byteOffset,value.byteLength)))].map(v=>v.toString(16).padStart(2,'0')).join('');
+      }else throw Error('Expected native Blob/File/byte array is missing');
+      if(entry.size!==size||entry.sha256!==sha256)throw Error('Native bytes do not match the immutable fixture input');
+      entry.status='matched';
+    }catch(error){entry.status='failed';entry.error={name:error.name,message:error.message};}
+    finally{db?.close();}
+  }
+  return {phase,url:location.href,documentId:window.__storageAudit?.documentId,factories:window.__normalResidency?.factories,observations};
 }"""
 
 RETAIN_HISTORY = r"""async ({drawingId,memo})=>{
@@ -252,12 +296,13 @@ def main():
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
     root, out = args.built_root.resolve(), args.out.resolve()
-    assert out.is_relative_to(Path("/tmp"))
+    assert out.is_relative_to(Path("/tmp").resolve())
     out.mkdir(parents=True, exist_ok=True)
     assert package_version("playwright") == "1.62.0"
     report = dict(format="sentlog-normal-startup-residency-v1", status="running", engine=args.engine,
+        platform=platform.system(),architecture=platform.machine(),
         importingOverride=False, syntheticServices=True, externalWritesCompleted=0, nativeIndexedDB=True,
-        physicalDeviceTested=False, physicalMemoryMeasured=False, phases=[], actions=[], pageErrors=[], crashes=[], observations=[])
+        physicalDeviceTested=False, physicalMemoryMeasured=False, phases=[], actions=[], pageErrors=[], crashes=[], observations=[], byteDiagnostics=[])
     report["sourceModules"]=[dict(path="sentlog/"+name,sha256=hashlib.sha256((root/"sentlog"/name).read_bytes()).hexdigest())
         for name in ["index.html","record-store.js","delta-sync-app-runtime.js","delta-sync-core.js","delta-sync-indexeddb.js","delta-sync-assets.js","delta-sync-asset-runtime.js","photo-thumbnails.js","cloud-sync.js"]]
     destination = out / "result.json"
@@ -285,6 +330,8 @@ def main():
         photo = png(); raw = packs(photo)
         ids = [p["drawings"][0]["meta"]["id"] for p in raw]
         cps = [dict(id="55555555-5555-4555-8555-"+str(555555555550+i), client_key=p["project"]["id"], name=p["project"]["name"], status="active") for i,p in enumerate(raw)]
+        byte_parameters=dict(ownerId=collaboration.OWNER,projectId=cps[0]["id"],deviceId=collaboration.B,drawingId=ids[0],
+            assetId="77777777-7777-4777-8777-777777777700",sha256=hashlib.sha256(photo).hexdigest(),size=len(photo))
         from playwright.sync_api import sync_playwright
         with tempfile.TemporaryDirectory(prefix="sentlog-normal-residency-", dir="/tmp") as profile, bounded_playwright(sync_playwright) as playwright:
             def launch():
@@ -306,6 +353,9 @@ def main():
                     cloud.pump(); page.wait_for_timeout(50)
             def shot(label):
                 with deadline(12, "native screenshot"): page.screenshot(path=str(out/(label+".png")), full_page=True, timeout=10000)
+            def observe_bytes(phase):
+                value=evaluate_async(page,BYTE_DIAGNOSTIC,dict(phase=phase,**byte_parameters),label="read-only native byte diagnostic")
+                report["byteDiagnostics"].append(value);write_json(destination,report)
             def ready():
                 page.locator("#sentlogSettingsBtn").wait_for(state="visible", timeout=45000)
                 evaluate_async(page, "async()=>await sentlogAppReady", label="normal app readiness")
@@ -327,6 +377,7 @@ def main():
             def observe_failure():
                 if page and not page.is_closed():
                     try:
+                        observe_bytes("after-failure")
                         with deadline(5,"failure observation"):
                             report["lastNativeState"]=page.evaluate("({audit:window.__storageAudit?.report(),residency:window.__normalResidency,photo:window.SentlogPhotoThumbnails?.status(),assetProbe:window.__normalAssetProbe})")
                         page.screenshot(path=str(out/"failure.png"),timeout=5000,full_page=True)
@@ -344,6 +395,10 @@ def main():
                 report["assetByteLifetime"]=evaluate_async(page,ASSET_ROUNDTRIP,
                     dict(ownerId=collaboration.OWNER,projectId=cps[0]["id"],deviceId=collaboration.B,drawingId=ids[0],sha256=hashlib.sha256(photo).hexdigest(),size=len(photo)),
                     label="native asset byte lifetime")
+                observe_bytes("before-navigation")
+                progress("isolated-empty-page-navigation")
+                page.goto(origin+FIXTURE+"?after-seed",wait_until="load")
+                observe_bytes("after-empty-page-navigation")
                 assets=[]
                 for index, metadata in enumerate(canonical[0]["drawings"][0]["state"]["shapes"][0]["photos"]):
                     aid="77777777-7777-4777-8777-"+str(777777777700+index); path="synthetic/residency/"+aid+".png"
@@ -355,9 +410,10 @@ def main():
                 backend.admin(op="seed", ownerId=collaboration.OWNER, devices=[dict(id=collaboration.B,name="合成iPhone")],
                     projects=[dict(**cp,payload=pack) for cp,pack in zip(cps,canonical)], assets=assets, rollout=True)
                 progress("normal-authenticated-automatic-migration")
-                page.goto(origin+"/sentlog/", wait_until="domcontentloaded"); ready()
+                page.goto(origin+"/sentlog/", wait_until="domcontentloaded");observe_bytes("after-normal-navigation");ready()
                 wait(lambda: page.evaluate("ids=>ids.every(id=>SentlogRecords.deltaJournal.bindingStateFor(id)?.phase==='active' && sentlogDeltaRuntime.isActive(id))", [cp["client_key"] for cp in cps]), "Automatic normal startup did not activate every synthetic project", 120)
                 evaluate_async(page, "async()=>{await SentlogRecords.settled();await sentlogCloudIdle();}", label="initial automatic synchronization")
+                observe_bytes("after-normal-automatic-sync")
 
                 progress("retain-offline-edit-and-unique-history")
                 context.set_offline(True)
@@ -435,6 +491,7 @@ def main():
                 assert {k:v for k,v in current.items() if k!="collab"}=={k:v for k,v in previous.items() if k!="collab"},"Pending edit changed business values"
                 report["preservedNativeBytesAndUnsentEdit"]=True
                 assert not cloud.unexpected and not cloud.sql_errors and not report["pageErrors"] and not report["crashes"],dict(unexpected=cloud.unexpected,sql=cloud.sql_errors,errors=report["pageErrors"],crashes=report["crashes"])
+                assert all(entry["status"]!="failed" for phase in report["byteDiagnostics"] for entry in phase["observations"]),"A native byte lifetime diagnostic failed"
                 report["status"]="passed"
             except Exception:
                 observe_failure()

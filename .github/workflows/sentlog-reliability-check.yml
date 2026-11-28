@@ -158,3 +158,52 @@ jobs:
             /tmp/sentlog-page-replacement-context-${{ matrix.engine }}/**/*.png
           if-no-files-found: error
           retention-days: 14
+  normal-webkit-macos:
+    name: normal authenticated startup (WebKit, macOS)
+    runs-on: macos-15-intel
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build and check the exact production app
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import subprocess
+          lines=Path('.github/workflows/pages.yml').read_text().splitlines()
+          marker='      - name: Build archive, management and capacity integration'
+          assert lines.count(marker)==1
+          start=lines.index(marker)+1
+          assert lines[start].strip()=='run: |'
+          commands=[]
+          for line in lines[start+1:]:
+              if not line.startswith('          '):break
+              commands.append(line[10:])
+          assert 'python3 scripts/build_iphone_stability_release.py' in commands
+          subprocess.run(['bash','-e','-o','pipefail','-c','\n'.join(commands)],check=True)
+          PY
+      - name: Install the matching native macOS WebKit
+        run: |
+          python -m pip install --disable-pip-version-check playwright==1.62.0
+          python -m playwright install webkit
+          npm install --prefix "$RUNNER_TEMP/sentlog-residency-deps" --ignore-scripts --no-audit --no-fund --save-exact @electric-sql/pglite@0.5.17
+      - name: Verify normal authenticated startup and native touch editing
+        timeout-minutes: 7
+        run: NODE_PATH="$RUNNER_TEMP/sentlog-residency-deps/node_modules" python tests/normal_startup_residency_ui.py --engine webkit --built-root . --out /tmp/sentlog-normal-residency-webkit-macos
+      - name: Preserve native macOS validation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sentlog-preservation-webkit-macos-${{ github.run_attempt }}
+          path: |
+            /tmp/sentlog-normal-residency-webkit-macos/**/*.json
+            /tmp/sentlog-normal-residency-webkit-macos/**/*.png
+          if-no-files-found: error
+          retention-days: 14
