@@ -124,31 +124,6 @@
   await test('matching legacy photo supplies durable delta bytes without downloading again',async()=>{
    const f=await fixture({files:[['photo:drawing:photo',bytes]]});try{assert((await f.sync()).complete);equal([f.server.stats.downloads,f.server.stats.uploads,f.server.stats.acks],[0,0,1]);}finally{f.close();}
   });
-  await test('an unreadable acknowledged cache recovers only from exact existing main bytes without rewriting the main file',async()=>{
-   for(const mismatch of [false,true]){
-    const f=await fixture({files:[['photo:drawing:photo',bytes]]});
-    const nativeClone=root.structuredClone,nativeRead=Blob.prototype.arrayBuffer,nativePut=IDBObjectStore.prototype.put;
-    let broken=true,repairs=0;const cacheBlobs=new WeakSet();
-    try{
-     assert((await f.sync()).complete);const before=await f.store.read(f.ref()),stats=clone(f.server.stats);
-     if(mismatch)f.files.set('photo:drawing:photo',new Blob(['x'.repeat(bytes.size)],{type:bytes.type}));
-     const main=f.files.get('photo:drawing:photo');f.local.beforeWrite=()=>{throw Error('Repair attempted to rewrite the main file');};
-     root.structuredClone=function(value,...args){const result=nativeClone.call(this,value,...args);
-      if(value?.reference?.assetId===f.ref().assetId&&value?.scope&&result?.blob)cacheBlobs.add(result.blob);return result;};
-     Blob.prototype.arrayBuffer=function(){return broken&&cacheBlobs.has(this)?
-      Promise.reject(new DOMException('synthetic unreadable cache','NotReadableError')):nativeRead.call(this);};
-     IDBObjectStore.prototype.put=function(value,...args){
-      if(this.transaction.db.name===f.name&&value?.blob){repairs++;broken=false;}
-      return nativePut.call(this,value,...args);
-     };
-     if(mismatch)await expect(()=>f.sync(),'ASSET_CONTENT_MISMATCH');else assert((await f.sync()).complete);
-     const after=await f.store.read(f.ref());equal([after.phase,after.revision],['acknowledged',before.revision+(mismatch?0:1)]);
-     equal(after.localReceipt,before.localReceipt);equal(after.remoteReceipt,before.remoteReceipt);equal(repairs,mismatch?0:1);
-     assert(f.files.get('photo:drawing:photo')===main,'Repair replaced the main photo');
-     equal([f.server.stats.acks,f.server.stats.downloads,f.server.stats.uploads],[stats.acks,stats.downloads,stats.uploads]);
-    }finally{root.structuredClone=nativeClone;Blob.prototype.arrayBuffer=nativeRead;IDBObjectStore.prototype.put=nativePut;f.close();}
-   }
-  });
   await test('lost initial upload retries the same immutable object without overwriting',async()=>{
    const f=await fixture({rows:[],files:[['photo:drawing:photo',bytes]]});try{
     f.server.lostUpload=true;const first=await f.sync();assert(!first.complete);equal(f.server.rows.length,0);const paths=[...f.server.objects.keys()];

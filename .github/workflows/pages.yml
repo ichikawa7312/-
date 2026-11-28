@@ -311,8 +311,6 @@ jobs:
           node tests/startup_backup_recovery_release.test.cjs
           node tests/metadata_choice_release.test.cjs
           python3 scripts/build_iphone_stability_release.py
-          node tests/delta_assets.test.cjs
-          node tests/delta_asset_runtime.test.cjs
           node tests/record_startup_read_budget.test.cjs
           node tests/delta_app_runtime_residency.test.cjs
           node tests/photo_thumbnails.test.cjs

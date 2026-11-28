@@ -622,16 +622,37 @@ def run_orientation(page, engine, screenshot_dir=None):
         page.wait_for_function("""({image,name})=>{
           if(!image.isConnected||image.closest('.photo-thumb')?.title!==name)
             throw Error('Photo-list image changed while loading');
-          return !!image.getAttribute('src')&&image.complete&&image.naturalWidth>0&&image.naturalHeight>0;
+          const rect=image.getBoundingClientRect();
+          return !!image.getAttribute('src')&&!!image.currentSrc&&image.complete&&image.naturalWidth>0&&image.naturalHeight>0&&
+            getComputedStyle(image).visibility==='visible'&&rect.width>0&&rect.height>0&&
+            rect.right>0&&rect.left<innerWidth&&rect.bottom>0&&rect.top<innerHeight;
         }""", arg={'image': image, 'name': name}, timeout=5000)
-        return image.evaluate(r"""async image=>{
-          const source=image.currentSrc||image.src;
-          if(!image.isConnected||!source)throw Error('Photo-list image is no longer current');
-          const pixels=await (""" + IMAGE_PIXELS + r""")(image);
-          if(!image.isConnected||(image.currentSrc||image.src)!==source)
-            throw Error('Photo list changed during pixel verification');
-          return pixels;
-        }""")
+        return image.evaluate(r"""async (image,name)=>{
+          const source=image.currentSrc,attributeSource=image.getAttribute('src');
+          const current=()=>{
+            const rect=image.getBoundingClientRect();
+            return !!source&&!!attributeSource&&image.isConnected&&image.getAttribute('src')===attributeSource&&
+              image.currentSrc===source&&image.complete&&image.naturalWidth>0&&image.naturalHeight>0&&
+              image.closest('.photo-thumb')?.title===name&&getComputedStyle(image).visibility==='visible'&&
+              rect.width>0&&rect.height>0&&rect.right>0&&rect.left<innerWidth&&rect.bottom>0&&rect.top<innerHeight;
+          };
+          if(!current())throw Error('Photo-list image is no longer current');
+          await image.decode();
+          // Match the review's asynchronous-image paint boundary. Sample the
+          // same visible node once; a failed pixel assertion is never retried.
+          let deadline;
+          try{
+            await Promise.race([
+              new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))),
+              new Promise((_,reject)=>{deadline=setTimeout(()=>reject(Error('Photo-list paint did not finish')),5000);})
+            ]);
+          }finally{clearTimeout(deadline);}
+          if(!current())throw Error('Photo list changed before pixel verification');
+          const pixels=await (""" + IMAGE_PIXELS + r""")(image,{decoded:true});
+          if(!current())throw Error('Photo list changed during pixel verification');
+          return {...pixels,ready:{connected:image.isConnected,complete:image.complete,
+            source,attributeSource,visibility:getComputedStyle(image).visibility,viewport:[innerWidth,innerHeight]}};
+        }""", name)
 
     devices = [
         ('iPhone', {'userAgent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_4 like Mac OS X) AppleWebKit/605.1.15 Version/18.4 Mobile/15E148 Safari/604.1',

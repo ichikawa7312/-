@@ -60,6 +60,9 @@ OBSERVE = r"""(() => {
   };
 })();"""
 
+SERVICE_NETWORK = r"""window.__fixtureOffline=false;
+Object.defineProperty(navigator,'onLine',{configurable:true,get:()=>!window.__fixtureOffline});"""
+
 SEED = r"""async ({packs,encoded,owner,device})=>{
   const R=SentlogRecords,C=SentlogRecordCollaboration,h=__operationHelpers;
   // Large existing records belong in the application's native store. Staging
@@ -168,7 +171,8 @@ BYTE_DIAGNOSTIC = r"""async ({phase,ownerId,projectId,deviceId,drawingId,assetId
     }catch(error){entry.status='failed';entry.error={name:error.name,message:error.message};}
     finally{db?.close();}
   }
-  return {phase,url:location.href,documentId:window.__storageAudit?.documentId,factories:window.__normalResidency?.factories,observations};
+  return {phase,url:location.href,documentId:window.__storageAudit?.documentId,factories:window.__normalResidency?.factories,
+    writes:window.__storageAudit?.report().writes||[],observations};
 }"""
 
 RETAIN_HISTORY = r"""async ({drawingId,memo})=>{
@@ -248,9 +252,16 @@ class Cloud(delta.Cloud):
         super().__init__(origin, root, engine, backend)
         self.hold_project, self.held, self.traffic = None, [], []
         self.built_root = root
+        self.offline_aborts = []
 
     def route(self, route, device):
         request, url = route.request, urlparse(route.request.url)
+        # Fail the real service requests, including preflights, without asking
+        # Playwright's WebKit patch to disable unrelated blob: reads as well.
+        if url.scheme in ("http", "https") and url.netloc == "wiulvaqixphuobdielyy.supabase.co" and device in self.offline:
+            self.offline_aborts.append(dict(path=url.path,method=request.method,device=device))
+            route.abort("internetdisconnected")
+            return
         if request.url.startswith("https://cdnjs.cloudflare.com/ajax/libs/pdf.js/"):
             name = "export-pdf.worker.min.js" if "worker" in url.path else "export-pdf.min.js"
             route.fulfill(content_type="text/javascript", body=(self.built_root / "sentlog/vendor" / name).read_bytes())
@@ -278,6 +289,11 @@ class Cloud(delta.Cloud):
                     notice["project_id"] = body["p_project_id"]
         return result
 
+    def pump(self):
+        if collaboration.B in self.offline:
+            return
+        super().pump()
+
     def release(self):
         self.hold_project = None
         held, self.held = self.held, []
@@ -287,6 +303,31 @@ class Cloud(delta.Cloud):
 
 def write_json(path, value):
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n")
+
+
+def classify_network_emulation(before, during, after, engine):
+    expected = {"main", "original", "probe-asset", "control-blob", "control-file"}
+    required = expected | {"control-array"}
+    assert before["documentId"] == during["documentId"] == after["documentId"]
+    assert before["url"] == during["url"] == after["url"]
+    assert not any(item["writes"] or item["factories"] for item in (before, during, after)), "The isolated emulator probe performed application work"
+    maps = [{item["kind"]:item for item in phase["observations"]} for phase in (before,during,after)]
+    for entries in (maps[0],maps[2]):
+        assert all(entries[k]["status"] == "matched" for k in required), "Native bytes failed outside the isolated offline emulator"
+        assert entries["production-asset"]["status"] == "not-created"
+    assert all(maps[0][k]["sha256"] == maps[2][k]["sha256"] for k in required), "Native bytes changed across the isolated emulator"
+    failures = {kind for kind,item in maps[1].items() if item["status"] == "failed"}
+    if failures:
+        assert engine == "webkit" and failures == expected, "The isolated failure does not match the known WebKit emulator boundary"
+        assert all(maps[1][kind]["error"].get("name") == "NotReadableError" for kind in failures)
+        assert maps[1]["control-array"]["status"] == "matched" and maps[1]["control-array"]["sha256"] == maps[0]["control-array"]["sha256"]
+        assert maps[1]["production-asset"]["status"] == "not-created"
+        classification = "expected-playwright-webkit-offline-blob-read-failure"
+    else:
+        assert all(maps[1][k]["status"] == "matched" and maps[1][k]["sha256"] == maps[0][k]["sha256"] for k in required)
+        classification = "native-bytes-readable-during-emulation"
+    return dict(classification=classification,noProductScript=True,noDatabaseWrites=True,
+        failedDuringOffline=sorted(failures),exactBytesRecoveredWithoutWrites=True)
 
 
 def main():
@@ -338,7 +379,7 @@ def main():
                 with deadline(45, "persistent native browser"):
                     ctx = getattr(playwright, args.engine).launch_persistent_context(profile, headless=True,
                         viewport={"width": 390, "height": 844}, is_mobile=True, has_touch=True, service_workers="block", timeout=30000)
-                ctx.add_init_script(AUDIT + HELPERS + OBSERVE + collaboration.SOCKET.replace("revision:v.revision}", "revision:v.revision,seq:v.seq}"))
+                ctx.add_init_script(AUDIT + HELPERS + OBSERVE + SERVICE_NETWORK + collaboration.SOCKET.replace("revision:v.revision}", "revision:v.revision,seq:v.seq}"))
                 if args.engine == "webkit": ctx.add_init_script(collaboration.WEBKIT_STORAGE_BODY)
                 ctx.route("**/*", lambda route: cloud.route(route, collaboration.B))
                 tab = ctx.pages[0] if ctx.pages else ctx.new_page(); tab.set_default_timeout(30000)
@@ -356,6 +397,7 @@ def main():
             def observe_bytes(phase):
                 value=evaluate_async(page,BYTE_DIAGNOSTIC,dict(phase=phase,**byte_parameters),label="read-only native byte diagnostic")
                 report["byteDiagnostics"].append(value);write_json(destination,report)
+                return value
             def ready():
                 page.locator("#sentlogSettingsBtn").wait_for(state="visible", timeout=45000)
                 evaluate_async(page, "async()=>await sentlogAppReady", label="normal app readiness")
@@ -399,6 +441,16 @@ def main():
                 progress("isolated-empty-page-navigation")
                 page.goto(origin+FIXTURE+"?after-seed",wait_until="load")
                 observe_bytes("after-empty-page-navigation")
+                # No product script is loaded on this page. Toggling only the
+                # browser's network emulation cannot be confused with sync or
+                # an application write; every byte read remains mandatory.
+                progress("isolated-offline-emulation-boundary")
+                offline_before=observe_bytes("empty-page-before-offline")
+                context.set_offline(True)
+                offline_during=observe_bytes("empty-page-immediately-offline")
+                context.set_offline(False)
+                offline_after=observe_bytes("empty-page-online-restored-no-app-writes")
+                report["offlineEmulationBoundary"]=classify_network_emulation(offline_before,offline_during,offline_after,args.engine)
                 assets=[]
                 for index, metadata in enumerate(canonical[0]["drawings"][0]["state"]["shapes"][0]["photos"]):
                     aid="77777777-7777-4777-8777-"+str(777777777700+index); path="synthetic/residency/"+aid+".png"
@@ -416,13 +468,24 @@ def main():
                 observe_bytes("after-normal-automatic-sync")
 
                 progress("retain-offline-edit-and-unique-history")
-                context.set_offline(True)
+                observe_bytes("before-offline-pending-edit")
+                cloud.offline.add(collaboration.B)
+                page.evaluate("()=>{window.__fixtureOffline=true;window.dispatchEvent(new Event('offline'));}")
+                aborted_before=len(cloud.offline_aborts)
+                rejected=evaluate_async(page,"async()=>{try{await fetch('https://wiulvaqixphuobdielyy.supabase.co/rest/v1/sentlog_projects?select=id',{cache:'no-store'});return false;}catch{return true;}}",label="actual service-network rejection")
+                assert rejected and len(cloud.offline_aborts)>aborted_before and not page.evaluate("navigator.onLine"),"The offline fixture did not reject a real service fetch"
+                hint=dict(kind="delta",project_id=cps[0]["id"],seq=0);cloud.notifications.append(hint)
+                queued=copy.deepcopy(cloud.notifications);cloud.pump()
+                assert cloud.notifications==queued and cloud.notifications.pop() is hint,"Offline Realtime pumping consumed a queued hint"
+                report["serviceOfflineProof"]=dict(realFetchRejected=True,abortedRequests=len(cloud.offline_aborts)-aborted_before,realtimeSuppressed=True,queuedHintPreserved=True)
+                observe_bytes("transport-offline-before-pending-edit")
                 retained = evaluate_async(page, RETAIN_HISTORY, dict(drawingId=ids[-1],memo=PENDING_MEMO), label="pre-existing unsent edit")
                 parameters=dict(retained=retained,ids=ids)
                 before=evaluate_async(page, PROOF, parameters, label="protected native byte proof")
                 report["fixture"] = dict(projects=PROJECTS,recordsPerProject=32,visiblePhotoMetadata=14,photoBytes=len(photo),protectedRows=len(retained),cutoffFiles=len(before["cutoffFiles"]))
                 with deadline(15,"close seeded native profile"): context.close()
                 context=None
+                cloud.offline.discard(collaboration.B)
 
                 progress("ordinary-restart-with-background-sync")
                 cloud.hold_project=cps[-1]["id"]
@@ -491,7 +554,10 @@ def main():
                 assert {k:v for k,v in current.items() if k!="collab"}=={k:v for k,v in previous.items() if k!="collab"},"Pending edit changed business values"
                 report["preservedNativeBytesAndUnsentEdit"]=True
                 assert not cloud.unexpected and not cloud.sql_errors and not report["pageErrors"] and not report["crashes"],dict(unexpected=cloud.unexpected,sql=cloud.sql_errors,errors=report["pageErrors"],crashes=report["crashes"])
-                assert all(entry["status"]!="failed" for phase in report["byteDiagnostics"] for entry in phase["observations"]),"A native byte lifetime diagnostic failed"
+                for phase in report["byteDiagnostics"]:
+                    if phase["phase"]=="empty-page-immediately-offline" and report["offlineEmulationBoundary"]["classification"]=="expected-playwright-webkit-offline-blob-read-failure":
+                        continue  # Strictly classified above; no product script or writes occurred.
+                    assert all(entry["status"]!="failed" for entry in phase["observations"]),"A real native byte lifetime diagnostic failed"
                 report["status"]="passed"
             except Exception:
                 observe_failure()
@@ -503,7 +569,7 @@ def main():
     except Exception as error:
         report["status"]="failed";report["error"]=str(error)[:5000]
     finally:
-        if cloud:report["traffic"]=cloud.traffic;report["sqlErrors"]=cloud.sql_errors;report["unexpectedRequests"]=cloud.unexpected
+        if cloud:report["traffic"]=cloud.traffic;report["sqlErrors"]=cloud.sql_errors;report["unexpectedRequests"]=cloud.unexpected;report["offlineServiceAborts"]=cloud.offline_aborts
         if backend:backend.close()
         server.shutdown();server.server_close();report["fixtureSHA256"]=hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
         progress("finished");print(json.dumps(dict(status=report["status"],error=report.get("error"),report=str(destination))),flush=True)
