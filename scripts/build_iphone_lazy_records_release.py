@@ -82,7 +82,11 @@ lazy=r'''  // iOS WebKit keeps every IndexedDB cursor value in this JS process. 
   }
   async function ensureDrawingLoaded(id){
     if(typeof id!=='string'||!id)throw recordNotLoaded('図面ID');
-    return ensureRecordLoaded(DRAW+id);
+    const value=await ensureRecordLoaded(DRAW+id);
+    // A missing drawing is NOT an empty drawing. Never let either the editor
+    // or legacy snapshot publish an empty state for a referenced drawing.
+    if(value===null)throw recordNotLoaded(DRAW+id);
+    return value;
   }
   async function ensureProjectLoaded(localProjectId){
     assertReady();if(!lazyRecordStartup)return true;
@@ -156,8 +160,20 @@ change(cloud,"      try{\n        context.assertCurrent();const cycleAssets=new 
        "      try{\n        if(window.SentlogRecords.lazyStartup){await window.SentlogRecords.ensureProjectLoaded(id);context.assertCurrent();}\n        context.assertCurrent();const cycleAssets=new Map();files+=await pullProjectAssets(cp,metadata.deviceId,cycleAssets);")
 # Eviction is only after both metadata and file checks of a project; never
 # while a retained in-flight editor snapshot is being used by that worker.
-change(cloud,"        const failure=collaborationProjectFailure(id,lp.name||cp.name,stage,error);collaborationFileFailures.set(id,failure);retryById[id]=failure.retryAt;\n      }\n    }\n    await window.SentlogRecords.settled()",
-       "        const failure=collaborationProjectFailure(id,lp.name||cp.name,stage,error);collaborationFileFailures.set(id,failure);retryById[id]=failure.retryAt;\n      }finally{window.SentlogRecords.evictProject?.(id);}\n    }\n    await window.SentlogRecords.settled()")
+# Eviction is attempted only after an entire file project finishes. The
+# same safe check below also covers the metadata round, so 15 projects cannot
+# collect 15 hydrated copies before the asset stage begins. The writer itself
+# refuses eviction while a drawing is active or records are being saved.
+cloud_value=source(cloud)
+for marker, replacement in [
+    ('collaborationMetadataFailures.set(id,failure);failed.add(id);defer(id,cp,failure.retryAt);\n    }\n  }\n  for(const id of needsFiles)',
+     'collaborationMetadataFailures.set(id,failure);failed.add(id);defer(id,cp,failure.retryAt);\n    }finally{window.SentlogRecords.evictProject?.(id);}\n  }\n  for(const id of needsFiles)'),
+    ('collaborationFileFailures.set(id,failure);retryById[id]=failure.retryAt;\n      }\n    }\n    await window.SentlogRecords.settled()',
+     'collaborationFileFailures.set(id,failure);retryById[id]=failure.retryAt;\n      }finally{window.SentlogRecords.evictProject?.(id);}\n    }\n    await window.SentlogRecords.settled()')]:
+    if cloud_value.count(marker)!=1:
+        raise RuntimeError(f'Expected one compiled sync release boundary: {marker[:90]} ({cloud_value.count(marker)})')
+    cloud_value=cloud_value.replace(marker,replacement)
+pending[cloud]=cloud_value
 
 for name in ['record-store','delta-sync-app-runtime','delta-sync-app-journal','cloud-sync']:
     path='sentlog/'+name+'.js';pending[path]='// '+MARKER+'\n'+source(path)
