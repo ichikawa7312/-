@@ -94,13 +94,13 @@
     if(!histories.has(k))histories.set(k,{undo:[],redo:[]});
     const h=histories.get(k);h.undo.push({before:copy(before),after:copy(after)});if(h.undo.length>80)h.undo.shift();h.redo=[];updateButtons();
   }
-  function mutate(fn,afterPersist){
+  function mutate(fn,afterPersist,{deferRender=false}={}){
     const before=copy(state),selection=selected;managed++;
     try{fn();rebuildNumberingState();persist();recordHistory(before,state);}
     catch(e){state=before;selected=selection;throw e;}
     finally{managed--;}
     if(afterPersist)afterPersist();
-    render();renderSelectedPhotos();refresh();
+    if(!deferRender){render();renderSelectedPhotos();refresh();}
   }
   function flushDraft(){
     stopTimer();if(!draft||composing||finishingComposition||draft.compositionPending||draft.text===draft.savedText||(!draft.text.trim()&&!draft.headIds?.length))return false;
@@ -186,6 +186,12 @@
     if(old)saveDecisions(old,decisionQueue);
     const next=decisionQueue.shift();if(next){showDecision(next);return;}
   }
+  function localDecisionApplied(d,target){
+    if(!d?.localRevisionId||!target?.collab)return false;
+    const revisions=d.kind==='delete'?target.collab.deletion?.revisions:
+      d.kind==='field'?target.collab.fields?.[d.key]?.revisions:null;
+    return Array.isArray(revisions)&&revisions.some(row=>row.id===d.localRevisionId);
+  }
   async function confirmDecision({localOnly=false}={}){
     const d=decision;if(!d||confirmation)return;
     const attempt={decision:d,controller:new AbortController()};confirmation=attempt;
@@ -194,6 +200,10 @@
       if(localOnly){
         if(d.kind!=='delete'&&d.kind!=='field')throw Error('この操作の端末内保存には対応していません。');
         if(root.SentlogRecords?.ready===false)throw Error('端末内の保存先を確認できません。変更せず停止しました。');
+        // Fail before touching a record if older uncommitted edits cannot
+        // reach the native IndexedDB writer.
+        if(typeof root.SentlogRecords?.flush==='function')await root.SentlogRecords.flush();
+        else if(typeof root.SentlogRecords?.settled==='function')await root.SentlogRecords.settled();
         root.SentlogRecords?.assertSafe?.();
       }else{
         if(!navigator.onLine&&d.kind!=='comment-edit')throw Error('最新の共有記録を確認できません。端末内に変更を記録する場合は、下の「この端末に変更を保存」を選んでください。');
@@ -204,8 +214,19 @@
         if(checked?.fresh!==true)throw Error('最新の記録をまだ確認できていません。変更内容を保持しています。');
       }
       if(decision!==d||confirmation!==attempt||attempt.controller.signal.aborted)return;
-      if(!sameDrawing(d)||selected!==d.selectionAtOpen)throw Error('アカウントまたは選択中の記録が変わりました。変更内容を元の記録に残しています。');
+      // A rejected disk flush may leave a local mutation in memory. Retry
+      // only the same exact recorded revision, never append another deletion.
+      const alreadyApplied=localOnly&&localDecisionApplied(d,currentTarget(d));
+      if(!sameDrawing(d)||(!alreadyApplied&&selected!==d.selectionAtOpen))
+        throw Error('アカウントまたは選択中の記録が変わりました。変更内容を元の記録に残しています。');
       const target=currentTarget(d);if(!target)throw Error('記録が移動または削除されました。');
+      if(alreadyApplied){
+        if(typeof root.SentlogRecords?.flush==='function')await root.SentlogRecords.flush();
+        else if(typeof root.SentlogRecords?.settled==='function')await root.SentlogRecords.settled();
+        root.SentlogRecords?.assertSafe?.();
+        saveDecisions(d,savedDecisions(d).filter(item=>!sameDecision(item,d)));
+        closeDecision();render();renderSelectedPhotos();refresh();return;
+      }
       const view=M.view(target);
       const photo=d.kind==='photo-remove'?view.photos.find(p=>p.id===d.photoId):null;
       if(d.kind==='photo-remove'&&(!photo||photo.deleted)){closeDecision();message('この写真は既に外されています。原本と変更履歴は残しています。');refresh();return;}
@@ -220,26 +241,34 @@
         if(composing||finishingComposition||draft?.compositionPending||draft?.text!==draft?.savedText&&!flushDraft())throw Error('入力中の文章を先に保存してください。下書きは残しています。');
         draft={text:entry.text,commentId:entry.id,headIds:entry.headIds,savedText:entry.text,revisionId:null,editingComment:true,compositionPending:false};editingComment=entry.id;writeDraft();input.value=draft.text;closeDecision();refresh();input.focus();return;
       }
+      if(localOnly){
+        d.localRevisionId=d.localRevisionId||id();
+        saveDecisions(d,[d,...decisionQueue]);
+      }
       mutate(()=>{
         if(d.kind==='delete'){
-          const removed=M.markDeleted(target,opts({expectedToken:d.token}));
+          const removed=M.markDeleted(target,opts({expectedToken:d.token,...(localOnly?{revisionId:d.localRevisionId}:{})}));
           state.shapes=state.shapes.filter(s=>s.id!==target.id);state.collabDeletedRecords=[...(state.collabDeletedRecords||[]).filter(s=>s.id!==target.id),removed];selected=null;
         }else if(d.kind==='photo-remove')replaceRecord(M.removePhoto(target,d.photoId,opts({expectedHeads:d.headIds})));
-        else replaceRecord(M.setField(target,d.key,d.value,opts({expectedHeads:d.headIds,unset:d.unset===true})));
+        else replaceRecord(M.setField(target,d.key,d.value,opts({expectedHeads:d.headIds,unset:d.unset===true,
+          ...(localOnly?{revisionId:d.localRevisionId}:{})})));
       },()=>{
         // A local-only intent is not confirmed until the native record writer
         // has flushed. Retain the decision if a storage failure is reported.
         if(!localOnly)saveDecisions(d,savedDecisions(d).filter(item=>!sameDecision(item,d)));
-      });
+      },{deferRender:localOnly});
       if(localOnly){
         const store=root.SentlogRecords;
         if(typeof store?.flush==='function')await store.flush();
         else if(typeof store?.settled==='function')await store.settled();
         store?.assertSafe?.();
+        if(!sameDrawing(d)||decision!==d)throw Error('保存中にアカウント・図面が変わりました。記録の控えを保持してください。');
         saveDecisions(d,savedDecisions(d).filter(item=>!sameDecision(item,d)));
         message('この端末に変更を保存しました。共有されるまでは他端末に反映されません。');
       }
-      closeDecision();refresh();
+      closeDecision();
+      if(localOnly){render();renderSelectedPhotos();}
+      refresh();
     }catch(e){if(decision===d&&confirmation===attempt)status.textContent=e.message;}
     finally{if(confirmation===attempt)confirmation=null;buttons.forEach(b=>b.disabled=false);}
   }
