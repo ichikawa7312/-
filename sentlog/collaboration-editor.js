@@ -173,6 +173,11 @@
       (scalarLabels[d.key]||d.key)+'\n登録：'+valueText(d.key,field?.value)+'（'+who(field?.heads[0])+'）\n変更：'+valueText(d.key,d.value);
     const actions=dialog.querySelector('[data-buttons]');actions.replaceChildren();
     actions.append(button('キャンセル',closeDecision),button(d.kind==='delete'?'削除する':d.kind==='comment-edit'?'修正する':d.kind==='photo-remove'?'写真を外す':'変更する',()=>confirmDecision()));
+    // Explicit local intent: do not pretend to have verified the remote head.
+    // Immutable field/delete revisions retain concurrent peer edits as conflicts
+    // when the shared record is eventually reconciled.
+    if(d.kind==='delete'||d.kind==='field')
+      actions.append(button('この端末に変更を保存（共有は後で）',()=>confirmDecision({localOnly:true})));
     dialog.hidden=false;
   }
   function cancelConfirmation(){const old=confirmation;confirmation=null;old?.controller.abort();}
@@ -181,13 +186,19 @@
     if(old)saveDecisions(old,decisionQueue);
     const next=decisionQueue.shift();if(next){showDecision(next);return;}
   }
-  async function confirmDecision(){
+  async function confirmDecision({localOnly=false}={}){
     const d=decision;if(!d||confirmation)return;
     const attempt={decision:d,controller:new AbortController()};confirmation=attempt;
     const status=dialog.querySelector('[data-status]'),buttons=dialog.querySelectorAll('button');buttons.forEach((b,index)=>b.disabled=index!==0);
     try{
-      if(!navigator.onLine&&d.kind!=='comment-edit')throw Error('変更内容はこの端末に残しています。接続後、最新の記録を確認して変更できます。');
-      if(navigator.onLine){
+      if(localOnly){
+        if(d.kind!=='delete'&&d.kind!=='field')throw Error('この操作の端末内保存には対応していません。');
+        if(root.SentlogRecords?.ready===false)throw Error('端末内の保存先を確認できません。変更せず停止しました。');
+        root.SentlogRecords?.assertSafe?.();
+      }else{
+        if(!navigator.onLine&&d.kind!=='comment-edit')throw Error('最新の共有記録を確認できません。端末内に変更を記録する場合は、下の「この端末に変更を保存」を選んでください。');
+      }
+      if(!localOnly&&navigator.onLine){
         if(typeof root.sentlogCollabRefresh!=='function')throw Error('最新の記録を確認する準備ができていません。少し待ってからお試しください。');
         status.textContent='最新の記録を確認しています…';const checked=await root.sentlogCollabRefresh(d.projectId,{signal:attempt.controller.signal});
         if(checked?.fresh!==true)throw Error('最新の記録をまだ確認できていません。変更内容を保持しています。');
@@ -216,11 +227,18 @@
         }else if(d.kind==='photo-remove')replaceRecord(M.removePhoto(target,d.photoId,opts({expectedHeads:d.headIds})));
         else replaceRecord(M.setField(target,d.key,d.value,opts({expectedHeads:d.headIds,unset:d.unset===true})));
       },()=>{
-        // Persist succeeded. Rendering a deletion clears the selected-record
-        // binding, so consume this exact decision before that render can
-        // discard its in-memory identity. Keep every other pending decision.
-        saveDecisions(d,savedDecisions(d).filter(item=>!sameDecision(item,d)));
+        // A local-only intent is not confirmed until the native record writer
+        // has flushed. Retain the decision if a storage failure is reported.
+        if(!localOnly)saveDecisions(d,savedDecisions(d).filter(item=>!sameDecision(item,d)));
       });
+      if(localOnly){
+        const store=root.SentlogRecords;
+        if(typeof store?.flush==='function')await store.flush();
+        else if(typeof store?.settled==='function')await store.settled();
+        store?.assertSafe?.();
+        saveDecisions(d,savedDecisions(d).filter(item=>!sameDecision(item,d)));
+        message('この端末に変更を保存しました。共有されるまでは他端末に反映されません。');
+      }
       closeDecision();refresh();
     }catch(e){if(decision===d&&confirmation===attempt)status.textContent=e.message;}
     finally{if(confirmation===attempt)confirmation=null;buttons.forEach(b=>b.disabled=false);}
