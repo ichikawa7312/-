@@ -45,7 +45,7 @@ replace_pc_function('start',"""async function pcFolderGranted(){
   try{return (await rootHandle.queryPermission({mode:'readwrite'}))==='granted';}catch{return false;}
 }
 async function autoSyncOnce(){
-  if(busy||document.hidden||!navigator.onLine||!session)return;
+  if(busy||!navigator.onLine||!session)return;
   if(!await pcFolderGranted()){
     setSync('PC保管先の許可待ち：保存許可を確認してください','warn');return;
   }
