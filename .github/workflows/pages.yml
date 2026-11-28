@@ -335,6 +335,8 @@ jobs:
           python3 scripts/build_offline_damage_decisions_release.py
           node tests/offline_damage_decisions_release.test.cjs
           node tests/collaboration_editor.test.cjs
+          python3 scripts/build_pc_autoresume_release.py
+          node tests/pc_autoresume_release.test.cjs
       - name: Setup Pages
         uses: actions/configure-pages@v5
         with:
