@@ -75,7 +75,16 @@
    (recoverShared===null||typeof recoverShared==='function')&&
    capabilities?.guarded===true&&capabilities.onlyIfMissing===true&&Number.isSafeInteger(timeoutMs)&&timeoutMs>0&&Number.isSafeInteger(maxBytes)&&maxBytes>0&&typeof allowArchivedRestore==='boolean',
    'ASSET_RUNTIME_CONFIG','写真の保存・認証・表示対象の確認方法が不足しています');
-  let closed=false,pump=null,active=null,recoveryCursor=0;
+  // Resume the bounded cursor after an iOS page reload or after the delta
+  // coordinator parks this idle project. Store only a small scoped ordinal,
+  // never an original Blob, photo identifier list, or archive receipt.
+  const recoveryCursorKey='sentlogSharedPhotoRecoveryCursorV1:'+scope.ownerId+':'+scope.projectId+':'+scope.deviceId;
+  let recoveryCursor=0;
+  try{
+    const saved=Number(root.localStorage?.getItem(recoveryCursorKey));
+    if(Number.isSafeInteger(saved)&&saved>=0)recoveryCursor=saved;
+  }catch{}
+  let closed=false,pump=null,active=null;
   function alive(){
    insist(!closed,'ASSET_CLOSED','共有写真の同期を終了しました');
    insist(sameScope(scope,currentScope()),'ASSET_SCOPE','写真同期中に利用者・案件・端末が変わりました');
@@ -151,7 +160,11 @@
     // original is absent or its re-encoding differs. Rotate the bounded
     // recovery window over the entire immutable snapshot, then wrap around.
     const recoveryStart=descriptors.length?recoveryCursor%descriptors.length:0;
-    if(descriptors.length)recoveryCursor=(recoveryStart+3)%descriptors.length;
+    if(descriptors.length){
+      recoveryCursor=(recoveryStart+3)%descriptors.length;
+      try{root.localStorage?.setItem(recoveryCursorKey,String(recoveryCursor));}
+      catch{} // Storage quota cannot invalidate or erase a photo.
+    }
     if(descriptors.length){
      try{assets=await transport.listPhotos(options);check();}
      catch(e){check();if(globalFailure(e))throw e;issue(null,e);}
