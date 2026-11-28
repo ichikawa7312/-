@@ -602,12 +602,12 @@ def run_deletion_confirmation(browser, cloud, engine):
         actor:{deviceId:'peer',deviceName:'別端末'}})""", remote['payload']['drawings'][0]['state']['shapes'][0])
     remote['revision'] += 1  # Deliberately no notification: confirmation itself must receive it.
     started = time.monotonic()
-    page.locator('.sl-collab-dialog').get_by_role('button', name='削除する', exact=True).click()
+    page.locator('.sl-collab-dialog').get_by_role('button', name='最新の共有記録を確認して変更', exact=True).click()
     wait(cloud, page, lambda: 'もう一度' in page.locator('.sl-collab-dialog [data-status]').inner_text(),
          'fresh delete check did not re-confirm the peer comment while unrelated sync was held', timeout=7)
     assert page.evaluate('state.shapes.length') == 2
     assert cloud.held_inspections, 'unrelated sync ended before the fresh-read assertion'
-    page.locator('.sl-collab-dialog').get_by_role('button', name='削除する', exact=True).click()
+    page.locator('.sl-collab-dialog').get_by_role('button', name='最新の共有記録を確認して変更', exact=True).click()
     wait(cloud, page, lambda: page.evaluate('state.shapes.length') == 1,
          'deletion still waits for the unrelated metadata queue', timeout=7)
     deletion_seconds = time.monotonic() - started
@@ -645,7 +645,7 @@ def run_deletion_confirmation(browser, cloud, engine):
     cloud.hold_head = (A, base.CLOUD_PROJECT)
     page.evaluate("SentlogFieldRecords.selectRecord('survey-a');$('inspector').classList.add('open')")
     page.locator('#deleteBtn').click()
-    page.locator('.sl-collab-dialog').get_by_role('button', name='削除する', exact=True).click()
+    page.locator('.sl-collab-dialog').get_by_role('button', name='最新の共有記録を確認して変更', exact=True).click()
     wait(cloud, page, lambda: bool(cloud.held_heads), 'confirmation read was not held')
     cancel = page.locator('.sl-collab-dialog').get_by_role('button', name='キャンセル', exact=True)
     assert cancel.is_enabled(), 'a pending delete disabled its cancel button'
