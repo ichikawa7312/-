@@ -327,6 +327,11 @@ jobs:
           node tests/storage_lifecycle_release.test.cjs
           node tests/startup_backup_recovery_release.test.cjs
           node tests/metadata_choice_release.test.cjs
+          python3 scripts/build_photo_foreground_release.py
+          node tests/photo_foreground_release.test.cjs
+          node tests/photo_save_sync_interference.test.cjs
+          node tests/collaboration_photos.test.cjs
+          node tests/record_connection_lifecycle.test.cjs
       - name: Setup Pages
         uses: actions/configure-pages@v5
         with:
