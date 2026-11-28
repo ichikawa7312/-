@@ -315,6 +315,8 @@ jobs:
           node tests/delta_app_runtime_residency.test.cjs
           node tests/photo_thumbnails.test.cjs
           node tests/iphone_stability_release.test.cjs
+          python3 scripts/build_iphone_lazy_records_release.py
+          node tests/iphone_lazy_records.test.cjs
           node tests/operation_memory_release.test.cjs
           node tests/capacity_maintenance_release.test.cjs
           node tests/reliability_release.test.cjs
