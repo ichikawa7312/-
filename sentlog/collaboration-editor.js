@@ -94,13 +94,13 @@
     if(!histories.has(k))histories.set(k,{undo:[],redo:[]});
     const h=histories.get(k);h.undo.push({before:copy(before),after:copy(after)});if(h.undo.length>80)h.undo.shift();h.redo=[];updateButtons();
   }
-  function mutate(fn,afterPersist){
+  function mutate(fn,afterPersist,{deferRender=false}={}){
     const before=copy(state),selection=selected;managed++;
     try{fn();rebuildNumberingState();persist();recordHistory(before,state);}
     catch(e){state=before;selected=selection;throw e;}
     finally{managed--;}
     if(afterPersist)afterPersist();
-    render();renderSelectedPhotos();refresh();
+    if(!deferRender){render();renderSelectedPhotos();refresh();}
   }
   function flushDraft(){
     stopTimer();if(!draft||composing||finishingComposition||draft.compositionPending||draft.text===draft.savedText||(!draft.text.trim()&&!draft.headIds?.length))return false;
@@ -172,7 +172,13 @@
       d.kind==='photo-remove'?'写真「'+(photo?.metadata?.name||d.photoName||'選択した写真')+'」をこの記録から外します。写真の原本と変更履歴は残ります。':
       (scalarLabels[d.key]||d.key)+'\n登録：'+valueText(d.key,field?.value)+'（'+who(field?.heads[0])+'）\n変更：'+valueText(d.key,d.value);
     const actions=dialog.querySelector('[data-buttons]');actions.replaceChildren();
-    actions.append(button('キャンセル',closeDecision),button(d.kind==='delete'?'削除する':d.kind==='comment-edit'?'修正する':d.kind==='photo-remove'?'写真を外す':'変更する',()=>confirmDecision()));
+    // Record deletions, scalar edits, and photo unlink are local-first.
+    // Keep the remote-freshness action as an *optional* explicit review path;
+    // normal field work must not block on the network or consume a peer edit.
+    const localFirst=d.kind==='delete'||d.kind==='field'||d.kind==='photo-remove';
+    actions.append(button('キャンセル',closeDecision),button(d.kind==='delete'?'削除する':d.kind==='comment-edit'?'修正する':d.kind==='photo-remove'?'写真を外す':'変更する',()=>confirmDecision({localOnly:localFirst})));
+    if(navigator.onLine&&localFirst)
+      actions.append(button('最新の共有記録を確認して変更',()=>confirmDecision({localOnly:false})));
     dialog.hidden=false;
   }
   function cancelConfirmation(){const old=confirmation;confirmation=null;old?.controller.abort();}
@@ -181,20 +187,48 @@
     if(old)saveDecisions(old,decisionQueue);
     const next=decisionQueue.shift();if(next){showDecision(next);return;}
   }
-  async function confirmDecision(){
+  function localDecisionApplied(d,target){
+    if(!d?.localRevisionId||!target?.collab)return false;
+    const revisions=d.kind==='delete'?target.collab.deletion?.revisions:
+      d.kind==='field'?target.collab.fields?.[d.key]?.revisions:
+      d.kind==='photo-remove'?target.collab.photos?.[d.photoId]?.revisions:null;
+    return Array.isArray(revisions)&&revisions.some(row=>row.id===d.localRevisionId);
+  }
+  async function confirmDecision({localOnly=!navigator.onLine}={}){
     const d=decision;if(!d||confirmation)return;
     const attempt={decision:d,controller:new AbortController()};confirmation=attempt;
     const status=dialog.querySelector('[data-status]'),buttons=dialog.querySelectorAll('button');buttons.forEach((b,index)=>b.disabled=index!==0);
     try{
-      if(!navigator.onLine&&d.kind!=='comment-edit')throw Error('変更内容はこの端末に残しています。接続後、最新の記録を確認して変更できます。');
-      if(navigator.onLine){
+      if(localOnly){
+        if(d.kind!=='delete'&&d.kind!=='field'&&d.kind!=='photo-remove')throw Error('この操作の端末内保存には対応していません。');
+        if(root.SentlogRecords?.ready===false)throw Error('端末内の保存先を確認できません。変更せず停止しました。');
+        // Fail before touching a record if older uncommitted edits cannot
+        // reach the native IndexedDB writer.
+        if(typeof root.SentlogRecords?.flush==='function')await root.SentlogRecords.flush();
+        else if(typeof root.SentlogRecords?.settled==='function')await root.SentlogRecords.settled();
+        root.SentlogRecords?.assertSafe?.();
+      }else{
+        if(!navigator.onLine&&d.kind!=='comment-edit')throw Error('最新の共有記録を確認できません。端末内に変更を記録する場合は、下の「この端末に変更を保存」を選んでください。');
+      }
+      if(!localOnly&&navigator.onLine){
         if(typeof root.sentlogCollabRefresh!=='function')throw Error('最新の記録を確認する準備ができていません。少し待ってからお試しください。');
         status.textContent='最新の記録を確認しています…';const checked=await root.sentlogCollabRefresh(d.projectId,{signal:attempt.controller.signal});
         if(checked?.fresh!==true)throw Error('最新の記録をまだ確認できていません。変更内容を保持しています。');
       }
       if(decision!==d||confirmation!==attempt||attempt.controller.signal.aborted)return;
-      if(!sameDrawing(d)||selected!==d.selectionAtOpen)throw Error('アカウントまたは選択中の記録が変わりました。変更内容を元の記録に残しています。');
+      // A rejected disk flush may leave a local mutation in memory. Retry
+      // only the same exact recorded revision, never append another deletion.
+      const alreadyApplied=localOnly&&localDecisionApplied(d,currentTarget(d));
+      if(!sameDrawing(d)||(!alreadyApplied&&selected!==d.selectionAtOpen))
+        throw Error('アカウントまたは選択中の記録が変わりました。変更内容を元の記録に残しています。');
       const target=currentTarget(d);if(!target)throw Error('記録が移動または削除されました。');
+      if(alreadyApplied){
+        if(typeof root.SentlogRecords?.flush==='function')await root.SentlogRecords.flush();
+        else if(typeof root.SentlogRecords?.settled==='function')await root.SentlogRecords.settled();
+        root.SentlogRecords?.assertSafe?.();
+        saveDecisions(d,savedDecisions(d).filter(item=>!sameDecision(item,d)));
+        closeDecision();render();renderSelectedPhotos();refresh();return;
+      }
       const view=M.view(target);
       const photo=d.kind==='photo-remove'?view.photos.find(p=>p.id===d.photoId):null;
       if(d.kind==='photo-remove'&&(!photo||photo.deleted)){closeDecision();message('この写真は既に外されています。原本と変更履歴は残しています。');refresh();return;}
@@ -209,19 +243,35 @@
         if(composing||finishingComposition||draft?.compositionPending||draft?.text!==draft?.savedText&&!flushDraft())throw Error('入力中の文章を先に保存してください。下書きは残しています。');
         draft={text:entry.text,commentId:entry.id,headIds:entry.headIds,savedText:entry.text,revisionId:null,editingComment:true,compositionPending:false};editingComment=entry.id;writeDraft();input.value=draft.text;closeDecision();refresh();input.focus();return;
       }
+      if(localOnly){
+        d.localRevisionId=d.localRevisionId||id();
+        saveDecisions(d,[d,...decisionQueue]);
+      }
       mutate(()=>{
         if(d.kind==='delete'){
-          const removed=M.markDeleted(target,opts({expectedToken:d.token}));
+          const removed=M.markDeleted(target,opts({expectedToken:d.token,...(localOnly?{revisionId:d.localRevisionId}:{})}));
           state.shapes=state.shapes.filter(s=>s.id!==target.id);state.collabDeletedRecords=[...(state.collabDeletedRecords||[]).filter(s=>s.id!==target.id),removed];selected=null;
-        }else if(d.kind==='photo-remove')replaceRecord(M.removePhoto(target,d.photoId,opts({expectedHeads:d.headIds})));
-        else replaceRecord(M.setField(target,d.key,d.value,opts({expectedHeads:d.headIds,unset:d.unset===true})));
+        }else if(d.kind==='photo-remove')replaceRecord(M.removePhoto(target,d.photoId,opts({expectedHeads:d.headIds,
+          ...(localOnly?{revisionId:d.localRevisionId}:{})})));
+        else replaceRecord(M.setField(target,d.key,d.value,opts({expectedHeads:d.headIds,unset:d.unset===true,
+          ...(localOnly?{revisionId:d.localRevisionId}:{})})));
       },()=>{
-        // Persist succeeded. Rendering a deletion clears the selected-record
-        // binding, so consume this exact decision before that render can
-        // discard its in-memory identity. Keep every other pending decision.
+        // A local-only intent is not confirmed until the native record writer
+        // has flushed. Retain the decision if a storage failure is reported.
+        if(!localOnly)saveDecisions(d,savedDecisions(d).filter(item=>!sameDecision(item,d)));
+      },{deferRender:localOnly});
+      if(localOnly){
+        const store=root.SentlogRecords;
+        if(typeof store?.flush==='function')await store.flush();
+        else if(typeof store?.settled==='function')await store.settled();
+        store?.assertSafe?.();
+        if(!sameDrawing(d)||decision!==d)throw Error('保存中にアカウント・図面が変わりました。記録の控えを保持してください。');
         saveDecisions(d,savedDecisions(d).filter(item=>!sameDecision(item,d)));
-      });
-      closeDecision();refresh();
+        message('この端末に変更を保存しました。共有されるまでは他端末に反映されません。');
+      }
+      closeDecision();
+      if(localOnly){render();renderSelectedPhotos();}
+      refresh();
     }catch(e){if(decision===d&&confirmation===attempt)status.textContent=e.message;}
     finally{if(confirmation===attempt)confirmation=null;buttons.forEach(b=>b.disabled=false);}
   }
@@ -336,6 +386,10 @@
         const existing=observed[field];if(same(existing,after[field])&&own(observed,field)===own(after,field))continue;
         if(same(prior[field],after[field])&&own(prior,field)===own(after,field))continue;
         if((existing===undefined||existing===null||existing==='')&&(prior[field]===undefined||prior[field]===null||prior[field]===''))continue;
+        // An offline edit is a normal local revision. Its observed parents
+        // remain explicit; an unseen peer change becomes a merge conflict,
+        // never an implicit overwrite. The writer still guards durable saves.
+        if(!navigator.onLine)continue;
         const pending={accountId:accountId(),projectId:activeProjectId,drawingId:activeDrawingId,recordId:s.id,kind:'field',key:field,value:copy(after[field]),unset:!own(after,field),headIds:view.fields[field]?.headIds||[]};
         warnings.push(pending);if(own(observed,field))after[field]=copy(observed[field]);else delete after[field];
       }
@@ -431,7 +485,7 @@
     });
     if(changed){render();renderSelectedPhotos();refresh();}
   }
-  root.SentlogCollaboration={actor,flushDraft,refresh,recordHistory,afterStoredNormalization,
+  root.SentlogCollaboration={offlineDamageDecisionsVersion:3,actor,flushDraft,refresh,recordHistory,afterStoredNormalization,
     requestPhotoRemoval(capture,photoId){
       const c={accountId:capture?.ownerId||'',projectId:capture?.projectId,drawingId:capture?.drawingId,recordId:capture?.recordId};
       if(!sameDrawing(c))throw Error('撮影先の図面を開いてから写真を外してください。');

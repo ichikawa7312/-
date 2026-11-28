@@ -87,6 +87,17 @@
   async function getOriginal(drawingId,photoId){
     const db=await openDb(),key=keyFor(drawingId,photoId);return new Promise((resolve,reject)=>{const q=db.transaction(PHOTOS,'readonly').objectStore(PHOTOS).get(key);q.onsuccess=()=>resolve(q.result||null);q.onerror=()=>reject(q.error);});
   }
+  // Read one photo's immutable association without scanning unrelated iPhone
+  // originals. Only the owning drawing/photo identity can be recovered.
+  async function getOriginalMeta(drawingId,photoId){
+    if(typeof drawingId!=='string'||!drawingId||typeof photoId!=='string'||!photoId)
+      throw Error('原本写真の識別情報が必要です');
+    const db=await openDb(),key=keyFor(drawingId,photoId);
+    return new Promise((resolve,reject)=>{
+      const q=db.transaction(META,'readonly').objectStore(META).get(key);
+      q.onsuccess=()=>resolve(q.result||null);q.onerror=()=>reject(q.error);
+    });
+  }
   // A capture may be retried after the page closes. Its original and pending
   // association share one transaction; an existing original is never replaced.
   async function stageOriginal(drawingId,photoId,file,meta){
@@ -349,7 +360,7 @@
     if(typeof persist==='function')persist();if(status&&added)status.textContent=`${added}枚保存しました（原本はこの端末・共有は軽量版）`;setTimeout(()=>{if(status&&/保存しました/.test(status.textContent))status.textContent='';},1800);if(typeof selected!=='undefined'&&selected===targetId&&typeof renderSelectedPhotos==='function')renderSelectedPhotos();refreshUI();
   }
 
-  const api={...pure,saveOriginal,getOriginal,stageOriginal,updatePhotoAssociation,rebindPendingOriginal,listMeta,stats,drawingStats,renameDrawing,markExported,deleteExported,makeSharedPhoto,makeZip,refreshUI,exportNext,listProjectMeta,projectOptions,beginExportSession,confirmExportSession,releaseExportSession};
+  const api={...pure,saveOriginal,getOriginal,getOriginalMeta,stageOriginal,updatePhotoAssociation,rebindPendingOriginal,listMeta,stats,drawingStats,renameDrawing,markExported,deleteExported,makeSharedPhoto,makeZip,refreshUI,exportNext,listProjectMeta,projectOptions,beginExportSession,confirmExportSession,releaseExportSession};
   root.SentlogOriginalPhotos=api;
   try{if(typeof addPhotosToSelected==='function')addPhotosToSelected=registerPhotos;}catch(e){console.warn('Sentlog original photo hook',e);}
   // app-settings.js inserts its dialog later in the document.write loader.
