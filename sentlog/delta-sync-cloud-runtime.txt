@@ -114,12 +114,41 @@ const sentlogDeltaInstaller=window.SentlogDeltaAppMigration.createInstaller({rec
     if(detail.status==='missing-files-review')sentlogDrawingReview.update({...detail,
       projectName:workspace().projects.find(project=>project.id===detail.localProjectId)?.name||'案件'});
   }}});
+// A missing shared photo can be reconstructed only on the original
+// capturing device and only if its historically recorded JPEG is byte-identical.
+// Never use a different project, account, shape, or unverified re-encoding.
+async function sentlogDeltaRecoverSharedOriginal(cp,item,options={}){
+  const verify=typeof options.validate==='function'?options.validate:()=>{};
+  verify();
+  if(!navigator.onLine||cp?.status!=='active'||!session?.user?.id||session.user.id!==options.scope?.ownerId)
+    return undefined;
+  const originals=window.SentlogOriginalPhotos;
+  if(typeof originals?.getOriginalMeta!=='function'||typeof originals.getOriginal!=='function'||
+     typeof originals.makeSharedPhoto!=='function')return undefined;
+  if(!item?.drawingId||!item.photoId||!item.recordId||!item.sha256||
+     !Number.isSafeInteger(item.size)||item.size<=0||item.mimeType!=='image/jpeg')return undefined;
+  const meta=await originals.getOriginalMeta(item.drawingId,item.photoId);verify();
+  const link=meta?.photoAssociation,target=link?.target;
+  if(meta?.drawingId!==item.drawingId||meta.photoId!==item.photoId||
+     meta.projectId!==cp.client_key||!meta.originalRevision||
+     link?.version!==1||link.photoId!==item.photoId||link.status!=='attached'||
+     target?.ownerId!==options.scope.ownerId||target.projectId!==cp.client_key||
+     target.drawingId!==item.drawingId||target.recordId!==item.recordId)return undefined;
+  const blob=await originals.getOriginal(item.drawingId,item.photoId);verify();
+  if(!(blob instanceof Blob)||blob.size!==Number(meta.size)||blob.type!==meta.type)
+    throw Object.assign(Error('撮影原本が不足・不一致のため確認用写真を復元できません。元の記録は保持しています'),{code:'ASSET_ORIGINAL_MISSING'});
+  const rebuilt=await originals.makeSharedPhoto(blob);verify();
+  const digest=(await sha256Hex(rebuilt)).toLowerCase();verify();
+  if(rebuilt.size!==item.size||rebuilt.type!==item.mimeType||digest!==item.sha256.toLowerCase())
+    throw Object.assign(Error('原本から再作成した画像が登録時の内容と一致しません。元画像・記録は変更せず保持しています'),{code:'ASSET_ORIGINAL_REENCODE_MISMATCH'});
+  return rebuilt;
+}
 const sentlogDeltaApp=window.SentlogDeltaAppRuntime.createRuntime({
   records:window.SentlogRecords,url:SUPABASE_URL,key:SUPABASE_KEY,session:()=>session,ensureSession,
   authGeneration:()=>sessionGuard.generation(),subscribeAuth:fn=>sessionGuard.subscribe(fn),
   deviceId:()=>localStorage.getItem(DEVICE_KEY),
   actor:()=>({deviceId:localStorage.getItem(DEVICE_KEY),deviceName:window.SentlogCollaborationDevice?.name||'この端末'}),
-  install:sentlogDeltaInstaller,readFile:dbGet,
+  install:sentlogDeltaInstaller,readFile:dbGet,recoverShared:sentlogDeltaRecoverSharedOriginal,
   withFileLock:(key,fn)=>window.SentlogSyncTraffic.withFileLock(key,fn),
   onStatus:status=>{sentlogDeltaStatuses.set(status.localProjectId,status);
     const label={replaying:'端末に保存した変更履歴を確認しています',projecting:'受信した記録を画面に反映しています'}[status.phase];
