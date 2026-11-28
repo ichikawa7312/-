@@ -172,12 +172,13 @@
       d.kind==='photo-remove'?'写真「'+(photo?.metadata?.name||d.photoName||'選択した写真')+'」をこの記録から外します。写真の原本と変更履歴は残ります。':
       (scalarLabels[d.key]||d.key)+'\n登録：'+valueText(d.key,field?.value)+'（'+who(field?.heads[0])+'）\n変更：'+valueText(d.key,d.value);
     const actions=dialog.querySelector('[data-buttons]');actions.replaceChildren();
-    actions.append(button('キャンセル',closeDecision),button(d.kind==='delete'?'削除する':d.kind==='comment-edit'?'修正する':d.kind==='photo-remove'?'写真を外す':'変更する',()=>confirmDecision()));
-    // Explicit local intent: do not pretend to have verified the remote head.
-    // Immutable field/delete revisions retain concurrent peer edits as conflicts
-    // when the shared record is eventually reconciled.
-    if(navigator.onLine&&(d.kind==='delete'||d.kind==='field'||d.kind==='photo-remove'))
-      actions.append(button('通信せず端末に保存',()=>confirmDecision({localOnly:true})));
+    // Record deletions, scalar edits, and photo unlink are local-first.
+    // Keep the remote-freshness action as an *optional* explicit review path;
+    // normal field work must not block on the network or consume a peer edit.
+    const localFirst=d.kind==='delete'||d.kind==='field'||d.kind==='photo-remove';
+    actions.append(button('キャンセル',closeDecision),button(d.kind==='delete'?'削除する':d.kind==='comment-edit'?'修正する':d.kind==='photo-remove'?'写真を外す':'変更する',()=>confirmDecision({localOnly:localFirst})));
+    if(navigator.onLine&&localFirst)
+      actions.append(button('最新の共有記録を確認して変更',()=>confirmDecision({localOnly:false})));
     dialog.hidden=false;
   }
   function cancelConfirmation(){const old=confirmation;confirmation=null;old?.controller.abort();}
@@ -484,7 +485,7 @@
     });
     if(changed){render();renderSelectedPhotos();refresh();}
   }
-  root.SentlogCollaboration={offlineDamageDecisionsVersion:2,actor,flushDraft,refresh,recordHistory,afterStoredNormalization,
+  root.SentlogCollaboration={offlineDamageDecisionsVersion:3,actor,flushDraft,refresh,recordHistory,afterStoredNormalization,
     requestPhotoRemoval(capture,photoId){
       const c={accountId:capture?.ownerId||'',projectId:capture?.projectId,drawingId:capture?.drawingId,recordId:capture?.recordId};
       if(!sameDrawing(c))throw Error('撮影先の図面を開いてから写真を外してください。');
