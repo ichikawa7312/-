@@ -10,10 +10,12 @@ assert(index.includes("['collaboration-editor.js?v="+token+"','offlineDamageDeci
 assert.equal(count(index,'phone-runtime.js?v=221'),2);
 assert(index.includes("['phone-runtime.js?v=221','v2.21']"));
 assert(edit.includes('offlineDamageDecisionsVersion:2'));
-assert(edit.includes('async function confirmDecision({localOnly=false}={})'));
+assert(edit.includes('async function confirmDecision({localOnly=!navigator.onLine}={})'));
 assert(edit.includes("if(!localOnly&&navigator.onLine)"));
 assert(edit.includes("opts({expectedToken:d.token,...(localOnly?{revisionId:d.localRevisionId}:{})})"));
 assert(edit.includes("function localDecisionApplied(d,target)"));
+assert(edit.includes("if(!navigator.onLine)continue;"));
+assert(edit.includes("d.kind==='photo-remove'?target.collab.photos?.[d.photoId]?.revisions:null"));
 assert(edit.includes("saveDecisions(d,[d,...decisionQueue])"));
 assert(edit.includes("store?.assertSafe?.()"));
 assert.deepEqual(worker.match(/sentlog-pwa-v\d+/g),['sentlog-pwa-v263']);
